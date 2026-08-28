@@ -1,0 +1,26 @@
+# Mix build artifacts and dependencies
+/_build/
+/deps/
+cover/
+/doc/
+
+# Local tooling and agent scratch data
+/.elixir_ls/
+/.pi/
+workers/bun/.pi/
+
+# Runtime artifacts
+erl_crash.dump
+*.ez
+node_modules/
+.quest-engineering-worker/
+workers/bun/.quest-engineering-worker/
+
+# Local environment overrides
+.env
+.env.*
+!.env.example
+
+# Operating systems and editors
+.DS_Store
+*.swp
