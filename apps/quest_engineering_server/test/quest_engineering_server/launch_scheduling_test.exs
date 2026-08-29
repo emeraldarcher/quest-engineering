@@ -17,11 +17,13 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Product.TacticLibrary
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RuntimeStore
+  alias QuestEngineering.Server.RunWorkspaceStore
   alias QuestEngineering.Server.SchedulingStore
   alias QuestEngineering.Server.WorkerStore
 
@@ -51,7 +53,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     %{workspace_root: root}
   end
 
-  test "launch atomically persists one immutable snapshot, Run, and ordered Actions", context do
+  test "launch atomically persists one immutable snapshot, Run, and ordered Actions" do
     fixture = product_fixture(parallel?: true)
     assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
 
@@ -68,7 +70,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     assert Enum.map(outbox, & &1.emission_index) == [0, 1]
     assert Enum.map(launched.actions, & &1.semantic_step_key) == ["first", "second"]
-    assert launched.snapshot.workspace.root == context.workspace_root
+    refute Map.has_key?(Map.from_struct(launched.snapshot.workspace), :root)
 
     assert {:ok, _updated} =
              Products.update_class(fixture.builder.id, %{instructions: "Changed after launch"})
@@ -150,20 +152,16 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert Repo.aggregate(QuestLaunch, :count) == launches_before
   end
 
-  test "deterministic ordered scanning bypasses a waiting earlier independent Action", context do
+  test "whole-Run preflight refuses a host missing any potentially used configuration", context do
     fixture =
       product_fixture(parallel?: true, first_model: %ModelRef{provider: "missing", model: "x"})
 
     assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
     register_worker("worker-other", context.workspace_root, adapter: "not-pi")
 
-    assert {:ok, scheduled} = SchedulingStore.schedule_next(launched.run_id)
-    assert scheduled.execution.identity.semantic_step_key == "second"
-    assert scheduled.execution.performer.member_key == "bob"
-
     assert {:waiting, waits} = SchedulingStore.schedule_next(launched.run_id)
-    assert Enum.any?(waits, &(&1.code == :waiting_for_worker))
-    assert Repo.aggregate(ScheduledActionExecution, :count) == 1
+    assert Enum.map(waits, & &1.code) == [:waiting_for_run_workspace]
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
   end
 
   test "earlier emitted contenders win roster order and later work waits until release",
@@ -248,10 +246,37 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     register_worker("worker-no-custom", context.workspace_root, adapter: "general-executor")
 
     assert {:waiting, waits} = SchedulingStore.schedule_next(launched.run_id)
-    assert Enum.map(waits, & &1.code) == [:waiting_for_worker]
+    assert Enum.map(waits, & &1.code) == [:waiting_for_run_workspace]
     assert Repo.aggregate(OccurrenceMemberBinding, :count) == 0
     assert Repo.aggregate(OccurrenceContextBinding, :count) == 0
     assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+  end
+
+  test "post-execution worktree integrity failure fences every later Action", context do
+    fixture = product_fixture(parallel?: true)
+    worker = register_worker("worker-fence", context.workspace_root, max_concurrency: 2)
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, assignment} =
+             RunWorkspaceStore.fence_for_action(
+               worker.id,
+               worker.connection_generation,
+               first.action_id,
+               %{
+                 "code" => "run_worktree_branch_mismatch",
+                 "message" => "Execution changed the Run branch."
+               }
+             )
+
+    assert assignment.state == "attention_required"
+
+    assert Repo.get!(RunWorkspaceAssignment, launched.run_id).failure_code ==
+             "run_worktree_branch_mismatch"
+
+    assert {:waiting, waits} = SchedulingStore.schedule_next(launched.run_id)
+    assert Enum.map(waits, & &1.code) == [:waiting_for_run_workspace]
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 1
   end
 
   test "concurrent schedulers cannot partially acquire the last Worker slot", context do

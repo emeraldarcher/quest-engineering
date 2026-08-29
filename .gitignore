@@ -13,6 +13,9 @@ workers/bun/.pi/
 erl_crash.dump
 *.ez
 node_modules/
+client/dist/
+client/src-tauri/target/
+client/src-tauri/gen/schemas/
 .quest-engineering-worker/
 workers/bun/.quest-engineering-worker/
 

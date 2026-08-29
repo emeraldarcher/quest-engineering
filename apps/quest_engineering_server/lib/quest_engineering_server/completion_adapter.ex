@@ -7,6 +7,7 @@ defmodule QuestEngineering.Server.CompletionAdapter do
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
+  alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Repo
@@ -32,11 +33,27 @@ defmodule QuestEngineering.Server.CompletionAdapter do
         end
 
       case DispatchStore.mark_completed(worker_id, generation, action.id) do
-        {:ok, dispatch_record} -> %{transition: result, dispatch: dispatch_record}
-        {:error, error} -> Repo.rollback(error)
+        {:ok, dispatch_record} ->
+          retain_terminal_workspace(action.run_id, result.run)
+          %{transition: result, dispatch: dispatch_record}
+
+        {:error, error} ->
+          Repo.rollback(error)
       end
     end)
   end
+
+  defp retain_terminal_workspace(run_id, %{status: status})
+       when status in [:completed, :failed] do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    from(assignment in RunWorkspaceAssignment,
+      where: assignment.run_id == ^run_id and assignment.state == "ready"
+    )
+    |> Repo.update_all(set: [state: "retained", retained_at: now, updated_at: now])
+  end
+
+  defp retain_terminal_workspace(_run_id, _run), do: :ok
 
   def transition_id(worker_id, action_id) do
     "worker-completion/v1/" <>

@@ -1,15 +1,50 @@
-# Quest Engineering Product API v1
+# Quest Engineering Product API v1 — v0.12
 
-The Product API is a conventional JSON API under `/api/v1`, with `snake_case` fields and opaque IDs. It is separate from Worker Protocol v3 and has no authentication in v0.10.
+The JSON API is under `/api/v1`, uses `snake_case`, and never exposes Worker IDs, executor adapters, Herdr/Pi identities, source paths, or Run-worktree paths.
 
-Product definitions expose CRUD plus explicit archival for Classes, Loadouts, Squads, reusable Tactics, and Quests. Lists exclude archived definitions unless `?include_archived=true` is supplied. Quest tactic sources are explicit `inline` or `definition` unions, and tactic bodies use the existing `step`, `sequence`, `parallel`, `until`, and `use` codec.
+## Logical Workspaces
 
-`POST /tactics/preview`, `POST /tactics/:id/preview`, and `POST /quests/:id/preview` never create execution state. `POST /quests/:id/launch` invokes the established launch service and returns a run reference.
+```text
+GET    /workspaces
+GET    /workspaces/:id
+POST   /workspaces
+PATCH  /workspaces/:id
+POST   /workspaces/:id/archive
+```
 
-`GET /runs`, `GET /quests/:id/runs`, and `GET /runs/:id` expose immutable-snapshot-backed Product projections. Step states are `pending`, `waiting`, `scheduled`, `running`, `completed`, `failed`, and `uncertain`. Artifact values are available only through `GET /runs/:run_id/artifacts/:artifact_id`; run projections contain summaries.
+Workspace fields are `id`, immutable `key`, `name`, `source_kind`, optional credential-free `source_fingerprint`, and `archived_at`. Workspaces are logical/path-free. Quests reference `workspace_id`.
 
-Configured, currently valid Quest workspaces are discoverable through `GET /api/v1/workspaces`. It returns only `{ref, name}` and never reveals local roots or Worker data.
+`GET /workspace-sources` asks connected Workers to refresh bounded authorized-root discovery and returns cached Product-safe candidates. `POST /workspaces/:id/bindings` with `{candidate_id}` requests a Worker-local binding. Candidates contain no path or Worker identity.
 
-Realtime clients connect separately at `/client` and join `run:<run_id>`. The join reply contains the current run projection. `run_changed` is an invalidation notification; clients must refetch `GET /runs/:id` after reconnect or notification. Notifications may duplicate or be missed and are published only after durable transactions commit.
+## Product definitions
 
-Errors use `{error: {code, message, details, meta}}`. Expected request validation, preview, archive-reference, conflict, and not-found failures never expose Ecto, SQL, provider, Herdr, or Pi internals.
+Classes, Loadouts, Squads, reusable Tactics, and Quests retain CRUD plus explicit archival. Lists exclude archived rows unless `?include_archived=true` is supplied. Quest tactic sources are explicit `inline` or `definition` unions.
+
+Preview routes remain pure and never inspect source repositories or provision worktrees:
+
+```text
+POST /tactics/preview
+POST /tactics/:id/preview
+POST /quests/:id/preview
+```
+
+`POST /quests/:id/launch` creates the immutable path-free LaunchSnapshot, Runtime Run, Actions, and one stable Run Workspace assignment. Physical provisioning happens asynchronously through Worker Protocol v4.
+
+## Execution options
+
+`GET /execution-options` returns coherent model/reasoning/tool profiles and logical `workspace_id` access combinations. Root-specific shell policy is applied before a combination is advertised. No capacities or physical details are exposed.
+
+## Runs
+
+```text
+GET /runs
+GET /quests/:id/runs
+GET /runs/:id
+GET /runs/:run_id/artifacts/:artifact_id
+```
+
+Run projections include `execution_environment` with safe Workspace identity, `waiting_for_host | preparing | ready | attention_required | retained | removed`, a safe message, base revision, branch name, and dirty-source exclusion flag. They omit assignment/worktree/Worker/binding IDs and paths.
+
+Step states remain `pending`, `waiting`, `scheduled`, `running`, `completed`, `failed`, and `uncertain`. Artifact values remain behind the artifact detail route.
+
+Clients subscribe to one selected Run through `/client` and `run:<run_id>`; committed changes invalidate that projection.

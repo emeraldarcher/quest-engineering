@@ -6,6 +6,7 @@ defmodule QuestEngineering.Server.Scheduler do
   alias QuestEngineering.Server.Dispatcher
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Repo
+  alias QuestEngineering.Server.RunWorkspaceProvisioner
   alias QuestEngineering.Server.SchedulingStore
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
@@ -41,6 +42,15 @@ defmodule QuestEngineering.Server.Scheduler do
   def handle_info({:schedule, run_id}, state) do
     next_state = %{state | pending: MapSet.delete(state.pending, run_id)}
 
+    case RunWorkspaceProvisioner.ensure(run_id) do
+      {:ready, _assignment} -> schedule_ready(run_id, state, next_state)
+      {:preparing, _assignment} -> {:noreply, next_state}
+      {:blocked, _assignment} -> {:noreply, next_state}
+      {:error, _error} -> {:noreply, next_state}
+    end
+  end
+
+  defp schedule_ready(run_id, state, next_state) do
     case SchedulingStore.schedule_next(run_id, claim_owner: state.claim_owner) do
       {:ok, dispatch} ->
         _result = Dispatcher.deliver(dispatch)

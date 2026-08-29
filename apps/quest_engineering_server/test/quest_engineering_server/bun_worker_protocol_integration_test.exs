@@ -8,7 +8,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.Persistence.QuestLaunch
-  alias QuestEngineering.Server.Persistence.ScheduledActionExecution
+  alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RuntimeStore
@@ -21,7 +21,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
     :ok
   end
 
-  test "real Bun Worker v3 executes a Product launch over Phoenix WebSocket" do
+  test "real Bun Worker v4 provisions a Run worktree before Product execution" do
     case System.find_executable("bun") do
       nil ->
         IO.puts("Bun Worker protocol integration skipped: bun executable is unavailable")
@@ -31,13 +31,58 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         previous_workspaces = Application.get_env(:quest_engineering_server, :workspaces)
         previous_scheduler = Application.get_env(:quest_engineering_server, :scheduler_enabled)
         Application.put_env(:quest_engineering_server, :workspaces, %{"workspace:test" => root})
-        Application.put_env(:quest_engineering_server, :scheduler_enabled, true)
+        Application.put_env(:quest_engineering_server, :scheduler_enabled, false)
 
         worker_root =
           Path.join(root, ".pi/tmp/bun-worker-integration-#{System.unique_integer([:positive])}")
 
         File.mkdir_p!(worker_root)
+        source_root = Path.join(worker_root, "source")
+        File.mkdir_p!(source_root)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# Bun worktree fixture\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
         worker_id = "bun-integration-#{System.unique_integer([:positive])}"
+        {quest, workspace} = product_fixture()
+        binding_id = Ecto.UUID.generate()
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: worker_root,
+              max_access: "read_write",
+              discover_depth: 1,
+              allow_unconfined_shell: true
+            }
+          ])
+
+        bindings =
+          Jason.encode!([
+            %{
+              binding_id: binding_id,
+              workspace_id: workspace.id,
+              authorized_root_key: "repository",
+              source_repository_root: source_root,
+              max_access: "read_write",
+              allow_unconfined_shell: true
+            }
+          ])
 
         port =
           Port.open({:spawn_executable, bun}, [
@@ -50,19 +95,20 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
               {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
               {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
               {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
-              {~c"QE_WORKSPACE_ROOT", String.to_charlist(root)},
-              {~c"QE_WORKSPACE_REF", ~c"workspace:test"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_WORKSPACE_BINDINGS_JSON", String.to_charlist(bindings)},
+              {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
               {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
               {~c"QE_WORKER_PROVIDER", ~c"fake"},
               {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
             ]
           ])
 
-        logger = spawn(fn -> port_log_loop() end)
-        Port.connect(port, logger)
+        {:os_pid, worker_os_pid} = Port.info(port, :os_pid)
 
         on_exit(fn ->
           if Port.info(port), do: Port.close(port)
+          System.cmd("kill", ["-TERM", Integer.to_string(worker_os_pid)], stderr_to_stdout: true)
           File.rm_rf!(worker_root)
 
           Application.put_env(
@@ -82,22 +128,31 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
           match?({:ok, %{status: "connected"}}, WorkerStore.fetch(worker_id))
         end)
 
-        quest = product_fixture()
         assert {:ok, launched} = LaunchQuest.launch(quest.id)
-        [action] = launched.actions
+        assert [_action] = launched.actions
 
         assert_eventually(fn ->
-          match?({:ok, %{revision: 1}}, RuntimeStore.fetch_run(action.run_id))
+          match?(%{state: "ready"}, Repo.get(RunWorkspaceAssignment, launched.run_id))
         end)
 
+        assignment = Repo.get!(RunWorkspaceAssignment, launched.run_id)
+        assert File.dir?(assignment.canonical_worktree_root)
+        assert File.exists?(Path.join(worker_root, "run-worktrees.sqlite"))
+        assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
         assert Repo.get_by!(QuestLaunch, run_id: launched.run_id)
-        assert Repo.get!(ScheduledActionExecution, action.id).state == "completed"
-        assert File.exists?(Path.join(worker_root, "dispatches.sqlite"))
     end
   end
 
   defp product_fixture do
     suffix = Integer.to_string(System.unique_integer([:positive]))
+
+    {:ok, workspace} =
+      Products.create_workspace(%{
+        key: "bun-integration-#{suffix}",
+        name: "Bun integration",
+        source_kind: :local_git,
+        source_fingerprint: nil
+      })
 
     {:ok, class} =
       Products.create_class(%{
@@ -132,9 +187,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
 
     {:ok, quest} =
       Products.create_quest(%{
-        title: "Bun v3 integration",
+        title: "Bun v4 integration",
         objective: "Complete through Product launch, scheduling, and Bun.",
-        workspace_ref: "workspace:test",
+        workspace_id: workspace.id,
         squad_id: squad.id,
         tactic_source: %Inline{
           body:
@@ -146,18 +201,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         }
       })
 
-    quest
-  end
-
-  defp port_log_loop do
-    receive do
-      {_port, {:data, data}} ->
-        IO.write(data)
-        port_log_loop()
-
-      {_port, {:exit_status, _status}} ->
-        :ok
-    end
+    {quest, workspace}
   end
 
   defp assert_eventually(fun, attempts \\ 200)

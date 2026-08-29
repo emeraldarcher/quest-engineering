@@ -16,12 +16,12 @@ Herdr mux
 Pi
 ```
 
-The control plane hosts Worker Protocol v2 and `workers/bun` contains the first production execution Worker. It durably accepts Actions in local SQLite, hosts normal interactive Pi through a dedicated Herdr session, maps runtime context lineage to persistent provider lineages, validates atomic structured outputs, and reconciles after restart. The client remains a separate concern.
+The control plane hosts Worker Protocol v4 and `workers/bun` is the filesystem authority. Product Workspaces are logical and path-free; Workers discover explicitly authorized source repositories and provision one durable isolated Git worktree per Run before model execution. Bun durably accepts Actions in local SQLite, hosts Pi through Herdr, preserves physical context lineage, verifies Run-worktree integrity before and after execution, and reconciles after restart. The Svelte/Pixi/Tauri client presents the Product as a compact fantasy management town.
 
 ## Umbrella applications
 
 - `quest_engineering_core` — dependency-free Elixir boundary containing reusable Product Tactic authoring and pure expansion into semantic `Step`/`Sequence`/`Parallel`/`Until` tactics, deterministic compilation, and a pure runtime.
-- `quest_engineering_server` — Phoenix/Ecto infrastructure boundary with Product Tactic persistence, immutable resolved launch snapshots, transactional runtime persistence, and the generation-fenced WebSocket Worker Protocol v3.
+- `quest_engineering_server` — Phoenix/Ecto infrastructure boundary with Product Tactic persistence, immutable resolved launch snapshots, transactional runtime persistence, and the generation-fenced WebSocket Worker Protocol v4.
 
 Dependencies point inward only:
 
@@ -65,7 +65,7 @@ mix ecto.migrate
 mix setup
 ```
 
-The greenfield migration creates runtime persistence plus `workers`, `worker_dispatches`, and reconciliation anomalies. See [`apps/quest_engineering_server/README.md`](apps/quest_engineering_server/README.md) for Worker Protocol v2, claiming, fencing, delivery, recovery, and reconciliation, and [`workers/bun/README.md`](workers/bun/README.md) for the real Worker/Herdr/Pi substrate.
+Additive migrations create Product definitions, logical Workspaces, Worker source bindings, Run workspace assignments, runtime persistence, dispatches, and reconciliation records. See [`apps/quest_engineering_server/README.md`](apps/quest_engineering_server/README.md) and [`workers/bun/README.md`](workers/bun/README.md) for v4 provisioning, fencing, delivery, and restart recovery.
 
 Run the umbrella tests. The test alias creates and migrates the test database automatically:
 

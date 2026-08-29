@@ -98,19 +98,35 @@ defmodule QuestEngineering.Core.Product.Squad do
         }
 end
 
+defmodule QuestEngineering.Core.Product.Workspace do
+  @moduledoc "A path-free logical product workspace which may be bound on many Workers."
+
+  @enforce_keys [:id, :key, :name, :source_kind]
+  defstruct [:id, :key, :name, :source_kind, :source_fingerprint]
+
+  @type source_kind :: :git_remote | :local_git
+  @type t :: %__MODULE__{
+          id: String.t(),
+          key: String.t(),
+          name: String.t(),
+          source_kind: source_kind(),
+          source_fingerprint: String.t() | nil
+        }
+end
+
 defmodule QuestEngineering.Core.Product.Quest do
-  @moduledoc "A user's objective and selected workspace, Squad, and Tactic source."
+  @moduledoc "A user's objective and selected logical Workspace, Squad, and Tactic source."
 
   alias QuestEngineering.Core.Product.TacticSource
 
-  @enforce_keys [:id, :title, :objective, :workspace_ref, :squad_id, :tactic_source]
-  defstruct [:id, :title, :objective, :workspace_ref, :squad_id, :tactic_source]
+  @enforce_keys [:id, :title, :objective, :workspace_id, :squad_id, :tactic_source]
+  defstruct [:id, :title, :objective, :workspace_id, :squad_id, :tactic_source]
 
   @type t :: %__MODULE__{
           id: String.t(),
           title: String.t(),
           objective: String.t(),
-          workspace_ref: String.t(),
+          workspace_id: String.t(),
           squad_id: String.t(),
           tactic_source: TacticSource.t()
         }

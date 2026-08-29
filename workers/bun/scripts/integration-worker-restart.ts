@@ -7,9 +7,17 @@ import type { ExecuteAction } from "../src/protocol/types.ts";
 import { PiProvider } from "../src/providers/pi/provider.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
 import { HerdrSessionHost } from "../src/session-host/herdr/session-host.ts";
+import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
 
 if (process.argv[2] === "--child") {
   const config = JSON.parse(process.argv[3] as string) as WorkerConfig;
+  const worktrees = new RunWorktreeRegistry(config);
+  const recoveredWorktree = await worktrees.verify(
+    "00000000-0000-4000-8000-000000000002",
+  );
+  if (recoveredWorktree.state !== "ready")
+    throw new Error("Child could not recover the Run worktree.");
+  worktrees.close();
   const registry = new DispatchRegistry(
     join(config.dataRoot, "dispatches.sqlite"),
     config.dataRoot,
@@ -73,9 +81,26 @@ const config: WorkerConfig = {
   maxConcurrency: 1,
   tags: ["integration"],
   herdrSession: `qe-restart-${id}`,
-  workspaceRoot: workspace,
-  workspaceRef: "workspace:restart",
-  workspaceMaxAccess: "read_write",
+  allowedRoots: [
+    {
+      key: "integration",
+      path: root,
+      max_access: "read_write",
+      discover_depth: 2,
+      allow_unconfined_shell: true,
+    },
+  ],
+  workspaceBindings: [
+    {
+      binding_id: "00000000-0000-4000-8000-000000000003",
+      workspace_id: "00000000-0000-4000-8000-000000000001",
+      authorized_root_key: "integration",
+      source_repository_root: workspace,
+      max_access: "read_write",
+      allow_unconfined_shell: true,
+    },
+  ],
+  worktreeRoot: join(root, "worktrees"),
   executorModels: [model],
   reasoningLevels: ["low", "medium", "high"],
   dataRoot: join(root, "worker-data"),
@@ -88,11 +113,29 @@ const config: WorkerConfig = {
   fakeOutputs: {},
   fakeDelayMs: 0,
 };
+await mkdir(config.worktreeRoot, { recursive: true });
+const worktrees = new RunWorktreeRegistry(config);
+const runWorktree = await worktrees.provision({
+  worktree_id: "00000000-0000-4000-8000-000000000002",
+  run_id: "restart-run",
+  workspace_id: "00000000-0000-4000-8000-000000000001",
+  workspace_binding_id: "00000000-0000-4000-8000-000000000003",
+  base: { kind: "binding_head_v1" },
+  branch_name: "qe/run/00000000000040008000000000000002",
+  identity_hash: "restart-run-worktree-v1",
+});
+if (runWorktree.state !== "ready")
+  throw new Error(
+    `Run worktree provisioning failed: ${runWorktree.failureCode}`,
+  );
+const executionRoot = runWorktree.canonicalRoot;
+worktrees.close();
+
 const instruction =
   'Use bash to run "sleep 20" first. After it finishes, create restart-proof.txt containing exactly "same Pi survived Worker restart" followed by a newline. Produce change_set describing the file.';
 const action: ExecuteAction = {
   type: "execute_action",
-  protocol_version: 3,
+  protocol_version: 4,
   worker_id: config.workerId,
   execution: {
     identity: {
@@ -120,11 +163,16 @@ const action: ExecuteAction = {
       model,
       reasoning: "medium",
       tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
-      workspace: {
-        ref: "workspace:restart",
-        root: workspace,
-        access: "read_write",
-      },
+    },
+    logical_workspace: {
+      workspace_id: "00000000-0000-4000-8000-000000000001",
+      workspace_key: "restart",
+    },
+    execution_workspace: {
+      worktree_id: "00000000-0000-4000-8000-000000000002",
+      workspace_binding_id: "00000000-0000-4000-8000-000000000003",
+      canonical_root: executionRoot,
+      access: "read_write",
     },
     context: {
       mode: "fresh",
@@ -197,7 +245,7 @@ if (
     "Worker restart did not preserve the exact Herdr/Pi execution.",
   );
 if (
-  (await Bun.file(join(workspace, "restart-proof.txt")).text()) !==
+  (await Bun.file(join(executionRoot, "restart-proof.txt")).text()) !==
   "same Pi survived Worker restart\n"
 )
   throw new Error("Recovered Pi did not finish the expected work.");
@@ -213,6 +261,9 @@ const proof = {
   agentsBefore: agentsBefore.length,
   agentsAfter: agentsAfter.length,
   outputs: completed.outputs,
+  runWorkspace: executionRoot,
+  baseRevision: runWorktree.baseRevision,
+  branchName: runWorktree.branchName,
 };
 await Bun.write(
   join(root, "proof.json"),

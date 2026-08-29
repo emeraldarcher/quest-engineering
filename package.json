@@ -1,0 +1,11 @@
+{
+  "name": "quest-engineering",
+  "private": true,
+  "workspaces": ["client"],
+  "scripts": {
+    "dev": "bun run --cwd client dev",
+    "tauri": "bun run --cwd client tauri",
+    "test:client": "bun test --cwd client",
+    "check:client": "bun run --cwd client check"
+  }
+}

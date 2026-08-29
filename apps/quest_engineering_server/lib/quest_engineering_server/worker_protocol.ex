@@ -9,12 +9,14 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
+  alias QuestEngineering.Core.ResolvedExecution.ExecutionWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Identity
+  alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 3
+  @version 4
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @reasoning ~w(low medium high)
@@ -33,7 +35,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             state: atom() | nil,
             outputs: map() | nil,
             failure: map() | nil,
-            dispatches: [map()] | nil
+            dispatches: [map()] | nil,
+            worktree: map() | nil,
+            candidates: [map()] | nil,
+            binding: map() | nil
           }
 
     defstruct [
@@ -45,7 +50,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :state,
       :outputs,
       :failure,
-      :dispatches
+      :dispatches,
+      :worktree,
+      :candidates,
+      :binding
     ]
   end
 
@@ -58,7 +66,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 3
+  @spec version() :: 4
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -104,6 +112,64 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     }
   end
 
+  def discover_workspace_sources(worker_id) do
+    %{
+      "type" => "discover_workspace_sources",
+      "protocol_version" => @version,
+      "worker_id" => worker_id
+    }
+  end
+
+  def bind_workspace_source(worker_id, binding) do
+    %{
+      "type" => "bind_workspace_source",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "binding" => %{
+        "binding_id" => binding.binding_id,
+        "workspace_id" => binding.workspace_id,
+        "workspace_key" => binding.workspace_key,
+        "source_kind" => to_string(binding.source_kind),
+        "source_fingerprint" => binding.source_fingerprint,
+        "candidate_id" => binding.candidate_id
+      }
+    }
+  end
+
+  def provision_run_worktree(worker_id, assignment) do
+    %{
+      "type" => "provision_run_worktree",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "worktree" => %{
+        "worktree_id" => assignment.worktree_id,
+        "run_id" => assignment.run_id,
+        "workspace_id" => assignment.workspace_id,
+        "workspace_binding_id" => assignment.workspace_binding_id,
+        "base" => %{"kind" => assignment.base_selector},
+        "branch_name" => assignment.branch_name,
+        "identity_hash" => assignment.identity_hash
+      }
+    }
+  end
+
+  def reconcile_run_worktrees_request(worker_id, assignments) do
+    %{
+      "type" => "reconcile_run_worktrees",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "worktrees" =>
+        Enum.map(assignments, fn assignment ->
+          %{
+            "worktree_id" => assignment.worktree_id,
+            "run_id" => assignment.run_id,
+            "workspace_binding_id" => assignment.workspace_binding_id,
+            "identity_hash" => assignment.identity_hash
+          }
+        end)
+    }
+  end
+
   def execute_action(worker_id, %ResolvedExecution{} = execution) do
     %{
       "type" => "execute_action",
@@ -136,6 +202,50 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_message("worker_heartbeat", worker_id, _payload),
     do: {:ok, %Message{type: :heartbeat, worker_id: worker_id}}
+
+  defp decode_message("workspace_sources", worker_id, %{"candidates" => candidates})
+       when is_list(candidates) do
+    with {:ok, decoded} <- decode_workspace_candidates(candidates) do
+      {:ok, %Message{type: :workspace_sources, worker_id: worker_id, candidates: decoded}}
+    end
+  end
+
+  defp decode_message("workspace_binding_ready", worker_id, %{"binding" => binding}) do
+    with {:ok, decoded} <- decode_workspace_binding(binding) do
+      {:ok, %Message{type: :workspace_binding_ready, worker_id: worker_id, binding: decoded}}
+    end
+  end
+
+  defp decode_message("run_worktree_ready", worker_id, payload) do
+    with {:ok, worktree} <- decode_ready_worktree(payload["worktree"]) do
+      {:ok, %Message{type: :run_worktree_ready, worker_id: worker_id, worktree: worktree}}
+    end
+  end
+
+  defp decode_message("run_worktree_failed", worker_id, payload) do
+    with {:ok, worktree} <- decode_failed_worktree(payload) do
+      {:ok, %Message{type: :run_worktree_failed, worker_id: worker_id, worktree: worktree}}
+    end
+  end
+
+  defp decode_message("run_worktree_attention", worker_id, payload) do
+    with {:ok, worktree} <- decode_failed_worktree(payload) do
+      {:ok, %Message{type: :run_worktree_attention, worker_id: worker_id, worktree: worktree}}
+    end
+  end
+
+  defp decode_message("run_worktree_integrity_failed", worker_id, payload) do
+    with {:ok, action_id} <- required_string(payload, "action_id"),
+         {:ok, failure} <- required_plain_map(payload, "failure") do
+      {:ok,
+       %Message{
+         type: :run_worktree_integrity_failed,
+         worker_id: worker_id,
+         action_id: action_id,
+         failure: failure
+       }}
+    end
+  end
 
   defp decode_message("dispatch_accepted", worker_id, payload) do
     with {:ok, fields} <- dispatch_identity(payload) do
@@ -218,6 +328,110 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end
   end
 
+  defp decode_workspace_candidates(candidates) do
+    Enum.reduce_while(candidates, {:ok, []}, fn
+      %{
+        "candidate_id" => id,
+        "name" => name,
+        "source_kind" => kind,
+        "max_access" => access,
+        "allow_unconfined_shell" => shell
+      } = value,
+      {:ok, decoded}
+      when is_binary(id) and is_binary(name) and kind in ["git_remote", "local_git"] and
+             access in @access and is_boolean(shell) ->
+        candidate = %{
+          candidate_id: id,
+          name: name,
+          source_kind: kind,
+          source_fingerprint: value["source_fingerprint"],
+          max_access: access,
+          allow_unconfined_shell: shell
+        }
+
+        {:cont, {:ok, decoded ++ [candidate]}}
+
+      _invalid, _acc ->
+        {:halt, error(:invalid_field, "candidates")}
+    end)
+  end
+
+  defp decode_workspace_binding(
+         %{
+           "binding_id" => binding_id,
+           "workspace_id" => workspace_id,
+           "authorized_root_key" => root_key,
+           "source_repository_root" => source_root,
+           "max_access" => access,
+           "allow_unconfined_shell" => shell
+         } = value
+       )
+       when is_binary(binding_id) and is_binary(workspace_id) and is_binary(root_key) and
+              is_binary(source_root) and access in @access and is_boolean(shell) do
+    {:ok,
+     %{
+       binding_id: binding_id,
+       workspace_id: workspace_id,
+       authorized_root_key: root_key,
+       source_repository_root: source_root,
+       source_fingerprint: value["source_fingerprint"],
+       max_access: access,
+       allow_unconfined_shell: shell
+     }}
+  end
+
+  defp decode_workspace_binding(_value), do: error(:invalid_field, "binding")
+
+  defp decode_ready_worktree(%{
+         "worktree_id" => worktree_id,
+         "run_id" => run_id,
+         "workspace_binding_id" => binding_id,
+         "base_revision" => base_revision,
+         "branch_name" => branch_name,
+         "canonical_root" => canonical_root,
+         "source_dirty_excluded" => dirty,
+         "identity_hash" => identity_hash
+       })
+       when is_binary(worktree_id) and is_binary(run_id) and is_binary(binding_id) and
+              is_binary(base_revision) and is_binary(branch_name) and is_binary(canonical_root) and
+              is_boolean(dirty) and is_binary(identity_hash) do
+    {:ok,
+     %{
+       worktree_id: worktree_id,
+       run_id: run_id,
+       workspace_binding_id: binding_id,
+       base_revision: base_revision,
+       branch_name: branch_name,
+       canonical_root: canonical_root,
+       source_dirty_excluded: dirty,
+       identity_hash: identity_hash
+     }}
+  end
+
+  defp decode_ready_worktree(_payload), do: error(:invalid_field, "worktree")
+
+  defp decode_failed_worktree(%{
+         "worktree_id" => worktree_id,
+         "run_id" => run_id,
+         "workspace_binding_id" => binding_id,
+         "identity_hash" => identity_hash,
+         "failure" => failure
+       })
+       when is_binary(worktree_id) and is_binary(run_id) and is_binary(binding_id) and
+              is_binary(identity_hash) and is_map(failure) do
+    {:ok,
+     %{
+       worktree_id: worktree_id,
+       run_id: run_id,
+       workspace_binding_id: binding_id,
+       identity_hash: identity_hash,
+       failure_code: failure["code"] || "run_worktree_failed",
+       failure_details: failure
+     }}
+  end
+
+  defp decode_failed_worktree(_payload), do: error(:invalid_field, "worktree")
+
   defp dispatch_identity(payload) do
     with {:ok, action_id} <- required_string(payload, "action_id"),
          {:ok, occurrence_id} <- required_string(payload, "occurrence_id"),
@@ -293,20 +507,23 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "arch" => arch,
          "max_concurrency" => max_concurrency,
          "tags" => tags,
-         "executors" => executors
+         "executors" => executors,
+         "workspace_bindings" => workspace_bindings
        })
        when is_binary(os) and os != "" and is_binary(arch) and arch != "" and
               is_integer(max_concurrency) and max_concurrency > 0 and max_concurrency <= 1024 and
               is_list(executors) and executors != [] do
     with :ok <- string_list(tags, "capabilities.tags"),
-         {:ok, executors} <- validate_executors(executors) do
+         {:ok, executors} <- validate_executors(executors),
+         :ok <- validate_workspace_bindings(workspace_bindings) do
       {:ok,
        %{
          "os" => os,
          "arch" => arch,
          "max_concurrency" => max_concurrency,
          "tags" => Enum.uniq(tags),
-         "executors" => executors
+         "executors" => executors,
+         "workspace_bindings" => Enum.uniq(workspace_bindings)
        }}
     end
   end
@@ -323,26 +540,26 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end)
   end
 
-  defp validate_executor(%{
-         "adapter" => adapter,
-         "models" => models,
-         "reasoning" => reasoning,
-         "tools" => tools,
-         "workspaces" => workspaces
-       })
+  defp validate_executor(
+         %{
+           "adapter" => adapter,
+           "models" => models,
+           "reasoning" => reasoning,
+           "tools" => tools
+         } = executor
+       )
        when is_binary(adapter) and adapter != "" and is_list(models) and models != [] and
-              is_list(reasoning) and is_list(tools) and is_list(workspaces) do
+              is_list(reasoning) and is_list(tools) do
     with :ok <- validate_models(models),
          :ok <- allowed_string_list(reasoning, @reasoning, "capabilities.executors.reasoning"),
-         :ok <- string_list(tools, "capabilities.executors.tools"),
-         :ok <- validate_workspaces(workspaces) do
+         :ok <- string_list(tools, "capabilities.executors.tools") do
       {:ok,
        %{
          "adapter" => adapter,
          "models" => Enum.uniq(models),
          "reasoning" => Enum.uniq(reasoning),
          "tools" => Enum.uniq(tools),
-         "workspaces" => Enum.uniq(workspaces)
+         "workspaces" => Map.get(executor, "workspaces", [])
        }}
     end
   end
@@ -362,17 +579,31 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        else: error(:invalid_field, "capabilities.executors.models")
   end
 
-  defp validate_workspaces(workspaces) do
-    if Enum.all?(workspaces, fn
-         %{"ref" => ref, "root" => root, "max_access" => access} ->
-           is_binary(ref) and ref != "" and is_binary(root) and root != "" and access in @access
+  defp validate_workspace_bindings(bindings) when is_list(bindings) do
+    if Enum.all?(bindings, fn
+         %{
+           "binding_id" => binding_id,
+           "workspace_id" => workspace_id,
+           "authorized_root_key" => root_key,
+           "source_repository_root" => source_root,
+           "max_access" => access,
+           "allow_unconfined_shell" => shell
+         } ->
+           valid_uuid?(binding_id) and valid_uuid?(workspace_id) and non_blank?(root_key) and
+             non_blank?(source_root) and access in @access and is_boolean(shell)
 
          _other ->
            false
        end),
        do: :ok,
-       else: error(:invalid_field, "capabilities.executors.workspaces")
+       else: error(:invalid_field, "capabilities.workspace_bindings")
   end
+
+  defp validate_workspace_bindings(_bindings),
+    do: error(:invalid_field, "capabilities.workspace_bindings")
+
+  defp valid_uuid?(value), do: is_binary(value) and match?({:ok, _}, Ecto.UUID.cast(value))
+  defp non_blank?(value), do: is_binary(value) and String.trim(value) != ""
 
   defp allowed_string_list(values, allowed, field) do
     if Enum.all?(values, &(&1 in allowed)),
@@ -400,6 +631,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          performer: %Performer{} = performer,
          work: %Work{} = work,
          configuration: %Configuration{} = configuration,
+         logical_workspace: %LogicalWorkspace{} = logical_workspace,
+         execution_workspace: %ExecutionWorkspace{} = execution_workspace,
          context: %Context{} = context
        }) do
     %{
@@ -418,12 +651,17 @@ defmodule QuestEngineering.Server.WorkerProtocol do
           "model" => configuration.model.model
         },
         "reasoning" => Atom.to_string(configuration.reasoning),
-        "tools" => configuration.tools,
-        "workspace" => %{
-          "ref" => configuration.workspace_ref,
-          "root" => configuration.workspace_root,
-          "access" => Atom.to_string(configuration.workspace_access)
-        }
+        "tools" => configuration.tools
+      },
+      "logical_workspace" => %{
+        "workspace_id" => logical_workspace.workspace_id,
+        "workspace_key" => logical_workspace.workspace_key
+      },
+      "execution_workspace" => %{
+        "worktree_id" => execution_workspace.worktree_id,
+        "workspace_binding_id" => execution_workspace.workspace_binding_id,
+        "canonical_root" => execution_workspace.canonical_root,
+        "access" => Atom.to_string(execution_workspace.access)
       },
       "context" => %{
         "mode" => Atom.to_string(context.mode),

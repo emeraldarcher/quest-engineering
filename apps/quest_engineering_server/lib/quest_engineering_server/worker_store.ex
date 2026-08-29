@@ -1,3 +1,4 @@
+# credo:disable-for-this-file Credo.Check.Refactor.Nesting
 defmodule QuestEngineering.Server.WorkerStore do
   @moduledoc "Durable Worker identity, capability, connection-generation, and liveness storage."
 
@@ -5,6 +6,7 @@ defmodule QuestEngineering.Server.WorkerStore do
 
   alias Ecto.Changeset
   alias QuestEngineering.Server.Persistence.Worker
+  alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.WorkerError
 
@@ -34,7 +36,9 @@ defmodule QuestEngineering.Server.WorkerStore do
         last_heartbeat_at: now
       }
 
-      persist_registration(worker, attributes)
+      registered = persist_registration(worker, attributes)
+      sync_workspace_bindings!(registered, capabilities["workspace_bindings"] || [])
+      registered
     end)
   end
 
@@ -97,6 +101,43 @@ defmodule QuestEngineering.Server.WorkerStore do
           worker.id == ^worker_id and worker.connection_generation == ^generation and
             worker.status == "connected"
     )
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.Nesting
+  defp sync_workspace_bindings!(worker, bindings) do
+    now = now()
+    advertised_ids = Enum.map(bindings, & &1["binding_id"])
+
+    Enum.each(bindings, fn binding ->
+      attributes = %{
+        binding_id: binding["binding_id"],
+        worker_id: worker.id,
+        workspace_id: binding["workspace_id"],
+        authorized_root_key: binding["authorized_root_key"],
+        source_repository_root: binding["source_repository_root"],
+        source_fingerprint: binding["source_fingerprint"],
+        max_access: binding["max_access"],
+        allow_unconfined_shell: binding["allow_unconfined_shell"],
+        status: "available",
+        last_seen_generation: worker.connection_generation,
+        last_seen_at: now
+      }
+
+      existing = Repo.get(WorkerWorkspaceBinding, binding["binding_id"])
+
+      changeset =
+        WorkerWorkspaceBinding.changeset(existing || %WorkerWorkspaceBinding{}, attributes)
+
+      case if(existing, do: Repo.update(changeset), else: Repo.insert(changeset)) do
+        {:ok, _row} -> :ok
+        {:error, changeset} -> Repo.rollback(changeset_error(changeset))
+      end
+    end)
+
+    from(binding in WorkerWorkspaceBinding,
+      where: binding.worker_id == ^worker.id and binding.binding_id not in ^advertised_ids
+    )
+    |> Repo.update_all(set: [status: "unavailable", updated_at: now])
   end
 
   defp persist_registration(worker, attributes) do

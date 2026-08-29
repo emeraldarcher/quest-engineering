@@ -21,11 +21,13 @@ defmodule QuestEngineering.Server.Product.Repository do
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Core.Product.Validation
   alias QuestEngineering.Core.Product.ValidationError
+  alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Server.Persistence.ProductClass
   alias QuestEngineering.Server.Persistence.ProductLoadout
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.ProductSquad
   alias QuestEngineering.Server.Persistence.ProductSquadMember
+  alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.TacticCodec
   alias QuestEngineering.Server.Product.TacticGraphLoader
   alias QuestEngineering.Server.Product.TacticLibrary
@@ -41,6 +43,53 @@ defmodule QuestEngineering.Server.Product.Repository do
 
   @type persistence_result(value) ::
           {:ok, value} | {:error, [ValidationError.t()] | Changeset.t() | Error.t()}
+
+  @spec create_workspace(map()) :: persistence_result(Workspace.t())
+  def create_workspace(attributes) when is_map(attributes) do
+    value = %Workspace{
+      id: Ecto.UUID.generate(),
+      key: attributes[:key],
+      name: attributes[:name],
+      source_kind: attributes[:source_kind],
+      source_fingerprint: Map.get(attributes, :source_fingerprint)
+    }
+
+    with {:ok, value} <- Validation.validate(value),
+         {:ok, row} <-
+           Repo.insert(ProductWorkspace.create_changeset(workspace_attributes(value))) do
+      {:ok, workspace_from_row(row)}
+    end
+  end
+
+  def update_workspace(id, attributes) when is_map(attributes) do
+    with {:ok, row} <- active_row(ProductWorkspace, id, :workspace),
+         :ok <- immutable_key(row.key, attributes),
+         current = workspace_from_row(row),
+         value <- %Workspace{
+           current
+           | name: Map.get(attributes, :name, current.name),
+             source_fingerprint:
+               Map.get(attributes, :source_fingerprint, current.source_fingerprint)
+         },
+         {:ok, value} <- Validation.validate(value),
+         {:ok, updated} <-
+           Repo.update(ProductWorkspace.update_changeset(row, workspace_attributes(value))) do
+      {:ok, workspace_from_row(updated)}
+    end
+  end
+
+  def get_workspace(id, options \\ []) do
+    with {:ok, row} <- row(ProductWorkspace, id, :workspace, options),
+         do: {:ok, workspace_from_row(row)}
+  end
+
+  def list_workspaces(options \\ []) do
+    ProductWorkspace
+    |> visible_query(options)
+    |> order_by([row], asc: row.key)
+    |> Repo.all()
+    |> Enum.map(&workspace_from_row/1)
+  end
 
   @spec create_class(map()) :: persistence_result(Class.t())
   def create_class(attributes) when is_map(attributes) do
@@ -211,16 +260,23 @@ defmodule QuestEngineering.Server.Product.Repository do
 
   @spec create_quest(map()) :: persistence_result(Quest.t())
   def create_quest(attributes) when is_map(attributes) do
-    value = %Quest{
-      id: Ecto.UUID.generate(),
-      title: attributes[:title],
-      objective: attributes[:objective],
-      workspace_ref: attributes[:workspace_ref],
-      squad_id: attributes[:squad_id],
-      tactic_source: attributes[:tactic_source]
-    }
+    with {:ok, workspace_id} <- resolve_workspace_id(attributes) do
+      value = %Quest{
+        id: Ecto.UUID.generate(),
+        title: attributes[:title],
+        objective: attributes[:objective],
+        workspace_id: workspace_id,
+        squad_id: attributes[:squad_id],
+        tactic_source: attributes[:tactic_source]
+      }
 
+      create_quest_value(value)
+    end
+  end
+
+  defp create_quest_value(value) do
     with {:ok, value} <- validate_quest(value),
+         {:ok, _workspace} <- get_workspace(value.workspace_id),
          {:ok, _squad} <- get_squad(value.squad_id),
          {:ok, row} <- Repo.insert(ProductQuest.create_changeset(quest_attributes(value))) do
       {:ok, quest_from_row!(row)}
@@ -235,11 +291,12 @@ defmodule QuestEngineering.Server.Product.Repository do
            id: current.id,
            title: Map.get(attributes, :title, current.title),
            objective: Map.get(attributes, :objective, current.objective),
-           workspace_ref: Map.get(attributes, :workspace_ref, current.workspace_ref),
+           workspace_id: Map.get(attributes, :workspace_id, current.workspace_id),
            squad_id: Map.get(attributes, :squad_id, current.squad_id),
            tactic_source: Map.get(attributes, :tactic_source, current.tactic_source)
          },
          {:ok, value} <- validate_quest(value),
+         {:ok, _workspace} <- get_workspace(value.workspace_id),
          {:ok, _squad} <- get_squad(value.squad_id),
          {:ok, updated} <-
            Repo.update(ProductQuest.update_changeset(row, quest_attributes(value))) do
@@ -263,15 +320,18 @@ defmodule QuestEngineering.Server.Product.Repository do
   end
 
   @doc "Builds but does not persist a LaunchSnapshot and creates no Runtime state."
-  def preview_launch_snapshot(quest_id, workspace_root) do
+  def preview_launch_snapshot(quest_id, _legacy_root), do: preview_launch_snapshot(quest_id)
+
+  def preview_launch_snapshot(quest_id) do
     transact_repeatable(fn ->
       with {:ok, quest} <- get_quest(quest_id),
+           {:ok, workspace} <- get_workspace(quest.workspace_id),
            {:ok, squad} <- get_squad(quest.squad_id),
            classes <- classes_for(squad),
            loadouts <- loadouts_for(squad),
            {:ok, catalog} <- TacticGraphLoader.load(quest.tactic_source),
            {:ok, snapshot} <-
-             Builder.build(quest, squad, classes, loadouts, workspace_root, catalog) do
+             Builder.build(quest, workspace, squad, classes, loadouts, catalog) do
         snapshot
       else
         {:error, error} -> Repo.rollback(error)
@@ -279,10 +339,38 @@ defmodule QuestEngineering.Server.Product.Repository do
     end)
   end
 
+  def archive_workspace(id), do: archive(ProductWorkspace, id, :workspace)
   def archive_class(id), do: archive(ProductClass, id, :class)
   def archive_loadout(id), do: archive(ProductLoadout, id, :loadout)
   def archive_squad(id), do: archive(ProductSquad, id, :squad)
   def archive_quest(id), do: archive(ProductQuest, id, :quest)
+
+  defp resolve_workspace_id(%{workspace_id: id}) when is_binary(id), do: {:ok, id}
+
+  defp resolve_workspace_id(%{workspace_ref: reference}) when is_binary(reference) do
+    key =
+      "legacy-" <>
+        (:sha256 |> :crypto.hash(reference) |> Base.encode16(case: :lower) |> binary_part(0, 16))
+
+    case Repo.get_by(ProductWorkspace, key: key) do
+      nil ->
+        case create_workspace(%{
+               key: key,
+               name: reference,
+               source_kind: :local_git,
+               source_fingerprint: nil
+             }) do
+          {:ok, workspace} -> {:ok, workspace.id}
+          {:error, error} -> {:error, error}
+        end
+
+      workspace ->
+        {:ok, workspace.id}
+    end
+  end
+
+  defp resolve_workspace_id(_attributes),
+    do: {:ok, nil}
 
   defp validate_squad_references(squad) do
     with {:ok, squad} <- Validation.validate(squad) do
@@ -387,6 +475,16 @@ defmodule QuestEngineering.Server.Product.Repository do
 
   defp normalize_members(invalid), do: invalid
 
+  defp workspace_from_row(row) do
+    %Workspace{
+      id: row.id,
+      key: row.key,
+      name: row.name,
+      source_kind: String.to_existing_atom(row.source_kind),
+      source_fingerprint: row.source_fingerprint
+    }
+  end
+
   defp class_from_row(row) do
     %Class{
       id: row.id,
@@ -427,7 +525,7 @@ defmodule QuestEngineering.Server.Product.Repository do
          id: row.id,
          title: row.title,
          objective: row.objective,
-         workspace_ref: row.workspace_ref,
+         workspace_id: row.workspace_id,
          squad_id: row.squad_id,
          tactic_source: tactic_source
        }}
@@ -466,6 +564,16 @@ defmodule QuestEngineering.Server.Product.Repository do
     end
   end
 
+  defp workspace_attributes(value) do
+    %{
+      id: value.id,
+      key: value.key,
+      name: value.name,
+      source_kind: Atom.to_string(value.source_kind),
+      source_fingerprint: value.source_fingerprint
+    }
+  end
+
   defp loadout_attributes(value) do
     %{
       id: value.id,
@@ -484,11 +592,14 @@ defmodule QuestEngineering.Server.Product.Repository do
     do: %{id: value.id, key: value.key, name: value.name, description: value.description}
 
   defp quest_attributes(value) do
+    workspace = Repo.get!(ProductWorkspace, value.workspace_id)
+
     %{
       id: value.id,
       title: value.title,
       objective: value.objective,
-      workspace_ref: value.workspace_ref,
+      workspace_ref: workspace.key,
+      workspace_id: value.workspace_id,
       squad_id: value.squad_id
     }
     |> Map.merge(tactic_source_attributes(value.tactic_source))

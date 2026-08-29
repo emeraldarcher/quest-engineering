@@ -5,8 +5,8 @@ defmodule QuestEngineering.Server.Persistence.LaunchSnapshotCodec do
   alias QuestEngineering.Server.Persistence.Error
   alias QuestEngineering.Server.Persistence.RuntimeCodec
 
-  @version 2
-  @supported_versions [1, 2]
+  @version 3
+  @supported_versions [1, 2, 3]
   def version, do: @version
 
   def encode(%LaunchSnapshot{} = snapshot), do: RuntimeCodec.encode(snapshot)
@@ -30,12 +30,13 @@ defmodule QuestEngineering.Server.Persistence.ResolvedExecutionCodec do
   alias QuestEngineering.Server.Persistence.Error
   alias QuestEngineering.Server.Persistence.RuntimeCodec
 
-  @version 1
+  @version 2
+  @supported_versions [1, 2]
   def version, do: @version
 
   def encode(%ResolvedExecution{} = execution), do: RuntimeCodec.encode(execution)
 
-  def decode(payload, @version) do
+  def decode(payload, version) when version in @supported_versions do
     case RuntimeCodec.decode(payload) do
       {:ok, %ResolvedExecution{} = execution} -> {:ok, execution}
       {:ok, value} -> {:error, %Error{type: :invalid_persisted_term, details: %{value: value}}}

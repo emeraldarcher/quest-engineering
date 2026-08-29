@@ -18,11 +18,13 @@ defmodule QuestEngineering.Server.SchedulingStore do
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunChangeNotifier
+  alias QuestEngineering.Server.RunWorkspaceStore
 
   @reserved_dispatch_states ~w(claimed dispatched acknowledged running uncertain)
   @default_lease_ms 1_000
@@ -37,6 +39,19 @@ defmodule QuestEngineering.Server.SchedulingStore do
   @spec schedule_next(String.t(), keyword()) ::
           {:ok, map()} | {:waiting, [Error.t()]} | {:error, Error.t()}
   def schedule_next(run_id, options \\ []) do
+    RunWorkspaceStore.prepare_legacy_test(run_id)
+
+    case RunWorkspaceStore.fetch(run_id) do
+      %{state: state} when state not in ["ready", "retained"] ->
+        {:waiting,
+         [waiting(:waiting_for_run_workspace, %{id: nil}, %{run_id: run_id, state: state})]}
+
+      _assignment ->
+        schedule_ready(run_id, options)
+    end
+  end
+
+  defp schedule_ready(run_id, options) do
     case Repo.transaction(fn -> schedule_locked(run_id, options) end) do
       {:ok, {:scheduled, dispatch}} ->
         RunChangeNotifier.notify(run_id)
@@ -70,6 +85,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
   defp schedule_locked(run_id, options) do
     lock_run!(run_id)
     launch = load_launch!(run_id)
+    assignment = load_ready_assignment!(run_id)
     snapshot = decode_snapshot!(launch)
     candidates = unscheduled_actions(run_id)
 
@@ -77,7 +93,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
     |> Enum.reduce_while({:waiting, []}, fn outbox, {:waiting, waits} ->
       action = decode_action!(outbox)
 
-      case resolve_candidate(snapshot, launch, action) do
+      case resolve_candidate(snapshot, launch, assignment, action) do
         {:ok, resolved} ->
           dispatch = persist_acquisition!(outbox, action, resolved, options)
           {:halt, {:scheduled, dispatch}}
@@ -91,7 +107,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
     end)
   end
 
-  defp resolve_candidate(snapshot, launch, action) do
+  defp resolve_candidate(snapshot, launch, assignment, action) do
     with {:ok, member} <- resolve_member(snapshot, action),
          {:ok, context} <- resolve_context(action),
          execution =
@@ -101,9 +117,14 @@ defmodule QuestEngineering.Server.SchedulingStore do
              launch.id,
              member,
              context.logical_lineage_id,
-             context.source_occurrence_id
+             context.source_occurrence_id,
+             %{
+               worktree_id: assignment.worktree_id,
+               workspace_binding_id: assignment.workspace_binding_id,
+               canonical_root: assignment.canonical_worktree_root
+             }
            ),
-         {:ok, worker, slot} <- select_worker(execution.configuration, action, context) do
+         {:ok, worker, slot} <- select_worker(execution, assignment, action, context) do
       {:ok, %{member: member, context: context, execution: execution, worker: worker, slot: slot}}
     end
   end
@@ -258,8 +279,18 @@ defmodule QuestEngineering.Server.SchedulingStore do
     end
   end
 
-  defp select_worker(configuration, action, context) do
-    required_worker_id = continuation_worker(action, context)
+  defp select_worker(execution, assignment, action, context) do
+    continuation_worker_id = continuation_worker(action, context)
+    required_worker_id = assignment.worker_id
+
+    if continuation_worker_id && continuation_worker_id != required_worker_id do
+      Repo.rollback(invariant(:continuation_run_worker_mismatch, %{run_id: action.run_id}))
+    end
+
+    requested =
+      execution.configuration
+      |> Map.from_struct()
+      |> Map.put(:workspace_access, execution.execution_workspace.access)
 
     workers =
       Repo.all(
@@ -269,8 +300,8 @@ defmodule QuestEngineering.Server.SchedulingStore do
           lock: "FOR UPDATE"
       )
       |> Enum.filter(fn worker ->
-        (is_nil(required_worker_id) or worker.id == required_worker_id) and
-          CapabilityMatcher.compatible?(worker.capabilities, configuration)
+        worker.id == required_worker_id and
+          CapabilityMatcher.executor_compatible?(worker.capabilities, requested)
       end)
 
     case Enum.find_value(workers, &worker_with_free_slot/1) do
@@ -406,6 +437,24 @@ defmodule QuestEngineering.Server.SchedulingStore do
     case Repo.one(from run in RuntimeRun, where: run.id == ^run_id, lock: "FOR UPDATE") do
       nil -> Repo.rollback(invariant(:run_not_found, %{run_id: run_id}))
       run -> run
+    end
+  end
+
+  defp load_ready_assignment!(run_id) do
+    case Repo.one(
+           from assignment in RunWorkspaceAssignment,
+             where: assignment.run_id == ^run_id,
+             lock: "FOR UPDATE"
+         ) do
+      %{state: state, canonical_worktree_root: root} = assignment
+      when state in ["ready", "retained"] and is_binary(root) ->
+        assignment
+
+      %{state: state} ->
+        Repo.rollback(invariant(:run_workspace_not_ready, %{run_id: run_id, state: state}))
+
+      nil ->
+        Repo.rollback(invariant(:missing_run_workspace_assignment, %{run_id: run_id}))
     end
   end
 

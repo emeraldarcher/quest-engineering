@@ -56,9 +56,13 @@ function decodeExecution(value: unknown): ResolvedExecution {
     "execution.configuration",
   );
   const model = record(configuration.model, "execution.configuration.model");
-  const workspace = record(
-    configuration.workspace,
-    "execution.configuration.workspace",
+  const logicalWorkspace = record(
+    execution.logical_workspace,
+    "execution.logical_workspace",
+  );
+  const executionWorkspace = record(
+    execution.execution_workspace,
+    "execution.execution_workspace",
   );
   const context = record(execution.context, "execution.context");
   const inputs = record(work.inputs, "execution.work.inputs");
@@ -82,9 +86,9 @@ function decodeExecution(value: unknown): ResolvedExecution {
     "execution.configuration.reasoning",
   );
   const access = oneOf(
-    workspace.access,
+    executionWorkspace.access,
     ["none", "read_only", "read_write"] as const,
-    "execution.configuration.workspace.access",
+    "execution.execution_workspace.access",
   );
   const mode = oneOf(
     context.mode,
@@ -157,11 +161,31 @@ function decodeExecution(value: unknown): ResolvedExecution {
       },
       reasoning: reasoning as Reasoning,
       tools,
-      workspace: {
-        ref: string(workspace.ref, "execution.configuration.workspace.ref"),
-        root: string(workspace.root, "execution.configuration.workspace.root"),
-        access: access as WorkspaceAccess,
-      },
+    },
+    logical_workspace: {
+      workspace_id: string(
+        logicalWorkspace.workspace_id,
+        "execution.logical_workspace.workspace_id",
+      ),
+      workspace_key: string(
+        logicalWorkspace.workspace_key,
+        "execution.logical_workspace.workspace_key",
+      ),
+    },
+    execution_workspace: {
+      worktree_id: string(
+        executionWorkspace.worktree_id,
+        "execution.execution_workspace.worktree_id",
+      ),
+      workspace_binding_id: string(
+        executionWorkspace.workspace_binding_id,
+        "execution.execution_workspace.workspace_binding_id",
+      ),
+      canonical_root: string(
+        executionWorkspace.canonical_root,
+        "execution.execution_workspace.canonical_root",
+      ),
+      access: access as WorkspaceAccess,
     },
     context: {
       mode,

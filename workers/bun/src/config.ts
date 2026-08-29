@@ -1,5 +1,5 @@
-import { mkdirSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
   JsonValue,
   Reasoning,
@@ -9,6 +9,22 @@ import { isJsonValue } from "./protocol/types.ts";
 import { validateHerdrSessionName } from "./session-host/herdr/connection.ts";
 import { loadConfiguredWorkspace } from "./workspace/configured-workspace.ts";
 
+export interface AuthorizedRoot {
+  key: string;
+  path: string;
+  max_access: WorkspaceAccess;
+  discover_depth: number;
+  allow_unconfined_shell: boolean;
+}
+export interface WorkspaceBindingConfig {
+  binding_id: string;
+  workspace_id: string;
+  authorized_root_key: string;
+  source_repository_root: string;
+  source_fingerprint?: string | null;
+  max_access: WorkspaceAccess;
+  allow_unconfined_shell: boolean;
+}
 export interface WorkerConfig {
   controlPlaneUrl: string;
   workerId: string;
@@ -16,9 +32,9 @@ export interface WorkerConfig {
   maxConcurrency: number;
   tags: string[];
   herdrSession: string;
-  workspaceRoot: string;
-  workspaceRef?: string;
-  workspaceMaxAccess?: WorkspaceAccess;
+  allowedRoots: AuthorizedRoot[];
+  workspaceBindings: WorkspaceBindingConfig[];
+  worktreeRoot: string;
   executorModels?: Array<{ provider: string; model: string }>;
   reasoningLevels?: Reasoning[];
   dataRoot: string;
@@ -36,16 +52,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const controlPlaneUrl = required(env, "QE_CONTROL_PLANE_URL");
   const workerId = required(env, "QE_WORKER_ID");
   const workerToken = required(env, "QE_WORKER_TOKEN");
-  const workspaceRoot = loadConfiguredWorkspace(
-    absolute(required(env, "QE_WORKSPACE_ROOT"), "QE_WORKSPACE_ROOT"),
-  ).root;
-  const workspaceRef = required(env, "QE_WORKSPACE_REF");
-  const workspaceMaxAccess = access(
-    env.QE_WORKSPACE_MAX_ACCESS?.trim() || "read_write",
-  );
   const dataRoot = absolute(
     env.QE_WORKER_DATA_ROOT?.trim() || ".quest-engineering-worker",
     "QE_WORKER_DATA_ROOT",
+  );
+  mkdirSync(dataRoot, { recursive: true });
+  const worktreeRoot = absolute(
+    env.QE_WORKTREE_ROOT?.trim() || join(dataRoot, "worktrees"),
+    "QE_WORKTREE_ROOT",
+  );
+  mkdirSync(worktreeRoot, { recursive: true });
+  const allowedRoots = parseAllowedRoots(env.QE_ALLOWED_ROOTS_JSON);
+  const persistedBindingsPath = join(dataRoot, "workspace-bindings.json");
+  const configuredBindings = env.QE_WORKSPACE_BINDINGS_JSON?.trim()
+    ? JSON.parse(env.QE_WORKSPACE_BINDINGS_JSON)
+    : [];
+  const persistedBindings = existsSync(persistedBindingsPath)
+    ? JSON.parse(readFileSync(persistedBindingsPath, "utf8"))
+    : [];
+  const combinedBindings = [
+    ...(Array.isArray(configuredBindings) ? configuredBindings : []),
+    ...(Array.isArray(persistedBindings) ? persistedBindings : []),
+  ];
+  const workspaceBindings = parseBindings(
+    JSON.stringify(combinedBindings),
+    allowedRoots,
+    realpathSync(worktreeRoot),
   );
   const maxConcurrency = positiveInteger(
     env.QE_MAX_CONCURRENCY ?? "1",
@@ -74,9 +106,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const reasoningLevels = reasoning(
     env.QE_REASONING_LEVELS ?? "low,medium,high",
   );
-  if (provider === "fake" && env.QE_ENABLE_TEST_PROVIDER !== "1") {
+  if (provider === "fake" && env.QE_ENABLE_TEST_PROVIDER !== "1")
     throw new Error("The fake provider requires QE_ENABLE_TEST_PROVIDER=1.");
-  }
   const fakeOutputs = parseFakeOutputs(env.QE_FAKE_OUTPUTS_JSON);
   const fakeDelayMs = nonNegativeInteger(
     env.QE_FAKE_DELAY_MS ?? "0",
@@ -96,7 +127,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workerId))
     throw new Error("QE_WORKER_ID is invalid.");
 
-  mkdirSync(dataRoot, { recursive: true });
   return {
     controlPlaneUrl,
     workerId,
@@ -104,9 +134,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     maxConcurrency,
     tags: csv(env.QE_WORKER_TAGS),
     herdrSession,
-    workspaceRoot,
-    workspaceRef,
-    workspaceMaxAccess,
+    allowedRoots,
+    workspaceBindings,
+    worktreeRoot,
     executorModels,
     reasoningLevels,
     dataRoot,
@@ -121,6 +151,91 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   };
 }
 
+function parseAllowedRoots(encoded: string | undefined): AuthorizedRoot[] {
+  const value = encoded?.trim() ? JSON.parse(encoded) : [];
+  if (!Array.isArray(value))
+    throw new Error("QE_ALLOWED_ROOTS_JSON must be an array.");
+  const keys = new Set<string>();
+  return value.map((item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error("Each allowed root must be an object.");
+    const x = item as Record<string, unknown>;
+    const key = text(x.key, "allowed root key");
+    if (keys.has(key)) throw new Error(`Duplicate allowed root key: ${key}`);
+    keys.add(key);
+    const path = realpathSync(
+      absolute(text(x.path, "allowed root path"), "allowed root path"),
+    );
+    return {
+      key,
+      path,
+      max_access: access(String(x.max_access ?? "read_write")),
+      discover_depth: integer(x.discover_depth ?? 4, "discover_depth"),
+      allow_unconfined_shell: x.allow_unconfined_shell === true,
+    };
+  });
+}
+function parseBindings(
+  encoded: string | undefined,
+  roots: AuthorizedRoot[],
+  worktreeRoot: string,
+): WorkspaceBindingConfig[] {
+  const value = encoded?.trim() ? JSON.parse(encoded) : [];
+  if (!Array.isArray(value))
+    throw new Error("QE_WORKSPACE_BINDINGS_JSON must be an array.");
+  return value.map((item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error("Each Workspace binding must be an object.");
+    const x = item as Record<string, unknown>;
+    const rootKey = text(x.authorized_root_key, "authorized_root_key");
+    const root = roots.find((candidate) => candidate.key === rootKey);
+    if (!root) throw new Error(`Unknown authorized root: ${rootKey}`);
+    const source = loadConfiguredWorkspace(
+      absolute(
+        text(x.source_repository_root, "source_repository_root"),
+        "source_repository_root",
+      ),
+    ).root;
+    if (!contained(root.path, source))
+      throw new Error(`Binding source is outside authorized root ${rootKey}.`);
+    if (contained(source, worktreeRoot))
+      throw new Error(
+        "QE_WORKTREE_ROOT cannot be inside a bound source repository.",
+      );
+    return {
+      binding_id: uuid(x.binding_id, "binding_id"),
+      workspace_id: uuid(x.workspace_id, "workspace_id"),
+      authorized_root_key: rootKey,
+      source_repository_root: source,
+      source_fingerprint:
+        typeof x.source_fingerprint === "string" ? x.source_fingerprint : null,
+      max_access: access(String(x.max_access ?? root.max_access)),
+      allow_unconfined_shell:
+        x.allow_unconfined_shell === undefined
+          ? root.allow_unconfined_shell
+          : x.allow_unconfined_shell === true,
+    };
+  });
+}
+function contained(parent: string, child: string): boolean {
+  const value = relative(parent, child);
+  return value === "" || (!value.startsWith("..") && !isAbsolute(value));
+}
+function uuid(value: unknown, key: string): string {
+  const x = text(value, key);
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      x,
+    )
+  )
+    throw new Error(`${key} must be a UUID.`);
+  return x;
+}
+function text(value: unknown, key: string): string {
+  if (typeof value !== "string" || !value.trim())
+    throw new Error(`${key} is required.`);
+  return value.trim();
+}
 function required(env: NodeJS.ProcessEnv, key: string): string {
   const value = env[key]?.trim();
   if (!value) throw new Error(`${key} is required.`);
@@ -138,6 +253,12 @@ function nonNegativeInteger(value: string, key: string): number {
     throw new Error(`${key} must be a non-negative integer.`);
   return parsed;
 }
+function integer(value: unknown, key: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0)
+    throw new Error(`${key} must be a non-negative integer.`);
+  return parsed;
+}
 function parseFakeOutputs(
   encoded: string | undefined,
 ): Record<string, JsonValue> {
@@ -148,9 +269,8 @@ function parseFakeOutputs(
     Array.isArray(value) ||
     value === null ||
     typeof value !== "object"
-  ) {
+  )
     throw new Error("QE_FAKE_OUTPUTS_JSON must be a JSON object.");
-  }
   return value;
 }
 function csv(value: string | undefined): string[] {
@@ -190,7 +310,7 @@ function reasoning(value: string): Reasoning[] {
 }
 function access(value: string): WorkspaceAccess {
   if (!["none", "read_only", "read_write"].includes(value))
-    throw new Error("QE_WORKSPACE_MAX_ACCESS is invalid.");
+    throw new Error("Workspace access is invalid.");
   return value as WorkspaceAccess;
 }
 function absolute(value: string, key: string): string {

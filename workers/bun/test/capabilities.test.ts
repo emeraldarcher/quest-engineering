@@ -14,13 +14,16 @@ const capabilities: WorkerCapabilities = {
       models: [{ provider: "fake", model: "test" }],
       reasoning: ["medium"],
       tools: ["workspace.filesystem"],
-      workspaces: [
-        {
-          ref: "workspace:test",
-          root: process.cwd(),
-          max_access: "read_write",
-        },
-      ],
+    },
+  ],
+  workspace_bindings: [
+    {
+      binding_id: "00000000-0000-4000-8000-000000000003",
+      workspace_id: "00000000-0000-4000-8000-000000000001",
+      authorized_root_key: "test",
+      source_repository_root: process.cwd(),
+      max_access: "read_write",
+      allow_unconfined_shell: true,
     },
   ],
 };

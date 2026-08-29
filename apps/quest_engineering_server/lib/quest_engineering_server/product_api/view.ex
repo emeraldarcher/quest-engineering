@@ -5,6 +5,17 @@ defmodule QuestEngineering.Server.ProductApi.View do
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Server.Persistence.TacticCodec
 
+  def workspace(value, archived_at \\ nil) do
+    %{
+      id: value.id,
+      key: value.key,
+      name: value.name,
+      source_kind: Atom.to_string(value.source_kind),
+      source_fingerprint: value.source_fingerprint,
+      archived_at: timestamp(archived_at)
+    }
+  end
+
   def class(value, archived_at \\ nil) do
     %{
       id: value.id,
@@ -65,7 +76,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
       id: value.id,
       title: value.title,
       objective: value.objective,
-      workspace_ref: value.workspace_ref,
+      workspace_id: value.workspace_id,
       squad_id: value.squad_id,
       tactic_source: tactic_source(value.tactic_source),
       archived_at: timestamp(archived_at)
@@ -93,7 +104,12 @@ defmodule QuestEngineering.Server.ProductApi.View do
         title: snapshot.quest.title,
         objective: snapshot.quest.objective
       },
-      workspace: %{ref: snapshot.workspace.ref},
+      workspace: %{
+        id: snapshot.workspace.id,
+        key: snapshot.workspace.key,
+        name: snapshot.workspace.name,
+        source_kind: Atom.to_string(snapshot.workspace.source_kind)
+      },
       squad: %{
         id: snapshot.squad.id,
         key: snapshot.squad.key,

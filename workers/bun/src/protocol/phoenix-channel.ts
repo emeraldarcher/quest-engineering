@@ -162,7 +162,14 @@ export class PhoenixWorkerChannel {
         this.handlers.onSuperseded();
         this.close();
       } else {
-        void this.handlers.onProtocol(message);
+        void Promise.resolve(this.handlers.onProtocol(message)).catch(
+          (error) => {
+            console.error(
+              "Worker protocol handler failed",
+              error instanceof Error ? error.message : String(error),
+            );
+          },
+        );
       }
     }
     void joinRef;

@@ -21,6 +21,7 @@ defmodule QuestEngineering.Core.Product.Validation do
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Core.Product.ValidationError
+  alias QuestEngineering.Core.Product.Workspace
 
   @key ~r/\A[a-z][a-z0-9-]{0,63}\z/
   @capability_key ~r/\A[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\z/
@@ -49,6 +50,7 @@ defmodule QuestEngineering.Core.Product.Validation do
   def validate(%Member{} = value), do: finish(value, member_errors(value, []))
   def validate(%Squad{} = value), do: finish(value, squad_errors(value))
   def validate(%Quest{} = value), do: finish(value, quest_errors(value))
+  def validate(%Workspace{} = value), do: finish(value, workspace_errors(value))
 
   def validate(%TacticDefinition{} = value),
     do: finish(value, tactic_definition_errors(value))
@@ -185,15 +187,36 @@ defmodule QuestEngineering.Core.Product.Validation do
     end
   end
 
+  defp workspace_errors(value) do
+    []
+    |> require(opaque_id?(value.id), :invalid_id, ["id"], %{value: value.id})
+    |> require(key?(value.key), :invalid_key, ["key"], %{value: value.key})
+    |> require(non_blank?(value.name), :invalid_name, ["name"], %{})
+    |> require(
+      value.source_kind in [:git_remote, :local_git],
+      :invalid_source_kind,
+      ["source_kind"],
+      %{value: value.source_kind}
+    )
+    |> require(
+      (value.source_kind == :git_remote and safe_fingerprint?(value.source_fingerprint)) or
+        (value.source_kind == :local_git and
+           (is_nil(value.source_fingerprint) or safe_fingerprint?(value.source_fingerprint))),
+      :invalid_source_fingerprint,
+      ["source_fingerprint"],
+      %{source_kind: value.source_kind}
+    )
+  end
+
   defp quest_errors(value) do
     []
     |> require(opaque_id?(value.id), :invalid_id, ["id"], %{value: value.id})
     |> require(non_blank?(value.title), :invalid_title, ["title"], %{})
     |> require(non_blank?(value.objective), :invalid_objective, ["objective"], %{})
     |> require(
-      non_blank?(value.workspace_ref),
+      opaque_id?(value.workspace_id),
       :invalid_workspace_reference,
-      ["workspace_ref"],
+      ["workspace_id"],
       %{}
     )
     |> require(opaque_id?(value.squad_id), :invalid_squad_reference, ["squad_id"], %{})
@@ -278,6 +301,11 @@ defmodule QuestEngineering.Core.Product.Validation do
 
   defp opaque_id?(value), do: non_blank?(value)
   defp key?(value), do: is_binary(value) and Regex.match?(@key, value)
+
+  defp safe_fingerprint?(value) do
+    non_blank?(value) and not Regex.match?(~r{://[^/]+@}, value) and
+      not String.contains?(value, "?")
+  end
 
   defp capability_key?(value),
     do: is_binary(value) and byte_size(value) <= 128 and Regex.match?(@capability_key, value)

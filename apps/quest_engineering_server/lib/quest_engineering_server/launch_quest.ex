@@ -13,6 +13,7 @@ defmodule QuestEngineering.Server.LaunchQuest do
   alias QuestEngineering.Core.Product.Squad
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.Runtime
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.ProductClass
@@ -20,14 +21,16 @@ defmodule QuestEngineering.Server.LaunchQuest do
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.ProductSquad
   alias QuestEngineering.Server.Persistence.ProductSquadMember
+  alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.QuestLaunch
+  alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.TacticCodec
   alias QuestEngineering.Server.Product.TacticGraphLoader
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunChangeNotifier
   alias QuestEngineering.Server.RuntimeStore
+  alias QuestEngineering.Server.RunWorkspaceStore
   alias QuestEngineering.Server.Scheduler
-  alias QuestEngineering.Server.WorkspaceResolver
 
   defmodule Error do
     @moduledoc false
@@ -37,21 +40,18 @@ defmodule QuestEngineering.Server.LaunchQuest do
   end
 
   @spec launch(String.t()) :: {:ok, map()} | {:error, term()}
-  def launch(quest_id) when is_binary(quest_id) do
-    with {:ok, workspace_ref} <- quest_workspace_ref(quest_id),
-         {:ok, workspace_root} <- WorkspaceResolver.resolve(workspace_ref) do
-      launch_transaction(quest_id, workspace_ref, workspace_root)
-    end
-  end
+  def launch(quest_id) when is_binary(quest_id), do: launch_transaction(quest_id)
 
   def launch(quest_id), do: {:error, error(:invalid_quest_id, %{quest_id: quest_id})}
 
-  defp launch_transaction(quest_id, workspace_ref, workspace_root) do
+  defp launch_transaction(quest_id) do
     case Repo.transaction(
-           fn -> launch_locked(quest_id, workspace_ref, workspace_root) end,
+           fn -> launch_locked(quest_id) end,
            isolation: :repeatable_read
          ) do
       {:ok, result} ->
+        RunWorkspaceStore.prepare_legacy_test(result.run_id)
+
         if Application.get_env(:quest_engineering_server, :scheduler_enabled, true),
           do: Scheduler.wake(result.run_id)
 
@@ -64,12 +64,11 @@ defmodule QuestEngineering.Server.LaunchQuest do
     end
   end
 
-  defp launch_locked(quest_id, expected_workspace_ref, workspace_root) do
+  defp launch_locked(quest_id) do
     quest_row = lock_active!(ProductQuest, quest_id, :quest)
 
-    if quest_row.workspace_ref != expected_workspace_ref do
-      Repo.rollback(error(:workspace_reference_changed, %{quest_id: quest_id}))
-    end
+    workspace_row =
+      lock_active!(ProductWorkspace, quest_row.workspace_id, :workspace, "FOR SHARE")
 
     squad_row = lock_active!(ProductSquad, quest_row.squad_id, :squad, "FOR SHARE")
 
@@ -91,10 +90,10 @@ defmodule QuestEngineering.Server.LaunchQuest do
          {:ok, snapshot} <-
            Builder.build(
              quest(quest_row, tactic_source),
+             workspace(workspace_row),
              squad(squad_row, member_rows),
              Enum.map(class_rows, &class/1),
              Enum.map(loadout_rows, &loadout/1),
-             workspace_root,
              catalog
            ),
          launch_id = Ecto.UUID.generate(),
@@ -103,7 +102,8 @@ defmodule QuestEngineering.Server.LaunchQuest do
          run_id = "quest-launch-" <> launch_id,
          {:ok, run, actions} <- start_runtime(snapshot, run_id),
          runtime_result = RuntimeStore.persist_started_run(run, actions),
-         {:ok, launch} <- insert_launch(launch_id, quest_id, run_id, snapshot) do
+         {:ok, launch} <- insert_launch(launch_id, quest_id, run_id, snapshot),
+         {:ok, _assignment} <- insert_workspace_assignment(run_id, snapshot.workspace.id) do
       %{
         launch_id: launch.id,
         run_id: run_id,
@@ -113,17 +113,6 @@ defmodule QuestEngineering.Server.LaunchQuest do
       }
     else
       {:error, error} -> Repo.rollback(error)
-    end
-  end
-
-  defp quest_workspace_ref(quest_id) do
-    case Repo.one(
-           from quest in ProductQuest,
-             where: quest.id == ^quest_id and is_nil(quest.archived_at),
-             select: quest.workspace_ref
-         ) do
-      nil -> {:error, error(:not_found, %{kind: :quest, id: quest_id})}
-      workspace_ref -> {:ok, workspace_ref}
     end
   end
 
@@ -213,14 +202,50 @@ defmodule QuestEngineering.Server.LaunchQuest do
     end
   end
 
+  defp insert_workspace_assignment(run_id, workspace_id) do
+    worktree_id = Ecto.UUID.generate()
+    stable_id = String.replace(worktree_id, "-", "")
+    branch_name = "qe/run/" <> stable_id
+
+    identity_hash =
+      :sha256
+      |> :crypto.hash(
+        Enum.join([run_id, workspace_id, worktree_id, "binding_head_v1", branch_name], "\n")
+      )
+      |> Base.encode16(case: :lower)
+
+    attributes = %{
+      run_id: run_id,
+      workspace_id: workspace_id,
+      worktree_id: worktree_id,
+      base_selector: "binding_head_v1",
+      branch_name: branch_name,
+      state: "waiting_for_host",
+      provision_revision: 1,
+      identity_hash: identity_hash
+    }
+
+    Repo.insert(RunWorkspaceAssignment.changeset(attributes))
+  end
+
   defp quest(row, tactic_source) do
     %Quest{
       id: row.id,
       title: row.title,
       objective: row.objective,
-      workspace_ref: row.workspace_ref,
+      workspace_id: row.workspace_id,
       squad_id: row.squad_id,
       tactic_source: tactic_source
+    }
+  end
+
+  defp workspace(row) do
+    %Workspace{
+      id: row.id,
+      key: row.key,
+      name: row.name,
+      source_kind: String.to_existing_atom(row.source_kind),
+      source_fingerprint: row.source_fingerprint
     }
   end
 

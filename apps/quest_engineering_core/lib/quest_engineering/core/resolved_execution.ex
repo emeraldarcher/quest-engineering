@@ -9,18 +9,38 @@ defmodule QuestEngineering.Core.ResolvedExecution do
 
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
+  alias QuestEngineering.Core.ResolvedExecution.ExecutionWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Identity
+  alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
   alias QuestEngineering.Core.ResolvedExecution.Work
 
-  @enforce_keys [:identity, :performer, :work, :configuration, :context]
-  defstruct [:identity, :performer, :work, :configuration, :context]
+  @enforce_keys [
+    :identity,
+    :performer,
+    :work,
+    :configuration,
+    :logical_workspace,
+    :execution_workspace,
+    :context
+  ]
+  defstruct [
+    :identity,
+    :performer,
+    :work,
+    :configuration,
+    :logical_workspace,
+    :execution_workspace,
+    :context
+  ]
 
   @type t :: %__MODULE__{
           identity: Identity.t(),
           performer: Performer.t(),
           work: Work.t(),
           configuration: Configuration.t(),
+          logical_workspace: LogicalWorkspace.t(),
+          execution_workspace: ExecutionWorkspace.t(),
           context: Context.t()
         }
 end
@@ -85,30 +105,38 @@ defmodule QuestEngineering.Core.ResolvedExecution.Configuration do
   alias QuestEngineering.Core.Product.Loadout
   alias QuestEngineering.Core.Product.ModelRef
 
-  @enforce_keys [
-    :model,
-    :reasoning,
-    :tools,
-    :workspace_ref,
-    :workspace_root,
-    :workspace_access
-  ]
-  defstruct [
-    :model,
-    :reasoning,
-    :tools,
-    :workspace_ref,
-    :workspace_root,
-    :workspace_access
-  ]
+  @enforce_keys [:model, :reasoning, :tools]
+  # Legacy fields remain decode-only for historical v1 executions.
+  defstruct [:model, :reasoning, :tools, :workspace_ref, :workspace_root, :workspace_access]
 
   @type t :: %__MODULE__{
           model: ModelRef.t(),
           reasoning: Loadout.reasoning(),
-          tools: [String.t()],
-          workspace_ref: String.t(),
-          workspace_root: String.t(),
-          workspace_access: Loadout.workspace_access()
+          tools: [String.t()]
+        }
+end
+
+defmodule QuestEngineering.Core.ResolvedExecution.LogicalWorkspace do
+  @moduledoc false
+  @enforce_keys [:workspace_id, :workspace_key]
+  defstruct [:workspace_id, :workspace_key]
+
+  @type t :: %__MODULE__{workspace_id: String.t(), workspace_key: String.t()}
+end
+
+defmodule QuestEngineering.Core.ResolvedExecution.ExecutionWorkspace do
+  @moduledoc false
+
+  alias QuestEngineering.Core.Product.Loadout
+
+  @enforce_keys [:worktree_id, :workspace_binding_id, :canonical_root, :access]
+  defstruct [:worktree_id, :workspace_binding_id, :canonical_root, :access]
+
+  @type t :: %__MODULE__{
+          worktree_id: String.t(),
+          workspace_binding_id: String.t(),
+          canonical_root: String.t(),
+          access: Loadout.workspace_access()
         }
 end
 
@@ -132,7 +160,9 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
+  alias QuestEngineering.Core.ResolvedExecution.ExecutionWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Identity
+  alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.Action
@@ -143,10 +173,20 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
           String.t(),
           ResolvedMember.t(),
           String.t(),
-          String.t() | nil
+          String.t() | nil,
+          map()
         ) :: ResolvedExecution.t()
-  def build(snapshot, action, launch_id, member, logical_lineage_id, source_occurrence_id)
-      when is_binary(launch_id) and is_binary(logical_lineage_id) do
+  def build(
+        snapshot,
+        action,
+        launch_id,
+        member,
+        logical_lineage_id,
+        source_occurrence_id,
+        execution_workspace
+      )
+      when is_binary(launch_id) and is_binary(logical_lineage_id) and
+             is_map(execution_workspace) do
     %ResolvedExecution{
       identity: %Identity{
         launch_id: launch_id,
@@ -172,10 +212,17 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
       configuration: %Configuration{
         model: member.loadout.model,
         reasoning: member.loadout.reasoning,
-        tools: member.loadout.tools,
-        workspace_ref: snapshot.workspace.ref,
-        workspace_root: snapshot.workspace.root,
-        workspace_access: member.loadout.workspace_access
+        tools: member.loadout.tools
+      },
+      logical_workspace: %LogicalWorkspace{
+        workspace_id: snapshot.workspace.id,
+        workspace_key: snapshot.workspace.key
+      },
+      execution_workspace: %ExecutionWorkspace{
+        worktree_id: Map.fetch!(execution_workspace, :worktree_id),
+        workspace_binding_id: Map.fetch!(execution_workspace, :workspace_binding_id),
+        canonical_root: Map.fetch!(execution_workspace, :canonical_root),
+        access: member.loadout.workspace_access
       },
       context: %Context{
         mode: if(source_occurrence_id, do: :continue_from, else: :fresh),

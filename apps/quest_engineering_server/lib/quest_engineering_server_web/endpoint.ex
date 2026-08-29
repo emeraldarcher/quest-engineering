@@ -16,6 +16,7 @@ defmodule QuestEngineering.ServerWeb.Endpoint do
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug QuestEngineering.ServerWeb.ClientCors
 
   plug Plug.Parsers,
     parsers: [:json],

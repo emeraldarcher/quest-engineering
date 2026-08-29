@@ -3,7 +3,6 @@ import type {
   ExecuteAction,
   ExecutorCapability,
   WorkerCapabilities,
-  WorkspaceAccess,
 } from "./protocol/types.ts";
 
 const QE_TOOLS = [
@@ -11,11 +10,6 @@ const QE_TOOLS = [
   "workspace.search",
   "terminal.shell",
 ] as const;
-const ACCESS: Record<WorkspaceAccess, number> = {
-  none: 0,
-  read_only: 1,
-  read_write: 2,
-};
 
 export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
   return {
@@ -27,13 +21,6 @@ export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
         : [{ provider: config.provider, model: "test" }]),
     reasoning: config.reasoningLevels ?? ["low", "medium", "high"],
     tools: [...QE_TOOLS],
-    workspaces: [
-      {
-        ref: config.workspaceRef ?? "workspace:test",
-        root: config.workspaceRoot,
-        max_access: config.workspaceMaxAccess ?? "read_write",
-      },
-    ],
   };
 }
 
@@ -48,6 +35,9 @@ export function workerCapabilities(
     max_concurrency: config.maxConcurrency,
     tags: config.tags,
     executors: [executorCapabilities(config)],
+    workspace_bindings: config.workspaceBindings.map((binding) => ({
+      ...binding,
+    })),
   };
 }
 
@@ -56,26 +46,32 @@ export function assertExecutionSupported(
   capabilities: WorkerCapabilities,
 ): void {
   const requested = action.execution.configuration;
-  const compatible = capabilities.executors.some(
-    (executor) =>
-      executor.models.some(
-        (model) =>
-          model.provider === requested.model.provider &&
-          model.model === requested.model.model,
-      ) &&
-      executor.reasoning.includes(requested.reasoning) &&
-      requested.tools.every((tool) => executor.tools.includes(tool)) &&
-      executor.workspaces.some(
-        (workspace) =>
-          workspace.ref === requested.workspace.ref &&
-          workspace.root === requested.workspace.root &&
-          ACCESS[workspace.max_access] >= ACCESS[requested.workspace.access],
-      ) &&
-      adapterCombinationSupported(executor.adapter, action),
+  const workspace = action.execution.execution_workspace;
+  const binding = capabilities.workspace_bindings.find(
+    (item) =>
+      item.binding_id === workspace.workspace_binding_id &&
+      item.workspace_id === action.execution.logical_workspace.workspace_id,
   );
+  const accessRank = { none: 0, read_only: 1, read_write: 2 } as const;
+  const compatible =
+    binding !== undefined &&
+    accessRank[binding.max_access] >= accessRank[workspace.access] &&
+    (!requested.tools.includes("terminal.shell") ||
+      binding.allow_unconfined_shell) &&
+    capabilities.executors.some(
+      (executor) =>
+        executor.models.some(
+          (model) =>
+            model.provider === requested.model.provider &&
+            model.model === requested.model.model,
+        ) &&
+        executor.reasoning.includes(requested.reasoning) &&
+        requested.tools.every((tool) => executor.tools.includes(tool)) &&
+        adapterCombinationSupported(executor.adapter, action),
+    );
   if (!compatible)
     throw new Error(
-      "Resolved execution is not supported by advertised capabilities.",
+      "Resolved execution is not supported by advertised capabilities and binding policy.",
     );
 }
 
@@ -85,23 +81,20 @@ function adapterCombinationSupported(
 ): boolean {
   if (adapter !== "pi") return true;
   const requested = action.execution.configuration;
+  const access = action.execution.execution_workspace.access;
   const workspaceTools = [
     "workspace.filesystem",
     "workspace.search",
     "terminal.shell",
   ];
   return (
+    !(requested.tools.includes("terminal.shell") && access !== "read_write") &&
     !(
-      requested.tools.includes("terminal.shell") &&
-      requested.workspace.access !== "read_write"
-    ) &&
-    !(
-      requested.workspace.access === "none" &&
+      access === "none" &&
       requested.tools.some((tool) => workspaceTools.includes(tool))
     )
   );
 }
-
 function splitModel(value: string): { provider: string; model: string } {
   const separator = value.indexOf("/");
   if (separator < 1 || separator === value.length - 1)

@@ -150,7 +150,7 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
              Products.preview_launch_snapshot(quest.id, "/canonical/worktree")
 
     assert snapshot.quest.id == quest.id
-    assert snapshot.workspace.root == "/canonical/worktree"
+    refute Map.has_key?(Map.from_struct(snapshot.workspace), :root)
     assert Enum.map(snapshot.squad.members, & &1.key) == ["builder", "reviewer"]
     assert Enum.map(snapshot.execution_plan.steps, & &1.key) == ["implement", "review"]
     refute Map.has_key?(Map.from_struct(snapshot), :run_id)

@@ -4,22 +4,26 @@ if System.get_env("PHX_SERVER") do
   config :quest_engineering_server, QuestEngineering.ServerWeb.Endpoint, server: true
 end
 
+if configured_origins = System.get_env("QUEST_ENGINEERING_CLIENT_ORIGINS") do
+  origins = configured_origins |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+
+  unless origins != [] and
+           Enum.all?(origins, fn origin ->
+             uri = URI.parse(origin)
+
+             is_binary(uri.scheme) and uri.scheme != "" and is_binary(uri.host) and uri.host != "" and
+               is_nil(uri.path) and is_nil(uri.query) and is_nil(uri.fragment)
+           end) do
+    raise "QUEST_ENGINEERING_CLIENT_ORIGINS must be a comma-separated list of absolute origins"
+  end
+
+  config :quest_engineering_server, client_origins: origins
+  config :quest_engineering_server, QuestEngineering.ServerWeb.Endpoint, check_origin: origins
+end
+
 if port = System.get_env("PORT") do
   config :quest_engineering_server, QuestEngineering.ServerWeb.Endpoint,
     http: [port: String.to_integer(port)]
-end
-
-if encoded_workspaces = System.get_env("QUEST_ENGINEERING_WORKSPACES_JSON") do
-  workspaces = Jason.decode!(encoded_workspaces)
-
-  unless is_map(workspaces) and
-           Enum.all?(workspaces, fn {reference, root} ->
-             is_binary(reference) and reference != "" and is_binary(root) and root != ""
-           end) do
-    raise "QUEST_ENGINEERING_WORKSPACES_JSON must be a JSON object of non-empty string paths"
-  end
-
-  config :quest_engineering_server, workspaces: workspaces
 end
 
 if config_env() == :prod do

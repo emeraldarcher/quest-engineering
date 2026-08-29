@@ -187,8 +187,11 @@ defmodule QuestEngineering.Server.FakeWorker do
   def init(options) do
     state = %{
       worker_id: Keyword.fetch!(options, :worker_id),
-      capabilities: Keyword.get(options, :capabilities, default_capabilities()),
-      protocol_version: Keyword.get(options, :protocol_version, 3),
+      capabilities:
+        options
+        |> Keyword.get(:capabilities, default_capabilities())
+        |> Map.put_new("workspace_bindings", []),
+      protocol_version: Keyword.get(options, :protocol_version, 4),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -197,6 +200,7 @@ defmodule QuestEngineering.Server.FakeWorker do
       connected?: false,
       registered?: false,
       known: %{},
+      worktrees: %{},
       execution_counts: %{},
       drop_ack?: false,
       drop_completion?: false,
@@ -348,6 +352,37 @@ defmodule QuestEngineering.Server.FakeWorker do
 
   defp handle_frame(_frame, state), do: state
 
+  defp handle_protocol(%{"type" => "provision_run_worktree", "worktree" => worktree}, state) do
+    ready = %{
+      "type" => "run_worktree_ready",
+      "protocol_version" => state.protocol_version,
+      "worker_id" => state.worker_id,
+      "worktree" => %{
+        "worktree_id" => worktree["worktree_id"],
+        "run_id" => worktree["run_id"],
+        "workspace_binding_id" => worktree["workspace_binding_id"],
+        "base_revision" => String.duplicate("a", 40),
+        "branch_name" => worktree["branch_name"],
+        "canonical_root" => "/managed/worktrees/" <> worktree["worktree_id"],
+        "source_dirty_excluded" => false,
+        "identity_hash" => worktree["identity_hash"]
+      }
+    }
+
+    state
+    |> Map.update!(:worktrees, &Map.put(&1, worktree["worktree_id"], ready))
+    |> send_protocol(ready)
+  end
+
+  defp handle_protocol(%{"type" => "reconcile_run_worktrees", "worktrees" => worktrees}, state) do
+    Enum.reduce(worktrees, state, fn request, current ->
+      case current.worktrees[request["worktree_id"]] do
+        nil -> current
+        ready -> send_protocol(current, ready)
+      end
+    end)
+  end
+
   defp handle_protocol(%{"type" => "execute_action", "execution" => execution} = action, state) do
     identity = execution["identity"]
 
@@ -478,6 +513,7 @@ defmodule QuestEngineering.Server.FakeWorker do
       "arch" => "test",
       "max_concurrency" => 1,
       "tags" => ["fake"],
+      "workspace_bindings" => [],
       "executors" => [
         %{
           "adapter" => "fake",

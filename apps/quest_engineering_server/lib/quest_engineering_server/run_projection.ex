@@ -7,6 +7,7 @@ defmodule QuestEngineering.Server.RunProjection do
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
+  alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.ProductApi.View
@@ -81,12 +82,15 @@ defmodule QuestEngineering.Server.RunProjection do
     artifacts = Enum.map(run.artifact_order, fn id -> artifact(Map.fetch!(run.artifacts, id)) end)
     states = Enum.map(steps, & &1.state)
 
+    assignment = Repo.get(RunWorkspaceAssignment, run.id)
+
     %{
       id: run.id,
       status: run_state(run.status, states),
       launched_at: iso(launch.inserted_at),
       revision: revision,
       launch: %{id: launch.id},
+      execution_environment: execution_environment(snapshot, assignment),
       quest: %{
         id: snapshot.quest.id,
         title: snapshot.quest.title,
@@ -105,7 +109,72 @@ defmodule QuestEngineering.Server.RunProjection do
       steps: steps,
       artifacts: artifacts,
       step_counts: counts(states),
-      issues: run_issues(run, steps)
+      issues:
+        run_issues(run, steps) ++
+          case execution_environment(snapshot, assignment).issue do
+            nil -> []
+            issue -> [issue]
+          end
+    }
+  end
+
+  defp execution_environment(snapshot, nil) do
+    %{
+      workspace: %{
+        id: snapshot.workspace.id,
+        key: snapshot.workspace.key,
+        name: snapshot.workspace.name
+      },
+      state: "attention_required",
+      message: "Run workspace assignment is missing.",
+      base_revision: nil,
+      branch: nil,
+      source_dirty_changes_excluded: nil,
+      issue: %{
+        code: "run_workspace_assignment_missing",
+        message: "Run workspace assignment is missing."
+      }
+    }
+  end
+
+  defp execution_environment(snapshot, assignment) do
+    {state, message, issue} =
+      case assignment.state do
+        "waiting_for_host" ->
+          {"waiting_for_host", "Waiting for a Worker capable of hosting this Workspace.", nil}
+
+        "provisioning" ->
+          {"preparing", "Preparing an isolated Run workspace.", nil}
+
+        "ready" ->
+          {"ready", "Run workspace ready.", nil}
+
+        "retained" ->
+          {"retained", "Terminal Run workspace retained.", nil}
+
+        "removed" ->
+          {"removed", "Run workspace removed.", nil}
+
+        _ ->
+          {"attention_required", "The Run workspace requires attention.",
+           %{
+             code: assignment.failure_code || "run_workspace_attention_required",
+             message: "The Run workspace requires attention."
+           }}
+      end
+
+    %{
+      workspace: %{
+        id: snapshot.workspace.id,
+        key: snapshot.workspace.key,
+        name: snapshot.workspace.name
+      },
+      state: state,
+      message: message,
+      base_revision: assignment.base_revision,
+      branch: assignment.branch_name,
+      source_dirty_changes_excluded: assignment.source_dirty_excluded,
+      issue: issue
     }
   end
 

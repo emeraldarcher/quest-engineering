@@ -597,8 +597,12 @@ function physicalConfiguration(action: ExecuteAction): string {
     model: configuration.model,
     reasoning: configuration.reasoning,
     tools: [...configuration.tools].sort(),
-    workspace_root: configuration.workspace.root,
-    workspace_access: configuration.workspace.access,
+    logical_workspace_id: action.execution.logical_workspace.workspace_id,
+    workspace_binding_id:
+      action.execution.execution_workspace.workspace_binding_id,
+    worktree_id: action.execution.execution_workspace.worktree_id,
+    workspace_root: action.execution.execution_workspace.canonical_root,
+    workspace_access: action.execution.execution_workspace.access,
   });
 }
 function canonicalJson(value: unknown): string {

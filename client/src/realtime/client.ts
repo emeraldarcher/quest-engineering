@@ -1,0 +1,78 @@
+import { type Channel, Socket } from "phoenix";
+import type { RunProjection } from "../api/contracts";
+
+export type RealtimeStatus =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected";
+export interface RealtimeHandlers {
+  onStatus(status: RealtimeStatus): void;
+  onJoined(run: RunProjection): void;
+  onInvalidated(runId: string): void;
+  onUnavailable(runId: string): void;
+}
+
+export class RealtimeClient {
+  private socket: Socket | null = null;
+  private channel: Channel | null = null;
+  private selectedRunId: string | null = null;
+
+  constructor(
+    private readonly socketUrl: string,
+    private readonly handlers: RealtimeHandlers,
+  ) {}
+
+  start(): void {
+    this.connect();
+  }
+
+  selectRun(runId: string): void {
+    if (this.selectedRunId === runId && this.channel) return;
+    this.channel?.leave();
+    this.selectedRunId = runId;
+    this.connect();
+    this.join(runId);
+  }
+
+  disconnect(): void {
+    this.channel?.leave();
+    this.channel = null;
+    this.selectedRunId = null;
+    this.socket?.disconnect();
+    this.socket = null;
+    this.handlers.onStatus("disconnected");
+  }
+
+  private connect(): void {
+    if (this.socket) return;
+    this.handlers.onStatus("connecting");
+    const socket = new Socket(this.socketUrl);
+    socket.onOpen(() => {
+      this.handlers.onStatus("connected");
+      if (this.selectedRunId) this.handlers.onInvalidated(this.selectedRunId);
+    });
+    socket.onError(() => this.handlers.onStatus("reconnecting"));
+    socket.onClose(() => this.handlers.onStatus("reconnecting"));
+    socket.connect();
+    this.socket = socket;
+  }
+
+  private join(runId: string): void {
+    if (!this.socket) return;
+    const channel = this.socket.channel(`run:${runId}`);
+    channel.on("run_changed", (payload: { run_id?: unknown }) => {
+      if (payload.run_id === runId) this.handlers.onInvalidated(runId);
+    });
+    channel
+      .join()
+      .receive("ok", (payload: { run?: RunProjection }) => {
+        if (this.selectedRunId === runId && payload.run)
+          this.handlers.onJoined(payload.run);
+      })
+      .receive("error", () => {
+        if (this.selectedRunId === runId) this.handlers.onUnavailable(runId);
+      });
+    this.channel = channel;
+  }
+}

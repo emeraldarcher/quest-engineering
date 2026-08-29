@@ -1,0 +1,36 @@
+{
+  "name": "@quest-engineering/client",
+  "version": "0.12.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "bun run typecheck && vite build",
+    "test": "bun test",
+    "test:components": "vitest run",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "biome check . && bun run typecheck && bun test && vitest run",
+    "smoke:real": "bun run scripts/live-contract-smoke.ts",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "phoenix": "1.8.1",
+    "pixi.js": "8.14.3",
+    "svelte": "5.39.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.15",
+    "@sveltejs/vite-plugin-svelte": "6.1.0",
+    "@tauri-apps/cli": "2.11.4",
+    "@testing-library/svelte": "5.2.8",
+    "@types/bun": "1.3.13",
+    "@types/node": "24.3.0",
+    "@types/phoenix": "^1.6.7",
+    "jsdom": "26.1.0",
+    "svelte-check": "4.3.1",
+    "typescript": "5.9.3",
+    "vite": "7.1.7",
+    "vitest": "3.2.4"
+  }
+}

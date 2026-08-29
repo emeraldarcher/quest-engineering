@@ -14,6 +14,7 @@ defmodule QuestEngineering.Core.ProductTest do
   alias QuestEngineering.Core.Product.TacticResolver.Catalog
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Core.Product.Validation
+  alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.ResolvedExecution.Builder, as: ResolvedExecutionBuilder
   alias QuestEngineering.Core.Runtime
 
@@ -78,13 +79,13 @@ defmodule QuestEngineering.Core.ProductTest do
     test "compiles the embedded Tactic and resolves exact Class and Loadout values" do
       assert {:ok, snapshot} = valid_snapshot()
 
-      assert %LaunchSnapshot{schema_version: 2} = snapshot
+      assert %LaunchSnapshot{schema_version: 3} = snapshot
 
       assert snapshot.quest.objective ==
                "Implement and independently review the requested change."
 
-      assert snapshot.workspace.ref == "workspace:quest"
-      assert snapshot.workspace.root == "/canonical/worktree"
+      assert snapshot.workspace.key == "quest"
+      refute Map.has_key?(Map.from_struct(snapshot.workspace), :root)
       assert Enum.map(snapshot.squad.members, & &1.key) == ["alice", "reviewer"]
       assert hd(snapshot.squad.members).class.instructions == builder_class().instructions
       assert hd(snapshot.squad.members).loadout.model == coding_loadout().model
@@ -129,10 +130,10 @@ defmodule QuestEngineering.Core.ProductTest do
       assert {:error, errors} =
                Builder.build(
                  quest,
+                 workspace(),
                  engineering_squad(),
                  [builder_class(), reviewer_class()],
                  [coding_loadout(), review_loadout()],
-                 "/canonical/worktree",
                  Catalog.empty()
                )
 
@@ -158,10 +159,10 @@ defmodule QuestEngineering.Core.ProductTest do
       assert {:ok, snapshot} =
                Builder.build(
                  %{quest() | tactic_source: %Inline{body: tactic}},
+                 workspace(),
                  %{engineering_squad() | members: [hd(engineering_squad().members)]},
                  [builder_class()],
                  [coding_loadout()],
-                 "/canonical/worktree",
                  Catalog.empty()
                )
 
@@ -182,10 +183,10 @@ defmodule QuestEngineering.Core.ProductTest do
       assert {:ok, snapshot} =
                Builder.build(
                  %{quest() | tactic_source: %Inline{body: tactic}},
+                 workspace(),
                  engineering_squad(),
                  [builder_class(), reviewer_class()],
                  [coding_loadout(), review_loadout()],
-                 "/canonical/worktree",
                  Catalog.empty()
                )
 
@@ -201,10 +202,10 @@ defmodule QuestEngineering.Core.ProductTest do
       assert {:error, errors} =
                Builder.build(
                  %{quest() | tactic_source: %Inline{body: tactic}},
+                 workspace(),
                  engineering_squad(),
                  [builder_class(), reviewer_class()],
                  [coding_loadout(), review_loadout()],
-                 "/canonical/worktree",
                  Catalog.empty()
                )
 
@@ -225,7 +226,12 @@ defmodule QuestEngineering.Core.ProductTest do
           "launch-resolved",
           member,
           "logical-lineage",
-          nil
+          nil,
+          %{
+            worktree_id: "worktree-id",
+            workspace_binding_id: "binding-id",
+            canonical_root: "/canonical/run-worktree"
+          }
         )
 
       assert execution.work.quest_objective == snapshot.quest.objective
@@ -242,10 +248,10 @@ defmodule QuestEngineering.Core.ProductTest do
   defp valid_snapshot do
     Builder.build(
       quest(),
+      workspace(),
       engineering_squad(),
       [builder_class(), reviewer_class()],
       [coding_loadout(), review_loadout()],
-      "/canonical/worktree",
       Catalog.empty()
     )
   end
@@ -319,12 +325,22 @@ defmodule QuestEngineering.Core.ProductTest do
     }
   end
 
+  defp workspace do
+    %Workspace{
+      id: "workspace-id",
+      key: "quest",
+      name: "Quest Engineering",
+      source_kind: :local_git,
+      source_fingerprint: nil
+    }
+  end
+
   defp quest do
     %Quest{
       id: "quest-id",
       title: "Implement feature",
       objective: "Implement and independently review the requested change.",
-      workspace_ref: "workspace:quest",
+      workspace_id: workspace().id,
       squad_id: engineering_squad().id,
       tactic_source: %Inline{
         body:

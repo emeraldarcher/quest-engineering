@@ -54,10 +54,16 @@ end
 
 defmodule QuestEngineering.Core.Product.LaunchSnapshot.WorkspaceSnapshot do
   @moduledoc false
-  @enforce_keys [:ref, :root]
-  defstruct [:ref, :root]
+  @enforce_keys [:id, :key, :name, :source_kind]
+  defstruct [:id, :key, :name, :source_kind, :source_fingerprint]
 
-  @type t :: %__MODULE__{ref: String.t(), root: String.t()}
+  @type t :: %__MODULE__{
+          id: String.t(),
+          key: String.t(),
+          name: String.t(),
+          source_kind: :git_remote | :local_git,
+          source_fingerprint: String.t() | nil
+        }
 end
 
 defmodule QuestEngineering.Core.Product.LaunchSnapshot.SquadSnapshot do
@@ -167,31 +173,33 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
   alias QuestEngineering.Core.Product.TacticResolver.Catalog
   alias QuestEngineering.Core.Product.Validation
   alias QuestEngineering.Core.Product.ValidationError
+  alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.Tactics.PerformerRequirement
 
-  @schema_version 2
+  @schema_version 3
 
-  @spec build(Quest.t(), Squad.t(), [Class.t()], [Loadout.t()], String.t(), Catalog.t()) ::
+  @spec build(Quest.t(), Workspace.t(), Squad.t(), [Class.t()], [Loadout.t()], Catalog.t()) ::
           {:ok, LaunchSnapshot.t()} | {:error, [ValidationError.t()]}
   def build(
         %Quest{} = quest,
+        %Workspace{} = workspace,
         %Squad{} = squad,
         classes,
         loadouts,
-        workspace_root,
         %Catalog{} = catalog
       )
       when is_list(classes) and is_list(loadouts) do
     errors =
       validation_errors(quest) ++
+        validation_errors(workspace) ++
         roster_errors(squad, classes, loadouts) ++
-        squad_reference_errors(quest, squad) ++ workspace_errors(workspace_root)
+        squad_reference_errors(quest, squad) ++ workspace_reference_errors(quest, workspace)
 
     with [] <- errors,
          {:ok, resolution} <- TacticResolver.resolve(quest.tactic_source, catalog),
          {:ok, plan} <- compile(resolution.tactic),
          [] <- satisfiability_errors(plan, squad, classes) do
-      {:ok, snapshot(quest, squad, classes, loadouts, workspace_root, resolution, plan)}
+      {:ok, snapshot(quest, workspace, squad, classes, loadouts, resolution, plan)}
     else
       {:error, [%TacticResolver.Error{} | _rest] = resolution_errors} ->
         {:error, Enum.map(resolution_errors, &resolution_error/1)}
@@ -204,11 +212,11 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
     end
   end
 
-  def build(_quest, _squad, _classes, _loadouts, _workspace_root, _catalog) do
+  def build(_quest, _workspace, _squad, _classes, _loadouts, _catalog) do
     {:error,
      [
        error(:invalid_launch_input, [], %{
-         reason: :expected_quest_squad_definition_lists_workspace_root_and_tactic_catalog
+         reason: :expected_quest_workspace_squad_definition_lists_and_tactic_catalog
        })
      ]}
   end
@@ -263,7 +271,7 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
     end)
   end
 
-  defp snapshot(quest, squad, classes, loadouts, workspace_root, resolution, plan) do
+  defp snapshot(quest, workspace, squad, classes, loadouts, resolution, plan) do
     class_by_id = Map.new(classes, &{&1.id, &1})
     loadout_by_id = Map.new(loadouts, &{&1.id, &1})
 
@@ -280,7 +288,13 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
     %LaunchSnapshot{
       schema_version: @schema_version,
       quest: %QuestSnapshot{id: quest.id, title: quest.title, objective: quest.objective},
-      workspace: %WorkspaceSnapshot{ref: quest.workspace_ref, root: workspace_root},
+      workspace: %WorkspaceSnapshot{
+        id: workspace.id,
+        key: workspace.key,
+        name: workspace.name,
+        source_kind: workspace.source_kind,
+        source_fingerprint: workspace.source_fingerprint
+      },
       squad: %SquadSnapshot{
         id: squad.id,
         key: squad.key,
@@ -342,14 +356,16 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
     ]
   end
 
-  defp workspace_errors(value) when is_binary(value) do
-    if String.valid?(value) and String.trim(value) != "",
-      do: [],
-      else: [error(:invalid_workspace_root, ["workspace", "root"], %{value: value})]
-  end
+  defp workspace_reference_errors(%Quest{workspace_id: id}, %Workspace{id: id}), do: []
 
-  defp workspace_errors(value),
-    do: [error(:invalid_workspace_root, ["workspace", "root"], %{value: value})]
+  defp workspace_reference_errors(quest, workspace) do
+    [
+      error(:quest_workspace_mismatch, ["workspace_id"], %{
+        quest_workspace_id: quest.workspace_id,
+        supplied_workspace_id: workspace.id
+      })
+    ]
+  end
 
   defp resolution_error(error) do
     %ValidationError{

@@ -1,6 +1,6 @@
 # Quest Engineering Server — Reusable Tactic Composition v0.9
 
-The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding launch snapshots to the pure Core Runtime and Worker Protocol v3.
+The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding path-free launch snapshots to the pure Core Runtime and Worker Protocol v4.
 
 ```text
 Quest + Squad + Classes + Loadouts
@@ -9,7 +9,7 @@ quest_launches + runtime_runs + ordered runtime_outbox
               ↓ atomic scheduling
 Member binding + logical context binding + Worker slot
               ↓
-ResolvedExecution → Worker Protocol v3
+ResolvedExecution → Worker Protocol v4
 ```
 
 A Worker remains infrastructure. It is not a Squad Member, Class, Loadout, semantic performer, or logical context.
@@ -58,7 +58,7 @@ The initial Pi adapter advertises:
 
 Unknown/custom capabilities are valid Product data but cause `waiting_for_worker` until an executor advertises them.
 
-## Worker Protocol v3
+## Worker Protocol v4
 
 Only protocol version 3 is accepted. `execute_action` carries a provider-neutral immutable `ResolvedExecution` with separate identity, performer, work, configuration, and logical context sections. It carries no unresolved performer/context requirement and no Pi/Herdr lineage ID.
 

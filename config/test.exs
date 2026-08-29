@@ -18,6 +18,8 @@ config :quest_engineering_server, QuestEngineering.ServerWeb.Endpoint,
   secret_key_base: "58mG/EfjSfAE7VAKwA9oa5SPyTtDTFzFdf+BumXt3c2VERzEWQC3HwrqJL2DfWsr",
   server: true
 
+config :quest_engineering_server, :legacy_test_auto_worktrees, true
+
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, sort_verified_routes_query_params: true

@@ -1,0 +1,11 @@
+[package]
+name = "quest-engineering-client"
+version = "0.12.0"
+description = "Quest Engineering Town client"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.5", features = [] }

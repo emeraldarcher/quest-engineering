@@ -50,7 +50,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     %{workspace_root: root}
   end
 
-  test "v3 registration fences an older connection", context do
+  test "v4 registration fences an older connection", context do
     worker_id = unique("worker-fence")
     first = start_worker(worker_id, context.workspace_root, max_concurrency: 2)
     assert_eventually(fn -> FakeWorker.connected?(first) end)
@@ -313,7 +313,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     {:ok, quest} =
       Products.create_quest(%{
         title: "Protocol integration",
-        objective: "Prove durable v3 delivery.",
+        objective: "Prove durable v4 delivery.",
         workspace_ref: "workspace:protocol",
         squad_id: squad.id,
         tactic_source: %Inline{

@@ -9,7 +9,14 @@ defmodule QuestEngineering.ServerWeb.Router do
     pipe_through :api
 
     get "/health", HealthController, :show
-    get "/workspaces", WorkspaceController, :index
+    get "/workspaces", ProductController, :index
+    get "/workspaces/:id", ProductController, :show
+    post "/workspaces", ProductController, :create
+    patch "/workspaces/:id", ProductController, :update
+    post "/workspaces/:id/archive", ProductController, :archive
+    get "/workspace-sources", WorkspaceSourceController, :index
+    post "/workspaces/:id/bindings", WorkspaceSourceController, :bind
+    get "/execution-options", ExecutionOptionsController, :index
 
     get "/classes", ProductController, :index
     get "/classes/:id", ProductController, :show

@@ -46,12 +46,12 @@ async function fixture() {
 
 test("maps QE capabilities through mechanically restricted access levels", () => {
   const none = action();
-  none.execution.configuration.workspace.access = "none";
+  none.execution.execution_workspace.access = "none";
   none.execution.configuration.tools = [];
   expect(mappedPiTools({ action: none })).toEqual(["qe_step_result"]);
 
   const readOnly = action();
-  readOnly.execution.configuration.workspace.access = "read_only";
+  readOnly.execution.execution_workspace.access = "read_only";
   readOnly.execution.configuration.tools = [
     "workspace.filesystem",
     "workspace.search",
@@ -77,6 +77,28 @@ test("maps QE capabilities through mechanically restricted access levels", () =>
     "write",
     "bash",
   ]);
+});
+
+test("access-none stays Run-pinned but uses an isolated non-repository CWD", async () => {
+  const { root, registry, host, provider } = await fixture();
+  const none = action();
+  none.execution.execution_workspace.access = "none";
+  none.execution.execution_workspace.canonical_root = join(root, "workspace");
+  none.execution.configuration.tools = [];
+  const accepted = registry.accept(none).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+
+  await provider.prepareFresh(accepted, lineage);
+
+  expect(host.createdCwds).toHaveLength(1);
+  expect(host.createdCwds[0]).toContain(join(root, "isolated"));
+  expect(host.createdCwds[0]).not.toBe(
+    none.execution.execution_workspace.canonical_root,
+  );
+  expect(lineage.logicalLineageId).toBe(
+    none.execution.context.logical_lineage_id,
+  );
+  registry.close();
 });
 
 test("adopts safe Herdr provenance when a local dispatch row is missing", async () => {
@@ -185,12 +207,13 @@ test("fresh Actions create distinct Pi agents while continuation reuses the orig
 class FakeHost implements SessionHost {
   readonly sessionName = "test-herdr";
   readonly startedNames: string[] = [];
+  readonly createdCwds: string[] = [];
   readonly metadata: Array<{ paneId: string; tokens: Record<string, string> }> =
     [];
   private workspaceCreated = false;
   private panes: HostedPane[] = [];
   private agents: HostedAgent[] = [];
-  constructor(private readonly cwd: string) {}
+  constructor(private cwd: string) {}
   async snapshot(): Promise<HostedSnapshot> {
     return {
       workspaces: this.workspaceCreated ? [{ workspaceId: "workspace" }] : [],
@@ -198,8 +221,10 @@ class FakeHost implements SessionHost {
       agents: this.agents,
     };
   }
-  async createWorkspace(): Promise<HostedPane> {
+  async createWorkspace(input: { cwd: string }): Promise<HostedPane> {
     this.workspaceCreated = true;
+    this.cwd = input.cwd;
+    this.createdCwds.push(input.cwd);
     const pane = this.pane("pane-1", "tab-1");
     this.panes.push(pane);
     return pane;
@@ -286,7 +311,9 @@ function config(root: string): WorkerConfig {
     maxConcurrency: 1,
     tags: [],
     herdrSession: "test-herdr",
-    workspaceRoot: join(root, "workspace"),
+    allowedRoots: [],
+    workspaceBindings: [],
+    worktreeRoot: join(root, "worktrees"),
     dataRoot: root,
     piThinking: "minimal",
     heartbeatMs: 1000,

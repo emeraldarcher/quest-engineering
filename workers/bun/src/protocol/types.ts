@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 3 as const;
+export const WORKER_PROTOCOL_VERSION = 4 as const;
 
 export type JsonValue =
   | string
@@ -44,11 +44,16 @@ export interface ResolvedExecution {
     model: { provider: string; model: string };
     reasoning: Reasoning;
     tools: string[];
-    workspace: {
-      ref: string;
-      root: string;
-      access: WorkspaceAccess;
-    };
+  };
+  logical_workspace: {
+    workspace_id: string;
+    workspace_key: string;
+  };
+  execution_workspace: {
+    worktree_id: string;
+    workspace_binding_id: string;
+    canonical_root: string;
+    access: WorkspaceAccess;
   };
   context: {
     mode: "fresh" | "continue_from";
@@ -57,7 +62,7 @@ export interface ResolvedExecution {
   };
 }
 
-/** v3 wire message plus normalized identity aliases used by durable v0.7 internals. */
+/** v4 wire message plus normalized identity aliases used by durable internals. */
 export interface ExecuteAction {
   type: "execute_action";
   protocol_version: typeof WORKER_PROTOCOL_VERSION;
@@ -97,11 +102,6 @@ export interface ExecutorCapability {
   models: Array<{ provider: string; model: string }>;
   reasoning: Reasoning[];
   tools: string[];
-  workspaces: Array<{
-    ref: string;
-    root: string;
-    max_access: WorkspaceAccess;
-  }>;
 }
 
 export interface WorkerCapabilities {
@@ -110,6 +110,15 @@ export interface WorkerCapabilities {
   max_concurrency: number;
   tags: string[];
   executors: ExecutorCapability[];
+  workspace_bindings: Array<{
+    binding_id: string;
+    workspace_id: string;
+    authorized_root_key: string;
+    source_repository_root: string;
+    source_fingerprint?: string | null;
+    max_access: WorkspaceAccess;
+    allow_unconfined_shell: boolean;
+  }>;
 }
 
 export function isJsonValue(value: unknown): value is JsonValue {

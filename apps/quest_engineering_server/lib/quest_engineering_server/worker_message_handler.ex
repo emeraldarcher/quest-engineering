@@ -5,13 +5,71 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.Reconciler
   alias QuestEngineering.Server.RunChangeNotifier
+  alias QuestEngineering.Server.RunWorkspaceStore
   alias QuestEngineering.Server.Scheduler
   alias QuestEngineering.Server.WorkerError
   alias QuestEngineering.Server.WorkerProtocol
   alias QuestEngineering.Server.WorkerStore
+  alias QuestEngineering.Server.WorkspaceControl
 
   def handle(worker_id, generation, %{type: :heartbeat}) do
     result(WorkerStore.heartbeat(worker_id, generation))
+  end
+
+  def handle(worker_id, generation, %{type: :workspace_sources, candidates: candidates}) do
+    with {:ok, _} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, _} <- WorkspaceControl.record_candidates(worker_id, candidates) do
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "workspace_sources_recorded"
+       }}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :workspace_binding_ready, binding: binding}) do
+    with {:ok, _} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, _row} <- WorkspaceControl.record_binding(worker_id, generation, binding) do
+      Scheduler.wake_all()
+
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "workspace_binding_recorded"
+       }}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :run_worktree_ready, worktree: worktree}) do
+    with {:ok, assignment} <- RunWorkspaceStore.ready(worker_id, generation, worktree) do
+      Scheduler.wake(assignment.run_id)
+      {:ok, workspace_response("run_worktree_ready", assignment.worktree_id)}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :run_worktree_failed, worktree: worktree}) do
+    with {:ok, assignment} <- RunWorkspaceStore.fail(worker_id, generation, worktree) do
+      {:ok, workspace_response("run_worktree_failed", assignment.worktree_id)}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :run_worktree_attention, worktree: worktree}) do
+    with {:ok, assignment} <- RunWorkspaceStore.attention(worker_id, generation, worktree) do
+      {:ok, workspace_response("run_worktree_attention", assignment.worktree_id)}
+    end
+  end
+
+  def handle(worker_id, generation, %{
+        type: :run_worktree_integrity_failed,
+        action_id: action_id,
+        failure: failure
+      }) do
+    with {:ok, assignment} <-
+           RunWorkspaceStore.fence_for_action(worker_id, generation, action_id, failure) do
+      {:ok, workspace_response("run_worktree_fenced", assignment.worktree_id)}
+    end
   end
 
   def handle(worker_id, generation, %{type: :dispatch_accepted} = message) do
@@ -139,6 +197,15 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
       {:error, error} ->
         {:error, error}
     end
+  end
+
+  defp workspace_response(result, worktree_id) do
+    %{
+      "type" => "message_result",
+      "protocol_version" => WorkerProtocol.version(),
+      "result" => result,
+      "worktree_id" => worktree_id
+    }
   end
 
   defp result({:ok, _worker}) do

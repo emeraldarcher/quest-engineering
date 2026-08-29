@@ -33,7 +33,9 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
+  alias QuestEngineering.Core.ResolvedExecution.ExecutionWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Identity
+  alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.Action
@@ -76,6 +78,8 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     Performer,
     Work,
     Configuration,
+    LogicalWorkspace,
+    ExecutionWorkspace,
     Context,
     ArtifactBinding,
     ArtifactCarry,

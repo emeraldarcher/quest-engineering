@@ -10,7 +10,11 @@ config :quest_engineering_server, QuestEngineering.Server.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
+config :quest_engineering_server,
+  client_origins: ["http://127.0.0.1:1420", "http://localhost:1420", "tauri://localhost"]
+
 config :quest_engineering_server, QuestEngineering.ServerWeb.Endpoint,
+  check_origin: ["http://127.0.0.1:1420", "http://localhost:1420", "tauri://localhost"],
   http: [ip: {127, 0, 0, 1}, port: 4000],
   code_reloader: true,
   debug_errors: true,

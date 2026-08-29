@@ -1,3 +1,35 @@
+defmodule QuestEngineering.Server.Persistence.ProductWorkspace do
+  @moduledoc false
+
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  @primary_key {:id, Ecto.UUID, autogenerate: true}
+  schema "product_workspaces" do
+    field :key, :string
+    field :name, :string
+    field :source_kind, :string
+    field :source_fingerprint, :string
+    field :archived_at, :utc_datetime_usec
+    timestamps(type: :utc_datetime_usec)
+  end
+
+  def create_changeset(attributes) do
+    %__MODULE__{}
+    |> cast(attributes, [:id, :key, :name, :source_kind, :source_fingerprint], empty_values: [])
+    |> validate_required([:id, :key, :name, :source_kind])
+    |> validate_inclusion(:source_kind, ["git_remote", "local_git"])
+    |> unique_constraint(:key)
+    |> check_constraint(:source_kind, name: :product_workspaces_source_kind_valid)
+  end
+
+  def update_changeset(row, attributes) do
+    row
+    |> cast(attributes, [:name, :source_fingerprint], empty_values: [])
+    |> validate_required([:name])
+  end
+end
+
 defmodule QuestEngineering.Server.Persistence.ProductClass do
   @moduledoc false
 
@@ -209,56 +241,53 @@ defmodule QuestEngineering.Server.Persistence.ProductQuest do
   @moduledoc false
 
   use Ecto.Schema
-
   import Ecto.Changeset
 
   @primary_key {:id, Ecto.UUID, autogenerate: true}
   schema "product_quests" do
     field :title, :string
     field :objective, :string
+
+    # Retained only so additive migrations can read historical rows. New Product APIs use workspace_id.
     field :workspace_ref, :string
+    field :workspace_id, Ecto.UUID
     field :squad_id, Ecto.UUID
     field :tactic_source_type, :string
     field :inline_tactic, :map
     field :tactic_definition_id, Ecto.UUID
     field :archived_at, :utc_datetime_usec
-
     timestamps(type: :utc_datetime_usec)
   end
 
-  def create_changeset(attributes) do
-    %__MODULE__{}
-    |> cast(attributes, [
+  def create_changeset(attributes), do: common_changeset(cast_fields(%__MODULE__{}, attributes))
+  def update_changeset(row, attributes), do: common_changeset(cast_fields(row, attributes))
+
+  defp cast_fields(row, attributes) do
+    cast(row, attributes, [
       :id,
       :title,
       :objective,
       :workspace_ref,
+      :workspace_id,
       :squad_id,
       :tactic_source_type,
       :inline_tactic,
       :tactic_definition_id
     ])
-    |> common_changeset()
-  end
-
-  def update_changeset(row, attributes) do
-    row
-    |> cast(attributes, [
-      :title,
-      :objective,
-      :workspace_ref,
-      :squad_id,
-      :tactic_source_type,
-      :inline_tactic,
-      :tactic_definition_id
-    ])
-    |> common_changeset()
   end
 
   defp common_changeset(changeset) do
     changeset
-    |> validate_required([:title, :objective, :workspace_ref, :squad_id, :tactic_source_type])
+    |> validate_required([
+      :title,
+      :objective,
+      :workspace_ref,
+      :workspace_id,
+      :squad_id,
+      :tactic_source_type
+    ])
     |> validate_inclusion(:tactic_source_type, ["inline", "definition"])
+    |> foreign_key_constraint(:workspace_id)
     |> foreign_key_constraint(:squad_id)
     |> foreign_key_constraint(:tactic_definition_id)
     |> check_constraint(:tactic_source_type, name: :product_quests_tactic_source_valid)

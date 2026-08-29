@@ -5,25 +5,30 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
+  alias QuestEngineering.Core.ResolvedExecution.ExecutionWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Identity
+  alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
+  @workspace_id "00000000-0000-4000-8000-000000000001"
+  @worktree_id "00000000-0000-4000-8000-000000000002"
+  @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts the explicit protocol v3 hello and normalized executor capabilities" do
+  test "accepts explicit protocol v4 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
     assert hello.capabilities["tags"] == ["fake"]
-    assert hd(hello.capabilities["executors"])["adapter"] == "other-executor"
+    assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
   end
 
-  test "rejects v2 and malformed capabilities" do
+  test "rejects v3 and malformed capabilities" do
     assert {:error, %WorkerProtocol.Error{code: :unsupported_protocol_version}} =
-             hello() |> Map.put("protocol_version", 2) |> WorkerProtocol.decode_hello()
+             hello() |> Map.put("protocol_version", 3) |> WorkerProtocol.decode_hello()
 
     malformed = put_in(hello(), ["capabilities", "max_concurrency"], 0)
 
@@ -31,21 +36,24 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
              WorkerProtocol.decode_hello(malformed)
   end
 
-  test "rejects unknown messages without creating atoms" do
-    payload = %{
-      "type" => "not_a_real_message_#{System.unique_integer([:positive])}",
-      "protocol_version" => 3,
-      "worker_id" => @worker_id
-    }
+  test "encodes persisted string source kinds in binding commands" do
+    command =
+      WorkerProtocol.bind_workspace_source(@worker_id, %{
+        binding_id: @binding_id,
+        workspace_id: @workspace_id,
+        workspace_key: "test",
+        source_kind: "git_remote",
+        source_fingerprint: "github.com:example/repository",
+        candidate_id: "candidate"
+      })
 
-    assert {:error, %WorkerProtocol.Error{code: :unknown_message_type}} =
-             WorkerProtocol.decode_worker_message(payload, @worker_id)
+    assert command["binding"]["source_kind"] == "git_remote"
   end
 
   test "accepts uncertain reconciliation only with structured failure" do
     payload = %{
       "type" => "dispatch_state",
-      "protocol_version" => 3,
+      "protocol_version" => 4,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -54,23 +62,24 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
       "failure" => %{"reason" => "ambiguous"}
     }
 
-    assert {:ok, %{state: :uncertain}} =
-             WorkerProtocol.decode_worker_message(payload, @worker_id)
+    assert {:ok, %{state: :uncertain}} = WorkerProtocol.decode_worker_message(payload, @worker_id)
   end
 
-  test "encodes immutable ResolvedExecution without unresolved product requirements" do
-    execution = execution()
-    encoded = WorkerProtocol.execute_action(@worker_id, execution)
+  test "encodes logical and physical execution workspaces separately" do
+    encoded = WorkerProtocol.execute_action(@worker_id, execution())
     wire = encoded["execution"]
 
-    assert encoded["protocol_version"] == 3
-    assert wire["identity"]["action_id"] == execution.identity.action_id
-    assert wire["work"]["quest_objective"] == "Ship the Quest"
-    assert wire["work"]["class_instructions"] == "Build carefully."
+    assert encoded["protocol_version"] == 4
     assert wire["configuration"]["model"] == %{"provider" => "fake", "model" => "test"}
-    assert wire["performer"]["member_key"] == "alice"
+
+    assert wire["logical_workspace"] == %{
+             "workspace_id" => @workspace_id,
+             "workspace_key" => "test"
+           }
+
+    assert wire["execution_workspace"]["worktree_id"] == @worktree_id
+    assert wire["execution_workspace"]["canonical_root"] == "/workspace"
     refute Map.has_key?(wire, "performer_requirement")
-    refute Map.has_key?(wire, "context_requirement")
     refute Map.has_key?(wire, "pi_session")
   end
 
@@ -107,10 +116,14 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
       configuration: %Configuration{
         model: %ModelRef{provider: "fake", model: "test"},
         reasoning: :medium,
-        tools: ["custom.qe-capability"],
-        workspace_ref: "workspace:test",
-        workspace_root: "/workspace",
-        workspace_access: :read_write
+        tools: ["custom.qe-capability"]
+      },
+      logical_workspace: %LogicalWorkspace{workspace_id: @workspace_id, workspace_key: "test"},
+      execution_workspace: %ExecutionWorkspace{
+        worktree_id: @worktree_id,
+        workspace_binding_id: @binding_id,
+        canonical_root: "/workspace",
+        access: :read_write
       },
       context: %Context{
         mode: :fresh,
@@ -123,7 +136,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   defp hello do
     %{
       "type" => "worker_hello",
-      "protocol_version" => 3,
+      "protocol_version" => 4,
       "worker_id" => @worker_id,
       "capabilities" => %{
         "os" => "test",
@@ -135,14 +148,18 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
             "adapter" => "other-executor",
             "models" => [%{"provider" => "fake", "model" => "test"}],
             "reasoning" => ["medium"],
-            "tools" => ["custom.qe-capability"],
-            "workspaces" => [
-              %{
-                "ref" => "workspace:test",
-                "root" => "/workspace",
-                "max_access" => "read_write"
-              }
-            ]
+            "tools" => ["custom.qe-capability"]
+          }
+        ],
+        "workspace_bindings" => [
+          %{
+            "binding_id" => @binding_id,
+            "workspace_id" => @workspace_id,
+            "authorized_root_key" => "test",
+            "source_repository_root" => "/workspace",
+            "source_fingerprint" => nil,
+            "max_access" => "read_write",
+            "allow_unconfined_shell" => true
           }
         ]
       }

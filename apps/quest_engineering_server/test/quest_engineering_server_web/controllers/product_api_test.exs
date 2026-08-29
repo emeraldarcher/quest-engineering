@@ -6,7 +6,9 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
+  alias QuestEngineering.Server.WorkerStore
   alias QuestEngineering.ServerWeb.Endpoint
 
   @endpoint Endpoint
@@ -110,11 +112,19 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert %{"tactic" => %{"id" => tactic_id, "body" => %{"type" => "step"}}} =
              json_response(tactic, 201)
 
+    %{"workspace" => %{"id" => workspace_id}} =
+      post_json("/api/v1/workspaces", %{
+        key: "product-api",
+        name: "Product API",
+        source_kind: "local_git"
+      })
+      |> json_response(201)
+
     quest =
       post_json("/api/v1/quests", %{
         title: "HTTP Quest",
         objective: "Verify the Product API.",
-        workspace_ref: "workspace:product-api",
+        workspace_id: workspace_id,
         squad_id: squad_id,
         tactic_source: %{type: "definition", tactic_definition_id: tactic_id}
       })
@@ -159,26 +169,113 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
              json_response(post(build_conn(), "/api/v1/quests/#{quest_id}/archive"), 200)
   end
 
-  test "workspace discovery exposes no filesystem roots" do
-    root = Path.expand(".pi/tmp/api-workspace-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(Path.join(root, ".git"))
-    previous = Application.get_env(:quest_engineering_server, :workspaces)
-
-    Application.put_env(:quest_engineering_server, :workspaces, %{
-      "workspace:api" => %{root: root, label: "API Workspace"}
-    })
+  test "client CORS allows only configured origins" do
+    previous = Application.get_env(:quest_engineering_server, :client_origins)
+    Application.put_env(:quest_engineering_server, :client_origins, ["tauri://localhost"])
 
     on_exit(fn ->
-      File.rm_rf!(root)
-      Application.put_env(:quest_engineering_server, :workspaces, previous || %{})
+      Application.put_env(:quest_engineering_server, :client_origins, previous || [])
     end)
+
+    response =
+      build_conn()
+      |> put_req_header("origin", "tauri://localhost")
+      |> get("/api/v1/health")
+
+    assert get_resp_header(response, "access-control-allow-origin") == ["tauri://localhost"]
+
+    rejected =
+      build_conn()
+      |> put_req_header("origin", "https://not-allowed.example")
+      |> get("/api/v1/health")
+
+    assert get_resp_header(rejected, "access-control-allow-origin") == []
+  end
+
+  test "execution options expose deduplicated coherent profiles without Worker infrastructure" do
+    {:ok, workspace} =
+      Products.create_workspace(%{
+        key: "api-options",
+        name: "workspace:api",
+        source_kind: :local_git
+      })
+
+    capabilities = %{
+      "os" => "test",
+      "arch" => "test",
+      "max_concurrency" => 2,
+      "tags" => ["internal"],
+      "executors" => [
+        %{
+          "adapter" => "private-adapter",
+          "models" => [%{"provider" => "fake", "model" => "test"}],
+          "reasoning" => ["low", "high"],
+          "tools" => ["workspace.filesystem", "workspace.search"],
+          "workspaces" => [
+            %{
+              "ref" => "workspace:api",
+              "root" => "/not-for-clients",
+              "max_access" => "read_write"
+            }
+          ]
+        }
+      ]
+    }
+
+    {:ok, _} = WorkerStore.register("options-one", capabilities, Ecto.UUID.generate())
+    {:ok, _} = WorkerStore.register("options-two", capabilities, Ecto.UUID.generate())
+
+    response = get(build_conn(), "/api/v1/execution-options")
+
+    assert %{
+             "execution_options" => [
+               %{
+                 "model" => %{"provider" => "fake", "model" => "test"},
+                 "reasoning" => ["high", "low"],
+                 "tools" => ["workspace.filesystem", "workspace.search"],
+                 "workspaces" => [
+                   %{
+                     "workspace_id" => workspace_id,
+                     "workspace_access" => ["none", "read_only", "read_write"]
+                   }
+                 ],
+                 "available" => true
+               }
+             ]
+           } = json_response(response, 200)
+
+    assert workspace_id == workspace.id
+    encoded = Jason.encode!(json_response(response, 200))
+    refute encoded =~ "options-one"
+    refute encoded =~ "private-adapter"
+    refute encoded =~ "/not-for-clients"
+    refute encoded =~ "max_concurrency"
+  end
+
+  test "logical Workspace APIs expose no Worker filesystem roots" do
+    created =
+      post_json("/api/v1/workspaces", %{
+        key: "api-workspace",
+        name: "API Workspace",
+        source_kind: "local_git"
+      })
+      |> json_response(201)
 
     response = get(build_conn(), "/api/v1/workspaces")
 
-    assert %{"workspaces" => [%{"ref" => "workspace:api", "name" => "API Workspace"}]} =
-             json_response(response, 200)
+    assert %{
+             "workspaces" => [
+               %{
+                 "id" => workspace_id,
+                 "key" => "api-workspace",
+                 "name" => "API Workspace",
+                 "source_kind" => "local_git"
+               }
+             ]
+           } = json_response(response, 200)
 
-    refute Jason.encode!(json_response(response, 200)) =~ root
+    assert created["workspace"]["id"] == workspace_id
+    refute Jason.encode!(json_response(response, 200)) =~ "/Users/"
   end
 
   defp post_json(path, body) do

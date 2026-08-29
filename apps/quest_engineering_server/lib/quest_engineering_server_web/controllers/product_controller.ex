@@ -52,16 +52,19 @@ defmodule QuestEngineering.ServerWeb.ProductController do
     end
   end
 
+  defp kind(%{path_info: ["api", "v1", "workspaces" | _]}), do: :workspace
   defp kind(%{path_info: ["api", "v1", "classes" | _]}), do: :class
   defp kind(%{path_info: ["api", "v1", "loadouts" | _]}), do: :loadout
   defp kind(%{path_info: ["api", "v1", "squads" | _]}), do: :squad
   defp kind(%{path_info: ["api", "v1", "quests" | _]}), do: :quest
   defp kind(%{path_info: ["api", "v1", "tactics" | _]}), do: :tactic
+  defp plural(:workspace), do: :workspaces
   defp plural(:class), do: :classes
   defp plural(:loadout), do: :loadouts
   defp plural(:squad), do: :squads
   defp plural(:quest), do: :quests
   defp plural(:tactic), do: :tactics
+  defp view(:workspace, value, archived_at), do: View.workspace(value, archived_at)
   defp view(:class, value, archived_at), do: View.class(value, archived_at)
   defp view(:loadout, value, archived_at), do: View.loadout(value, archived_at)
   defp view(:squad, value, archived_at), do: View.squad(value, archived_at)

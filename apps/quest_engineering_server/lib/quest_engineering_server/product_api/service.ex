@@ -9,11 +9,11 @@ defmodule QuestEngineering.Server.ProductApi.Service do
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.ProductSquad
   alias QuestEngineering.Server.Persistence.ProductTactic
+  alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.TacticCodec
   alias QuestEngineering.Server.Product.Repository
   alias QuestEngineering.Server.Product.TacticLibrary
   alias QuestEngineering.Server.Repo
-  alias QuestEngineering.Server.WorkspaceResolver
 
   defmodule Error do
     @moduledoc false
@@ -21,12 +21,14 @@ defmodule QuestEngineering.Server.ProductApi.Service do
     defstruct [:code, :details]
   end
 
+  def list(:workspace, options), do: {:ok, Repository.list_workspaces(options)}
   def list(:class, options), do: {:ok, Repository.list_classes(options)}
   def list(:loadout, options), do: {:ok, Repository.list_loadouts(options)}
   def list(:squad, options), do: {:ok, Repository.list_squads(options)}
   def list(:quest, options), do: {:ok, Repository.list_quests(options)}
   def list(:tactic, options), do: {:ok, TacticLibrary.list(options)}
 
+  def get(:workspace, id, options), do: Repository.get_workspace(id, options)
   def get(:class, id, options), do: Repository.get_class(id, options)
   def get(:loadout, id, options), do: Repository.get_loadout(id, options)
   def get(:squad, id, options), do: Repository.get_squad(id, options)
@@ -37,6 +39,7 @@ defmodule QuestEngineering.Server.ProductApi.Service do
     with {:ok, attributes} <- attributes(kind, payload),
          :ok <- active_references(kind, attributes) do
       case kind do
+        :workspace -> Repository.create_workspace(attributes)
         :class -> Repository.create_class(attributes)
         :loadout -> Repository.create_loadout(attributes)
         :squad -> Repository.create_squad(attributes)
@@ -51,6 +54,7 @@ defmodule QuestEngineering.Server.ProductApi.Service do
          {:ok, reference_attributes} <- complete_references(kind, id, attributes),
          :ok <- active_references(kind, reference_attributes) do
       case kind do
+        :workspace -> Repository.update_workspace(id, attributes)
         :class -> Repository.update_class(id, attributes)
         :loadout -> Repository.update_loadout(id, attributes)
         :squad -> Repository.update_squad(id, attributes)
@@ -63,6 +67,7 @@ defmodule QuestEngineering.Server.ProductApi.Service do
   def archive(kind, id) do
     result =
       case kind do
+        :workspace -> Repository.archive_workspace(id)
         :class -> Repository.archive_class(id)
         :loadout -> Repository.archive_loadout(id)
         :squad -> Repository.archive_squad(id)
@@ -91,16 +96,22 @@ defmodule QuestEngineering.Server.ProductApi.Service do
 
   def preview_tactic_definition(id), do: TacticLibrary.preview_definition(id)
 
-  def preview_quest(id) do
-    with {:ok, quest} <- Repository.get_quest(id),
-         {:ok, root} <- WorkspaceResolver.resolve(quest.workspace_ref) do
-      Repository.preview_launch_snapshot(id, root)
-    end
-  end
+  def preview_quest(id), do: Repository.preview_launch_snapshot(id)
 
   def launch(id), do: LaunchQuest.launch(id)
 
-  def workspaces, do: WorkspaceResolver.list()
+  defp attributes(:workspace, payload) do
+    case basic(payload, [:key, :name, :source_kind, :source_fingerprint]) do
+      {:ok, attributes} ->
+        enum(attributes, :source_kind, %{
+          "git_remote" => :git_remote,
+          "local_git" => :local_git
+        })
+
+      error ->
+        error
+    end
+  end
 
   defp attributes(:class, payload), do: basic(payload, [:key, :name, :description, :instructions])
 
@@ -129,7 +140,8 @@ defmodule QuestEngineering.Server.ProductApi.Service do
   end
 
   defp attributes(:quest, payload) do
-    with {:ok, attributes} <- basic(payload, [:title, :objective, :workspace_ref, :squad_id]),
+    with {:ok, attributes} <-
+           basic(payload, [:title, :objective, :workspace_id, :squad_id]),
          {:ok, source} <-
            tactic_source(
              Map.get(payload, "tactic_source", Map.get(payload, :tactic_source, :absent))
@@ -248,7 +260,11 @@ defmodule QuestEngineering.Server.ProductApi.Service do
 
   defp complete_references(:quest, id, attributes) do
     with {:ok, quest} <- Repository.get_quest(id) do
-      attributes = Map.put_new(attributes, :squad_id, quest.squad_id)
+      attributes =
+        attributes
+        |> Map.put_new(:workspace_id, quest.workspace_id)
+        |> Map.put_new(:squad_id, quest.squad_id)
+
       {:ok, Map.put_new(attributes, :tactic_source, quest.tactic_source)}
     end
   end
@@ -265,9 +281,15 @@ defmodule QuestEngineering.Server.ProductApi.Service do
 
   defp active_references(:quest, attributes) do
     rows =
-      case Map.get(attributes, :squad_id) do
+      case Map.get(attributes, :workspace_id) do
         nil -> []
-        id -> [{ProductSquad, id}]
+        id -> [{ProductWorkspace, id}]
+      end
+
+    rows =
+      case Map.get(attributes, :squad_id) do
+        nil -> rows
+        id -> rows ++ [{ProductSquad, id}]
       end
 
     rows =
@@ -293,6 +315,7 @@ defmodule QuestEngineering.Server.ProductApi.Service do
     end
   end
 
+  defp schema(:workspace), do: ProductWorkspace
   defp schema(:class), do: ProductClass
   defp schema(:loadout), do: ProductLoadout
   defp schema(:squad), do: ProductSquad

@@ -7,6 +7,7 @@ import type { ExecuteAction, JsonValue } from "../src/protocol/types.ts";
 import { PiProvider } from "../src/providers/pi/provider.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
 import { HerdrSessionHost } from "../src/session-host/herdr/session-host.ts";
+import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
 
 const id = crypto.randomUUID().slice(0, 8);
 const root = resolve(".pi/tmp", `worker-herdr-pi-${id}`);
@@ -47,9 +48,26 @@ const config: WorkerConfig = {
   maxConcurrency: 1,
   tags: ["integration"],
   herdrSession: `qe-worker-${id}`,
-  workspaceRoot: workspace,
-  workspaceRef: "workspace:integration",
-  workspaceMaxAccess: "read_write",
+  allowedRoots: [
+    {
+      key: "integration",
+      path: root,
+      max_access: "read_write",
+      discover_depth: 2,
+      allow_unconfined_shell: true,
+    },
+  ],
+  workspaceBindings: [
+    {
+      binding_id: "00000000-0000-4000-8000-000000000003",
+      workspace_id: "00000000-0000-4000-8000-000000000001",
+      authorized_root_key: "integration",
+      source_repository_root: workspace,
+      max_access: "read_write",
+      allow_unconfined_shell: true,
+    },
+  ],
+  worktreeRoot: join(root, "worktrees"),
   executorModels: [model],
   reasoningLevels: ["low", "medium", "high"],
   dataRoot: join(root, "worker-data"),
@@ -62,6 +80,23 @@ const config: WorkerConfig = {
   fakeOutputs: {},
   fakeDelayMs: 0,
 };
+await mkdir(config.worktreeRoot, { recursive: true });
+const runWorktrees = new RunWorktreeRegistry(config);
+const runWorktree = await runWorktrees.provision({
+  worktree_id: "00000000-0000-4000-8000-000000000002",
+  run_id: "run-live",
+  workspace_id: "00000000-0000-4000-8000-000000000001",
+  workspace_binding_id: "00000000-0000-4000-8000-000000000003",
+  base: { kind: "binding_head_v1" },
+  branch_name: "qe/run/00000000000040008000000000000002",
+  identity_hash: "integration-run-worktree-v1",
+});
+if (runWorktree.state !== "ready")
+  throw new Error(
+    `Run worktree provisioning failed: ${runWorktree.failureCode}`,
+  );
+const executionRoot = runWorktree.canonicalRoot;
+
 const registry = new DispatchRegistry(
   join(config.dataRoot, "dispatches.sqlite"),
   config.dataRoot,
@@ -147,14 +182,17 @@ if (reviewLineage.lineageId === implementLineage.lineageId)
 const verdict = registry.get(review.action_id).outputs?.verdict;
 if (!isRecord(verdict) || verdict.status !== "accepted")
   throw new Error(`Review rejected the proof: ${JSON.stringify(verdict)}`);
-const content = await Bun.file(join(workspace, "qe-v07-proof.txt")).text();
+const content = await Bun.file(join(executionRoot, "qe-v07-proof.txt")).text();
 if (content !== "implemented through Herdr\ncontinued in the same Pi context\n")
   throw new Error(`Unexpected proof content: ${JSON.stringify(content)}`);
 
 const proof = {
   ok: true,
   root,
-  workspace,
+  sourceWorkspace: workspace,
+  runWorkspace: executionRoot,
+  baseRevision: runWorktree.baseRevision,
+  branchName: runWorktree.branchName,
   herdrSession: config.herdrSession,
   implement: summary(registry, implement.action_id),
   repair: summary(registry, repair.action_id),
@@ -186,6 +224,14 @@ await Bun.write(
 );
 console.log(JSON.stringify(proof, null, 2));
 registry.close();
+runWorktrees.close();
+const restartedWorktrees = new RunWorktreeRegistry(config);
+if (
+  (await restartedWorktrees.verify(runWorktree.worktreeId)).canonicalRoot !==
+  executionRoot
+)
+  throw new Error("Worker restart did not recover the same Run worktree.");
+restartedWorktrees.close();
 provider.disconnect();
 process.exit(0);
 
@@ -203,7 +249,7 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
       : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 3,
+    protocol_version: 4,
     worker_id: config.workerId,
     execution: {
       identity: {
@@ -231,11 +277,16 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
         model,
         reasoning: "medium",
         tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
-        workspace: {
-          ref: "workspace:integration",
-          root: workspace,
-          access: "read_write",
-        },
+      },
+      logical_workspace: {
+        workspace_id: "00000000-0000-4000-8000-000000000001",
+        workspace_key: "integration",
+      },
+      execution_workspace: {
+        worktree_id: "00000000-0000-4000-8000-000000000002",
+        workspace_binding_id: "00000000-0000-4000-8000-000000000003",
+        canonical_root: executionRoot,
+        access: "read_write",
       },
       context: {
         mode: contextMode,

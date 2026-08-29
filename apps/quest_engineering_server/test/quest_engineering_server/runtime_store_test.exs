@@ -45,7 +45,7 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
               }
             ]} = RuntimeStore.pending_actions("create-recovery")
 
-    assert Repo.aggregate(RuntimeOutbox, :count) == 1
+    assert count(RuntimeOutbox, "create-recovery") == 1
   end
 
   test "recovers static sequence and parallel partial-completion snapshots" do
@@ -112,11 +112,11 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
     assert replay.actions == first.actions
 
     assert {:ok, %{revision: 2}} = RuntimeStore.fetch_run("dedup")
-    assert Repo.aggregate(RuntimeTransition, :count) == 2
+    assert count(RuntimeTransition, "dedup") == 2
 
     action_ids = Repo.all(from outbox in RuntimeOutbox, select: outbox.action_id)
     assert length(action_ids) == length(Enum.uniq(action_ids))
-    assert Repo.aggregate(RuntimeOutbox, :count) == 3
+    assert count(RuntimeOutbox, "dedup") == 3
   end
 
   test "rejects reuse of a transition id for a different event" do
@@ -132,7 +132,7 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
              RuntimeStore.apply_transition("conflict", "completion-123", conflicting)
 
     assert {:ok, %{revision: 1}} = RuntimeStore.fetch_run("conflict")
-    assert Repo.aggregate(RuntimeTransition, :count) == 1
+    assert count(RuntimeTransition, "conflict") == 1
   end
 
   test "invalid runtime events leave snapshot, history, and outbox unchanged" do
@@ -145,8 +145,8 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
              RuntimeStore.apply_transition("invalid-event", "invalid", invalid)
 
     assert {:ok, %{run: ^original, revision: 0}} = RuntimeStore.fetch_run("invalid-event")
-    assert Repo.aggregate(RuntimeTransition, :count) == 0
-    assert Repo.aggregate(RuntimeOutbox, :count) == 1
+    assert count(RuntimeTransition, "invalid-event") == 0
+    assert count(RuntimeOutbox, "invalid-event") == 1
   end
 
   test "the same action id with a different payload is an integrity conflict" do
@@ -157,14 +157,14 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
              OutboxWriter.insert_action("action-integrity", 0, action)
 
     assert action_id == action.id
-    assert Repo.aggregate(RuntimeOutbox, :count) == 1
+    assert count(RuntimeOutbox, "action-integrity") == 1
 
     conflicting = %{action | semantic_step_key: "different-step"}
 
     assert {:error, %PersistenceError{type: :action_id_conflict, action_id: ^action_id}} =
              OutboxWriter.insert_action("action-integrity", 0, conflicting)
 
-    assert Repo.aggregate(RuntimeOutbox, :count) == 1
+    assert count(RuntimeOutbox, "action-integrity") == 1
   end
 
   test "an outbox integrity failure rolls back state and transition history" do
@@ -183,8 +183,8 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
              )
 
     assert {:ok, %{run: ^run, revision: 0}} = RuntimeStore.fetch_run("forced-rollback")
-    assert Repo.aggregate(RuntimeTransition, :count) == 0
-    assert Repo.aggregate(RuntimeOutbox, :count) == 2
+    assert count(RuntimeTransition, "forced-rollback") == 0
+    assert count(RuntimeOutbox, "forced-rollback") == 2
   end
 
   test "durable action intents survive memory loss without embedding delivery state" do
@@ -200,7 +200,7 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
 
     refute Map.has_key?(intent, :status)
     refute Map.has_key?(intent, :worker_id)
-    assert Repo.aggregate(RuntimeOutbox, :count) == 1
+    assert count(RuntimeOutbox, "delivery") == 1
   end
 
   test "persists and recovers representative runtime states through PostgreSQL JSONB" do
@@ -461,6 +461,10 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
         Map.new(occurrence.input_artifact_ids, fn {type, id} -> {type, run.artifacts[id]} end),
       declared_outputs: plan_step.produces
     }
+  end
+
+  defp count(schema, run_id) do
+    Repo.aggregate(from(row in schema, where: row.run_id == ^run_id), :count)
   end
 
   defp occurrence(run, semantic_step_key) do
