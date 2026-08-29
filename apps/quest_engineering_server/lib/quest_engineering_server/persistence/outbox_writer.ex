@@ -10,23 +10,26 @@ defmodule QuestEngineering.Server.Persistence.OutboxWriter do
   @spec insert_actions(String.t(), non_neg_integer(), [Action.t()]) ::
           {:ok, [RuntimeOutbox.t()]} | {:error, Error.t() | Ecto.Changeset.t()}
   def insert_actions(run_id, revision, actions) do
-    Enum.reduce_while(actions, {:ok, []}, fn action, {:ok, rows} ->
-      case insert_action(run_id, revision, action) do
+    actions
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {action, emission_index}, {:ok, rows} ->
+      case insert_action(run_id, revision, action, emission_index) do
         {:ok, row} -> {:cont, {:ok, rows ++ [row]}}
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
   end
 
-  @spec insert_action(String.t(), non_neg_integer(), Action.t()) ::
+  @spec insert_action(String.t(), non_neg_integer(), Action.t(), non_neg_integer()) ::
           {:ok, RuntimeOutbox.t()} | {:error, Error.t() | Ecto.Changeset.t()}
-  def insert_action(run_id, revision, %Action{} = action) do
+  def insert_action(run_id, revision, %Action{} = action, emission_index \\ 0) do
     payload = RuntimeCodec.encode(action)
 
     attributes = %{
       action_id: action.id,
       run_id: run_id,
       run_revision: revision,
+      emission_index: emission_index,
       action_type: Atom.to_string(action.type),
       payload: payload
     }
@@ -58,7 +61,9 @@ defmodule QuestEngineering.Server.Persistence.OutboxWriter do
          details: %{
            existing_run_id: existing.run_id,
            existing_run_revision: existing.run_revision,
-           submitted_run_revision: attributes.run_revision
+           submitted_run_revision: attributes.run_revision,
+           existing_emission_index: existing.emission_index,
+           submitted_emission_index: attributes.emission_index
          }
        }}
     end
@@ -67,6 +72,7 @@ defmodule QuestEngineering.Server.Persistence.OutboxWriter do
   defp same_action?(existing, attributes) do
     existing.run_id == attributes.run_id and
       existing.run_revision == attributes.run_revision and
+      existing.emission_index == attributes.emission_index and
       existing.action_type == attributes.action_type and
       existing.payload == attributes.payload
   end

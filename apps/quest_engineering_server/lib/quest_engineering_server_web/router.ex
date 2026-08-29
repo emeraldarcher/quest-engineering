@@ -9,5 +9,45 @@ defmodule QuestEngineering.ServerWeb.Router do
     pipe_through :api
 
     get "/health", HealthController, :show
+    get "/workspaces", WorkspaceController, :index
+
+    get "/classes", ProductController, :index
+    get "/classes/:id", ProductController, :show
+    post "/classes", ProductController, :create
+    patch "/classes/:id", ProductController, :update
+    post "/classes/:id/archive", ProductController, :archive
+
+    get "/loadouts", ProductController, :index
+    get "/loadouts/:id", ProductController, :show
+    post "/loadouts", ProductController, :create
+    patch "/loadouts/:id", ProductController, :update
+    post "/loadouts/:id/archive", ProductController, :archive
+
+    post "/tactics/preview", TacticController, :preview
+    post "/tactics/:id/preview", TacticController, :preview_definition
+    get "/tactics", ProductController, :index
+    get "/tactics/:id", ProductController, :show
+    post "/tactics", ProductController, :create
+    patch "/tactics/:id", ProductController, :update
+    post "/tactics/:id/archive", ProductController, :archive
+
+    get "/squads", ProductController, :index
+    get "/squads/:id", ProductController, :show
+    post "/squads", ProductController, :create
+    patch "/squads/:id", ProductController, :update
+    post "/squads/:id/archive", ProductController, :archive
+
+    post "/quests/:id/preview", QuestController, :preview
+    post "/quests/:id/launch", QuestController, :launch
+    get "/quests/:id/runs", RunController, :quest_index
+    get "/quests", ProductController, :index
+    get "/quests/:id", ProductController, :show
+    post "/quests", ProductController, :create
+    patch "/quests/:id", ProductController, :update
+    post "/quests/:id/archive", ProductController, :archive
+
+    get "/runs", RunController, :index
+    get "/runs/:run_id/artifacts/:artifact_id", RunController, :artifact
+    get "/runs/:id", RunController, :show
   end
 end

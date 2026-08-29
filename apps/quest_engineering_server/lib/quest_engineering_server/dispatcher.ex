@@ -1,35 +1,33 @@
 defmodule QuestEngineering.Server.Dispatcher do
-  @moduledoc "Claims and sends Actions only to an explicitly named Worker."
+  @moduledoc "Sends already-scheduled executions to their transactionally selected Worker."
 
   use GenServer
 
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.RunChangeNotifier
+  alias QuestEngineering.Server.SchedulingStore
   alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerProtocol
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
-  def dispatch(worker_id, options \\ []),
-    do: GenServer.call(__MODULE__, {:dispatch, worker_id, options}, 10_000)
+  def deliver(dispatch), do: GenServer.call(__MODULE__, {:deliver, dispatch}, 10_000)
 
   def redeliver(worker_id, generation),
     do: GenServer.call(__MODULE__, {:redeliver, worker_id, generation}, 10_000)
 
   @impl true
-  def init(options) do
-    {:ok, %{claim_owner: Keyword.fetch!(options, :claim_owner)}}
-  end
+  def init(_options), do: {:ok, %{}}
 
   @impl true
-  def handle_call({:dispatch, worker_id, options}, _from, state) do
+  def handle_call({:deliver, dispatch}, _from, state) do
     result =
-      with {:ok, %{generation: generation}} <- WorkerConnections.lookup(worker_id),
-           {:ok, dispatch} <-
-             DispatchStore.claim_next(worker_id, state.claim_owner, options),
-           :ok <- send_execute(worker_id, generation, dispatch) do
+      with {:ok, %{generation: generation}} <- WorkerConnections.lookup(dispatch.worker_id),
+           :ok <- send_execute(dispatch.worker_id, generation, dispatch.execution) do
         DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation)
       end
 
+    if match?({:ok, _}, result), do: RunChangeNotifier.notify(dispatch.run_id)
     {:reply, result, state}
   end
 
@@ -53,13 +51,18 @@ defmodule QuestEngineering.Server.Dispatcher do
   end
 
   defp redeliver_one(dispatch, worker_id, generation) do
-    with :ok <- send_execute(worker_id, generation, dispatch) do
-      DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation)
+    with {:ok, %{scheduled: scheduled, execution: execution}} <-
+           SchedulingStore.fetch_execution(dispatch.action_id),
+         :ok <- send_execute(worker_id, generation, execution),
+         {:ok, updated} <-
+           DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation) do
+      RunChangeNotifier.notify(scheduled.run_id)
+      {:ok, updated}
     end
   end
 
-  defp send_execute(worker_id, generation, dispatch) do
-    message = WorkerProtocol.execute_action(worker_id, dispatch.action)
+  defp send_execute(worker_id, generation, execution) do
+    message = WorkerProtocol.execute_action(worker_id, execution)
     WorkerConnections.send_protocol(worker_id, generation, message)
   end
 end

@@ -5,6 +5,10 @@ defmodule QuestEngineering.ServerWeb.Endpoint do
     websocket: true,
     longpoll: false
 
+  socket "/client", QuestEngineering.ServerWeb.ClientSocket,
+    websocket: true,
+    longpoll: false
+
   if code_reloading? do
     plug Phoenix.CodeReloader
     plug Phoenix.Ecto.CheckRepoStatus, otp_app: :quest_engineering_server

@@ -19,6 +19,23 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.ExecutionPlan.Step
   alias QuestEngineering.Core.ExecutionPlan.UntilOutput
   alias QuestEngineering.Core.ExecutionPlan.UntilRegion
+  alias QuestEngineering.Core.Product.LaunchSnapshot
+  alias QuestEngineering.Core.Product.LaunchSnapshot.ClassSnapshot
+  alias QuestEngineering.Core.Product.LaunchSnapshot.LoadoutSnapshot
+  alias QuestEngineering.Core.Product.LaunchSnapshot.QuestSnapshot
+  alias QuestEngineering.Core.Product.LaunchSnapshot.ResolvedMember
+  alias QuestEngineering.Core.Product.LaunchSnapshot.SquadSnapshot
+  alias QuestEngineering.Core.Product.LaunchSnapshot.WorkspaceSnapshot
+  alias QuestEngineering.Core.Product.ModelRef
+  alias QuestEngineering.Core.Product.TacticProvenance
+  alias QuestEngineering.Core.Product.TacticProvenance.Occurrence, as: TacticOccurrence
+  alias QuestEngineering.Core.Product.TacticProvenance.Root, as: TacticRoot
+  alias QuestEngineering.Core.ResolvedExecution
+  alias QuestEngineering.Core.ResolvedExecution.Configuration
+  alias QuestEngineering.Core.ResolvedExecution.Context
+  alias QuestEngineering.Core.ResolvedExecution.Identity
+  alias QuestEngineering.Core.ResolvedExecution.Performer
+  alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.Action
   alias QuestEngineering.Core.Runtime.ArtifactInstance
   alias QuestEngineering.Core.Runtime.Event
@@ -32,13 +49,34 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.Tactics.Artifact
   alias QuestEngineering.Core.Tactics.Condition
   alias QuestEngineering.Core.Tactics.ContextRequirement
+  alias QuestEngineering.Core.Tactics.Parallel
   alias QuestEngineering.Core.Tactics.PerformerRequirement
+  alias QuestEngineering.Core.Tactics.Sequence
+  alias QuestEngineering.Core.Tactics.Step, as: TacticStep
+  alias QuestEngineering.Core.Tactics.Until
   alias QuestEngineering.Server.Persistence.Error
 
   @snapshot_version 2
 
   @struct_modules [
     ExecutionPlan,
+    LaunchSnapshot,
+    QuestSnapshot,
+    WorkspaceSnapshot,
+    SquadSnapshot,
+    ResolvedMember,
+    ClassSnapshot,
+    LoadoutSnapshot,
+    ModelRef,
+    TacticProvenance,
+    TacticOccurrence,
+    TacticRoot,
+    ResolvedExecution,
+    Identity,
+    Performer,
+    Work,
+    Configuration,
+    Context,
     ArtifactBinding,
     ArtifactCarry,
     ConditionBinding,
@@ -62,13 +100,17 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     Artifact,
     Condition,
     ContextRequirement,
-    PerformerRequirement
+    Parallel,
+    PerformerRequirement,
+    Sequence,
+    TacticStep,
+    Until
   ]
   @modules_by_name Map.new(@struct_modules, &{Atom.to_string(&1), &1})
   @closed_atoms ~w(
-    active carried check checking class completed continue_from current dispatched equals
-    execute_step exhausted failed fresh otherwise pending remediating root running same_as
-    step_completed until_exhausted
+    active carried check checking class completed continue_from current definition dispatched equals
+    execute_step exhausted failed fresh high inline low medium none otherwise pending read_only
+    read_write remediating root running same_as step_completed until_exhausted
   )a
   @closed_atoms_by_name Map.new(@closed_atoms, &{Atom.to_string(&1), &1})
 
@@ -205,10 +247,15 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
         # discriminator atoms before nested fields are decoded. This keeps cold
         # restart decoding safe without creating atoms from open wire data.
         case Code.ensure_loaded(module) do
-          {:module, ^module} -> {:ok, module}
-          {:error, reason} -> invalid_term(%{reason: :struct_module_unavailable, module: name, error: reason})
+          {:module, ^module} ->
+            {:ok, module}
+
+          {:error, reason} ->
+            invalid_term(%{reason: :struct_module_unavailable, module: name, error: reason})
         end
-      :error -> invalid_term(%{reason: :unknown_struct, module: name})
+
+      :error ->
+        invalid_term(%{reason: :unknown_struct, module: name})
     end
   end
 

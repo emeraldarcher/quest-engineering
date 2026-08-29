@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
-import { PiProvider } from "../src/providers/pi/provider.ts";
+import { mappedPiTools, PiProvider } from "../src/providers/pi/provider.ts";
 import { writeControlAtomic } from "../src/providers/pi/result-envelope.ts";
 import type {
   AttachDescriptor,
@@ -43,6 +43,41 @@ async function fixture() {
   });
   return { root, registry, host, provider };
 }
+
+test("maps QE capabilities through mechanically restricted access levels", () => {
+  const none = action();
+  none.execution.configuration.workspace.access = "none";
+  none.execution.configuration.tools = [];
+  expect(mappedPiTools({ action: none })).toEqual(["qe_step_result"]);
+
+  const readOnly = action();
+  readOnly.execution.configuration.workspace.access = "read_only";
+  readOnly.execution.configuration.tools = [
+    "workspace.filesystem",
+    "workspace.search",
+    "terminal.shell",
+  ];
+  expect(mappedPiTools({ action: readOnly })).toEqual([
+    "qe_step_result",
+    "read",
+    "grep",
+    "find",
+    "ls",
+  ]);
+
+  const readWrite = action();
+  readWrite.execution.configuration.tools = [
+    "workspace.filesystem",
+    "terminal.shell",
+  ];
+  expect(mappedPiTools({ action: readWrite })).toEqual([
+    "qe_step_result",
+    "read",
+    "edit",
+    "write",
+    "bash",
+  ]);
+});
 
 test("adopts safe Herdr provenance when a local dispatch row is missing", async () => {
   const { root, registry, provider } = await fixture();
@@ -124,11 +159,11 @@ test("fresh Actions create distinct Pi agents while continuation reuses the orig
       attempt_id: "repair-attempt",
       semantic_step_key: "repair",
       instruction: "Repair findings.",
-      context_requirement: { selector: "continue_from", value: "implement" },
+      context_requirement: { selector: "continue_from", value: null },
       context_lineage_occurrence_id: first.action.occurrence_id,
     }),
   ).dispatch;
-  const source = registry.resolveContinuation(first.action.occurrence_id);
+  const source = registry.resolveContinuation(first.action);
   registry.assignLineage(repair.action.action_id, source.lineageId);
   const repairedDispatch = registry.get(repair.action.action_id);
   const repairedLineage = registry.getLineage(source.lineageId);

@@ -44,6 +44,16 @@ defmodule QuestEngineering.Server.RuntimeStore do
      %Error{type: :constraint_failure, details: %{reason: :invalid_create_run, plan: plan}}}
   end
 
+  @doc false
+  @spec persist_started_run(Runtime.Run.t(), [Runtime.Action.t()]) :: run_result()
+  def persist_started_run(%Runtime.Run{} = run, actions) when is_list(actions) do
+    if Repo.in_transaction?() do
+      persist_new_run(run, actions)
+    else
+      raise ArgumentError, "persist_started_run/2 requires an existing Repo transaction"
+    end
+  end
+
   @doc "Loads the authoritative snapshot without consulting in-memory state or replaying history."
   @spec fetch_run(String.t()) ::
           {:ok, %{run: Runtime.Run.t(), revision: non_neg_integer(), status: atom()}}
@@ -109,7 +119,7 @@ defmodule QuestEngineering.Server.RuntimeStore do
         left_join: dispatch in WorkerDispatch,
         on: dispatch.action_id == outbox.action_id,
         where: is_nil(dispatch.id),
-        order_by: [asc: outbox.id],
+        order_by: [asc: outbox.run_revision, asc: outbox.emission_index],
         select: outbox
 
     query = if run_id, do: where(query, [outbox], outbox.run_id == ^run_id), else: query
@@ -306,6 +316,7 @@ defmodule QuestEngineering.Server.RuntimeStore do
       action_id: row.action_id,
       run_id: row.run_id,
       run_revision: row.run_revision,
+      emission_index: row.emission_index,
       action_type: String.to_existing_atom(row.action_type),
       action: action
     }

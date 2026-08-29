@@ -11,6 +11,7 @@ defmodule QuestEngineering.Server.Persistence.RuntimeOutbox do
     field :action_id, :string
     field :run_id, :string
     field :run_revision, :integer
+    field :emission_index, :integer
     field :action_type, :string
     field :payload, :map
 
@@ -19,11 +20,29 @@ defmodule QuestEngineering.Server.Persistence.RuntimeOutbox do
 
   def changeset(attributes) do
     %__MODULE__{}
-    |> cast(attributes, [:action_id, :run_id, :run_revision, :action_type, :payload])
-    |> validate_required([:action_id, :run_id, :run_revision, :action_type, :payload])
+    |> cast(attributes, [
+      :action_id,
+      :run_id,
+      :run_revision,
+      :emission_index,
+      :action_type,
+      :payload
+    ])
+    |> validate_required([
+      :action_id,
+      :run_id,
+      :run_revision,
+      :emission_index,
+      :action_type,
+      :payload
+    ])
     |> validate_number(:run_revision, greater_than_or_equal_to: 0)
+    |> validate_number(:emission_index, greater_than_or_equal_to: 0)
     |> foreign_key_constraint(:run_id)
     |> unique_constraint(:action_id, name: :runtime_outbox_action_id_index)
+    |> unique_constraint([:run_id, :run_revision, :emission_index],
+      name: :runtime_outbox_emission_order_index
+    )
     |> check_constraint(:run_revision, name: :runtime_outbox_revision_non_negative)
   end
 end

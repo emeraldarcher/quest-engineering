@@ -55,8 +55,7 @@ export class DispatchExecutor {
         if (lineage) await this.provider.clearActiveMetadata(dispatch, lineage);
         continue;
       }
-      if (dispatch.state === "failed" || dispatch.state === "uncertain")
-        continue;
+      if (dispatch.state === "failed") continue;
       await this.recoverOne(dispatch);
     }
   }
@@ -88,27 +87,25 @@ export class DispatchExecutor {
     try {
       let lineage: ProviderLineage;
       let execution: ProviderPreparedExecution;
-      if (dispatch.action.context_requirement.selector === "fresh") {
+      if (dispatch.action.execution.context.mode === "fresh") {
         if (!dispatch.lineageId)
           throw new Error("Fresh dispatch has no provider lineage.");
         lineage = this.registry.getLineage(dispatch.lineageId);
         this.registry.occupy(lineage.lineageId, actionId);
         execution = await this.provider.prepareFresh(dispatch, lineage);
-      } else if (
-        dispatch.action.context_requirement.selector === "continue_from"
-      ) {
+      } else if (dispatch.action.execution.context.mode === "continue_from") {
         const occurrenceId = dispatch.action.context_lineage_occurrence_id;
         if (!occurrenceId)
           throw new Error(
             "Continued dispatch has no resolved lineage occurrence.",
           );
-        lineage = this.registry.resolveContinuation(occurrenceId);
+        lineage = this.registry.resolveContinuation(dispatch.action);
         dispatch = this.registry.assignLineage(actionId, lineage.lineageId);
         this.registry.occupy(lineage.lineageId, actionId);
         execution = await this.provider.prepareContinuation(dispatch, lineage);
       } else {
         throw new Error(
-          `Unsupported context requirement: ${dispatch.action.context_requirement.selector}`,
+          `Unsupported context requirement: ${dispatch.action.execution.context.mode}`,
         );
       }
 
@@ -158,7 +155,7 @@ export class DispatchExecutor {
           failure,
           isUncertain(current, error),
         );
-        if (dispatch.lineageId)
+        if (dispatch.lineageId && dispatch.state !== "uncertain")
           await this.provider.clearActiveMetadata(
             dispatch,
             this.registry.getLineage(dispatch.lineageId),
@@ -173,14 +170,14 @@ export class DispatchExecutor {
     try {
       if (
         !dispatch.lineageId &&
-        dispatch.action.context_requirement.selector === "continue_from"
+        dispatch.action.execution.context.mode === "continue_from"
       ) {
         const occurrenceId = dispatch.action.context_lineage_occurrence_id;
         if (!occurrenceId)
           throw new Error(
             "Continued dispatch has no resolved lineage occurrence.",
           );
-        const source = this.registry.resolveContinuation(occurrenceId);
+        const source = this.registry.resolveContinuation(dispatch.action);
         dispatch = this.registry.assignLineage(
           dispatch.action.action_id,
           source.lineageId,
@@ -272,7 +269,7 @@ export class DispatchExecutor {
         failureValue(error),
         true,
       );
-      if (failed.lineageId)
+      if (failed.lineageId && failed.state !== "uncertain")
         await this.provider.clearActiveMetadata(
           failed,
           this.registry.getLineage(failed.lineageId),
@@ -307,10 +304,11 @@ export class DispatchExecutor {
         failureValue(error),
         true,
       );
-      await this.provider.clearActiveMetadata(
-        failed,
-        this.registry.getLineage(lineage.lineageId),
-      );
+      if (failed.state !== "uncertain")
+        await this.provider.clearActiveMetadata(
+          failed,
+          this.registry.getLineage(lineage.lineageId),
+        );
       await this.reportFailure(failed);
     }
   }
@@ -327,13 +325,15 @@ export class DispatchExecutor {
       this.registry.acknowledgeServerCompletion(dispatch.action.action_id);
   }
   private async reportFailure(dispatch: DispatchRecord): Promise<void> {
-    await this.report(payload(dispatch, "failed"), "step_failed");
+    if (dispatch.state === "uncertain")
+      await this.report(payload(dispatch, "uncertain"), "dispatch_state");
+    else await this.report(payload(dispatch, "failed"), "step_failed");
   }
 }
 
 function payload(
   dispatch: DispatchRecord,
-  state: "running" | "completed" | "failed",
+  state: "running" | "completed" | "failed" | "uncertain",
 ): ReconcileDispatch {
   return {
     action_id: dispatch.action.action_id,
@@ -343,7 +343,7 @@ function payload(
     ...(state === "completed" && dispatch.outputs
       ? { outputs: dispatch.outputs }
       : {}),
-    ...(state === "failed"
+    ...(state === "failed" || state === "uncertain"
       ? { failure: dispatch.failure ?? { reason: "execution_failed" } }
       : {}),
   };

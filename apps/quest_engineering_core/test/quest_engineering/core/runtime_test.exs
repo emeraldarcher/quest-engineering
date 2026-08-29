@@ -104,7 +104,10 @@ defmodule QuestEngineering.Core.RuntimeTest do
         complete(run, review_0, %{"verdict" => %{"status" => "rejected"}})
 
       assert repair_1.semantic_step_key == "repair"
-      assert repair_1.instruction == "Repair the rejected change set and produce an updated change set."
+
+      assert repair_1.instruction ==
+               "Repair the rejected change set and produce an updated change set."
+
       assert repair_1.performer_requirement == same_as("implement")
       assert repair_1.context_requirement == continue_from("implement")
       assert repair_1.performer_affinity_occurrence_id == implement.occurrence_id

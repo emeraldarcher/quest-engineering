@@ -53,6 +53,19 @@ await command([
 await Bun.write(join(workspace, "README.md"), "# Worker restart fixture\n");
 await command(["git", "-C", workspace, "add", "README.md"]);
 await command(["git", "-C", workspace, "commit", "-m", "fixture"]);
+const configuredModel = process.env.QE_PI_MODEL?.trim();
+if (!configuredModel)
+  throw new Error(
+    "QE_PI_MODEL=provider/model is required for the restart integration.",
+  );
+const separator = configuredModel.indexOf("/");
+if (separator < 1 || separator === configuredModel.length - 1)
+  throw new Error("QE_PI_MODEL must use provider/model syntax.");
+const model = {
+  provider: configuredModel.slice(0, separator),
+  model: configuredModel.slice(separator + 1),
+};
+
 const config: WorkerConfig = {
   controlPlaneUrl: "ws://127.0.0.1/unused",
   workerId: `worker-restart-${id}`,
@@ -61,11 +74,13 @@ const config: WorkerConfig = {
   tags: ["integration"],
   herdrSession: `qe-restart-${id}`,
   workspaceRoot: workspace,
+  workspaceRef: "workspace:restart",
+  workspaceMaxAccess: "read_write",
+  executorModels: [model],
+  reasoningLevels: ["low", "medium", "high"],
   dataRoot: join(root, "worker-data"),
-  ...(process.env.QE_PI_MODEL?.trim()
-    ? { piModel: process.env.QE_PI_MODEL.trim() }
-    : {}),
-  piThinking: process.env.QE_PI_THINKING?.trim() || "minimal",
+  piModel: configuredModel,
+  piThinking: "medium",
   heartbeatMs: 10_000,
   reconnectMs: 1_000,
   resultTimeoutMs: 600_000,
@@ -73,19 +88,56 @@ const config: WorkerConfig = {
   fakeOutputs: {},
   fakeDelayMs: 0,
 };
+const instruction =
+  'Use bash to run "sleep 20" first. After it finishes, create restart-proof.txt containing exactly "same Pi survived Worker restart" followed by a newline. Produce change_set describing the file.';
 const action: ExecuteAction = {
   type: "execute_action",
-  protocol_version: 2,
+  protocol_version: 3,
   worker_id: config.workerId,
+  execution: {
+    identity: {
+      launch_id: "restart-launch",
+      action_id: "restart-action",
+      run_id: "restart-run",
+      occurrence_id: "restart-occurrence",
+      attempt_id: "restart-attempt",
+      semantic_step_key: "implement",
+    },
+    performer: {
+      member_key: "restart-member",
+      member_name: "Restart Member",
+      class_key: "integration",
+      class_name: "Integration",
+    },
+    work: {
+      quest_objective: "Prove one Pi survives Worker restart.",
+      class_instructions: "Perform the restart proof safely.",
+      step_instruction: instruction,
+      inputs: {},
+      declared_outputs: ["change_set"],
+    },
+    configuration: {
+      model,
+      reasoning: "medium",
+      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      workspace: {
+        ref: "workspace:restart",
+        root: workspace,
+        access: "read_write",
+      },
+    },
+    context: {
+      mode: "fresh",
+      source_occurrence_id: null,
+      logical_lineage_id: "restart-logical-lineage",
+    },
+  },
   action_id: "restart-action",
   run_id: "restart-run",
   occurrence_id: "restart-occurrence",
   attempt_id: "restart-attempt",
   semantic_step_key: "implement",
-  instruction:
-    'Use bash to run "sleep 20" first. After it finishes, create restart-proof.txt containing exactly "same Pi survived Worker restart" followed by a newline. Produce change_set describing the file.',
-  performer_requirement: { selector: "class", value: "integration" },
-  performer_affinity_occurrence_id: null,
+  instruction,
   context_requirement: { selector: "fresh", value: null },
   context_lineage_occurrence_id: null,
   inputs: {},

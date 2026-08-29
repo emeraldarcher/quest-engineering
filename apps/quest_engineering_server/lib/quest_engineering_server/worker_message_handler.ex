@@ -4,6 +4,8 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.Reconciler
+  alias QuestEngineering.Server.RunChangeNotifier
+  alias QuestEngineering.Server.Scheduler
   alias QuestEngineering.Server.WorkerError
   alias QuestEngineering.Server.WorkerProtocol
   alias QuestEngineering.Server.WorkerStore
@@ -15,6 +17,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   def handle(worker_id, generation, %{type: :dispatch_accepted} = message) do
     with :ok <- validate_identity(worker_id, message),
          {:ok, dispatch} <- DispatchStore.acknowledge(worker_id, generation, message.action_id) do
+      notify_action(message.action_id)
       {:ok, response(:dispatch_acknowledged, dispatch)}
     end
   end
@@ -25,6 +28,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   def handle(worker_id, generation, %{type: :dispatch_state, state: :running} = message) do
     with :ok <- validate_identity(worker_id, message),
          {:ok, dispatch} <- DispatchStore.mark_running(worker_id, generation, message.action_id) do
+      notify_action(message.action_id)
       {:ok, response(:dispatch_running, dispatch)}
     end
   end
@@ -35,6 +39,15 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   def handle(worker_id, generation, %{type: :dispatch_state, state: :failed} = message),
     do: failure(worker_id, generation, message)
 
+  def handle(worker_id, generation, %{type: :dispatch_state, state: :uncertain} = message) do
+    with :ok <- validate_identity(worker_id, message),
+         {:ok, dispatch} <-
+           DispatchStore.mark_uncertain(worker_id, generation, message.action_id, message.failure) do
+      notify_action(message.action_id)
+      {:ok, response(:dispatch_uncertain, dispatch)}
+    end
+  end
+
   def handle(worker_id, generation, %{type: :step_completed} = message),
     do: completion(worker_id, generation, message)
 
@@ -44,6 +57,9 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   def handle(worker_id, generation, %{type: :reconcile_state, dispatches: dispatches}) do
     case Reconciler.reconcile(worker_id, generation, dispatches) do
       {:ok, reconciliation} ->
+        Scheduler.wake_all()
+        Enum.each(Reconciler.run_ids_for_worker(worker_id), &RunChangeNotifier.notify/1)
+
         {:ok,
          %{
            "type" => "message_result",
@@ -61,6 +77,9 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   defp completion(worker_id, generation, message) do
     case CompletionAdapter.complete(worker_id, generation, message) do
       {:ok, %{transition: transition}} ->
+        Scheduler.wake_all()
+        notify_action(message.action_id)
+
         {:ok,
          %{
            "type" => "message_result",
@@ -80,7 +99,16 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     with :ok <- validate_identity(worker_id, message),
          {:ok, dispatch} <-
            DispatchStore.mark_failed(worker_id, generation, message.action_id, message.failure) do
+      Scheduler.wake_all()
+      notify_action(message.action_id)
       {:ok, response(:dispatch_failed, dispatch)}
+    end
+  end
+
+  defp notify_action(action_id) do
+    case DispatchStore.fetch(action_id) do
+      {:ok, %{action: action}} -> RunChangeNotifier.notify(action.run_id)
+      _ -> :ok
     end
   end
 

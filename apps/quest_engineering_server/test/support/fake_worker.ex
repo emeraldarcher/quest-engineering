@@ -188,7 +188,7 @@ defmodule QuestEngineering.Server.FakeWorker do
     state = %{
       worker_id: Keyword.fetch!(options, :worker_id),
       capabilities: Keyword.get(options, :capabilities, default_capabilities()),
-      protocol_version: Keyword.get(options, :protocol_version, 2),
+      protocol_version: Keyword.get(options, :protocol_version, 3),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -348,13 +348,15 @@ defmodule QuestEngineering.Server.FakeWorker do
 
   defp handle_frame(_frame, state), do: state
 
-  defp handle_protocol(%{"type" => "execute_action"} = action, state) do
-    case Map.fetch(state.known, action["action_id"]) do
+  defp handle_protocol(%{"type" => "execute_action", "execution" => execution} = action, state) do
+    identity = execution["identity"]
+
+    case Map.fetch(state.known, identity["action_id"]) do
       :error ->
         dispatch = %{
-          action_id: action["action_id"],
-          occurrence_id: action["occurrence_id"],
-          attempt_id: action["attempt_id"],
+          action_id: identity["action_id"],
+          occurrence_id: identity["occurrence_id"],
+          attempt_id: identity["attempt_id"],
           state: :accepted,
           outputs: nil,
           failure: nil,
@@ -381,7 +383,7 @@ defmodule QuestEngineering.Server.FakeWorker do
 
     send_protocol(state, %{
       "type" => "reconcile_state",
-      "protocol_version" => 2,
+      "protocol_version" => state.protocol_version,
       "worker_id" => state.worker_id,
       "dispatches" => dispatches
     })
@@ -444,7 +446,7 @@ defmodule QuestEngineering.Server.FakeWorker do
   defp identity_message(state, dispatch, type) do
     %{
       "type" => type,
-      "protocol_version" => 2,
+      "protocol_version" => state.protocol_version,
       "worker_id" => state.worker_id,
       "action_id" => dispatch.action_id,
       "occurrence_id" => dispatch.occurrence_id,
@@ -476,7 +478,21 @@ defmodule QuestEngineering.Server.FakeWorker do
       "arch" => "test",
       "max_concurrency" => 1,
       "tags" => ["fake"],
-      "capabilities" => []
+      "executors" => [
+        %{
+          "adapter" => "fake",
+          "models" => [%{"provider" => "fake", "model" => "test"}],
+          "reasoning" => ["low", "medium", "high"],
+          "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"],
+          "workspaces" => [
+            %{
+              "ref" => "workspace:test",
+              "root" => "/workspace",
+              "max_access" => "read_write"
+            }
+          ]
+        }
+      ]
     }
   end
 end

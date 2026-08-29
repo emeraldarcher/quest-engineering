@@ -69,7 +69,10 @@ defmodule QuestEngineering.Core.CompilerTest do
                  )
 
         assert Enum.any?(errors, fn
-                 %CompileError{type: :invalid_structure, details: %{reason: :invalid_step_instruction}} ->
+                 %CompileError{
+                   type: :invalid_structure,
+                   details: %{reason: :invalid_step_instruction}
+                 } ->
                    true
 
                  _error ->

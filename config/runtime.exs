@@ -9,6 +9,19 @@ if port = System.get_env("PORT") do
     http: [port: String.to_integer(port)]
 end
 
+if encoded_workspaces = System.get_env("QUEST_ENGINEERING_WORKSPACES_JSON") do
+  workspaces = Jason.decode!(encoded_workspaces)
+
+  unless is_map(workspaces) and
+           Enum.all?(workspaces, fn {reference, root} ->
+             is_binary(reference) and reference != "" and is_binary(root) and root != ""
+           end) do
+    raise "QUEST_ENGINEERING_WORKSPACES_JSON must be a JSON object of non-empty string paths"
+  end
+
+  config :quest_engineering_server, workspaces: workspaces
+end
+
 if config_env() == :prod do
   worker_token = System.fetch_env!("QUEST_ENGINEERING_WORKER_TOKEN")
   config :quest_engineering_server, worker_token: worker_token

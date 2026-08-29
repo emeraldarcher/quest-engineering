@@ -11,13 +11,25 @@ defmodule QuestEngineering.Server.Reconciler do
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.WorkerError
 
-  @expected_states ~w(acknowledged running completed failed)
+  @expected_states ~w(acknowledged running completed failed uncertain)
 
   def reconcile(worker_id, generation, observed) do
     case Repo.transaction(fn -> reconcile_locked!(worker_id, generation, observed) end) do
       {:ok, reconciliation} -> {:ok, reconciliation}
       {:error, error} -> {:error, error}
     end
+  end
+
+  @doc false
+  def run_ids_for_worker(worker_id) do
+    Repo.all(
+      from dispatch in WorkerDispatch,
+        join: outbox in QuestEngineering.Server.Persistence.RuntimeOutbox,
+        on: outbox.action_id == dispatch.action_id,
+        where: dispatch.worker_id == ^worker_id,
+        select: outbox.run_id,
+        distinct: true
+    )
   end
 
   def list_anomalies(worker_id) do
@@ -108,6 +120,10 @@ defmodule QuestEngineering.Server.Reconciler do
 
   defp apply_observed(worker_id, generation, %{state: :failed} = item) do
     DispatchStore.mark_failed(worker_id, generation, item.action_id, item.failure)
+  end
+
+  defp apply_observed(worker_id, generation, %{state: :uncertain} = item) do
+    DispatchStore.mark_uncertain(worker_id, generation, item.action_id, item.failure)
   end
 
   defp record_missing(worker_id, observed) do

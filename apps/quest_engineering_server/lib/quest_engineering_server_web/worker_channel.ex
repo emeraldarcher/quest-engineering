@@ -4,6 +4,7 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
   use Phoenix.Channel
 
   alias QuestEngineering.Server.Dispatcher
+  alias QuestEngineering.Server.Scheduler
   alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerMessageHandler
   alias QuestEngineering.Server.WorkerProtocol
@@ -63,6 +64,7 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
   @impl true
   def handle_info(:after_worker_join, socket) do
     _ = Dispatcher.redeliver(socket.assigns.worker_id, socket.assigns.connection_generation)
+    Scheduler.wake_all()
     send(self(), :request_reconciliation)
     {:noreply, socket}
   end

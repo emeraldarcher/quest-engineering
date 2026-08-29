@@ -20,8 +20,8 @@ The control plane hosts Worker Protocol v2 and `workers/bun` contains the first 
 
 ## Umbrella applications
 
-- `quest_engineering_core` — dependency-free Elixir boundary containing semantic `Step`/`Sequence`/`Parallel`/`Until` tactics, orthogonal performer and context-lineage requirements, typed artifact resolution, deterministic compilation, and a pure runtime.
-- `quest_engineering_server` — Phoenix/Ecto infrastructure boundary with authoritative runtime snapshots, serial revisions, idempotent transition history, a transactional PostgreSQL outbox, and the generation-fenced WebSocket Worker Protocol v2.
+- `quest_engineering_core` — dependency-free Elixir boundary containing reusable Product Tactic authoring and pure expansion into semantic `Step`/`Sequence`/`Parallel`/`Until` tactics, deterministic compilation, and a pure runtime.
+- `quest_engineering_server` — Phoenix/Ecto infrastructure boundary with Product Tactic persistence, immutable resolved launch snapshots, transactional runtime persistence, and the generation-fenced WebSocket Worker Protocol v3.
 
 Dependencies point inward only:
 

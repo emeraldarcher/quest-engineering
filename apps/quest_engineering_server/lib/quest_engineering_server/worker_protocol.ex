@@ -6,12 +6,19 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   callbacks only pass decoded messages to application services.
   """
 
-  alias QuestEngineering.Core.Runtime.Action
+  alias QuestEngineering.Core.ResolvedExecution
+  alias QuestEngineering.Core.ResolvedExecution.Configuration
+  alias QuestEngineering.Core.ResolvedExecution.Context
+  alias QuestEngineering.Core.ResolvedExecution.Identity
+  alias QuestEngineering.Core.ResolvedExecution.Performer
+  alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 2
+  @version 3
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
-  @states ~w(accepted running completed failed)
+  @states ~w(accepted running completed failed uncertain)
+  @reasoning ~w(low medium high)
+  @access ~w(none read_only read_write)
 
   defmodule Message do
     @moduledoc false
@@ -51,7 +58,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 2
+  @spec version() :: 3
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -97,33 +104,13 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     }
   end
 
-  def execute_action(worker_id, %Action{instruction: instruction} = action)
-      when is_binary(instruction) and instruction != "" do
-    if not String.valid?(instruction) or String.trim(instruction) == "" do
-      raise ArgumentError, "Worker Protocol v2 execute_action requires a valid non-empty instruction"
-    end
-
+  def execute_action(worker_id, %ResolvedExecution{} = execution) do
     %{
       "type" => "execute_action",
       "protocol_version" => @version,
       "worker_id" => worker_id,
-      "action_id" => action.id,
-      "run_id" => action.run_id,
-      "occurrence_id" => action.occurrence_id,
-      "attempt_id" => action.attempt_id,
-      "semantic_step_key" => action.semantic_step_key,
-      "instruction" => action.instruction,
-      "performer_requirement" => requirement(action.performer_requirement),
-      "performer_affinity_occurrence_id" => action.performer_affinity_occurrence_id,
-      "context_requirement" => requirement(action.context_requirement),
-      "context_lineage_occurrence_id" => action.context_lineage_occurrence_id,
-      "inputs" => Map.new(action.inputs, fn {type, artifact} -> {type, artifact(artifact)} end),
-      "declared_outputs" => action.declared_outputs
+      "execution" => execution(execution)
     }
-  end
-
-  def execute_action(_worker_id, %Action{}) do
-    raise ArgumentError, "Worker Protocol v2 execute_action requires a valid non-empty instruction"
   end
 
   def protocol_error(%Error{} = protocol_error) do
@@ -248,7 +235,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp optional_outputs(payload, :completed), do: required_outputs(payload)
   defp optional_outputs(_payload, _state), do: {:ok, nil}
 
-  defp optional_failure(payload, :failed), do: required_plain_map(payload, "failure")
+  defp optional_failure(payload, state) when state in [:failed, :uncertain],
+    do: required_plain_map(payload, "failure")
+
   defp optional_failure(_payload, _state), do: {:ok, nil}
 
   defp required_outputs(payload) do
@@ -304,25 +293,92 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "arch" => arch,
          "max_concurrency" => max_concurrency,
          "tags" => tags,
-         "capabilities" => capabilities
+         "executors" => executors
        })
        when is_binary(os) and os != "" and is_binary(arch) and arch != "" and
-              is_integer(max_concurrency) and max_concurrency > 0 and max_concurrency <= 1024 do
+              is_integer(max_concurrency) and max_concurrency > 0 and max_concurrency <= 1024 and
+              is_list(executors) and executors != [] do
     with :ok <- string_list(tags, "capabilities.tags"),
-         :ok <- string_list(capabilities, "capabilities.capabilities") do
+         {:ok, executors} <- validate_executors(executors) do
       {:ok,
        %{
          "os" => os,
          "arch" => arch,
          "max_concurrency" => max_concurrency,
          "tags" => Enum.uniq(tags),
-         "capabilities" => Enum.uniq(capabilities)
+         "executors" => executors
        }}
     end
   end
 
   defp validate_capabilities(_capabilities),
     do: error(:invalid_capabilities, "capabilities")
+
+  defp validate_executors(executors) do
+    Enum.reduce_while(executors, {:ok, []}, fn executor, {:ok, validated} ->
+      case validate_executor(executor) do
+        {:ok, value} -> {:cont, {:ok, validated ++ [value]}}
+        {:error, _error} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_executor(%{
+         "adapter" => adapter,
+         "models" => models,
+         "reasoning" => reasoning,
+         "tools" => tools,
+         "workspaces" => workspaces
+       })
+       when is_binary(adapter) and adapter != "" and is_list(models) and models != [] and
+              is_list(reasoning) and is_list(tools) and is_list(workspaces) do
+    with :ok <- validate_models(models),
+         :ok <- allowed_string_list(reasoning, @reasoning, "capabilities.executors.reasoning"),
+         :ok <- string_list(tools, "capabilities.executors.tools"),
+         :ok <- validate_workspaces(workspaces) do
+      {:ok,
+       %{
+         "adapter" => adapter,
+         "models" => Enum.uniq(models),
+         "reasoning" => Enum.uniq(reasoning),
+         "tools" => Enum.uniq(tools),
+         "workspaces" => Enum.uniq(workspaces)
+       }}
+    end
+  end
+
+  defp validate_executor(_executor),
+    do: error(:invalid_capabilities, "capabilities.executors")
+
+  defp validate_models(models) do
+    if Enum.all?(models, fn
+         %{"provider" => provider, "model" => model} ->
+           is_binary(provider) and provider != "" and is_binary(model) and model != ""
+
+         _other ->
+           false
+       end),
+       do: :ok,
+       else: error(:invalid_field, "capabilities.executors.models")
+  end
+
+  defp validate_workspaces(workspaces) do
+    if Enum.all?(workspaces, fn
+         %{"ref" => ref, "root" => root, "max_access" => access} ->
+           is_binary(ref) and ref != "" and is_binary(root) and root != "" and access in @access
+
+         _other ->
+           false
+       end),
+       do: :ok,
+       else: error(:invalid_field, "capabilities.executors.workspaces")
+  end
+
+  defp allowed_string_list(values, allowed, field) do
+    if Enum.all?(values, &(&1 in allowed)),
+      do: :ok,
+      else: error(:invalid_field, field, %{allowed: allowed})
+  end
 
   defp string_list(values, field) when is_list(values) do
     if Enum.all?(values, &(is_binary(&1) and &1 != "")),
@@ -339,8 +395,46 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end
   end
 
-  defp requirement(%{selector: selector, value: value}) do
-    %{"selector" => Atom.to_string(selector), "value" => value}
+  defp execution(%ResolvedExecution{
+         identity: %Identity{} = identity,
+         performer: %Performer{} = performer,
+         work: %Work{} = work,
+         configuration: %Configuration{} = configuration,
+         context: %Context{} = context
+       }) do
+    %{
+      "identity" => stringify_struct(identity),
+      "performer" => stringify_struct(performer),
+      "work" => %{
+        "quest_objective" => work.quest_objective,
+        "class_instructions" => work.class_instructions,
+        "step_instruction" => work.step_instruction,
+        "inputs" => Map.new(work.inputs, fn {type, value} -> {type, artifact(value)} end),
+        "declared_outputs" => work.declared_outputs
+      },
+      "configuration" => %{
+        "model" => %{
+          "provider" => configuration.model.provider,
+          "model" => configuration.model.model
+        },
+        "reasoning" => Atom.to_string(configuration.reasoning),
+        "tools" => configuration.tools,
+        "workspace" => %{
+          "ref" => configuration.workspace_ref,
+          "root" => configuration.workspace_root,
+          "access" => Atom.to_string(configuration.workspace_access)
+        }
+      },
+      "context" => %{
+        "mode" => Atom.to_string(context.mode),
+        "source_occurrence_id" => context.source_occurrence_id,
+        "logical_lineage_id" => context.logical_lineage_id
+      }
+    }
+  end
+
+  defp stringify_struct(value) do
+    Map.new(Map.from_struct(value), fn {key, nested} -> {Atom.to_string(key), nested} end)
   end
 
   defp artifact(%ArtifactInstance{} = value) do

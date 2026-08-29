@@ -83,6 +83,8 @@ defmodule QuestEngineering.Server.WorkerConnections do
     WorkerStore.disconnect(worker_id, connection.connection_id, connection.generation)
   rescue
     DBConnection.OwnershipError -> {:error, :repo_unavailable}
+  catch
+    :exit, _reason -> {:error, :repo_unavailable}
   end
 
   defp supersede_existing(state, worker_id, generation) do

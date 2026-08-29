@@ -1,5 +1,9 @@
 import { arch, platform } from "node:os";
 import { join } from "node:path";
+import {
+  assertExecutionSupported,
+  workerCapabilities,
+} from "./capabilities.ts";
 import type { WorkerConfig } from "./config.ts";
 import { DispatchExecutor } from "./dispatch/executor.ts";
 import { type DispatchRecord, DispatchRegistry } from "./dispatch/registry.ts";
@@ -20,6 +24,7 @@ export class QuestEngineeringWorker {
   readonly registry: DispatchRegistry;
   readonly executor: DispatchExecutor;
   private readonly channel: PhoenixWorkerChannel;
+  private readonly capabilities: WorkerCapabilities;
   private stopping = false;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
 
@@ -37,19 +42,8 @@ export class QuestEngineeringWorker {
             ),
             config,
           );
-    const capabilities: WorkerCapabilities = {
-      os: platform(),
-      arch: arch(),
-      max_concurrency: config.maxConcurrency,
-      tags: config.tags,
-      capabilities: [
-        config.provider === "pi" ? "herdr" : "fake",
-        config.provider,
-        "persistent_execution",
-        "structured_result",
-        "manual_attach",
-      ],
-    };
+    const capabilities = workerCapabilities(config, platform(), arch());
+    this.capabilities = capabilities;
     this.channel = new PhoenixWorkerChannel(
       config.controlPlaneUrl,
       config.workerId,
@@ -109,6 +103,7 @@ export class QuestEngineeringWorker {
   ): Promise<void> {
     if (message.type === "execute_action") {
       const action = decodeExecuteAction(message, this.config.workerId);
+      assertExecutionSupported(action, this.capabilities);
       const acceptance = this.executor.accept(action);
       try {
         await this.sendAcceptedOrState(acceptance.dispatch);
@@ -167,8 +162,15 @@ export class QuestEngineeringWorker {
       );
       return;
     }
-    if (dispatch.state === "failed" || dispatch.state === "uncertain") {
+    if (dispatch.state === "failed") {
       await this.report(dispatchPayload(dispatch, "failed"), "step_failed");
+      return;
+    }
+    if (dispatch.state === "uncertain") {
+      await this.report(
+        dispatchPayload(dispatch, "uncertain"),
+        "dispatch_state",
+      );
       return;
     }
     await this.report(dispatchPayload(dispatch, "running"), "dispatch_state");
@@ -225,7 +227,7 @@ function identityMessage(
 }
 function dispatchPayload(
   dispatch: DispatchRecord,
-  state: "running" | "completed" | "failed",
+  state: "running" | "completed" | "failed" | "uncertain",
 ): ReconcileDispatch {
   return {
     action_id: dispatch.action.action_id,
@@ -235,7 +237,7 @@ function dispatchPayload(
     ...(state === "completed" && dispatch.outputs
       ? { outputs: dispatch.outputs }
       : {}),
-    ...(state === "failed"
+    ...(state === "failed" || state === "uncertain"
       ? { failure: dispatch.failure ?? { reason: "execution_uncertain" } }
       : {}),
   };

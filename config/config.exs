@@ -2,7 +2,8 @@ import Config
 
 config :quest_engineering_server,
   ecto_repos: [QuestEngineering.Server.Repo],
-  worker_token: System.get_env("QUEST_ENGINEERING_WORKER_TOKEN", "development-worker-token")
+  worker_token: System.get_env("QUEST_ENGINEERING_WORKER_TOKEN", "development-worker-token"),
+  workspaces: %{}
 
 config :quest_engineering_server, QuestEngineering.Server.Repo,
   migration_timestamps: [type: :utc_datetime_usec]

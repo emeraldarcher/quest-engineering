@@ -33,6 +33,13 @@ await Bun.write(join(workspace, "README.md"), "# Worker Herdr/Pi fixture\n");
 await command(["git", "-C", workspace, "add", "README.md"]);
 await command(["git", "-C", workspace, "commit", "-m", "fixture"]);
 
+const configuredModel = process.env.QE_PI_MODEL?.trim();
+if (!configuredModel)
+  throw new Error(
+    "QE_PI_MODEL=provider/model is required for the real Pi integration.",
+  );
+const model = splitModel(configuredModel);
+
 const config: WorkerConfig = {
   controlPlaneUrl: "ws://127.0.0.1/unused",
   workerId: `worker-live-${id}`,
@@ -41,11 +48,13 @@ const config: WorkerConfig = {
   tags: ["integration"],
   herdrSession: `qe-worker-${id}`,
   workspaceRoot: workspace,
+  workspaceRef: "workspace:integration",
+  workspaceMaxAccess: "read_write",
+  executorModels: [model],
+  reasoningLevels: ["low", "medium", "high"],
   dataRoot: join(root, "worker-data"),
-  ...(process.env.QE_PI_MODEL?.trim()
-    ? { piModel: process.env.QE_PI_MODEL.trim() }
-    : {}),
-  piThinking: process.env.QE_PI_THINKING?.trim() || "minimal",
+  piModel: configuredModel,
+  piThinking: "medium",
   heartbeatMs: 10_000,
   reconnectMs: 1_000,
   resultTimeoutMs: 600_000,
@@ -86,7 +95,7 @@ const repair = makeAction({
   semantic_step_key: "repair",
   instruction:
     'Append exactly the line "continued in the same Pi context" to qe-v07-proof.txt. Preserve the first line. Produce the updated change_set.',
-  context_requirement: { selector: "continue_from", value: "implement" },
+  context_requirement: { selector: "continue_from", value: null },
   context_lineage_occurrence_id: implement.occurrence_id,
   inputs: {
     change_set: artifact(
@@ -181,23 +190,79 @@ provider.disconnect();
 process.exit(0);
 
 function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
+  const actionId = overrides.action_id ?? "action";
+  const occurrenceId = overrides.occurrence_id ?? "occurrence";
+  const attemptId = overrides.attempt_id ?? "attempt";
+  const semanticStepKey = overrides.semantic_step_key ?? "step";
+  const instruction = overrides.instruction ?? "Execute the step.";
+  const contextMode = overrides.context_requirement?.selector ?? "fresh";
+  const source = overrides.context_lineage_occurrence_id ?? null;
+  const logicalLineageId =
+    contextMode === "continue_from"
+      ? "logical-action-implement"
+      : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 2,
+    protocol_version: 3,
     worker_id: config.workerId,
-    action_id: "action",
-    run_id: "run-live",
-    occurrence_id: "occurrence",
-    attempt_id: "attempt",
-    semantic_step_key: "step",
-    instruction: "Execute the step.",
-    performer_requirement: { selector: "class", value: "integration" },
-    performer_affinity_occurrence_id: null,
-    context_requirement: { selector: "fresh", value: null },
-    context_lineage_occurrence_id: null,
-    inputs: {},
-    declared_outputs: [],
-    ...overrides,
+    execution: {
+      identity: {
+        launch_id: "integration-launch",
+        action_id: actionId,
+        run_id: overrides.run_id ?? "run-live",
+        occurrence_id: occurrenceId,
+        attempt_id: attemptId,
+        semantic_step_key: semanticStepKey,
+      },
+      performer: {
+        member_key: "integration-member",
+        member_name: "Integration Member",
+        class_key: "integration",
+        class_name: "Integration",
+      },
+      work: {
+        quest_objective: "Verify real Herdr/Pi product execution binding.",
+        class_instructions: "Perform the assigned integration work carefully.",
+        step_instruction: instruction,
+        inputs: overrides.inputs ?? {},
+        declared_outputs: overrides.declared_outputs ?? [],
+      },
+      configuration: {
+        model,
+        reasoning: "medium",
+        tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+        workspace: {
+          ref: "workspace:integration",
+          root: workspace,
+          access: "read_write",
+        },
+      },
+      context: {
+        mode: contextMode,
+        source_occurrence_id: source,
+        logical_lineage_id: logicalLineageId,
+      },
+    },
+    action_id: actionId,
+    run_id: overrides.run_id ?? "run-live",
+    occurrence_id: occurrenceId,
+    attempt_id: attemptId,
+    semantic_step_key: semanticStepKey,
+    instruction,
+    inputs: overrides.inputs ?? {},
+    declared_outputs: overrides.declared_outputs ?? [],
+    context_requirement: { selector: contextMode, value: null },
+    context_lineage_occurrence_id: source,
+  };
+}
+
+function splitModel(value: string) {
+  const separator = value.indexOf("/");
+  if (separator < 1 || separator === value.length - 1)
+    throw new Error("QE_PI_MODEL must use provider/model syntax.");
+  return {
+    provider: value.slice(0, separator),
+    model: value.slice(separator + 1),
   };
 }
 function artifact(type: string, occurrence: string, value: JsonValue) {

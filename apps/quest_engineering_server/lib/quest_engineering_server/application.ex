@@ -19,6 +19,7 @@ defmodule QuestEngineering.Server.Application do
       {Phoenix.PubSub, name: QuestEngineering.Server.PubSub},
       QuestEngineering.Server.WorkerConnections,
       {QuestEngineering.Server.Dispatcher, claim_owner: claim_owner},
+      {QuestEngineering.Server.Scheduler, claim_owner: claim_owner},
       Endpoint
     ]
 

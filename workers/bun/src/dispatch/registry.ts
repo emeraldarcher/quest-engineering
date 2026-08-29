@@ -12,6 +12,8 @@ import type { NativeSessionRef } from "../session-host/types.ts";
 
 export interface ProviderLineage {
   lineageId: string;
+  logicalLineageId: string;
+  configurationJson: string;
   provider: "pi";
   resultControlPath: string;
   ownershipToken: string;
@@ -57,6 +59,9 @@ interface DispatchRow {
 }
 interface LineageRow {
   lineage_id: string;
+  logical_lineage_id: string;
+  configuration_json: string;
+  configuration_hash: string;
   provider: "pi";
   result_control_path: string;
   ownership_token: string;
@@ -68,6 +73,15 @@ interface LineageRow {
   terminal_id: string | null;
   agent_name: string | null;
   native_session_json: string | null;
+}
+
+export class IncompatibleContinuationConfigurationError extends Error {
+  readonly code = "incompatible_continuation_configuration";
+  constructor(logicalLineageId: string) {
+    super(
+      `Continuation configuration differs for logical lineage ${logicalLineageId}.`,
+    );
+  }
 }
 
 export class DispatchRegistry {
@@ -107,15 +121,19 @@ export class DispatchRegistry {
         }
 
         let lineageId: string | null = null;
-        if (action.context_requirement.selector === "fresh") {
+        if (action.execution.context.mode === "fresh") {
           lineageId = crypto.randomUUID();
           const controlPath = this.lineageControlPath(lineageId);
+          const configurationJson = physicalConfiguration(action);
           this.db
             .query(`INSERT INTO provider_lineages
-          (lineage_id,provider,result_control_path,ownership_token,active_action_id,created_at,updated_at)
-          VALUES (?,?,?,?,NULL,?,?)`)
+          (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,result_control_path,ownership_token,active_action_id,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,NULL,?,?)`)
             .run(
               lineageId,
+              action.execution.context.logical_lineage_id,
+              configurationJson,
+              digest(configurationJson),
               "pi",
               controlPath,
               `qe-${digest(`${action.worker_id}:${lineageId}`).slice(0, 24)}`,
@@ -169,10 +187,13 @@ export class DispatchRegistry {
         const lineage = input.lineage;
         this.db
           .query(`INSERT INTO provider_lineages
-        (lineage_id,provider,result_control_path,ownership_token,active_action_id,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(lineage_id) DO NOTHING`)
+        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,result_control_path,ownership_token,active_action_id,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(lineage_id) DO NOTHING`)
           .run(
             lineage.lineageId,
+            lineage.logicalLineageId,
+            lineage.configurationJson,
+            digest(lineage.configurationJson),
             lineage.provider,
             lineage.resultControlPath,
             lineage.ownershipToken,
@@ -261,18 +282,22 @@ export class DispatchRegistry {
     ).map(mapDispatch);
   }
 
-  resolveContinuation(occurrenceId: string): ProviderLineage {
-    const records = this.listByOccurrence(occurrenceId).filter(
-      (item) => item.lineageId && item.state === "completed",
-    );
-    const lineageIds = [
-      ...new Set(records.map((item) => item.lineageId as string)),
-    ];
-    if (lineageIds.length !== 1)
+  resolveContinuation(action: ExecuteAction): ProviderLineage {
+    const logicalLineageId = action.execution.context.logical_lineage_id;
+    const row = this.db
+      .query("SELECT * FROM provider_lineages WHERE logical_lineage_id=?")
+      .get(logicalLineageId) as LineageRow | null;
+    if (!row)
       throw new Error(
-        `Continuation occurrence ${occurrenceId} has ${lineageIds.length} authoritative provider lineages.`,
+        `Unknown logical continuation lineage: ${logicalLineageId}.`,
       );
-    return this.getLineage(lineageIds[0] as string);
+    const expected = physicalConfiguration(action);
+    if (
+      row.configuration_json !== expected ||
+      row.configuration_hash !== digest(expected)
+    )
+      throw new IncompatibleContinuationConfigurationError(logicalLineageId);
+    return mapLineage(row);
   }
 
   assignLineage(actionId: string, lineageId: string): DispatchRecord {
@@ -379,10 +404,8 @@ export class DispatchRegistry {
           throw new Error(
             `Completed dispatch ${actionId} has no provider lineage.`,
           );
-        if (dispatch.state === "failed" || dispatch.state === "uncertain")
-          throw new Error(
-            `Cannot complete ${actionId} from ${dispatch.state}.`,
-          );
+        if (dispatch.state === "failed")
+          throw new Error(`Cannot complete ${actionId} from failed.`);
         this.db
           .query(
             "UPDATE dispatches SET state='completed',outputs_json=?,failure_json=NULL,updated_at=? WHERE action_id=?",
@@ -417,7 +440,7 @@ export class DispatchRegistry {
             now(),
             actionId,
           );
-        if (dispatch.lineageId) {
+        if (dispatch.lineageId && !uncertain) {
           this.db
             .query(
               "UPDATE provider_lineages SET active_action_id=NULL,updated_at=? WHERE lineage_id=? AND active_action_id=?",
@@ -439,7 +462,7 @@ export class DispatchRegistry {
 
   reconcilePayloads(): ReconcileDispatch[] {
     return this.list().map((dispatch) => {
-      const state = dispatch.state === "uncertain" ? "failed" : dispatch.state;
+      const state = dispatch.state;
       return {
         action_id: dispatch.action.action_id,
         occurrence_id: dispatch.action.occurrence_id,
@@ -448,7 +471,7 @@ export class DispatchRegistry {
         ...(state === "completed" && dispatch.outputs
           ? { outputs: dispatch.outputs }
           : {}),
-        ...(state === "failed"
+        ...(state === "failed" || state === "uncertain"
           ? { failure: dispatch.failure ?? { reason: "execution_uncertain" } }
           : {}),
       };
@@ -469,6 +492,9 @@ export class DispatchRegistry {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS provider_lineages (
         lineage_id TEXT PRIMARY KEY,
+        logical_lineage_id TEXT NOT NULL UNIQUE,
+        configuration_json TEXT NOT NULL,
+        configuration_hash TEXT NOT NULL,
         provider TEXT NOT NULL CHECK(provider='pi'),
         result_control_path TEXT NOT NULL UNIQUE,
         ownership_token TEXT NOT NULL UNIQUE,
@@ -507,6 +533,24 @@ export class DispatchRegistry {
       CREATE INDEX IF NOT EXISTS dispatches_run_occurrence ON dispatches(run_id,occurrence_id);
       CREATE INDEX IF NOT EXISTS dispatches_state ON dispatches(state);
     `);
+    this.ensureColumn("provider_lineages", "logical_lineage_id", "TEXT");
+    this.ensureColumn("provider_lineages", "configuration_json", "TEXT");
+    this.ensureColumn("provider_lineages", "configuration_hash", "TEXT");
+    this.db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS provider_lineages_logical_lineage ON provider_lineages(logical_lineage_id) WHERE logical_lineage_id IS NOT NULL",
+    );
+  }
+
+  private ensureColumn(
+    table: string,
+    column: string,
+    definition: string,
+  ): void {
+    const columns = this.db
+      .query(`PRAGMA table_info(${table})`)
+      .all() as Array<{ name: string }>;
+    if (!columns.some((item) => item.name === column))
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
 
@@ -530,6 +574,8 @@ function mapDispatch(row: DispatchRow): DispatchRecord {
 function mapLineage(row: LineageRow): ProviderLineage {
   return {
     lineageId: row.lineage_id,
+    logicalLineageId: row.logical_lineage_id,
+    configurationJson: row.configuration_json,
     provider: row.provider,
     resultControlPath: row.result_control_path,
     ownershipToken: row.ownership_token,
@@ -544,6 +590,16 @@ function mapLineage(row: LineageRow): ProviderLineage {
       ? (JSON.parse(row.native_session_json) as NativeSessionRef)
       : null,
   };
+}
+function physicalConfiguration(action: ExecuteAction): string {
+  const configuration = action.execution.configuration;
+  return canonicalJson({
+    model: configuration.model,
+    reasoning: configuration.reasoning,
+    tools: [...configuration.tools].sort(),
+    workspace_root: configuration.workspace.root,
+    workspace_access: configuration.workspace.access,
+  });
 }
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;

@@ -58,7 +58,7 @@ describe("durable dispatch registry", () => {
     const lineageId = first.lineageId as string;
     registry.occupy(lineageId, first.action.action_id);
     registry.complete(first.action.action_id, { change_set: { version: 1 } });
-    const source = registry.resolveContinuation(first.action.occurrence_id);
+    const source = registry.resolveContinuation(first.action);
 
     const continued = registry.accept(
       action({
@@ -67,7 +67,7 @@ describe("durable dispatch registry", () => {
         attempt_id: "attempt-2",
         semantic_step_key: "repair",
         instruction: "Repair the rejected change set.",
-        context_requirement: { selector: "continue_from", value: "implement" },
+        context_requirement: { selector: "continue_from", value: null },
         context_lineage_occurrence_id: first.action.occurrence_id,
       }),
     ).dispatch;
@@ -80,6 +80,45 @@ describe("durable dispatch registry", () => {
     expect(registry.get(continued.action.action_id).resultDirectory).not.toBe(
       first.resultDirectory,
     );
+    registry.close();
+  });
+
+  test("continuation rejects a different immutable physical configuration", async () => {
+    const { root, database } = await fixture();
+    const registry = new DispatchRegistry(database, root);
+    const first = registry.accept(action()).dispatch;
+    const lineageId = first.lineageId as string;
+    registry.occupy(lineageId, first.action.action_id);
+    registry.complete(first.action.action_id, { change_set: {} });
+    const continued = action({
+      action_id: "continued",
+      occurrence_id: "continued-occurrence",
+      attempt_id: "continued-attempt",
+      context_requirement: { selector: "continue_from", value: null },
+      context_lineage_occurrence_id: first.action.occurrence_id,
+    });
+    continued.execution.configuration = {
+      ...continued.execution.configuration,
+      reasoning: "high",
+    };
+    expect(() => registry.resolveContinuation(continued)).toThrow(
+      "Continuation configuration differs",
+    );
+    registry.close();
+  });
+
+  test("uncertain physical execution retains lineage occupancy", async () => {
+    const { root, database } = await fixture();
+    const registry = new DispatchRegistry(database, root);
+    const dispatch = registry.accept(action()).dispatch;
+    const lineageId = dispatch.lineageId as string;
+    registry.occupy(lineageId, dispatch.action.action_id);
+    registry.fail(dispatch.action.action_id, { reason: "unknown" }, true);
+    expect(registry.get(dispatch.action.action_id).state).toBe("uncertain");
+    expect(registry.getLineage(lineageId).activeActionId).toBe(
+      dispatch.action.action_id,
+    );
+    expect(registry.reconcilePayloads()[0]?.state).toBe("uncertain");
     registry.close();
   });
 

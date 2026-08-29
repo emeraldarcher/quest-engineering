@@ -1,12 +1,12 @@
-# Quest Engineering Bun Worker v0.7
+# Quest Engineering Bun Worker v0.8b
 
-The Bun Worker is a long-lived execution node for Worker Protocol v2:
+The Bun Worker executes immutable Worker Protocol v3 `ResolvedExecution` values:
 
 ```text
-Elixir control plane → Bun Worker → Herdr → Pi
+Elixir scheduler → Bun Worker → executor adapter → Herdr → Pi
 ```
 
-It owns transport, durable local dispatch acceptance, provider execution, the configured workspace boundary, structured-result validation, and reconciliation. It does not own semantic control flow, retries, review acceptance, scheduling, performers, Classes, Loadouts, Squads, or Quests.
+It owns durable local acceptance, exact capability enforcement, physical provider lineage, structured results, and reconciliation. Product and Core Runtime remain provider-neutral.
 
 ## Configuration
 
@@ -16,98 +16,80 @@ Required:
 QE_CONTROL_PLANE_URL=ws://127.0.0.1:4000/worker/websocket
 QE_WORKER_ID=stable-worker-id
 QE_WORKER_TOKEN=...
+QE_WORKSPACE_REF=workspace:project
 QE_WORKSPACE_ROOT=/absolute/path/to/a/git/worktree
+QE_EXECUTOR_MODELS=openai-codex/model-name,other-provider/model-name
 ```
 
 Optional:
 
 ```text
+QE_WORKSPACE_MAX_ACCESS=read_write       # none | read_only | read_write
+QE_REASONING_LEVELS=low,medium,high
 QE_WORKER_DATA_ROOT=.quest-engineering-worker
 QE_HERDR_SESSION=quest-engineering-worker
 QE_MAX_CONCURRENCY=1
 QE_WORKER_TAGS=local,git
-QE_PI_MODEL=provider/model
-QE_PI_THINKING=medium
 QE_HEARTBEAT_MS=10000
 QE_RECONNECT_MS=1000
 QE_RESULT_TIMEOUT_MS=21600000
 ```
 
-The Herdr session must not be `default`. The official integration must be installed manually:
-
-```sh
-herdr integration install pi
-```
-
-The deterministic fake provider is test-only and requires both:
+The fake executor is test-only and requires:
 
 ```text
 QE_WORKER_PROVIDER=fake
 QE_ENABLE_TEST_PROVIDER=1
 ```
 
-## Durability
-
-SQLite stores one dispatch per stable `action_id`. `occurrence_id` is indexed but deliberately not unique because an occurrence may have multiple execution attempts in a future runtime.
-
-Acceptance ordering is:
-
-```text
-receive execute_action
-→ BEGIN IMMEDIATE
-→ insert accepted dispatch and result identity
-→ COMMIT
-→ send dispatch_accepted
-→ touch Herdr/Pi
-```
-
-Completed outputs are validated and committed before `step_completed` is sent. A lost control-plane acknowledgement leaves the dispatch completed and eligible for resend.
-
-`provider_lineages.active_action_id` is physical Pi occupancy. The same transaction that persists a valid completed result clears occupancy. Server acknowledgement is tracked separately and never blocks a later valid continuation.
-
-## SessionHost and Herdr
-
-`HerdrSessionHost` wraps the verified Herdr 19/20 socket operations. Herdr owns the terminal and Pi process, so Worker or control-plane shutdown only disconnects controller sockets.
-
-Fresh context creates a new lineage, tab, Pi process, and native Pi session. Herdr pane metadata stores opaque Worker, lineage, active Action, and result provenance. Recovery checks exact pane/terminal/agent identity and ownership tokens; labels are never identity.
-
-A live terminal remains directly attachable:
+The official Herdr Pi integration must be installed manually:
 
 ```sh
-herdr --session <session> agent attach <agent-name>
+herdr integration install pi
 ```
 
-## Pi provider and context lineage
+## Capabilities and per-execution configuration
 
-`PiProvider` composes only:
+The Worker advertises executor records containing exact models, reasoning levels, QE capability keys, workspaces, and maximum workspace access. It defensively rejects any v3 execution not supported by the same advertisement.
 
-- the provider-neutral `Step.instruction`
-- resolved input artifacts
-- exact declared output names
-- workspace safety boundaries
-- the structured result-tool requirement
+The initial Pi mappings are:
 
-It does not infer work from semantic step keys.
+| QE capability | Pi tools |
+|---|---|
+| `workspace.filesystem` / read-only | `read` |
+| `workspace.filesystem` / read-write | `read`, `edit`, `write` |
+| `workspace.search` | `grep`, `find`, `ls` |
+| `terminal.shell` / read-write | `bash` |
 
-A fresh lineage owns one stable result-control path. `continue_from` resolves the prior runtime occurrence to its unambiguous completed provider lineage, reuses the same Pi agent and stable control path, and atomically updates that file with the new Action identity, nonce, declared outputs, and Action-specific result directory before prompting.
+`qe_step_result` is mandatory infrastructure, not a Product capability. Model and reasoning are passed to Pi from each immutable execution rather than Worker-global defaults.
 
-## Structured results
+## Workspace enforcement
 
-Pi must call `qe_step_result` exactly once. The extension atomically publishes a versioned envelope outside the worktree. The Worker requires exact Worker/Action/Run/occurrence/attempt/nonce identity, exactly one result, all declared outputs, no undeclared outputs, and recursively JSON-compatible values. Terminal prose and Herdr `idle`/`done` never become implicit outputs.
+- `none`: Pi runs in a lineage-specific Worker-data directory with only `qe_step_result`; no workspace tools are active.
+- `read_only`: mutation tools and shell/user-shell are mechanically blocked; path-bearing read/search calls are constrained to the canonical root.
+- `read_write`: only explicitly mapped tools are active; path-bearing filesystem calls remain root-checked and shell is present only with `terminal.shell`.
 
-## Reconciliation
+Read-write shell path confinement remains limited by Pi's shell interception API and is supplemented by the mandatory workspace policy. Restricted `none` and `read_only` modes do not expose shell.
 
-At startup the Worker reconciles SQLite against Herdr before registering with Elixir:
+## Durable identity and continuation
 
-- running + exact agent: observe the same process
-- temporary Herdr outage: retain local running state
-- running + available Herdr + missing agent: fail as infrastructure; never replace it
-- settled + valid result: persist completion and resend
-- settled + no result after prompt intent: mark uncertain/failed; never reprompt
-- safe Herdr provenance + matching lineage control file + missing dispatch: adopt
-- ambiguous provenance: leave the session alive and refuse to guess
+SQLite canonical-hashes the complete normalized v3 payload. Receiving the same Action ID with different payload is an identity conflict and never starts another execution.
 
-Herdr `agent.prompt` has no submission idempotency key. The Worker therefore chooses safety over liveness in an irreducibly ambiguous settled-without-result crash window.
+Each fresh logical context creates one Worker-local physical provider lineage. SQLite persists its server logical lineage ID and canonical configuration. Continuation resolves by logical lineage ID and requires exact equality of:
+
+- model provider/name;
+- reasoning;
+- order-independent QE tool set;
+- canonical workspace root;
+- workspace access.
+
+Mismatch fails explicitly with `incompatible_continuation_configuration`; it never creates or partially reconfigures another Pi.
+
+## Uncertainty and restart
+
+`uncertain` is nonterminal for occupancy. Bun retains physical lineage `active_action_id`, reports `uncertain` during reconciliation, and does not reprompt or clear Herdr active metadata. Worker or control-plane restart recovers the exact Herdr/Pi process when provenance is available.
+
+Known terminal adapter failure may clear physical occupancy and report `failed`. The server can release scheduling resources, but Core Runtime remains dispatched in v0.8b because semantic execution-failure/retry behavior does not yet exist.
 
 ## Checks
 
@@ -116,9 +98,7 @@ bun test
 bun run typecheck
 bun run check
 
-# Opt-in, uses real Herdr/Pi and may consume model quota:
+# Opt-in and may consume model quota:
 bun run integration:herdr-pi
 bun run integration:worker-restart
 ```
-
-The live integration retains its repository-local `.pi/tmp` fixture and prints exact native attach descriptors. The restart harness kills the Bun controller while Pi is working, then proves the same lineage, agent, pane, and single logical execution complete after recovery.

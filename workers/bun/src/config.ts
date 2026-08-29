@@ -1,6 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import type { JsonValue } from "./protocol/types.ts";
+import type {
+  JsonValue,
+  Reasoning,
+  WorkspaceAccess,
+} from "./protocol/types.ts";
 import { isJsonValue } from "./protocol/types.ts";
 import { validateHerdrSessionName } from "./session-host/herdr/connection.ts";
 import { loadConfiguredWorkspace } from "./workspace/configured-workspace.ts";
@@ -13,6 +17,10 @@ export interface WorkerConfig {
   tags: string[];
   herdrSession: string;
   workspaceRoot: string;
+  workspaceRef?: string;
+  workspaceMaxAccess?: WorkspaceAccess;
+  executorModels?: Array<{ provider: string; model: string }>;
+  reasoningLevels?: Reasoning[];
   dataRoot: string;
   piModel?: string;
   piThinking: string;
@@ -31,6 +39,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const workspaceRoot = loadConfiguredWorkspace(
     absolute(required(env, "QE_WORKSPACE_ROOT"), "QE_WORKSPACE_ROOT"),
   ).root;
+  const workspaceRef = required(env, "QE_WORKSPACE_REF");
+  const workspaceMaxAccess = access(
+    env.QE_WORKSPACE_MAX_ACCESS?.trim() || "read_write",
+  );
   const dataRoot = absolute(
     env.QE_WORKER_DATA_ROOT?.trim() || ".quest-engineering-worker",
     "QE_WORKER_DATA_ROOT",
@@ -55,6 +67,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     "QE_RESULT_TIMEOUT_MS",
   );
   const provider = env.QE_WORKER_PROVIDER === "fake" ? "fake" : "pi";
+  const executorModels = models(
+    env.QE_EXECUTOR_MODELS ?? env.QE_PI_MODEL,
+    provider,
+  );
+  const reasoningLevels = reasoning(
+    env.QE_REASONING_LEVELS ?? "low,medium,high",
+  );
   if (provider === "fake" && env.QE_ENABLE_TEST_PROVIDER !== "1") {
     throw new Error("The fake provider requires QE_ENABLE_TEST_PROVIDER=1.");
   }
@@ -86,6 +105,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     tags: csv(env.QE_WORKER_TAGS),
     herdrSession,
     workspaceRoot,
+    workspaceRef,
+    workspaceMaxAccess,
+    executorModels,
+    reasoningLevels,
     dataRoot,
     ...(env.QE_PI_MODEL?.trim() ? { piModel: env.QE_PI_MODEL.trim() } : {}),
     piThinking: env.QE_PI_THINKING?.trim() || "medium",
@@ -139,6 +162,36 @@ function csv(value: string | undefined): string[] {
         .filter(Boolean),
     ),
   ];
+}
+function models(
+  value: string | undefined,
+  provider: "pi" | "fake",
+): Array<{ provider: string; model: string }> {
+  const configured = csv(value);
+  if (configured.length === 0 && provider === "fake")
+    return [{ provider: "fake", model: "test" }];
+  if (configured.length === 0)
+    throw new Error("QE_EXECUTOR_MODELS is required for the Pi provider.");
+  return configured.map((entry) => {
+    const separator = entry.indexOf("/");
+    if (separator < 1 || separator === entry.length - 1)
+      throw new Error("Executor models must use provider/model syntax.");
+    return {
+      provider: entry.slice(0, separator),
+      model: entry.slice(separator + 1),
+    };
+  });
+}
+function reasoning(value: string): Reasoning[] {
+  const values = csv(value);
+  if (!values.every((item) => ["low", "medium", "high"].includes(item)))
+    throw new Error("QE_REASONING_LEVELS contains an unsupported level.");
+  return values as Reasoning[];
+}
+function access(value: string): WorkspaceAccess {
+  if (!["none", "read_only", "read_write"].includes(value))
+    throw new Error("QE_WORKSPACE_MAX_ACCESS is invalid.");
+  return value as WorkspaceAccess;
 }
 function absolute(value: string, key: string): string {
   const path = resolve(value);

@@ -1,10 +1,7 @@
 defmodule QuestEngineering.Server.DispatchStore do
   @moduledoc """
-  PostgreSQL authority for delivery of durable runtime Action intents to an
-  explicitly selected Worker.
-
-  Claims never enclose network I/O. `FOR UPDATE SKIP LOCKED` prevents duplicate
-  claims, while expiring claim metadata makes claim/send ambiguity recoverable.
+  PostgreSQL authority for delivery state after the scheduler has atomically
+  selected a Worker and reserved its slot. Network I/O never occurs here.
   """
 
   import Ecto.Query
@@ -12,30 +9,13 @@ defmodule QuestEngineering.Server.DispatchStore do
   alias Ecto.Changeset
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
+  alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.WorkerError
 
-  @reserved_states ~w(claimed dispatched acknowledged running)
-  @active_states ~w(acknowledged running)
-  @default_lease_ms 1_000
-
-  def claim_next(worker_id, claim_owner, options \\ []) do
-    lease_ms = Keyword.get(options, :lease_ms, @default_lease_ms)
-    now = now()
-    expires_at = DateTime.add(now, lease_ms, :millisecond)
-    token = Ecto.UUID.generate()
-
-    transact(fn ->
-      worker = lock_connected_worker!(worker_id)
-
-      case reclaimable_dispatch(worker_id, now) do
-        nil -> claim_pending(worker, claim_owner, token, expires_at)
-        dispatch -> reclaim(dispatch, claim_owner, token, expires_at)
-      end
-    end)
-  end
+  @active_states ~w(acknowledged running uncertain)
 
   def mark_dispatched(action_id, claim_token, generation) do
     case Repo.get_by(WorkerDispatch, action_id: action_id) do
@@ -53,7 +33,7 @@ defmodule QuestEngineering.Server.DispatchStore do
 
   def acknowledge(worker_id, generation, action_id) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
-      if dispatch.state in ["completed", "failed", "running", "acknowledged"] do
+      if dispatch.state in ["completed", "failed", "running", "acknowledged", "uncertain"] do
         dispatch
       else
         Repo.update!(
@@ -69,7 +49,7 @@ defmodule QuestEngineering.Server.DispatchStore do
 
   def mark_running(worker_id, generation, action_id) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
-      if dispatch.state in ["completed", "failed"] do
+      if dispatch.state in ["completed", "failed", "uncertain"] do
         dispatch
       else
         Repo.update!(
@@ -88,14 +68,18 @@ defmodule QuestEngineering.Server.DispatchStore do
       if dispatch.state == "failed" do
         Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
       else
-        Repo.update!(
-          Changeset.change(dispatch,
-            state: "completed",
-            acknowledged_at: dispatch.acknowledged_at || now(),
-            terminal_at: dispatch.terminal_at || now(),
-            last_connection_generation: generation
+        updated =
+          Repo.update!(
+            Changeset.change(dispatch,
+              state: "completed",
+              acknowledged_at: dispatch.acknowledged_at || now(),
+              terminal_at: dispatch.terminal_at || now(),
+              last_connection_generation: generation
+            )
           )
-        )
+
+        mark_scheduled_terminal!(action_id, "completed", nil)
+        updated
       end
     end)
   end
@@ -105,11 +89,35 @@ defmodule QuestEngineering.Server.DispatchStore do
       if dispatch.state == "completed" do
         Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
       else
+        updated =
+          Repo.update!(
+            Changeset.change(dispatch,
+              state: "failed",
+              acknowledged_at: dispatch.acknowledged_at || now(),
+              terminal_at: dispatch.terminal_at || now(),
+              failure: failure,
+              last_connection_generation: generation
+            )
+          )
+
+        # v0.8b deliberately releases scheduling resources for a known-terminal
+        # physical failure while Core Runtime remains dispatched; Core has no
+        # execution-failure event and this milestone adds no retry semantics.
+        mark_scheduled_terminal!(action_id, "failed", failure)
+        updated
+      end
+    end)
+  end
+
+  def mark_uncertain(worker_id, generation, action_id, failure) do
+    transition_from_worker(worker_id, generation, action_id, fn dispatch ->
+      if dispatch.state in ["completed", "failed"] do
+        dispatch
+      else
         Repo.update!(
           Changeset.change(dispatch,
-            state: "failed",
+            state: "uncertain",
             acknowledged_at: dispatch.acknowledged_at || now(),
-            terminal_at: dispatch.terminal_at || now(),
             failure: failure,
             last_connection_generation: generation
           )
@@ -162,7 +170,7 @@ defmodule QuestEngineering.Server.DispatchStore do
       dispatch.claim_token != claim_token ->
         Repo.rollback(error(:stale_claim_token, dispatch.worker_id, dispatch.action_id))
 
-      dispatch.state in ["acknowledged", "running", "completed", "failed"] ->
+      dispatch.state in ["acknowledged", "running", "completed", "failed", "uncertain"] ->
         dispatch_record(dispatch)
 
       dispatch.state in ["claimed", "dispatched"] ->
@@ -175,85 +183,6 @@ defmodule QuestEngineering.Server.DispatchStore do
         |> Repo.update!()
         |> dispatch_record()
     end
-  end
-
-  defp claim_pending(worker, claim_owner, token, expires_at) do
-    reserved =
-      Repo.aggregate(
-        from(dispatch in WorkerDispatch,
-          where: dispatch.worker_id == ^worker.id and dispatch.state in ^@reserved_states
-        ),
-        :count
-      )
-
-    if reserved >= worker.max_concurrency do
-      Repo.rollback(error(:worker_at_capacity, worker.id, nil, %{reserved: reserved}))
-    end
-
-    query =
-      from outbox in RuntimeOutbox,
-        left_join: dispatch in WorkerDispatch,
-        on: dispatch.action_id == outbox.action_id,
-        where: is_nil(dispatch.id),
-        order_by: [asc: outbox.id],
-        limit: 1,
-        lock: "FOR UPDATE OF r0 SKIP LOCKED",
-        select: outbox
-
-    case Repo.one(query) do
-      nil -> Repo.rollback(error(:no_pending_action, worker.id))
-      outbox -> insert_claim(outbox, worker.id, claim_owner, token, expires_at)
-    end
-  end
-
-  defp insert_claim(outbox, worker_id, claim_owner, token, expires_at) do
-    attributes = %{
-      action_id: outbox.action_id,
-      worker_id: worker_id,
-      state: "claimed",
-      payload_hash: payload_hash(outbox.payload),
-      claim_owner: claim_owner,
-      claim_token: token,
-      claim_expires_at: expires_at
-    }
-
-    case Repo.insert(WorkerDispatch.changeset(attributes)) do
-      {:ok, dispatch} ->
-        {:ok, action} = decode_action(outbox)
-        dispatch_record(dispatch, action)
-
-      {:error, changeset} ->
-        Repo.rollback(
-          error(:constraint_failure, worker_id, outbox.action_id, changeset_details(changeset))
-        )
-    end
-  end
-
-  defp reclaim(dispatch, claim_owner, token, expires_at) do
-    updated =
-      dispatch
-      |> Changeset.change(
-        claim_owner: claim_owner,
-        claim_token: token,
-        claim_expires_at: expires_at
-      )
-      |> Repo.update!()
-
-    outbox = Repo.get_by!(RuntimeOutbox, action_id: updated.action_id)
-    {:ok, action} = decode_action(outbox)
-    dispatch_record(updated, action)
-  end
-
-  defp reclaimable_dispatch(worker_id, now) do
-    Repo.one(
-      from dispatch in WorkerDispatch,
-        where:
-          dispatch.worker_id == ^worker_id and dispatch.state in ["claimed", "dispatched"] and
-            dispatch.claim_expires_at <= ^now,
-        order_by: [asc: dispatch.id],
-        limit: 1,
-        lock: "FOR UPDATE SKIP LOCKED"
-    )
   end
 
   defp transition_from_worker(worker_id, generation, action_id, fun) do
@@ -269,14 +198,6 @@ defmodule QuestEngineering.Server.DispatchStore do
       update_active_dispatches!(worker_id)
       dispatch_record(result)
     end)
-  end
-
-  defp lock_connected_worker!(worker_id) do
-    case Repo.one(from worker in Worker, where: worker.id == ^worker_id, lock: "FOR UPDATE") do
-      nil -> Repo.rollback(error(:worker_not_found, worker_id))
-      %{status: "connected"} = worker -> worker
-      _worker -> Repo.rollback(error(:worker_disconnected, worker_id))
-    end
   end
 
   defp lock_generation!(worker_id, generation) do
@@ -336,6 +257,7 @@ defmodule QuestEngineering.Server.DispatchStore do
     %{
       action_id: dispatch.action_id,
       worker_id: dispatch.worker_id,
+      worker_slot: dispatch.worker_slot,
       state: dispatch_state(dispatch.state),
       action: action,
       claim_owner: dispatch.claim_owner,
@@ -352,15 +274,26 @@ defmodule QuestEngineering.Server.DispatchStore do
   defp dispatch_state("running"), do: :running
   defp dispatch_state("completed"), do: :completed
   defp dispatch_state("failed"), do: :failed
+  defp dispatch_state("uncertain"), do: :uncertain
 
-  defp payload_hash(payload) do
-    :sha256
-    |> :crypto.hash(Jason.encode!(payload))
-    |> Base.encode16(case: :lower)
+  defp mark_scheduled_terminal!(action_id, state, failure) do
+    case Repo.get(ScheduledActionExecution, action_id) do
+      nil ->
+        :ok
+
+      %{state: "active"} = scheduled ->
+        Repo.update!(
+          Changeset.change(scheduled,
+            state: state,
+            terminal_at: now(),
+            failure: failure
+          )
+        )
+
+      _terminal ->
+        :ok
+    end
   end
-
-  defp changeset_details(changeset),
-    do: %{errors: Changeset.traverse_errors(changeset, &elem(&1, 0))}
 
   defp error(type, worker_id, action_id \\ nil, details \\ nil) do
     %WorkerError{type: type, worker_id: worker_id, action_id: action_id, details: details}
