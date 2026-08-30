@@ -13,6 +13,7 @@ import {
   type Workspace,
   type WorkspaceSource,
 } from "../api/contracts";
+import type { ClientFixture } from "../fixtures/fixtures";
 import { RealtimeClient, type RealtimeStatus } from "../realtime/client";
 import { projectRunWorld } from "../world/projector";
 
@@ -46,10 +47,18 @@ const emptyProduct: ProductState = {
   runs: [],
 };
 
-export function createAppStore(api: ApiClient, socketUrl: string) {
-  const product = writable<ProductState>(emptyProduct);
+export function createAppStore(
+  api: ApiClient,
+  socketUrl: string,
+  fixture: ClientFixture | null = null,
+) {
+  const product = writable<ProductState>(fixture?.product ?? emptyProduct);
   const selectedBuilding = writable<BuildingId | null>(null);
-  const selectedRun = writable<RunProjection | null>(null);
+  const selectedRun = writable<RunProjection | null>(
+    fixture?.selectedRunId
+      ? (fixture.runs[fixture.selectedRunId] ?? null)
+      : null,
+  );
   const loading = writable(true);
   const error = writable<ApiError | null>(null);
   const realtimeStatus = writable<RealtimeStatus>("disconnected");
@@ -77,6 +86,10 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
   });
 
   async function loadProduct(quiet = false) {
+    if (fixture) {
+      loading.set(false);
+      return;
+    }
     realtime.start();
     if (!quiet) loading.set(true);
     error.set(null);
@@ -141,6 +154,10 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
   }
 
   async function selectRun(runId: string) {
+    if (fixture) {
+      selectedRun.set(fixture.runs[runId] ?? null);
+      return;
+    }
     const request = ++runRequest;
     error.set(null);
     try {
@@ -229,11 +246,12 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
     );
   }
   function dispose() {
-    realtime.disconnect();
+    if (!fixture) realtime.disconnect();
   }
 
   return {
     api,
+    fixture,
     product,
     selectedBuilding,
     selectedRun,

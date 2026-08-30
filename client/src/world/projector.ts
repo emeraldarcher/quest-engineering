@@ -4,7 +4,8 @@ export type VisualActivity =
   | "idle"
   | "moving_to_work"
   | "working"
-  | "completed"
+  | "waiting"
+  | "completed_transition"
   | "failed"
   | "uncertain";
 export interface MemberWorldModel {
@@ -21,25 +22,34 @@ export interface WorkOrderMarker {
 }
 export interface RunWorldModel {
   runId: string;
+  squadKey: string;
   members: MemberWorldModel[];
   orderMarkers: WorkOrderMarker[];
   diagnostics: string[];
 }
 
 const factualStates = new Set([
+  "waiting",
   "scheduled",
   "running",
   "completed",
   "failed",
   "uncertain",
 ]);
-const activeStates = new Set(["scheduled", "running", "failed", "uncertain"]);
+const activeStates = new Set([
+  "waiting",
+  "scheduled",
+  "running",
+  "failed",
+  "uncertain",
+]);
 const priority: Record<VisualActivity, number> = {
-  working: 6,
-  moving_to_work: 5,
+  working: 7,
+  moving_to_work: 6,
+  waiting: 5,
   uncertain: 4,
   failed: 3,
-  completed: 2,
+  completed_transition: 2,
   idle: 1,
 };
 
@@ -68,7 +78,7 @@ export function projectRunWorld(run: RunProjection): RunWorldModel {
     const active = steps.filter((step) => activeStates.has(step.state));
     if (active.length > 1)
       diagnostics.push(`${member.name} has multiple active occurrences.`);
-    const selected = [...steps].sort(
+    const selected = [...active].sort(
       (a, b) => visualFor(b).priority - visualFor(a).priority,
     )[0];
     const presentation = selected
@@ -89,7 +99,13 @@ export function projectRunWorld(run: RunProjection): RunWorldModel {
     };
   });
 
-  return { runId: run.id, members, orderMarkers, diagnostics };
+  return {
+    runId: run.id,
+    squadKey: run.squad.key,
+    members,
+    orderMarkers,
+    diagnostics,
+  };
 }
 
 function visualFor(step: RunStep): {
@@ -101,8 +117,8 @@ function visualFor(step: RunStep): {
       ? "working"
       : step.state === "scheduled"
         ? "moving_to_work"
-        : step.state === "completed"
-          ? "completed"
+        : step.state === "waiting"
+          ? "waiting"
           : step.state === "failed"
             ? "failed"
             : step.state === "uncertain"

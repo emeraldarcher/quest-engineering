@@ -1,6 +1,6 @@
 {
   "name": "@quest-engineering/client",
-  "version": "0.12.0",
+  "version": "0.14.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "check": "biome check . && bun run typecheck && bun test && vitest run",
     "smoke:real": "bun run scripts/live-contract-smoke.ts",
+    "screenshots:v014a": "bun run scripts/capture-v014a.ts",
     "tauri": "tauri"
   },
   "dependencies": {

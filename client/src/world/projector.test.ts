@@ -44,7 +44,14 @@ const base = (): RunProjection => ({
   steps: [],
 });
 const step = (
-  state: "pending" | "waiting" | "scheduled" | "running",
+  state:
+    | "pending"
+    | "waiting"
+    | "scheduled"
+    | "running"
+    | "completed"
+    | "failed"
+    | "uncertain",
   bound = false,
 ) => ({
   occurrence_id: `occ-${state}`,
@@ -98,4 +105,23 @@ test("parallel bound running work projects simultaneously", () => {
     "working",
     "moving_to_work",
   ]);
+});
+
+test("a waiting Member is shown only when the API supplies a factual binding", () => {
+  const run = base();
+  run.steps = [
+    step("waiting"),
+    { ...step("waiting", true), occurrence_id: "bound-waiting" },
+  ];
+  const world = projectRunWorld(run);
+  expect(world.members.map((item) => item.visual)).toEqual(["waiting", "idle"]);
+  expect(world.orderMarkers).toHaveLength(2);
+});
+
+test("historical completed work settles to idle and exposes transition evidence", () => {
+  const run = base();
+  run.steps = [step("completed", true)];
+  const world = projectRunWorld(run);
+  expect(world.members[0]?.visual).toBe("idle");
+  expect(world.members[0]?.completedOccurrenceIds).toEqual(["occ-completed"]);
 });
