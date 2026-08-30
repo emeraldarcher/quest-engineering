@@ -8,6 +8,8 @@ defmodule QuestEngineering.Server.Persistence.WorkerWorkspaceCandidate do
     field :name, :string
     field :source_kind, :string
     field :source_fingerprint, :string
+    field :publication_remote_name, :string
+    field :publication_repository_identity, :string
     field :max_access, :string
     field :allow_unconfined_shell, :boolean
     field :status, :string

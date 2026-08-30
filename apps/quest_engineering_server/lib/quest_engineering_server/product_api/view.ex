@@ -1,20 +1,45 @@
 defmodule QuestEngineering.Server.ProductApi.View do
   @moduledoc false
 
+  import Ecto.Query
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.Persistence.ProductQuest
+  alias QuestEngineering.Server.Persistence.QuestLaunch
+  alias QuestEngineering.Server.Persistence.RunDelivery
+  alias QuestEngineering.Server.Persistence.RuntimeRun
   alias QuestEngineering.Server.Persistence.TacticCodec
+  alias QuestEngineering.Server.Repo
+  alias QuestEngineering.Server.WorkspaceControl
 
   def workspace(value, archived_at \\ nil) do
+    binding = WorkspaceControl.binding_state(value.id)
+
     %{
       id: value.id,
       key: value.key,
       name: value.name,
       source_kind: Atom.to_string(value.source_kind),
       source_fingerprint: value.source_fingerprint,
+      binding: binding_projection(binding),
       archived_at: timestamp(archived_at)
     }
   end
+
+  defp binding_projection(nil), do: %{state: "unbound", message: "Add this Project to a Worker."}
+
+  defp binding_projection(%{state: "pending"}),
+    do: %{state: "preparing", message: "Preparing Project…"}
+
+  defp binding_projection(%{state: "available"}), do: %{state: "ready", message: "Project ready."}
+
+  defp binding_projection(%{state: state, failure_code: code}),
+    do: %{
+      state: state,
+      message: "Project setup requires attention.",
+      issue: %{code: code || "workspace_binding_failed"}
+    }
 
   def class(value, archived_at \\ nil) do
     %{
@@ -72,6 +97,9 @@ defmodule QuestEngineering.Server.ProductApi.View do
   end
 
   def quest(value, archived_at \\ nil) do
+    row = Repo.get(ProductQuest, value.id)
+    lifecycle = quest_lifecycle(row)
+
     %{
       id: value.id,
       title: value.title,
@@ -79,9 +107,104 @@ defmodule QuestEngineering.Server.ProductApi.View do
       workspace_id: value.workspace_id,
       squad_id: value.squad_id,
       tactic_source: tactic_source(value.tactic_source),
+      completion: %{
+        completed_at: row && timestamp(row.completed_at),
+        completed_by_run_id: row && row.completed_by_run_id
+      },
+      lifecycle: lifecycle,
       archived_at: timestamp(archived_at)
     }
   end
+
+  defp quest_lifecycle(nil),
+    do: %{state: "ready", label: "Ready", current_run_id: nil, primary_action: "launch"}
+
+  defp quest_lifecycle(%{completed_at: completed_at, completed_by_run_id: run_id})
+       when not is_nil(completed_at),
+       do: %{state: "complete", label: "Complete", current_run_id: run_id, primary_action: nil}
+
+  defp quest_lifecycle(row) do
+    latest =
+      Repo.one(
+        from launch in QuestLaunch,
+          where: launch.quest_id == ^row.id,
+          order_by: [desc: launch.inserted_at],
+          limit: 1
+      )
+
+    if is_nil(latest) do
+      %{state: "ready", label: "Ready", current_run_id: nil, primary_action: "launch"}
+    else
+      run = Repo.get(RuntimeRun, latest.run_id)
+      delivery = Repo.get_by(RunDelivery, run_id: latest.run_id)
+      lifecycle_for_run(latest.run_id, run, delivery)
+    end
+  end
+
+  defp lifecycle_for_run(run_id, %{status: "running"}, _delivery),
+    do: %{state: "working", label: "Working", current_run_id: run_id, primary_action: nil}
+
+  defp lifecycle_for_run(run_id, %{status: "failed"}, _delivery),
+    do: %{
+      state: "needs_attention",
+      label: "Needs Attention",
+      current_run_id: run_id,
+      primary_action: "run_again"
+    }
+
+  defp lifecycle_for_run(run_id, _run, %RunDelivery{state: state} = delivery)
+       when state in ~w(pending preparing publishing creating_review),
+       do: %{
+         state: "preparing_review",
+         label: "Preparing Review",
+         current_run_id: run_id,
+         primary_action: nil,
+         delivery: DeliveryStore.projection(delivery)
+       }
+
+  defp lifecycle_for_run(run_id, _run, %RunDelivery{state: "review_open"} = delivery),
+    do: %{
+      state: "awaiting_review",
+      label: "Awaiting Review",
+      current_run_id: run_id,
+      primary_action: "open_pull_request",
+      delivery: DeliveryStore.projection(delivery)
+    }
+
+  defp lifecycle_for_run(run_id, _run, %RunDelivery{state: state} = delivery)
+       when state in ~w(closed_unmerged no_changes),
+       do: %{
+         state: "needs_attention",
+         label: "Needs Attention",
+         current_run_id: run_id,
+         primary_action: "run_again",
+         delivery: DeliveryStore.projection(delivery)
+       }
+
+  defp lifecycle_for_run(run_id, _run, %RunDelivery{} = delivery) do
+    projection = DeliveryStore.projection(delivery)
+
+    %{
+      state: "needs_attention",
+      label: "Needs Attention",
+      current_run_id: run_id,
+      primary_action:
+        cond do
+          projection.can_retry -> "retry_publishing"
+          delivery.state == "attention_required" -> "run_again"
+          true -> nil
+        end,
+      delivery: projection
+    }
+  end
+
+  defp lifecycle_for_run(run_id, _run, nil),
+    do: %{
+      state: "preparing_review",
+      label: "Preparing Review",
+      current_run_id: run_id,
+      primary_action: nil
+    }
 
   def tactic_source(%Inline{body: body}), do: %{type: "inline", body: TacticCodec.encode(body)}
 

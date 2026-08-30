@@ -501,11 +501,25 @@ defmodule QuestEngineering.Server.RuntimeStoreConcurrencyTest do
 
         event = Runtime.completed(action, %{})
 
+        parent = self()
+
         tasks =
           for transition_id <- ["concurrent-a", "concurrent-b"] do
-            Task.async(fn -> RuntimeStore.apply_transition(run_id, transition_id, event) end)
+            Task.async(fn ->
+              result = RuntimeStore.apply_transition(run_id, transition_id, event)
+              send(parent, {:transition_finished, self()})
+
+              receive do
+                :release_connection_client -> result
+              end
+            end)
           end
 
+        for _task <- tasks do
+          assert_receive {:transition_finished, _pid}, 5_000
+        end
+
+        Enum.each(tasks, &send(&1.pid, :release_connection_client))
         results = Task.await_many(tasks, 5_000)
 
         assert Enum.count(results, &match?({:ok, %{revision: 1}}, &1)) == 1

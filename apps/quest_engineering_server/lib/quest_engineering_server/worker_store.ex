@@ -116,6 +116,8 @@ defmodule QuestEngineering.Server.WorkerStore do
         authorized_root_key: binding["authorized_root_key"],
         source_repository_root: binding["source_repository_root"],
         source_fingerprint: binding["source_fingerprint"],
+        publication_remote_name: binding["publication_remote_name"],
+        publication_repository_identity: binding["publication_repository_identity"],
         max_access: binding["max_access"],
         allow_unconfined_shell: binding["allow_unconfined_shell"],
         status: "available",

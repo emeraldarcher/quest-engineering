@@ -2,7 +2,10 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   @moduledoc "Application adapter for validated, generation-fenced Worker messages."
 
   alias QuestEngineering.Server.CompletionAdapter
+  alias QuestEngineering.Server.DeliveryCoordinator
+  alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.ProductChangeNotifier
   alias QuestEngineering.Server.Reconciler
   alias QuestEngineering.Server.RunChangeNotifier
   alias QuestEngineering.Server.RunWorkspaceStore
@@ -28,6 +31,18 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     end
   end
 
+  def handle(worker_id, generation, %{type: :workspace_binding_failed, binding: binding}) do
+    with {:ok, _} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, _} <- WorkspaceControl.record_binding_failure(worker_id, binding) do
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "workspace_binding_failed_recorded"
+       }}
+    end
+  end
+
   def handle(worker_id, generation, %{type: :workspace_binding_ready, binding: binding}) do
     with {:ok, _} <- WorkerStore.heartbeat(worker_id, generation),
          {:ok, _row} <- WorkspaceControl.record_binding(worker_id, generation, binding) do
@@ -40,6 +55,37 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          "result" => "workspace_binding_recorded"
        }}
     end
+  end
+
+  def handle(worker_id, generation, %{type: :run_worktree_retained, worktree: worktree}) do
+    with {:ok, assignment} <- RunWorkspaceStore.retained(worker_id, generation, worktree) do
+      DeliveryCoordinator.wake(assignment.run_id)
+      {:ok, workspace_response("run_worktree_retained", assignment.worktree_id)}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :run_worktree_removed, worktree: worktree}) do
+    with {:ok, assignment} <- RunWorkspaceStore.removed(worker_id, generation, worktree),
+         do: {:ok, workspace_response("run_worktree_removed", assignment.worktree_id)}
+  end
+
+  def handle(worker_id, generation, %{type: :run_delivery_inspected, delivery: delivery}) do
+    with {:ok, persisted} <- DeliveryStore.inspected(worker_id, generation, delivery) do
+      DeliveryCoordinator.wake(persisted.run_id)
+      {:ok, delivery_response("run_delivery_inspected", persisted.id)}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :run_delivery_published, delivery: delivery}) do
+    with {:ok, persisted} <- DeliveryStore.published(worker_id, generation, delivery) do
+      DeliveryCoordinator.wake(persisted.run_id)
+      {:ok, delivery_response("run_delivery_published", persisted.id)}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :run_delivery_failed, delivery: delivery}) do
+    with {:ok, persisted} <- DeliveryStore.failed(worker_id, generation, delivery),
+         do: {:ok, delivery_response("run_delivery_failed", persisted.id)}
   end
 
   def handle(worker_id, generation, %{type: :run_worktree_ready, worktree: worktree}) do
@@ -136,6 +182,8 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     case CompletionAdapter.complete(worker_id, generation, message) do
       {:ok, %{transition: transition}} ->
         Scheduler.wake_all()
+        DeliveryCoordinator.wake(transition.run.id)
+        ProductChangeNotifier.notify(["quests", "runs"])
         notify_action(message.action_id)
 
         {:ok,
@@ -205,6 +253,15 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
       "protocol_version" => WorkerProtocol.version(),
       "result" => result,
       "worktree_id" => worktree_id
+    }
+  end
+
+  defp delivery_response(result, delivery_id) do
+    %{
+      "type" => "message_result",
+      "protocol_version" => WorkerProtocol.version(),
+      "result" => result,
+      "delivery_id" => delivery_id
     }
   end
 

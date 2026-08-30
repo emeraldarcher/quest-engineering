@@ -255,6 +255,8 @@ defmodule QuestEngineering.Server.Persistence.ProductQuest do
     field :tactic_source_type, :string
     field :inline_tactic, :map
     field :tactic_definition_id, Ecto.UUID
+    field :completed_at, :utc_datetime_usec
+    field :completed_by_run_id, :string
     field :archived_at, :utc_datetime_usec
     timestamps(type: :utc_datetime_usec)
   end

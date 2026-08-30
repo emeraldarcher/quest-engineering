@@ -33,6 +33,9 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
       |> Changeset.change(
         state: if(assignment.state == "retained", do: "retained", else: "ready"),
         base_revision: worktree.base_revision,
+        base_branch_name: worktree.base_branch_name,
+        publication_remote_name: worktree.publication_remote_name,
+        publication_repository_identity: worktree.publication_repository_identity,
         canonical_worktree_root: worktree.canonical_root,
         source_dirty_excluded: worktree.source_dirty_excluded,
         ready_at: now(),
@@ -69,6 +72,71 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
 
   def fetch(run_id), do: Repo.get(RunWorkspaceAssignment, run_id)
 
+  def retained(worker_id, generation, worktree) do
+    update_from_worker(worker_id, generation, worktree, fn assignment ->
+      if assignment.state != "retained", do: Repo.rollback(:stale_worktree_retention)
+
+      assignment
+      |> Changeset.change(
+        state: "retained",
+        retention_confirmed_at: now(),
+        retained_at: assignment.retained_at || now()
+      )
+      |> Repo.update!()
+    end)
+  end
+
+  def removed(worker_id, generation, worktree) do
+    update_from_worker(worker_id, generation, worktree, fn assignment ->
+      assignment
+      |> Changeset.change(
+        state: "removed",
+        removed_at: now(),
+        failure_code: nil,
+        failure_details: nil
+      )
+      |> Repo.update!()
+    end)
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  def request_cleanup(run_id, acknowledge_unmerged \\ false) do
+    alias QuestEngineering.Server.Persistence.RunDelivery
+
+    case Repo.transaction(fn ->
+           assignment =
+             Repo.one(
+               from a in RunWorkspaceAssignment, where: a.run_id == ^run_id, lock: "FOR UPDATE"
+             ) || Repo.rollback(:not_found)
+
+           delivery = Repo.get_by(RunDelivery, run_id: run_id)
+
+           if assignment.state in ["cleanup_requested", "removed"] do
+             assignment
+           else
+             if assignment.state != "retained", do: Repo.rollback(:workspace_not_retained)
+
+             if delivery && delivery.state == "closed_unmerged" && not acknowledge_unmerged,
+               do: Repo.rollback(:unmerged_acknowledgement_required)
+
+             if is_nil(delivery) or
+                  delivery.state not in ~w(review_open merged closed_unmerged no_changes),
+                do: Repo.rollback(:cleanup_not_safe)
+
+             assignment
+             |> Changeset.change(state: "cleanup_requested", cleanup_requested_at: now())
+             |> Repo.update!()
+           end
+         end) do
+      {:ok, assignment} ->
+        RunChangeNotifier.notify(run_id)
+        {:ok, assignment}
+
+      error ->
+        error
+    end
+  end
+
   # Compatibility only for pre-v4 test fixtures; production never enables this flag.
   # credo:disable-for-next-line Credo.Check.Refactor.Nesting
   def prepare_legacy_test(run_id) do
@@ -104,7 +172,14 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
       from assignment in RunWorkspaceAssignment,
         where:
           assignment.worker_id == ^worker_id and
-            assignment.state in ["provisioning", "ready", "attention_required", "retained"],
+            assignment.state in [
+              "provisioning",
+              "ready",
+              "attention_required",
+              "retained",
+              "cleanup_requested",
+              "removed"
+            ],
         order_by: [asc: assignment.inserted_at]
     )
   end

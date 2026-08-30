@@ -11,10 +11,10 @@ defmodule QuestEngineering.Server.Dispatcher do
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
-  def deliver(dispatch), do: GenServer.call(__MODULE__, {:deliver, dispatch}, 10_000)
+  def deliver(dispatch), do: call_if_running({:deliver, dispatch})
 
   def redeliver(worker_id, generation),
-    do: GenServer.call(__MODULE__, {:redeliver, worker_id, generation}, 10_000)
+    do: call_if_running({:redeliver, worker_id, generation})
 
   @impl true
   def init(_options), do: {:ok, %{}}
@@ -58,6 +58,13 @@ defmodule QuestEngineering.Server.Dispatcher do
            DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation) do
       RunChangeNotifier.notify(scheduled.run_id)
       {:ok, updated}
+    end
+  end
+
+  defp call_if_running(message) do
+    case Process.whereis(__MODULE__) do
+      nil -> {:error, :background_service_not_running}
+      _pid -> GenServer.call(__MODULE__, message, 10_000)
     end
   end
 

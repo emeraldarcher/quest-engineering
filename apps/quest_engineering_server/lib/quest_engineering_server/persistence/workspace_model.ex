@@ -10,6 +10,8 @@ defmodule QuestEngineering.Server.Persistence.WorkerWorkspaceBinding do
     field :authorized_root_key, :string
     field :source_repository_root, :string
     field :source_fingerprint, :string
+    field :publication_remote_name, :string
+    field :publication_repository_identity, :string
     field :max_access, :string
     field :allow_unconfined_shell, :boolean, default: false
     field :status, :string
@@ -27,6 +29,8 @@ defmodule QuestEngineering.Server.Persistence.WorkerWorkspaceBinding do
       :authorized_root_key,
       :source_repository_root,
       :source_fingerprint,
+      :publication_remote_name,
+      :publication_repository_identity,
       :max_access,
       :allow_unconfined_shell,
       :status,
@@ -65,7 +69,10 @@ defmodule QuestEngineering.Server.Persistence.RunWorkspaceAssignment do
     field :worktree_id, Ecto.UUID
     field :base_selector, :string
     field :base_revision, :string
+    field :base_branch_name, :string
     field :branch_name, :string
+    field :publication_remote_name, :string
+    field :publication_repository_identity, :string
     field :canonical_worktree_root, :string
     field :source_dirty_excluded, :boolean
     field :state, :string
@@ -76,6 +83,7 @@ defmodule QuestEngineering.Server.Persistence.RunWorkspaceAssignment do
     field :assigned_at, :utc_datetime_usec
     field :ready_at, :utc_datetime_usec
     field :retained_at, :utc_datetime_usec
+    field :retention_confirmed_at, :utc_datetime_usec
     field :cleanup_requested_at, :utc_datetime_usec
     field :removed_at, :utc_datetime_usec
     timestamps(type: :utc_datetime_usec)
@@ -93,7 +101,10 @@ defmodule QuestEngineering.Server.Persistence.RunWorkspaceAssignment do
       :worktree_id,
       :base_selector,
       :base_revision,
+      :base_branch_name,
       :branch_name,
+      :publication_remote_name,
+      :publication_repository_identity,
       :canonical_worktree_root,
       :source_dirty_excluded,
       :state,
@@ -104,6 +115,7 @@ defmodule QuestEngineering.Server.Persistence.RunWorkspaceAssignment do
       :assigned_at,
       :ready_at,
       :retained_at,
+      :retention_confirmed_at,
       :cleanup_requested_at,
       :removed_at
     ])

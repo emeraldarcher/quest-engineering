@@ -15,6 +15,7 @@ defmodule QuestEngineering.Server.LaunchQuest do
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.Runtime
+  alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.ProductClass
   alias QuestEngineering.Server.Persistence.ProductLoadout
@@ -26,6 +27,7 @@ defmodule QuestEngineering.Server.LaunchQuest do
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.TacticCodec
   alias QuestEngineering.Server.Product.TacticGraphLoader
+  alias QuestEngineering.Server.ProductChangeNotifier
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunChangeNotifier
   alias QuestEngineering.Server.RuntimeStore
@@ -52,11 +54,11 @@ defmodule QuestEngineering.Server.LaunchQuest do
       {:ok, result} ->
         RunWorkspaceStore.prepare_legacy_test(result.run_id)
 
-        if Application.get_env(:quest_engineering_server, :scheduler_enabled, true),
-          do: Scheduler.wake(result.run_id)
+        Scheduler.wake(result.run_id)
 
         # The transaction above has committed; UI observers only see durable state.
         RunChangeNotifier.notify(result.run_id)
+        ProductChangeNotifier.notify(["quests", "runs"])
         {:ok, result}
 
       {:error, error} ->
@@ -66,6 +68,11 @@ defmodule QuestEngineering.Server.LaunchQuest do
 
   defp launch_locked(quest_id) do
     quest_row = lock_active!(ProductQuest, quest_id, :quest)
+
+    case DeliveryStore.launch_eligibility(quest_id) do
+      :ok -> :ok
+      {:error, code} -> Repo.rollback(error(code, %{quest_id: quest_id}))
+    end
 
     workspace_row =
       lock_active!(ProductWorkspace, quest_row.workspace_id, :workspace, "FOR SHARE")

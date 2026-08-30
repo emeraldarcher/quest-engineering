@@ -15,9 +15,8 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
   alias QuestEngineering.Server.WorkerStore
 
   setup do
-    :ok = Sandbox.checkout(Repo)
-    Sandbox.mode(Repo, {:shared, self()})
-    on_exit(fn -> Sandbox.mode(Repo, :manual) end)
+    owner = Sandbox.start_owner!(Repo, shared: true)
+    on_exit(fn -> Sandbox.stop_owner(owner) end)
     :ok
   end
 
@@ -29,9 +28,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
       bun ->
         root = Path.expand("../../../..", __DIR__)
         previous_workspaces = Application.get_env(:quest_engineering_server, :workspaces)
-        previous_scheduler = Application.get_env(:quest_engineering_server, :scheduler_enabled)
         Application.put_env(:quest_engineering_server, :workspaces, %{"workspace:test" => root})
-        Application.put_env(:quest_engineering_server, :scheduler_enabled, false)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+        start_supervised!(QuestEngineering.Server.RunWorkspaceProvisioner)
 
         worker_root =
           Path.join(root, ".pi/tmp/bun-worker-integration-#{System.unique_integer([:positive])}")
@@ -116,12 +115,6 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
             :workspaces,
             previous_workspaces || %{}
           )
-
-          Application.put_env(
-            :quest_engineering_server,
-            :scheduler_enabled,
-            if(is_nil(previous_scheduler), do: true, else: previous_scheduler)
-          )
         end)
 
         assert_eventually(fn ->
@@ -140,6 +133,13 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         assert File.exists?(Path.join(worker_root, "run-worktrees.sqlite"))
         assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
         assert Repo.get_by!(QuestLaunch, run_id: launched.run_id)
+
+        Port.close(port)
+        System.cmd("kill", ["-TERM", Integer.to_string(worker_os_pid)], stderr_to_stdout: true)
+
+        assert_eventually(fn ->
+          match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
+        end)
     end
   end
 

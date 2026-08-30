@@ -25,19 +25,13 @@ defmodule QuestEngineering.ServerWeb.RunChannelTest do
     root = Path.expand(".pi/tmp/channel-workspace-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, ".git"))
     previous = Application.get_env(:quest_engineering_server, :workspaces)
-    previous_scheduler = Application.get_env(:quest_engineering_server, :scheduler_enabled)
     Application.put_env(:quest_engineering_server, :workspaces, %{"workspace:channel" => root})
-    Application.put_env(:quest_engineering_server, :scheduler_enabled, false)
+    start_supervised!(WorkerConnections)
+    start_supervised!({Dispatcher, claim_owner: "run-channel-test"})
 
     on_exit(fn ->
       File.rm_rf!(root)
       Application.put_env(:quest_engineering_server, :workspaces, previous || %{})
-
-      Application.put_env(
-        :quest_engineering_server,
-        :scheduler_enabled,
-        if(is_nil(previous_scheduler), do: true, else: previous_scheduler)
-      )
     end)
 
     {:ok, class} =

@@ -1,5 +1,5 @@
 defmodule QuestEngineering.Server.Product.TacticLibraryTest do
-  use QuestEngineering.Server.DataCase, async: true
+  use QuestEngineering.Server.DataCase, async: false
 
   import Kernel, except: [use: 2]
   import QuestEngineering.Core.Product.TacticAuthoring, only: [use: 2]

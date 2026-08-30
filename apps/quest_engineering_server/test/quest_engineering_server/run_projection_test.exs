@@ -16,19 +16,11 @@ defmodule QuestEngineering.Server.RunProjectionTest do
     root = Path.expand(".pi/tmp/projection-workspace-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, ".git"))
     previous = Application.get_env(:quest_engineering_server, :workspaces)
-    previous_scheduler = Application.get_env(:quest_engineering_server, :scheduler_enabled)
     Application.put_env(:quest_engineering_server, :workspaces, %{"workspace:projection" => root})
-    Application.put_env(:quest_engineering_server, :scheduler_enabled, false)
 
     on_exit(fn ->
       File.rm_rf!(root)
       Application.put_env(:quest_engineering_server, :workspaces, previous || %{})
-
-      Application.put_env(
-        :quest_engineering_server,
-        :scheduler_enabled,
-        if(is_nil(previous_scheduler), do: true, else: previous_scheduler)
-      )
     end)
 
     {:ok, class} =

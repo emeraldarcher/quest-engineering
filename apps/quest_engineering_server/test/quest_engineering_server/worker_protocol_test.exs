@@ -23,6 +23,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
     assert hello.capabilities["tags"] == ["fake"]
+    assert hello.capabilities["features"] == ["run_delivery_v1"]
     assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
   end
 
@@ -48,6 +49,33 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
       })
 
     assert command["binding"]["source_kind"] == "git_remote"
+  end
+
+  test "decodes authoritative Delivery evidence messages" do
+    payload = %{
+      "type" => "run_delivery_inspected",
+      "protocol_version" => 4,
+      "worker_id" => @worker_id,
+      "delivery" => %{
+        "delivery_id" => Ecto.UUID.generate(),
+        "run_id" => "run",
+        "worktree_id" => @worktree_id,
+        "identity_hash" => "identity",
+        "fingerprint" => String.duplicate("a", 64),
+        "evidence" => %{"summary" => %{"files_changed" => 1}},
+        "no_changes" => false,
+        "base_revision" => String.duplicate("b", 40),
+        "base_branch_name" => "main",
+        "branch_name" => "qe/run/11111111111111111111111111111111",
+        "head_before_finalize" => String.duplicate("c", 40),
+        "repository_host" => "github.com",
+        "repository_identity" => "owner/repo",
+        "remote_name" => "origin"
+      }
+    }
+
+    assert {:ok, %{type: :run_delivery_inspected, delivery: %{no_changes: false}}} =
+             WorkerProtocol.decode_worker_message(payload, @worker_id)
   end
 
   test "accepts uncertain reconciliation only with structured failure" do
@@ -143,6 +171,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         "arch" => "test",
         "max_concurrency" => 2,
         "tags" => ["fake", "fake"],
+        "features" => ["run_delivery_v1"],
         "executors" => [
           %{
             "adapter" => "other-executor",

@@ -14,15 +14,25 @@ defmodule QuestEngineering.Server.Application do
         "control-plane/" <> Atom.to_string(node())
       )
 
-    children = [
+    infrastructure = [
       QuestEngineering.Server.Repo,
-      {Phoenix.PubSub, name: QuestEngineering.Server.PubSub},
-      QuestEngineering.Server.WorkerConnections,
-      {QuestEngineering.Server.Dispatcher, claim_owner: claim_owner},
-      QuestEngineering.Server.RunWorkspaceProvisioner,
-      {QuestEngineering.Server.Scheduler, claim_owner: claim_owner},
-      Endpoint
+      {Phoenix.PubSub, name: QuestEngineering.Server.PubSub}
     ]
+
+    background_services =
+      if Application.get_env(:quest_engineering_server, :start_background_services, true) do
+        [
+          QuestEngineering.Server.WorkerConnections,
+          {QuestEngineering.Server.Dispatcher, claim_owner: claim_owner},
+          QuestEngineering.Server.RunWorkspaceProvisioner,
+          {QuestEngineering.Server.Scheduler, claim_owner: claim_owner},
+          QuestEngineering.Server.DeliveryCoordinator
+        ]
+      else
+        []
+      end
+
+    children = infrastructure ++ background_services ++ [Endpoint]
 
     Supervisor.start_link(children,
       strategy: :one_for_one,

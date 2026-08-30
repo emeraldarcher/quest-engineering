@@ -1,8 +1,8 @@
-# Quest Engineering Product API v1 — v0.12
+# Quest Engineering Product API v1 — v0.13
 
-The JSON API is under `/api/v1`, uses `snake_case`, and never exposes Worker IDs, executor adapters, Herdr/Pi identities, source paths, or Run-worktree paths.
+The JSON API is under `/api/v1`, uses `snake_case`, and never exposes Worker IDs, executor adapters, Herdr/Pi identities, source paths, Run-worktree paths, Git remote URLs, or credentials.
 
-## Logical Workspaces
+## Projects / logical Workspaces
 
 ```text
 GET    /workspaces
@@ -10,41 +10,52 @@ GET    /workspaces/:id
 POST   /workspaces
 PATCH  /workspaces/:id
 POST   /workspaces/:id/archive
+GET    /workspace-sources
+POST   /workspaces/:id/bindings
 ```
 
-Workspace fields are `id`, immutable `key`, `name`, `source_kind`, optional credential-free `source_fingerprint`, and `archived_at`. Workspaces are logical/path-free. Quests reference `workspace_id`.
+The domain and API retain `Workspace`; ordinary UI calls it a **Project**. Workspace binding projection is `unbound | preparing | ready | attention_required | offline`. A binding request is durable before Worker delivery, and failure details are bounded Product-safe values.
 
-`GET /workspace-sources` asks connected Workers to refresh bounded authorized-root discovery and returns cached Product-safe candidates. `POST /workspaces/:id/bindings` with `{candidate_id}` requests a Worker-local binding. Candidates contain no path or Worker identity.
+## Product definitions and Quest lifecycle
 
-## Product definitions
+Classes, Loadouts, Squads, reusable Tactics, and Quests retain CRUD and archival. Preview remains side-effect free.
 
-Classes, Loadouts, Squads, reusable Tactics, and Quests retain CRUD plus explicit archival. Lists exclude archived rows unless `?include_archived=true` is supplied. Quest tactic sources are explicit `inline` or `definition` unions.
+`POST /quests/:id/launch` creates an explicit new immutable Launch/Runtime Run/worktree. Launch is rejected while Runtime or Delivery is active, while publishing needs a recoverable retry, or after merge completion. `Run Again` is allowed after Runtime failure, `closed_unmerged`, and `no_changes`.
 
-Preview routes remain pure and never inspect source repositories or provision worktrees:
+Quest projection adds:
+
+```json
+{
+  "completion": { "completed_at": null, "completed_by_run_id": null },
+  "lifecycle": {
+    "state": "awaiting_review",
+    "label": "Awaiting Review",
+    "current_run_id": "...",
+    "primary_action": "open_pull_request"
+  }
+}
+```
+
+Quest completion is written only after an exact expected same-repository GitHub PR is observed merged.
+
+## Runs and Delivery
 
 ```text
-POST /tactics/preview
-POST /tactics/:id/preview
-POST /quests/:id/preview
+GET  /runs
+GET  /quests/:id/runs
+GET  /runs/:id
+GET  /runs/:id/changes
+POST /runs/:id/delivery/retry
+POST /runs/:id/worktree/cleanup
+GET  /runs/:run_id/artifacts/:artifact_id
 ```
 
-`POST /quests/:id/launch` creates the immutable path-free LaunchSnapshot, Runtime Run, Actions, and one stable Run Workspace assignment. Physical provisioning happens asynchronously through Worker Protocol v4.
+`delivery` is independent of Core Runtime and projects `preparing_review | awaiting_review | merged | closed_unmerged | no_changes | attention_required`, authoritative change counts, exact base/head revisions, safe issue data, and canonical GitHub review metadata.
 
-## Execution options
+`Retry Publishing` resumes the same Delivery and runs no model work. Cleanup accepts `{ "acknowledge_unmerged": true }` when applicable, removes only a clean managed worktree non-forcibly, and retains branches/history.
 
-`GET /execution-options` returns coherent model/reasoning/tool profiles and logical `workspace_id` access combinations. Root-specific shell policy is applied before a combination is advertised. No capacities or physical details are exposed.
+The central control plane reconciles open PRs every ten seconds. Before completion it verifies repository, base branch, head repository, head branch, and exact published head OID. Fork/cross-repository PR publishing is not supported in v0.13.
 
-## Runs
+## Realtime
 
-```text
-GET /runs
-GET /quests/:id/runs
-GET /runs/:id
-GET /runs/:run_id/artifacts/:artifact_id
-```
-
-Run projections include `execution_environment` with safe Workspace identity, `waiting_for_host | preparing | ready | attention_required | retained | removed`, a safe message, base revision, branch name, and dirty-source exclusion flag. They omit assignment/worktree/Worker/binding IDs and paths.
-
-Step states remain `pending`, `waiting`, `scheduled`, `running`, `completed`, `failed`, and `uncertain`. Artifact values remain behind the artifact detail route.
-
-Clients subscribe to one selected Run through `/client` and `run:<run_id>`; committed changes invalidate that projection.
+Clients subscribe to selected `run:<run_id>` invalidations and global `product:all` invalidations. Payloads are small refetch signals; Delivery patches and raw diffs are not broadcast.

@@ -38,7 +38,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             dispatches: [map()] | nil,
             worktree: map() | nil,
             candidates: [map()] | nil,
-            binding: map() | nil
+            binding: map() | nil,
+            delivery: map() | nil
           }
 
     defstruct [
@@ -53,7 +54,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :dispatches,
       :worktree,
       :candidates,
-      :binding
+      :binding,
+      :delivery
     ]
   end
 
@@ -164,10 +166,32 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             "worktree_id" => assignment.worktree_id,
             "run_id" => assignment.run_id,
             "workspace_binding_id" => assignment.workspace_binding_id,
-            "identity_hash" => assignment.identity_hash
+            "identity_hash" => assignment.identity_hash,
+            "desired_state" => assignment.state
           }
         end)
     }
+  end
+
+  def retain_run_worktree(worker_id, assignment) do
+    worktree_command("retain_run_worktree", worker_id, assignment)
+  end
+
+  def cleanup_run_worktree(worker_id, assignment) do
+    worktree_command("cleanup_run_worktree", worker_id, assignment)
+  end
+
+  def inspect_run_delivery(worker_id, delivery, assignment) do
+    delivery_command("inspect_run_delivery", worker_id, delivery, assignment)
+  end
+
+  def publish_run_delivery(worker_id, delivery, assignment) do
+    delivery_command("publish_run_delivery", worker_id, delivery, assignment)
+    |> put_in(["delivery", "expected_fingerprint"], delivery.change_fingerprint)
+    |> put_in(["delivery", "base_revision"], delivery.base_revision)
+    |> put_in(["delivery", "base_branch_name"], delivery.base_branch_name)
+    |> put_in(["delivery", "repository_identity"], delivery.repository_identity)
+    |> put_in(["delivery", "remote_name"], delivery.remote_name)
   end
 
   def execute_action(worker_id, %ResolvedExecution{} = execution) do
@@ -232,6 +256,44 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     with {:ok, worktree} <- decode_failed_worktree(payload) do
       {:ok, %Message{type: :run_worktree_attention, worker_id: worker_id, worktree: worktree}}
     end
+  end
+
+  defp decode_message("run_worktree_retained", worker_id, %{"worktree" => worktree})
+       when is_map(worktree) do
+    with {:ok, decoded} <- decode_worktree_identity(worktree),
+         do:
+           {:ok, %Message{type: :run_worktree_retained, worker_id: worker_id, worktree: decoded}}
+  end
+
+  defp decode_message("run_worktree_removed", worker_id, %{"worktree" => worktree})
+       when is_map(worktree) do
+    with {:ok, decoded} <- decode_worktree_identity(worktree),
+         do: {:ok, %Message{type: :run_worktree_removed, worker_id: worker_id, worktree: decoded}}
+  end
+
+  defp decode_message("run_delivery_inspected", worker_id, %{"delivery" => delivery})
+       when is_map(delivery) do
+    with {:ok, decoded} <- decode_delivery(delivery, :inspected),
+         do:
+           {:ok, %Message{type: :run_delivery_inspected, worker_id: worker_id, delivery: decoded}}
+  end
+
+  defp decode_message("run_delivery_published", worker_id, %{"delivery" => delivery})
+       when is_map(delivery) do
+    with {:ok, decoded} <- decode_delivery(delivery, :published),
+         do:
+           {:ok, %Message{type: :run_delivery_published, worker_id: worker_id, delivery: decoded}}
+  end
+
+  defp decode_message("run_delivery_failed", worker_id, %{"delivery" => delivery})
+       when is_map(delivery) do
+    with {:ok, decoded} <- decode_delivery(delivery, :failed),
+         do: {:ok, %Message{type: :run_delivery_failed, worker_id: worker_id, delivery: decoded}}
+  end
+
+  defp decode_message("workspace_binding_failed", worker_id, %{"binding" => binding})
+       when is_map(binding) do
+    {:ok, %Message{type: :workspace_binding_failed, worker_id: worker_id, binding: binding}}
   end
 
   defp decode_message("run_worktree_integrity_failed", worker_id, payload) do
@@ -345,6 +407,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
           name: name,
           source_kind: kind,
           source_fingerprint: value["source_fingerprint"],
+          publication_remote_name: value["publication_remote_name"],
+          publication_repository_identity: value["publication_repository_identity"],
           max_access: access,
           allow_unconfined_shell: shell
         }
@@ -375,6 +439,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        authorized_root_key: root_key,
        source_repository_root: source_root,
        source_fingerprint: value["source_fingerprint"],
+       publication_remote_name: value["publication_remote_name"],
+       publication_repository_identity: value["publication_repository_identity"],
        max_access: access,
        allow_unconfined_shell: shell
      }}
@@ -382,16 +448,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_workspace_binding(_value), do: error(:invalid_field, "binding")
 
-  defp decode_ready_worktree(%{
-         "worktree_id" => worktree_id,
-         "run_id" => run_id,
-         "workspace_binding_id" => binding_id,
-         "base_revision" => base_revision,
-         "branch_name" => branch_name,
-         "canonical_root" => canonical_root,
-         "source_dirty_excluded" => dirty,
-         "identity_hash" => identity_hash
-       })
+  defp decode_ready_worktree(
+         %{
+           "worktree_id" => worktree_id,
+           "run_id" => run_id,
+           "workspace_binding_id" => binding_id,
+           "base_revision" => base_revision,
+           "branch_name" => branch_name,
+           "canonical_root" => canonical_root,
+           "source_dirty_excluded" => dirty,
+           "identity_hash" => identity_hash
+         } = value
+       )
        when is_binary(worktree_id) and is_binary(run_id) and is_binary(binding_id) and
               is_binary(base_revision) and is_binary(branch_name) and is_binary(canonical_root) and
               is_boolean(dirty) and is_binary(identity_hash) do
@@ -401,7 +469,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        run_id: run_id,
        workspace_binding_id: binding_id,
        base_revision: base_revision,
+       base_branch_name: value["base_branch_name"],
        branch_name: branch_name,
+       publication_remote_name: value["publication_remote_name"],
+       publication_repository_identity: value["publication_repository_identity"],
        canonical_root: canonical_root,
        source_dirty_excluded: dirty,
        identity_hash: identity_hash
@@ -431,6 +502,89 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   end
 
   defp decode_failed_worktree(_payload), do: error(:invalid_field, "worktree")
+
+  defp decode_worktree_identity(value) do
+    with {:ok, worktree_id} <- required_string(value, "worktree_id"),
+         {:ok, run_id} <- required_string(value, "run_id"),
+         {:ok, binding_id} <- required_string(value, "workspace_binding_id"),
+         {:ok, identity_hash} <- required_string(value, "identity_hash") do
+      {:ok,
+       %{
+         worktree_id: worktree_id,
+         run_id: run_id,
+         workspace_binding_id: binding_id,
+         identity_hash: identity_hash
+       }}
+    end
+  end
+
+  defp decode_delivery(value, kind) do
+    with {:ok, delivery_id} <- required_string(value, "delivery_id"),
+         {:ok, run_id} <- required_string(value, "run_id"),
+         {:ok, worktree_id} <- required_string(value, "worktree_id"),
+         {:ok, identity_hash} <- required_string(value, "identity_hash") do
+      base = %{
+        delivery_id: delivery_id,
+        run_id: run_id,
+        worktree_id: worktree_id,
+        identity_hash: identity_hash
+      }
+
+      decode_delivery_kind(value, kind, base)
+    end
+  end
+
+  defp decode_delivery_kind(value, :inspected, base) do
+    required =
+      ~w(fingerprint base_revision base_branch_name branch_name head_before_finalize repository_host repository_identity remote_name)
+
+    if Enum.all?(required, &(is_binary(value[&1]) and value[&1] != "")) and
+         is_map(value["evidence"]) and is_boolean(value["no_changes"]) do
+      {:ok,
+       Map.merge(base, %{
+         fingerprint: value["fingerprint"],
+         base_revision: value["base_revision"],
+         base_branch_name: value["base_branch_name"],
+         branch_name: value["branch_name"],
+         head_before_finalize: value["head_before_finalize"],
+         repository_host: value["repository_host"],
+         repository_identity: value["repository_identity"],
+         remote_name: value["remote_name"],
+         evidence: value["evidence"],
+         no_changes: value["no_changes"]
+       })}
+    else
+      error(:invalid_field, "delivery")
+    end
+  end
+
+  defp decode_delivery_kind(value, :published, base) do
+    if Enum.all?(
+         ~w(fingerprint branch_name head_revision),
+         &(is_binary(value[&1]) and value[&1] != "")
+       ),
+       do:
+         {:ok,
+          Map.merge(base, %{
+            fingerprint: value["fingerprint"],
+            branch_name: value["branch_name"],
+            head_revision: value["head_revision"]
+          })},
+       else: error(:invalid_field, "delivery")
+  end
+
+  defp decode_delivery_kind(value, :failed, base) do
+    if Enum.all?(~w(stage code), &(is_binary(value[&1]) and value[&1] != "")) and
+         is_map(value["details"] || %{}),
+       do:
+         {:ok,
+          Map.merge(base, %{
+            stage: value["stage"],
+            code: value["code"],
+            details: value["details"] || %{}
+          })},
+       else: error(:invalid_field, "delivery")
+  end
 
   defp dispatch_identity(payload) do
     with {:ok, action_id} <- required_string(payload, "action_id"),
@@ -502,20 +656,24 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp match_worker(received, expected),
     do: error(:worker_id_mismatch, "worker_id", %{received: received, expected: expected})
 
-  defp validate_capabilities(%{
-         "os" => os,
-         "arch" => arch,
-         "max_concurrency" => max_concurrency,
-         "tags" => tags,
-         "executors" => executors,
-         "workspace_bindings" => workspace_bindings
-       })
+  defp validate_capabilities(
+         %{
+           "os" => os,
+           "arch" => arch,
+           "max_concurrency" => max_concurrency,
+           "tags" => tags,
+           "executors" => executors,
+           "workspace_bindings" => workspace_bindings
+         } = capabilities
+       )
        when is_binary(os) and os != "" and is_binary(arch) and arch != "" and
               is_integer(max_concurrency) and max_concurrency > 0 and max_concurrency <= 1024 and
               is_list(executors) and executors != [] do
     with :ok <- string_list(tags, "capabilities.tags"),
          {:ok, executors} <- validate_executors(executors),
-         :ok <- validate_workspace_bindings(workspace_bindings) do
+         :ok <- validate_workspace_bindings(workspace_bindings),
+         features = Map.get(capabilities, "features", []),
+         :ok <- string_list(features, "capabilities.features") do
       {:ok,
        %{
          "os" => os,
@@ -523,7 +681,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "max_concurrency" => max_concurrency,
          "tags" => Enum.uniq(tags),
          "executors" => executors,
-         "workspace_bindings" => Enum.uniq(workspace_bindings)
+         "workspace_bindings" => Enum.uniq(workspace_bindings),
+         "features" => Enum.uniq(features)
        }}
     end
   end
@@ -624,6 +783,37 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       value when is_binary(value) and value != "" -> {:ok, value}
       _other -> error(:missing_or_invalid_field, field)
     end
+  end
+
+  defp worktree_command(type, worker_id, assignment) do
+    %{
+      "type" => type,
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "worktree" => %{
+        "worktree_id" => assignment.worktree_id,
+        "run_id" => assignment.run_id,
+        "workspace_binding_id" => assignment.workspace_binding_id,
+        "identity_hash" => assignment.identity_hash
+      }
+    }
+  end
+
+  defp delivery_command(type, worker_id, delivery, assignment) do
+    %{
+      "type" => type,
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "delivery" => %{
+        "delivery_id" => delivery.id,
+        "command_revision" => delivery.command_revision,
+        "run_id" => delivery.run_id,
+        "worktree_id" => assignment.worktree_id,
+        "workspace_binding_id" => assignment.workspace_binding_id,
+        "identity_hash" => assignment.identity_hash,
+        "branch_name" => assignment.branch_name
+      }
+    }
   end
 
   defp execution(%ResolvedExecution{

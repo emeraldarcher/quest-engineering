@@ -4,6 +4,7 @@ defmodule QuestEngineering.Server.CompletionAdapter do
   import Ecto.Query
 
   alias QuestEngineering.Core.Runtime
+  alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
@@ -35,7 +36,8 @@ defmodule QuestEngineering.Server.CompletionAdapter do
       case DispatchStore.mark_completed(worker_id, generation, action.id) do
         {:ok, dispatch_record} ->
           retain_terminal_workspace(action.run_id, result.run)
-          %{transition: result, dispatch: dispatch_record}
+          delivery = ensure_delivery(action.run_id, result.run)
+          %{transition: result, dispatch: dispatch_record, delivery: delivery}
 
         {:error, error} ->
           Repo.rollback(error)
@@ -54,6 +56,11 @@ defmodule QuestEngineering.Server.CompletionAdapter do
   end
 
   defp retain_terminal_workspace(_run_id, _run), do: :ok
+
+  defp ensure_delivery(run_id, %{status: :completed}),
+    do: DeliveryStore.ensure_for_completed_run(run_id)
+
+  defp ensure_delivery(_run_id, _run), do: nil
 
   def transition_id(worker_id, action_id) do
     "worker-completion/v1/" <>

@@ -7,6 +7,7 @@ import {
   asRecord,
   asString,
   type ClassDefinition,
+  type DeliveryProjection,
   decodeApiError,
   type ExecutionOption,
   type JsonValue,
@@ -123,6 +124,23 @@ export class ApiClient {
       `/runs/${encodeURIComponent(id)}`,
       (value) => decodeRun(asRecord(value, "run").run),
       signal,
+    );
+  retryDelivery = (runId: string) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/delivery/retry`,
+      {},
+      (value) => decodeDelivery(asRecord(value, "delivery").delivery),
+    );
+  cleanupWorktree = (runId: string, acknowledgeUnmerged = false) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/worktree/cleanup`,
+      { acknowledge_unmerged: acknowledgeUnmerged },
+      (value) => asRecord(value, "execution environment").execution_environment,
+    );
+  getRunChanges = (runId: string) =>
+    this.get(
+      `/runs/${encodeURIComponent(runId)}/changes`,
+      (value) => asRecord(value, "changes").changes,
     );
   getArtifact = (runId: string, artifactId: string) =>
     this.get(
@@ -371,6 +389,54 @@ function decodeQuest(value: unknown): Quest {
     workspace_id: asString(x.workspace_id, "quest"),
     squad_id: asString(x.squad_id, "quest"),
     tactic_source: decodeSource(x.tactic_source),
+    completion: (() => {
+      const completion = asRecord(
+        x.completion ?? { completed_at: null, completed_by_run_id: null },
+        "quest completion",
+      );
+      return {
+        completed_at: nullableString(
+          completion.completed_at,
+          "quest completion",
+        ),
+        completed_by_run_id: nullableString(
+          completion.completed_by_run_id,
+          "quest completion",
+        ),
+      };
+    })(),
+    lifecycle: (() => {
+      const lifecycle = asRecord(
+        x.lifecycle ?? {
+          state: "ready",
+          label: "Ready",
+          current_run_id: null,
+          primary_action: "launch",
+        },
+        "quest lifecycle",
+      );
+      return {
+        state: asString(
+          lifecycle.state,
+          "quest lifecycle",
+        ) as Quest["lifecycle"]["state"],
+        label: asString(lifecycle.label, "quest lifecycle"),
+        current_run_id: nullableString(
+          lifecycle.current_run_id,
+          "quest lifecycle",
+        ),
+        primary_action:
+          lifecycle.primary_action === null
+            ? null
+            : (asString(
+                lifecycle.primary_action,
+                "quest lifecycle",
+              ) as Quest["lifecycle"]["primary_action"]),
+        ...(lifecycle.delivery
+          ? { delivery: decodeDelivery(lifecycle.delivery) }
+          : {}),
+      };
+    })(),
     archived_at: nullableString(x.archived_at, "quest"),
   };
 }
@@ -385,6 +451,22 @@ function decodeWorkspace(value: unknown): Workspace {
     name: asString(x.name, "workspace"),
     source_kind: sourceKind,
     source_fingerprint: nullableString(x.source_fingerprint, "workspace"),
+    binding: (() => {
+      const binding = asRecord(
+        x.binding ?? {
+          state: "unbound",
+          message: "Add this Project to a Worker.",
+        },
+        "Project binding",
+      );
+      return {
+        state: asString(
+          binding.state,
+          "Project binding",
+        ) as Workspace["binding"]["state"],
+        message: asString(binding.message, "Project binding"),
+      };
+    })(),
     archived_at: nullableString(x.archived_at, "workspace"),
   };
 }
@@ -425,6 +507,47 @@ function decodeExecutionOption(value: unknown): ExecutionOption {
     available: asBoolean(x.available, "availability"),
   };
 }
+function decodeDelivery(value: unknown): DeliveryProjection {
+  const x = asRecord(value, "delivery");
+  const changes =
+    x.changes == null ? null : asRecord(x.changes, "delivery changes");
+  const review =
+    x.review == null ? null : asRecord(x.review, "delivery review");
+  const revisions = asRecord(
+    x.revisions ?? { base: null, head: null },
+    "delivery revisions",
+  );
+  const issue = x.issue == null ? null : asRecord(x.issue, "delivery issue");
+  return {
+    state: asString(x.state, "delivery") as DeliveryProjection["state"],
+    changes: changes
+      ? {
+          files_changed: asNumber(changes.files_changed, "delivery changes"),
+          additions: asNumber(changes.additions, "delivery changes"),
+          deletions: asNumber(changes.deletions, "delivery changes"),
+        }
+      : null,
+    review: review
+      ? {
+          provider: asString(review.provider, "delivery review") as "github",
+          state: asString(review.state, "delivery review"),
+          number: asNumber(review.number, "delivery review"),
+          url: asString(review.url, "delivery review"),
+        }
+      : null,
+    revisions: {
+      base: nullableString(revisions.base, "delivery revision"),
+      head: nullableString(revisions.head, "delivery revision"),
+    },
+    issue: issue
+      ? {
+          code: asString(issue.code, "delivery issue"),
+          message: asString(issue.message, "delivery issue"),
+        }
+      : null,
+    can_retry: asBoolean(x.can_retry, "delivery"),
+  };
+}
 function decodeRunSummary(value: unknown): RunSummary {
   const x = asRecord(value, "run summary");
   return {
@@ -433,6 +556,7 @@ function decodeRunSummary(value: unknown): RunSummary {
     quest_title: asString(x.quest_title, "run"),
     launched_at: asString(x.launched_at, "run"),
     step_counts: x.step_counts as Record<StepState, number>,
+    delivery: x.delivery == null ? null : decodeDelivery(x.delivery),
   };
 }
 function decodeRun(value: unknown): RunProjection {
@@ -458,6 +582,7 @@ function decodeRun(value: unknown): RunProjection {
       title: asString(quest.title, "quest"),
       objective: asString(quest.objective, "quest"),
     },
+    delivery: x.delivery == null ? null : decodeDelivery(x.delivery),
     execution_environment: {
       workspace: {
         id: asString(environmentWorkspace.id, "environment Workspace"),

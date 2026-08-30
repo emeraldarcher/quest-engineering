@@ -11,6 +11,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
   alias QuestEngineering.Server.FakeWorker
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
+  alias QuestEngineering.Server.Persistence.RunDelivery
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
@@ -20,14 +21,16 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
   alias QuestEngineering.Server.WorkerStore
 
   setup do
-    :ok = Sandbox.checkout(Repo)
-    Sandbox.mode(Repo, {:shared, self()})
+    owner = Sandbox.start_owner!(Repo, shared: true)
     root = Path.expand(".pi/tmp/v08b-protocol-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, ".git"))
     previous_workspaces = Application.get_env(:quest_engineering_server, :workspaces)
-    previous_scheduler = Application.get_env(:quest_engineering_server, :scheduler_enabled)
     Application.put_env(:quest_engineering_server, :workspaces, %{"workspace:protocol" => root})
-    Application.put_env(:quest_engineering_server, :scheduler_enabled, true)
+
+    start_supervised!(QuestEngineering.Server.WorkerConnections)
+    start_supervised!({QuestEngineering.Server.Dispatcher, claim_owner: "protocol-test"})
+    start_supervised!(QuestEngineering.Server.RunWorkspaceProvisioner)
+    start_supervised!({QuestEngineering.Server.Scheduler, claim_owner: "protocol-test"})
 
     on_exit(fn ->
       File.rm_rf!(root)
@@ -38,13 +41,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
         previous_workspaces || %{}
       )
 
-      Application.put_env(
-        :quest_engineering_server,
-        :scheduler_enabled,
-        if(is_nil(previous_scheduler), do: true, else: previous_scheduler)
-      )
-
-      Sandbox.mode(Repo, :manual)
+      Sandbox.stop_owner(owner)
     end)
 
     %{workspace_root: root}
@@ -123,6 +120,8 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
         RuntimeStore.fetch_run(launched.run_id)
       )
     end)
+
+    assert %{state: "pending"} = Repo.get_by!(RunDelivery, run_id: launched.run_id)
 
     action_ids = [plan.id, implement.id, review_0.id, repair.id, review_1.id]
     assert Enum.all?(action_ids, &(FakeWorker.execution_count(worker, &1) == 1))

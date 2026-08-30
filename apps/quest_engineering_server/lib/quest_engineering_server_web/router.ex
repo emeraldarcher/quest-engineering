@@ -54,6 +54,9 @@ defmodule QuestEngineering.ServerWeb.Router do
     post "/quests/:id/archive", ProductController, :archive
 
     get "/runs", RunController, :index
+    get "/runs/:id/changes", RunController, :changes
+    post "/runs/:id/delivery/retry", RunController, :retry_delivery
+    post "/runs/:id/worktree/cleanup", RunController, :cleanup
     get "/runs/:run_id/artifacts/:artifact_id", RunController, :artifact
     get "/runs/:id", RunController, :show
   end

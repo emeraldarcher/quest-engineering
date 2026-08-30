@@ -1,5 +1,5 @@
 defmodule QuestEngineering.Server.Product.RepositoryTest do
-  use QuestEngineering.Server.DataCase, async: true
+  use QuestEngineering.Server.DataCase, async: false
 
   import QuestEngineering.Core.Tactics
 

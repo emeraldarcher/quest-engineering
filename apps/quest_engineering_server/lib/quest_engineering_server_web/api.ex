@@ -58,6 +58,17 @@ defmodule QuestEngineering.ServerWeb.Api do
   defp error_view(:not_found),
     do: {404, "not_found", "The requested resource was not found.", [], %{}}
 
+  defp error_view(code)
+       when code in [
+              :delivery_not_retryable,
+              :workspace_not_retained,
+              :unmerged_acknowledgement_required,
+              :cleanup_not_safe,
+              :background_service_not_running
+            ] do
+    {409, to_string(code), "The request conflicts with current Run delivery state.", [], %{}}
+  end
+
   defp error_view(%Changeset{} = changeset),
     do: {422, "validation_failed", "The request is invalid.", changeset_details(changeset), %{}}
 

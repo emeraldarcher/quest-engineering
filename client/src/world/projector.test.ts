@@ -14,6 +14,7 @@ const base = (): RunProjection => ({
   launched_at: "2026-01-01T00:00:00Z",
   revision: 1,
   quest: { id: "quest", title: "Quest", objective: "Work" },
+  delivery: null,
   execution_environment: {
     workspace: { id: "workspace", key: "workspace", name: "Workspace" },
     state: "ready",

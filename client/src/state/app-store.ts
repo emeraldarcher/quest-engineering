@@ -58,6 +58,8 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
   let runRequest = 0;
   let refetching = false;
   let refetchNeeded = false;
+  let productRefetching = false;
+  let productRefetchNeeded = false;
 
   const realtime = new RealtimeClient(socketUrl, {
     onStatus: (status) => realtimeStatus.set(status),
@@ -65,6 +67,7 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
     onInvalidated: (runId) => {
       if (get(selectedRun)?.id === runId) void invalidateRun(runId);
     },
+    onProductInvalidated: () => void invalidateProduct(),
     onUnavailable: (runId) => {
       if (get(selectedRun)?.id !== runId) return;
       selectedRun.set(null);
@@ -73,9 +76,9 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
     },
   });
 
-  async function loadProduct() {
+  async function loadProduct(quiet = false) {
     realtime.start();
-    loading.set(true);
+    if (!quiet) loading.set(true);
     error.set(null);
     try {
       const [
@@ -113,7 +116,23 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
     } catch (cause) {
       error.set(toApiError(cause));
     } finally {
-      loading.set(false);
+      if (!quiet) loading.set(false);
+    }
+  }
+
+  async function invalidateProduct() {
+    if (productRefetching) {
+      productRefetchNeeded = true;
+      return;
+    }
+    productRefetching = true;
+    try {
+      do {
+        productRefetchNeeded = false;
+        await loadProduct(true);
+      } while (productRefetchNeeded);
+    } finally {
+      productRefetching = false;
     }
   }
 
@@ -169,6 +188,34 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
     }
   }
 
+  function reportError(cause: unknown) {
+    const failure = toApiError(cause);
+    error.set(failure);
+    if (import.meta.env.DEV) console.error(failure.code, failure.meta);
+  }
+
+  async function command<T>(operation: () => Promise<T>): Promise<T | null> {
+    error.set(null);
+    try {
+      return await operation();
+    } catch (cause) {
+      reportError(cause);
+      return null;
+    }
+  }
+
+  async function retryPublishing(runId: string) {
+    const result = await command(() => api.retryDelivery(runId));
+    if (result) await invalidateRun(runId);
+  }
+
+  async function cleanupWorktree(runId: string, acknowledgeUnmerged = false) {
+    const result = await command(() =>
+      api.cleanupWorktree(runId, acknowledgeUnmerged),
+    );
+    if (result) await invalidateRun(runId);
+  }
+
   function selectBuildingId(id: BuildingId | null) {
     selectedBuilding.set(id);
   }
@@ -197,6 +244,10 @@ export function createAppStore(api: ApiClient, socketUrl: string) {
     bootstrapRunning,
     loadProduct,
     refreshProduct,
+    command,
+    reportError,
+    retryPublishing,
+    cleanupWorktree,
     selectRun,
     selectBuildingId,
     isEmptyFirstRun,

@@ -19,6 +19,7 @@ config :quest_engineering_server, QuestEngineering.ServerWeb.Endpoint,
   server: true
 
 config :quest_engineering_server, :legacy_test_auto_worktrees, true
+config :quest_engineering_server, :start_background_services, false
 
 config :logger, level: :warning
 config :phoenix, :plug_init_mode, :runtime

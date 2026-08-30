@@ -9,12 +9,14 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Core.Product.TacticSource
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Server.CompletionAdapter
+  alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
   alias QuestEngineering.Server.Persistence.QuestLaunch
+  alias QuestEngineering.Server.Persistence.RunDelivery
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
@@ -28,26 +30,17 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.WorkerStore
 
   setup do
-    :ok = Sandbox.checkout(Repo)
-    Sandbox.mode(Repo, {:shared, self()})
+    owner = Sandbox.start_owner!(Repo, shared: true)
     root = Path.expand(".pi/tmp/v08b-workspace-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, ".git"))
     previous = Application.get_env(:quest_engineering_server, :workspaces)
-    previous_scheduler = Application.get_env(:quest_engineering_server, :scheduler_enabled)
     Application.put_env(:quest_engineering_server, :workspaces, %{"workspace:test" => root})
-    Application.put_env(:quest_engineering_server, :scheduler_enabled, false)
 
     on_exit(fn ->
       File.rm_rf!(root)
       Application.put_env(:quest_engineering_server, :workspaces, previous || %{})
 
-      Application.put_env(
-        :quest_engineering_server,
-        :scheduler_enabled,
-        if(is_nil(previous_scheduler), do: true, else: previous_scheduler)
-      )
-
-      Sandbox.mode(Repo, :manual)
+      Sandbox.stop_owner(owner)
     end)
 
     %{workspace_root: root}
@@ -122,12 +115,22 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
                  )
              })
 
-    assert {:ok, later_launch} = LaunchQuest.launch(fixture.quest.id)
+    assert {:error, %{code: :run_active}} = LaunchQuest.launch(fixture.quest.id)
+
+    assert {:ok, later_quest} =
+             Products.create_quest(%{
+               title: "Later definition Quest",
+               objective: "Run the updated definition.",
+               workspace_id: fixture.quest.workspace_id,
+               squad_id: fixture.quest.squad_id,
+               tactic_source: TacticSource.definition(definition.id)
+             })
+
+    assert {:ok, later_launch} = LaunchQuest.launch(later_quest.id)
     assert launched.snapshot.tactic.instruction == "Reusable work."
     assert later_launch.snapshot.tactic.instruction == "Changed reusable work."
 
     assert :ok = TacticLibrary.archive(definition.id)
-    assert {:error, [%{code: :archived_tactic_definition}]} = LaunchQuest.launch(fixture.quest.id)
 
     assert {:ok, historical} =
              LaunchSnapshotCodec.decode(persisted.snapshot, persisted.snapshot_version)
@@ -280,9 +283,19 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   end
 
   test "concurrent schedulers cannot partially acquire the last Worker slot", context do
-    fixture = product_fixture()
-    assert {:ok, first_launch} = LaunchQuest.launch(fixture.quest.id)
-    assert {:ok, second_launch} = LaunchQuest.launch(fixture.quest.id)
+    first_fixture = product_fixture()
+
+    assert {:ok, second_quest} =
+             Products.create_quest(%{
+               title: "Second concurrent Quest",
+               objective: "Compete for the final Worker slot.",
+               workspace_id: first_fixture.quest.workspace_id,
+               squad_id: first_fixture.quest.squad_id,
+               tactic_source: first_fixture.quest.tactic_source
+             })
+
+    assert {:ok, first_launch} = LaunchQuest.launch(first_fixture.quest.id)
+    assert {:ok, second_launch} = LaunchQuest.launch(second_quest.id)
     register_worker("worker-last-slot", context.workspace_root, max_concurrency: 1)
 
     tasks =
@@ -304,6 +317,205 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
              """)
   end
 
+  test "Run Again is allowed only after terminal non-integrated attempts" do
+    fixture = product_fixture()
+
+    for {terminal, quest} <-
+          Enum.zip(["closed_unmerged", "no_changes"], sibling_quests(fixture.quest, 2)) do
+      assert {:ok, launched} = LaunchQuest.launch(quest.id)
+      run = Repo.get!(RuntimeRun, launched.run_id)
+      Repo.update!(Ecto.Changeset.change(run, status: "completed"))
+
+      Repo.insert!(
+        RunDelivery.changeset(%{
+          id: Ecto.UUID.generate(),
+          run_id: launched.run_id,
+          quest_id: quest.id,
+          state: terminal,
+          command_revision: 1
+        })
+      )
+
+      assert {:ok, _new_run} = LaunchQuest.launch(quest.id)
+    end
+  end
+
+  test "active and recoverable Delivery attempts require Retry Publishing" do
+    states = [
+      "pending",
+      "preparing",
+      "publishing",
+      "creating_review",
+      "review_open",
+      "attention_required"
+    ]
+
+    fixture = product_fixture()
+
+    for {state, quest} <- Enum.zip(states, sibling_quests(fixture.quest, length(states))) do
+      assert {:ok, launched} = LaunchQuest.launch(quest.id)
+      run = Repo.get!(RuntimeRun, launched.run_id)
+      Repo.update!(Ecto.Changeset.change(run, status: "completed"))
+
+      Repo.insert!(
+        RunDelivery.changeset(%{
+          id: Ecto.UUID.generate(),
+          run_id: launched.run_id,
+          quest_id: quest.id,
+          state: state,
+          command_revision: 1
+        })
+      )
+
+      expected =
+        if state == "attention_required", do: :retry_publishing_required, else: :delivery_active
+
+      assert {:error, %{code: ^expected}} = LaunchQuest.launch(quest.id)
+    end
+  end
+
+  test "nonrecoverable Delivery identity attention permits an explicit new Run" do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    run = Repo.get!(RuntimeRun, launched.run_id)
+    Repo.update!(Ecto.Changeset.change(run, status: "completed"))
+
+    Repo.insert!(
+      RunDelivery.changeset(%{
+        id: Ecto.UUID.generate(),
+        run_id: launched.run_id,
+        quest_id: fixture.quest.id,
+        state: "attention_required",
+        command_revision: 1,
+        failure_code: "pull_request_identity_mismatch"
+      })
+    )
+
+    assert {:ok, _new_run} = LaunchQuest.launch(fixture.quest.id)
+  end
+
+  test "cleanup requests are explicit, safe, and idempotent" do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    run = Repo.get!(RuntimeRun, launched.run_id)
+    Repo.update!(Ecto.Changeset.change(run, status: "completed"))
+    assignment = Repo.get!(RunWorkspaceAssignment, launched.run_id)
+
+    Repo.update!(
+      Ecto.Changeset.change(assignment, state: "retained", retained_at: DateTime.utc_now())
+    )
+
+    Repo.insert!(
+      RunDelivery.changeset(%{
+        id: Ecto.UUID.generate(),
+        run_id: launched.run_id,
+        quest_id: fixture.quest.id,
+        state: "no_changes",
+        command_revision: 1
+      })
+    )
+
+    assert {:ok, %{state: "cleanup_requested"}} =
+             RunWorkspaceStore.request_cleanup(launched.run_id)
+
+    assert {:ok, %{state: "cleanup_requested"}} =
+             RunWorkspaceStore.request_cleanup(launched.run_id)
+  end
+
+  test "an unchanged merged Pull Request atomically completes its Quest" do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    run = Repo.get!(RuntimeRun, launched.run_id)
+    Repo.update!(Ecto.Changeset.change(run, status: "completed"))
+    head = String.duplicate("a", 40)
+
+    delivery =
+      Repo.insert!(
+        RunDelivery.changeset(%{
+          id: Ecto.UUID.generate(),
+          run_id: launched.run_id,
+          quest_id: fixture.quest.id,
+          state: "review_open",
+          command_revision: 1,
+          repository_identity: "owner/repo",
+          base_branch_name: "main",
+          branch_name: "qe/run/11111111111111111111111111111111",
+          head_revision: head,
+          provider: "github",
+          pull_request_number: 12
+        })
+      )
+
+    assert {:ok, merged} =
+             DeliveryStore.observe_review(delivery.id, %{
+               number: 12,
+               url: "https://github.com/owner/repo/pull/12",
+               state: "merged",
+               merged_at: DateTime.utc_now(),
+               repository_identity: "owner/repo",
+               base_branch: "main",
+               head_repository_identity: "owner/repo",
+               head_branch: "qe/run/11111111111111111111111111111111",
+               head_revision: head
+             })
+
+    assert merged.state == "merged"
+    quest = Repo.get!(QuestEngineering.Server.Persistence.ProductQuest, fixture.quest.id)
+    assert quest.completed_by_run_id == launched.run_id
+    assert {:error, %{code: :quest_completed}} = LaunchQuest.launch(fixture.quest.id)
+  end
+
+  test "an altered merged Pull Request cannot complete its Quest" do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    run = Repo.get!(RuntimeRun, launched.run_id)
+    Repo.update!(Ecto.Changeset.change(run, status: "completed"))
+    head = String.duplicate("a", 40)
+
+    delivery =
+      Repo.insert!(
+        RunDelivery.changeset(%{
+          id: Ecto.UUID.generate(),
+          run_id: launched.run_id,
+          quest_id: fixture.quest.id,
+          state: "review_open",
+          command_revision: 1,
+          repository_identity: "owner/repo",
+          base_branch_name: "main",
+          branch_name: "qe/run/11111111111111111111111111111111",
+          head_revision: head,
+          provider: "github",
+          pull_request_number: 13
+        })
+      )
+
+    assert {:ok, attention} =
+             DeliveryStore.observe_review(delivery.id, %{
+               number: 13,
+               url: "https://github.com/owner/repo/pull/13",
+               state: "merged",
+               merged_at: DateTime.utc_now(),
+               repository_identity: "owner/repo",
+               base_branch: "release",
+               head_repository_identity: "owner/repo",
+               head_branch: "qe/run/11111111111111111111111111111111",
+               head_revision: head
+             })
+
+    assert attention.state == "attention_required"
+    assert attention.failure_code == "pull_request_identity_mismatch"
+
+    refute Repo.get!(QuestEngineering.Server.Persistence.ProductQuest, fixture.quest.id).completed_at
+  end
+
+  test "previous Runtime failure permits an explicit new Run" do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    run = Repo.get!(RuntimeRun, launched.run_id)
+    Repo.update!(Ecto.Changeset.change(run, status: "failed"))
+    assert {:ok, _new_run} = LaunchQuest.launch(fixture.quest.id)
+  end
+
   test "uncertain execution retains Member, context, and Worker occupancy", context do
     fixture = product_fixture()
     assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
@@ -322,6 +534,21 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert Repo.get!(ScheduledActionExecution, dispatch.action_id).state == "active"
     assert {:ok, persisted_worker} = WorkerStore.fetch(worker.id)
     assert persisted_worker.active_dispatches == 1
+  end
+
+  defp sibling_quests(quest, count) do
+    Enum.map(1..count, fn index ->
+      {:ok, sibling} =
+        Products.create_quest(%{
+          title: "Sibling #{index}",
+          objective: "Exercise Delivery state.",
+          workspace_id: quest.workspace_id,
+          squad_id: quest.squad_id,
+          tactic_source: quest.tactic_source
+        })
+
+      sibling
+    end)
   end
 
   defp product_fixture(options \\ []) do

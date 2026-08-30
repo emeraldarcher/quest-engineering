@@ -3,6 +3,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
   import Ecto.Query
 
+  alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RuntimeCodec
@@ -59,7 +60,8 @@ defmodule QuestEngineering.Server.RunProjection do
       status: projection.status,
       quest_title: projection.quest.title,
       launched_at: projection.launched_at,
-      step_counts: projection.step_counts
+      step_counts: projection.step_counts,
+      delivery: projection.delivery
     }
   end
 
@@ -83,6 +85,7 @@ defmodule QuestEngineering.Server.RunProjection do
     states = Enum.map(steps, & &1.state)
 
     assignment = Repo.get(RunWorkspaceAssignment, run.id)
+    delivery = DeliveryStore.fetch(run.id)
 
     %{
       id: run.id,
@@ -91,6 +94,7 @@ defmodule QuestEngineering.Server.RunProjection do
       revision: revision,
       launch: %{id: launch.id},
       execution_environment: execution_environment(snapshot, assignment),
+      delivery: DeliveryStore.projection(delivery),
       quest: %{
         id: snapshot.quest.id,
         title: snapshot.quest.title,
@@ -151,6 +155,9 @@ defmodule QuestEngineering.Server.RunProjection do
 
         "retained" ->
           {"retained", "Terminal Run workspace retained.", nil}
+
+        "cleanup_requested" ->
+          {"cleanup_requested", "Removing the retained Run workspace.", nil}
 
         "removed" ->
           {"removed", "Run workspace removed.", nil}

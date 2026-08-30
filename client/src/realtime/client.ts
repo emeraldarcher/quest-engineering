@@ -11,11 +11,13 @@ export interface RealtimeHandlers {
   onJoined(run: RunProjection): void;
   onInvalidated(runId: string): void;
   onUnavailable(runId: string): void;
+  onProductInvalidated(resources: string[]): void;
 }
 
 export class RealtimeClient {
   private socket: Socket | null = null;
   private channel: Channel | null = null;
+  private productChannel: Channel | null = null;
   private selectedRunId: string | null = null;
 
   constructor(
@@ -37,7 +39,9 @@ export class RealtimeClient {
 
   disconnect(): void {
     this.channel?.leave();
+    this.productChannel?.leave();
     this.channel = null;
+    this.productChannel = null;
     this.selectedRunId = null;
     this.socket?.disconnect();
     this.socket = null;
@@ -51,11 +55,27 @@ export class RealtimeClient {
     socket.onOpen(() => {
       this.handlers.onStatus("connected");
       if (this.selectedRunId) this.handlers.onInvalidated(this.selectedRunId);
+      this.joinProduct();
     });
     socket.onError(() => this.handlers.onStatus("reconnecting"));
     socket.onClose(() => this.handlers.onStatus("reconnecting"));
     socket.connect();
     this.socket = socket;
+  }
+
+  private joinProduct(): void {
+    if (!this.socket || this.productChannel) return;
+    const channel = this.socket.channel("product:all");
+    channel.on("product_changed", (payload: { resources?: unknown }) => {
+      const resources = Array.isArray(payload.resources)
+        ? payload.resources.filter(
+            (item): item is string => typeof item === "string",
+          )
+        : [];
+      this.handlers.onProductInvalidated(resources);
+    });
+    channel.join();
+    this.productChannel = channel;
   }
 
   private join(runId: string): void {

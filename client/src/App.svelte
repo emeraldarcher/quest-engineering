@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
+import { onDestroy, onMount, tick } from "svelte";
 import type {
   ArtifactDetail,
   ClassDefinition,
@@ -13,6 +13,7 @@ import type {
 } from "./api/contracts";
 import TownCanvas from "./components/TownCanvas.svelte";
 import ValidationSummary from "./components/ValidationSummary.svelte";
+import { openPullRequest } from "./platform/open-pull-request";
 import { createStarterCrew } from "./domain/starter-crew";
 import type { AppStore, BuildingId } from "./state/app-store";
 
@@ -90,9 +91,11 @@ let selectedMemberKey: string | null = null;
 let artifact: ArtifactDetail | null = null;
 let starterOption = "";
 let starterWorkspace = "";
+let previousFocus: HTMLElement | null = null;
 
 onMount(async () => {
   window.addEventListener("keydown", handleKeydown);
+  window.addEventListener("unhandledrejection", handleUnhandledRejection);
   const fixtureBuilding = new URLSearchParams(location.search).get("building") as BuildingId | null;
   if (buildings.some((item) => item.id === fixtureBuilding)) selectBuilding(fixtureBuilding as BuildingId);
   await store.loadProduct();
@@ -101,6 +104,7 @@ onMount(async () => {
 });
 onDestroy(() => {
   window.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener("unhandledrejection", handleUnhandledRejection);
   store.dispose();
 });
 
@@ -113,6 +117,12 @@ const buildings: Array<{ id: BuildingId; label: string; hotkey: string }> = [
   { id: "work-area", label: "Work Yard", hotkey: "6" },
 ];
 $: product = $productStore;
+$: {
+  const freshQuest = selectedQuest && product.quests.find((item) => item.id === selectedQuest?.id);
+  if (freshQuest && freshQuest !== selectedQuest) selectedQuest = freshQuest;
+  const freshProject = selectedWorkspace && product.workspaces.find((item) => item.id === selectedWorkspace?.id);
+  if (freshProject && freshProject !== selectedWorkspace) selectedWorkspace = freshProject;
+}
 $: run = $selectedRunStore;
 $: world = $worldStore;
 $: selectedOption =
@@ -131,9 +141,13 @@ $: memberStep =
 $: memberIsActive =
   memberStep !== null && ["scheduled", "running", "uncertain"].includes(memberStep.state);
 
+function handleUnhandledRejection(event: PromiseRejectionEvent) {
+  event.preventDefault();
+  store.reportError(event.reason);
+}
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
-    store.selectBuildingId(null);
+    requestCloseWindow();
     return;
   }
   if ((event.target as HTMLElement)?.matches("input, textarea, select")) return;
@@ -142,9 +156,27 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 function selectBuilding(id: BuildingId) {
+  previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   store.selectBuildingId(id);
   preview = null;
   artifact = null;
+  void tick().then(() => document.querySelector<HTMLElement>(".panel input:not([disabled]), .panel select, .panel button")?.focus());
+}
+function requestCloseWindow() {
+  const dirty =
+    (!selectedWorkspace && !!(workspaceDraft.key || workspaceDraft.name)) ||
+    (!!selectedWorkspace && (workspaceDraft.name !== selectedWorkspace.name || workspaceDraft.source_fingerprint !== (selectedWorkspace.source_fingerprint ?? ""))) ||
+    (!selectedClass && !!classDraft.key) ||
+    (!!selectedClass && JSON.stringify(classDraft) !== JSON.stringify({key: selectedClass.key, name: selectedClass.name, description: selectedClass.description, instructions: selectedClass.instructions})) ||
+    (!selectedLoadout && !!loadoutDraft.key) ||
+    (!!selectedLoadout && (loadoutDraft.name !== selectedLoadout.name || loadoutDraft.description !== selectedLoadout.description || loadoutDraft.model !== selectedLoadout.model.model || loadoutDraft.provider !== selectedLoadout.model.provider || loadoutDraft.tools !== selectedLoadout.tools.join(", "))) ||
+    (!selectedSquad && !!squadDraft.key) ||
+    (!!selectedSquad && JSON.stringify(squadDraft.members) !== JSON.stringify(selectedSquad.members)) ||
+    (!selectedQuest && !!(questDraft.title || questDraft.objective)) ||
+    (!!selectedQuest && (questDraft.title !== selectedQuest.title || questDraft.objective !== selectedQuest.objective || questDraft.workspace_id !== selectedQuest.workspace_id || questDraft.squad_id !== selectedQuest.squad_id));
+  if (dirty && !confirm("Discard unsaved changes and close this window?")) return;
+  store.selectBuildingId(null);
+  previousFocus?.focus();
 }
 function selectMember(key: string) {
   selectedMemberKey = key;
@@ -162,6 +194,8 @@ function chooseWorkspaceSource(candidateId: string) {
   if (!source) return;
   workspaceDraft = {
     ...workspaceDraft,
+    key: workspaceDraft.key || source.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+    name: workspaceDraft.name || source.name,
     source_kind: source.source_kind,
     source_fingerprint: source.source_fingerprint ?? "",
   };
@@ -421,6 +455,27 @@ async function launchQuest() {
   store.selectBuildingId("work-area");
   preview = null;
 }
+async function openSelectedQuestReview() {
+  const review = selectedQuest?.lifecycle.delivery?.review;
+  if (review) await store.command(() => openPullRequest(review.url, review.number));
+}
+async function retrySelectedQuestPublishing() {
+  const runId = selectedQuest?.lifecycle.current_run_id;
+  if (runId) await store.retryPublishing(runId);
+}
+async function retryPublishing() {
+  if (run) await store.retryPublishing(run.id);
+}
+async function cleanupWorktree() {
+  if (!run) return;
+  const acknowledge = run.delivery?.state === "closed_unmerged";
+  if (acknowledge && !confirm("This Pull Request closed without merge. Remove only the clean local worktree?")) return;
+  await store.cleanupWorktree(run.id, acknowledge);
+}
+async function reviewOnGitHub() {
+  const review = run?.delivery?.review;
+  if (review) await store.command(() => openPullRequest(review.url, review.number));
+}
 async function archiveQuest() {
   if (selectedQuest && confirm(`Archive ${selectedQuest.title}?`)) {
     await store.api.archiveQuest(selectedQuest.id);
@@ -443,11 +498,7 @@ async function bootstrap() {
     selectBuilding("quest-board");
     newQuest();
   } catch (cause) {
-    alert(
-      cause instanceof Error
-        ? cause.message
-        : "Starter crew could not be created.",
-    );
+    store.reportError(cause);
   } finally {
     store.bootstrapRunning.set(false);
   }
@@ -474,7 +525,7 @@ function optionKey(option: {
 
 <main>
   <TownCanvas model={world} selectedBuilding={$selectedBuildingStore} onBuilding={selectBuilding} onMember={selectMember} />
-  <header class="topbar"><strong>QUEST ENGINEERING</strong><span class="version">v0.12 · RUNEFALL</span><span class:bad={$realtimeStatusStore !== "connected"}>◆ control plane {$realtimeStatusStore}</span><span class:bad={!product.workspaceSources.length}>◇ {product.workspaceSources.length ? "Worker source online" : "No Worker source"}</span><nav aria-label="Town menu">{#each buildings as building}<button title={`${building.hotkey} · ${building.label}`} on:click={() => selectBuilding(building.id)}><kbd>{building.hotkey}</kbd> {building.label}</button>{/each}</nav></header>
+  <header class="topbar"><strong>QUEST ENGINEERING</strong><span class="version">v0.13 · DELIVERY</span><span class:bad={$realtimeStatusStore !== "connected"}>◆ control plane {$realtimeStatusStore}</span><span class:bad={!product.workspaceSources.length}>◇ {product.workspaceSources.length ? "Worker source online" : "No Worker source"}</span><nav aria-label="Town menu">{#each buildings as building}<button title={`${building.hotkey} · ${building.label}`} on:click={() => selectBuilding(building.id)}><kbd>{building.hotkey}</kbd> {building.label}</button>{/each}</nav></header>
   {#if $loadingStore}<div class="notice">Loading Product data…</div>{/if}
   {#if $errorStore}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}</div>{/if}
 
@@ -483,7 +534,7 @@ function optionKey(option: {
       <h1>Raise a starter crew</h1><p>Create ordinary Product rows for a Builder, Reviewer, Loadouts, Squad, and reusable Tactic.</p>
       {#if product.executionOptions.filter((item) => item.available).length && product.workspaces.length}
         <label>Known model <select bind:value={starterOption}><option value="">Choose a connected execution profile</option>{#each product.executionOptions.filter((item) => item.available) as option}<option value={optionKey(option)}>{option.model.provider} / {option.model.model}</option>{/each}</select></label>
-        <label>Workspace <select bind:value={starterWorkspace}><option value="">Choose workspace</option>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label>
+        <label>Project <select bind:value={starterWorkspace}><option value="">Choose workspace</option>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label>
         <button disabled={!selectedOption || !starterWorkspace || $bootstrapRunningStore} on:click={bootstrap}>{$bootstrapRunningStore ? "Creating…" : "Create starter crew"}</button>
       {:else}<p class="error">Connect a compatible Worker and configure a workspace, then refresh the town. Manual editors remain available.</p>{/if}
     </section>
@@ -491,17 +542,19 @@ function optionKey(option: {
 
   {#if run}<aside class="run-status"><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}</aside>{/if}
 
-  {#if $selectedBuildingStore === "gatehouse"}<aside class="panel game-window"><header><span>✦</span><h2>Wayfinder Lodge</h2><button class="close" aria-label="Close" on:click={() => store.selectBuildingId(null)}>×</button></header><p class="subtitle">Logical Workspaces · paths stay with Workers</p><div class="split"><ul class="ledger">{#each product.workspaces as item}<li><button on:click={() => editWorkspace(item)}><strong>{item.name}</strong><small>{item.key} · {item.source_kind}</small></button></li>{/each}</ul><form on:submit|preventDefault={saveWorkspace}><h3>{selectedWorkspace ? "Edit charter" : "Register charter"}</h3><label>Immutable key <input disabled={!!selectedWorkspace} bind:value={workspaceDraft.key} required /></label><label>Display name <input bind:value={workspaceDraft.name} required /></label><label>Source identity <select bind:value={workspaceDraft.source_kind} disabled={!!selectedWorkspace}><option value="local_git">Local Git</option><option value="git_remote">Git remote</option></select></label><label>Remote fingerprint <input bind:value={workspaceDraft.source_fingerprint} placeholder="Optional for local Git" /></label><fieldset><legend>Worker source binding</legend><label>Discovered authorized repository <select value={selectedWorkspaceSource} on:change={(event) => chooseWorkspaceSource(event.currentTarget.value)}><option value="">Choose a source</option>{#each product.workspaceSources.filter((source) => !selectedWorkspace || source.source_kind === selectedWorkspace.source_kind && source.source_fingerprint === selectedWorkspace.source_fingerprint) as source}<option value={source.candidate_id}>{source.name} · {source.source_kind} · {source.max_access}{source.shell_available ? " · shell" : ""}</option>{/each}</select></label><button type="button" disabled={!selectedWorkspace || !selectedWorkspaceSource} on:click={bindWorkspaceSource}>Bind selected source</button></fieldset><p class="hint">Discovery is mediated by the control plane; local paths never enter Product data.</p><ValidationSummary details={$errorStore?.details ?? []} /><footer><button>Save Workspace</button><button type="button" on:click={newWorkspace}>New</button>{#if selectedWorkspace}<button type="button" class="danger" on:click={archiveWorkspace}>Archive</button>{/if}</footer></form></div></aside>{/if}
+  {#if $selectedBuildingStore}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
-  {#if $selectedBuildingStore === "guild"}<aside class="panel"><h2>Guild Hall — Classes</h2><div class="split"><ul>{#each product.classes as item}<li><button on:click={() => editClass(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveClass}><h3>{selectedClass ? "Edit" : "Create"} Class</h3><label>Key <input disabled={!!selectedClass} bind:value={classDraft.key} required /></label><label>Name <input bind:value={classDraft.name} required /></label><label>Description <textarea bind:value={classDraft.description}></textarea></label><label>Instructions <textarea bind:value={classDraft.instructions} required></textarea></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Class</button><button type="button" on:click={newClass}>New</button>{#if selectedClass}<button type="button" class="danger" on:click={archiveClass}>Archive</button>{/if}</form></div></aside>{/if}
+  {#if $selectedBuildingStore === "gatehouse"}<aside class="panel game-window"><header><span>✦</span><h2>Projects</h2><button class="close" aria-label="Close" on:click={() => store.selectBuildingId(null)}>×</button></header><p class="subtitle">Projects available to your Quests</p><div class="split"><ul class="ledger">{#each product.workspaces as item}<li><button on:click={() => editWorkspace(item)}><strong>{item.name}</strong><small>{item.key} · {item.source_kind}</small></button></li>{/each}</ul><form on:submit|preventDefault={saveWorkspace}><h3>{selectedWorkspace ? "Edit Project" : "Add Project"}</h3><label>Immutable key <input disabled={!!selectedWorkspace} bind:value={workspaceDraft.key} required /></label><label>Repository <select value={selectedWorkspaceSource} on:change={(event) => chooseWorkspaceSource(event.currentTarget.value)}><option value="">Choose a discovered repository</option>{#each product.workspaceSources as source}<option value={source.candidate_id}>{source.name}</option>{/each}</select></label><label>Display name <input bind:value={workspaceDraft.name} required /></label><details class="advanced"><summary>Advanced Git identity and Worker binding</summary><label>Source identity <select bind:value={workspaceDraft.source_kind} disabled={!!selectedWorkspace}><option value="local_git">Local Git</option><option value="git_remote">Git remote</option></select></label><label>Remote fingerprint <input bind:value={workspaceDraft.source_fingerprint} placeholder="Optional for local Git" /></label><fieldset><legend>Worker source binding</legend><label>Discovered authorized repository <select value={selectedWorkspaceSource} on:change={(event) => chooseWorkspaceSource(event.currentTarget.value)}><option value="">Choose a source</option>{#each product.workspaceSources.filter((source) => !selectedWorkspace || source.source_kind === selectedWorkspace.source_kind && source.source_fingerprint === selectedWorkspace.source_fingerprint) as source}<option value={source.candidate_id}>{source.name} · {source.source_kind} · {source.max_access}{source.shell_available ? " · shell" : ""}</option>{/each}</select></label><button type="button" disabled={!selectedWorkspace || !selectedWorkspaceSource} on:click={bindWorkspaceSource}>Bind selected source</button></fieldset><p class="hint">Discovery is mediated by the control plane; local paths never enter Product data.</p></details><ValidationSummary details={$errorStore?.details ?? []} /><footer><button>Save Project</button><button type="button" on:click={newWorkspace}>New</button>{#if selectedWorkspace}<button type="button" class="danger" on:click={archiveWorkspace}>Archive</button>{/if}</footer></form></div></aside>{/if}
 
-  {#if $selectedBuildingStore === "blacksmith"}<aside class="panel"><h2>Blacksmith — Loadouts</h2><div class="split"><ul>{#each product.loadouts as item}<li><button on:click={() => editLoadout(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveLoadout}><h3>{selectedLoadout ? "Edit" : "Create"} Loadout</h3><label>Key <input disabled={!!selectedLoadout} bind:value={loadoutDraft.key} required /></label><label>Name <input bind:value={loadoutDraft.name} required /></label><label>Description <textarea bind:value={loadoutDraft.description}></textarea></label><label>Known execution profile <select on:change={(event) => applyExecutionOption(event.currentTarget.value)}><option value="">Choose a discovered profile</option>{#each product.executionOptions as option}<option value={optionKey(option)}>{option.model.provider} / {option.model.model} — {option.available ? "available" : "offline"}</option>{/each}</select></label><label>Provider <input bind:value={loadoutDraft.provider} required /></label><label>Model <input bind:value={loadoutDraft.model} required /></label><label>Reasoning <select bind:value={loadoutDraft.reasoning}><option>low</option><option>medium</option><option>high</option></select></label><label>QE capabilities <input bind:value={loadoutDraft.tools} /></label><label>Workspace access <select bind:value={loadoutDraft.workspace_access}><option>none</option><option>read_only</option><option>read_write</option></select></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Loadout</button><button type="button" on:click={newLoadout}>New</button>{#if selectedLoadout}<button type="button" class="danger" on:click={archiveLoadout}>Archive</button>{/if}</form></div><p class="hint">Known execution profiles are a convenience; custom Product capability values remain valid.</p></aside>{/if}
+  {#if $selectedBuildingStore === "guild"}<aside class="panel game-window"><h2>Guild Hall — Classes</h2><div class="split"><ul>{#each product.classes as item}<li><button on:click={() => editClass(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveClass}><h3>{selectedClass ? "Edit" : "Create"} Class</h3><label>Key <input disabled={!!selectedClass} bind:value={classDraft.key} required /></label><label>Name <input bind:value={classDraft.name} required /></label><label>Description <textarea bind:value={classDraft.description}></textarea></label><label>Instructions <textarea bind:value={classDraft.instructions} required></textarea></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Class</button><button type="button" on:click={newClass}>New</button>{#if selectedClass}<button type="button" class="danger" on:click={archiveClass}>Archive</button>{/if}</form></div></aside>{/if}
 
-  {#if $selectedBuildingStore === "tavern"}<aside class="panel"><h2>Tavern — Squads</h2><div class="split"><ul>{#each product.squads as item}<li><button on:click={() => editSquad(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveSquad}><h3>{selectedSquad ? "Edit" : "Create"} Squad</h3><label>Key <input disabled={!!selectedSquad} bind:value={squadDraft.key} required /></label><label>Name <input bind:value={squadDraft.name} required /></label><label>Description <textarea bind:value={squadDraft.description}></textarea></label><h3>Roster</h3>{#each squadDraft.members as item, index}<fieldset><input aria-label="Member key" bind:value={item.member_key} /><input aria-label="Display name" bind:value={item.name} /><select bind:value={item.class_id}>{#each product.classes as value}<option value={value.id}>{value.name}</option>{/each}</select><select bind:value={item.loadout_id}>{#each product.loadouts as value}<option value={value.id}>{value.name}</option>{/each}</select><button type="button" on:click={() => moveMember(index, -1)}>↑</button><button type="button" on:click={() => moveMember(index, 1)}>↓</button><button type="button" on:click={() => squadDraft.members = squadDraft.members.filter((_, i) => i !== index)}>Remove</button></fieldset>{/each}<ValidationSummary details={$errorStore?.details ?? []} /><button type="button" on:click={addMember}>Add Member</button><button>Save Squad</button><button type="button" on:click={newSquad}>New</button>{#if selectedSquad}<button type="button" class="danger" on:click={archiveSquad}>Archive</button>{/if}</form></div></aside>{/if}
+  {#if $selectedBuildingStore === "blacksmith"}<aside class="panel game-window"><h2>Forge — Loadouts</h2><div class="split"><ul>{#each product.loadouts as item}<li><button on:click={() => editLoadout(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveLoadout}><h3>{selectedLoadout ? "Edit" : "Create"} Loadout</h3><label>Key <input disabled={!!selectedLoadout} bind:value={loadoutDraft.key} required /></label><label>Name <input bind:value={loadoutDraft.name} required /></label><label>Description <textarea bind:value={loadoutDraft.description}></textarea></label><label>Known execution profile <select on:change={(event) => applyExecutionOption(event.currentTarget.value)}><option value="">Choose a discovered profile</option>{#each product.executionOptions as option}<option value={optionKey(option)}>{option.model.provider} / {option.model.model} — {option.available ? "available" : "offline"}</option>{/each}</select></label><label>Provider <input bind:value={loadoutDraft.provider} required /></label><label>Model <input bind:value={loadoutDraft.model} required /></label><label>Reasoning <select bind:value={loadoutDraft.reasoning}><option>low</option><option>medium</option><option>high</option></select></label><label>QE capabilities <input bind:value={loadoutDraft.tools} /></label><label>Workspace access <select bind:value={loadoutDraft.workspace_access}><option>none</option><option>read_only</option><option>read_write</option></select></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Loadout</button><button type="button" on:click={newLoadout}>New</button>{#if selectedLoadout}<button type="button" class="danger" on:click={archiveLoadout}>Archive</button>{/if}</form></div><p class="hint">Known execution profiles are a convenience; custom Product capability values remain valid.</p></aside>{/if}
 
-  {#if $selectedBuildingStore === "quest-board"}<aside class="panel"><h2>Quest Board</h2><div class="split"><ul>{#each product.quests as item}<li><button on:click={() => item.tactic_source.type === "definition" ? editQuest(item) : selectedQuest = item}>{item.title}</button>{#if item.tactic_source.type === "inline"}<small> inline tactic — read only</small>{/if}</li>{/each}</ul><form on:submit|preventDefault={saveQuest}><h3>{selectedQuest ? "Edit" : "Create"} Quest</h3>{#if selectedQuest?.tactic_source.type === "inline"}<p>This Quest uses an inline Tactic. v0.12 preserves it read-only.</p>{:else}<label>Title <input bind:value={questDraft.title} required /></label><label>Objective <textarea bind:value={questDraft.objective} required></textarea></label><label>Workspace <select bind:value={questDraft.workspace_id}>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label><label>Squad <select bind:value={questDraft.squad_id}>{#each product.squads as squad}<option value={squad.id}>{squad.name}</option>{/each}</select></label><label>Tactic <select bind:value={questDraft.tactic_definition_id}>{#each product.tactics as tactic}<option value={tactic.id}>{tactic.name} — {tactic.description}</option>{/each}</select></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Quest</button>{#if selectedQuest}<button type="button" on:click={previewQuest}>Preview</button><button type="button" class="launch" on:click={launchQuest}>Launch Quest</button><button type="button" class="danger" on:click={archiveQuest}>Archive</button>{/if}<button type="button" on:click={newQuest}>New</button>{/if}</form></div>{#if preview}<pre>{JSON.stringify(preview, null, 2)}</pre>{/if}<h3>Reusable Tactics</h3>{#each product.tactics as tactic}<article><strong>{tactic.name}</strong><p>{tactic.description}</p></article>{/each}</aside>{/if}
+  {#if $selectedBuildingStore === "tavern"}<aside class="panel game-window"><h2>Tavern — Squads</h2><div class="split"><ul>{#each product.squads as item}<li><button on:click={() => editSquad(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveSquad}><h3>{selectedSquad ? "Edit" : "Create"} Squad</h3><label>Key <input disabled={!!selectedSquad} bind:value={squadDraft.key} required /></label><label>Name <input bind:value={squadDraft.name} required /></label><label>Description <textarea bind:value={squadDraft.description}></textarea></label><h3>Roster</h3>{#each squadDraft.members as item, index}<fieldset><input aria-label="Member key" bind:value={item.member_key} /><input aria-label="Display name" bind:value={item.name} /><select bind:value={item.class_id}>{#each product.classes as value}<option value={value.id}>{value.name}</option>{/each}</select><select bind:value={item.loadout_id}>{#each product.loadouts as value}<option value={value.id}>{value.name}</option>{/each}</select><button type="button" on:click={() => moveMember(index, -1)}>↑</button><button type="button" on:click={() => moveMember(index, 1)}>↓</button><button type="button" on:click={() => squadDraft.members = squadDraft.members.filter((_, i) => i !== index)}>Remove</button></fieldset>{/each}<ValidationSummary details={$errorStore?.details ?? []} /><button type="button" on:click={addMember}>Add Member</button><button>Save Squad</button><button type="button" on:click={newSquad}>New</button>{#if selectedSquad}<button type="button" class="danger" on:click={archiveSquad}>Archive</button>{/if}</form></div></aside>{/if}
 
-  {#if $selectedBuildingStore === "work-area"}<aside class="panel"><h2>Work Yard — Selected Run</h2><label>Recent runs <select on:change={(event) => store.selectRun(event.currentTarget.value)} value={run?.id ?? ""}><option value="">Choose a run</option>{#each product.runs as summary}<option value={summary.id}>{summary.quest_title} — {summary.status}</option>{/each}</select></label>{#if run}<h3>{run.quest.title} <span class="pill">{run.status}</span></h3><section class="environment"><strong>{run.execution_environment.workspace.name}</strong><span>{run.execution_environment.message}</span>{#if run.execution_environment.branch}<code>{run.execution_environment.branch}</code>{/if}{#if run.execution_environment.source_dirty_changes_excluded}<small>Dirty source changes were excluded from the Run base.</small>{/if}{#if run.execution_environment.state === "retained"}<small>Changes remain in the isolated retained Run worktree; the source checkout was not modified.</small>{/if}</section>{#if world?.orderMarkers.length}<p>Orders: {world.orderMarkers.map((item) => `${item.name} (${item.state})`).join(", ")}</p>{/if}{#if world?.diagnostics.length}<p class="error">{world.diagnostics.join(" ")}</p>{/if}<h3>Member inspector</h3>{#if member}<p><strong>{member.name}</strong> · {member.class.name} · {member.loadout.name}</p>{#if memberStep}<p>{memberIsActive ? "Active assignment" : "Last assignment"}: <strong>{memberStep.name}</strong> — {memberStep.state}</p><p>{memberStep.instruction}</p><small>Occurrence ID: {memberStep.occurrence_id}</small>{#if memberStep.inputs.length || memberStep.outputs.length}<h4>Assignment artifacts</h4>{#each [...memberStep.inputs, ...memberStep.outputs] as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{:else}<p>No assignment history for this Member.</p>{/if}{/if}<h3>Run artifacts</h3>{#if run.artifacts.length}{#each run.artifacts as item}<button on:click={() => openArtifact(item.id)}>{item.type} — {artifactPreview(item.preview)}</button>{/each}{:else}<p>No artifacts were produced.</p>{/if}{#if artifact}<h4>{artifact.type}</h4><pre>{JSON.stringify(artifact.value, null, 2)}</pre>{/if}<h3>Occurrence history</h3>{#each run.steps as step}<details><summary>{step.name ?? step.semantic_step_key} — {step.state}</summary><p>{step.instruction}</p>{#if step.member}<p>Member: {step.member.name}</p>{/if}<small>{step.occurrence_id}</small>{#if step.inputs.length}<h4>Inputs</h4>{#each step.inputs as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{#if step.outputs.length}<h4>Outputs</h4>{#each step.outputs as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{#if step.issue}<p class="error">{step.issue.code}: {step.issue.message}</p>{/if}</details>{/each}{/if}</aside>{/if}
+  {#if $selectedBuildingStore === "quest-board"}<aside class="panel game-window"><h2>Quest Board</h2><div class="split"><ul>{#each product.quests as item}<li><button on:click={() => item.tactic_source.type === "definition" ? editQuest(item) : selectedQuest = item}>{item.title}</button>{#if item.tactic_source.type === "inline"}<small> inline tactic — read only</small>{/if}</li>{/each}</ul><form on:submit|preventDefault={saveQuest}><h3>{selectedQuest ? "Edit" : "Create"} Quest</h3>{#if selectedQuest?.tactic_source.type === "inline"}<p>This Quest uses an inline Tactic and remains read-only.</p>{:else}<label>Title <input bind:value={questDraft.title} required /></label><label>Objective <textarea bind:value={questDraft.objective} required></textarea></label><label>Project <select bind:value={questDraft.workspace_id}>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label><label>Squad <select bind:value={questDraft.squad_id}>{#each product.squads as squad}<option value={squad.id}>{squad.name}</option>{/each}</select></label><label>Tactic <select bind:value={questDraft.tactic_definition_id}>{#each product.tactics as tactic}<option value={tactic.id}>{tactic.name} — {tactic.description}</option>{/each}</select></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Quest</button>{#if selectedQuest}<button type="button" on:click={previewQuest}>Preview</button>{#if selectedQuest.lifecycle.primary_action === "launch"}<button type="button" class="launch" on:click={launchQuest}>Launch Quest</button>{:else if selectedQuest.lifecycle.primary_action === "run_again"}<button type="button" class="launch" on:click={launchQuest}>Run Again</button>{:else if selectedQuest.lifecycle.primary_action === "retry_publishing"}<button type="button" on:click={retrySelectedQuestPublishing}>Retry Publishing</button>{:else if selectedQuest.lifecycle.primary_action === "open_pull_request"}<button type="button" class="launch" on:click={openSelectedQuestReview}>Review on GitHub</button>{/if}<button type="button" class="danger" on:click={archiveQuest}>Archive</button>{/if}<button type="button" on:click={newQuest}>New</button>{/if}</form></div>{#if preview}<pre>{JSON.stringify(preview, null, 2)}</pre>{/if}<h3>Reusable Tactics</h3>{#each product.tactics as tactic}<article><strong>{tactic.name}</strong><p>{tactic.description}</p></article>{/each}</aside>{/if}
+
+  {#if $selectedBuildingStore === "work-area"}<aside class="panel game-window"><h2>Work Yard — Selected Run</h2><label>Recent runs <select on:change={(event) => store.selectRun(event.currentTarget.value)} value={run?.id ?? ""}><option value="">Choose a run</option>{#each product.runs as summary}<option value={summary.id}>{summary.quest_title} — {summary.status}</option>{/each}</select></label>{#if run}<h3>{run.quest.title} <span class="pill">{run.status}</span></h3><section class="environment"><strong>{run.execution_environment.workspace.name}</strong><span>{run.execution_environment.message}</span>{#if run.execution_environment.branch}<code>{run.execution_environment.branch}</code>{/if}{#if run.execution_environment.source_dirty_changes_excluded}<small>Dirty source changes were excluded from the Run base.</small>{/if}{#if run.execution_environment.state === "retained"}<small>Changes remain in the isolated retained Run worktree; the source checkout was not modified.</small>{/if}</section>{#if run.delivery}<section class="delivery"><h3>Delivery · {run.delivery.state.replaceAll("_", " ")}</h3>{#if run.delivery.changes}<span>{run.delivery.changes.files_changed} files · +{run.delivery.changes.additions} / -{run.delivery.changes.deletions}</span>{/if}{#if run.delivery.review?.state === "open"}<button class="launch" on:click={reviewOnGitHub}>Review on GitHub</button>{/if}{#if run.delivery.can_retry}<button on:click={retryPublishing}>Retry Publishing</button>{/if}{#if run.delivery.issue}<p class="error">{run.delivery.issue.code}: {run.delivery.issue.message}</p>{/if}</section>{/if}{#if run.execution_environment.state === "retained" && ["awaiting_review", "merged", "closed_unmerged", "no_changes"].includes(run.delivery?.state ?? "")}<button on:click={cleanupWorktree}>Remove clean worktree</button>{/if}{#if world?.orderMarkers.length}<p>Orders: {world.orderMarkers.map((item) => `${item.name} (${item.state})`).join(", ")}</p>{/if}{#if world?.diagnostics.length}<p class="error">{world.diagnostics.join(" ")}</p>{/if}<h3>Member inspector</h3>{#if member}<p><strong>{member.name}</strong> · {member.class.name} · {member.loadout.name}</p>{#if memberStep}<p>{memberIsActive ? "Active assignment" : "Last assignment"}: <strong>{memberStep.name}</strong> — {memberStep.state}</p><p>{memberStep.instruction}</p><small>Occurrence ID: {memberStep.occurrence_id}</small>{#if memberStep.inputs.length || memberStep.outputs.length}<h4>Assignment artifacts</h4>{#each [...memberStep.inputs, ...memberStep.outputs] as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{:else}<p>No assignment history for this Member.</p>{/if}{/if}<h3>Run artifacts</h3>{#if run.artifacts.length}{#each run.artifacts as item}<button on:click={() => openArtifact(item.id)}>{item.type} — {artifactPreview(item.preview)}</button>{/each}{:else}<p>No artifacts were produced.</p>{/if}{#if artifact}<h4>{artifact.type}</h4><pre>{JSON.stringify(artifact.value, null, 2)}</pre>{/if}<h3>Occurrence history</h3>{#each run.steps as step}<details><summary>{step.name ?? step.semantic_step_key} — {step.state}</summary><p>{step.instruction}</p>{#if step.member}<p>Member: {step.member.name}</p>{/if}<small>{step.occurrence_id}</small>{#if step.inputs.length}<h4>Inputs</h4>{#each step.inputs as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{#if step.outputs.length}<h4>Outputs</h4>{#each step.outputs as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{#if step.issue}<p class="error">{step.issue.code}: {step.issue.message}</p>{/if}</details>{/each}{/if}</aside>{/if}
 </main>
 
 <style>
@@ -526,11 +579,15 @@ function optionKey(option: {
   input, select, textarea { width: 100%; background: #0d1a20; color: #fff1c9; border: 2px solid #6e654b; padding: .45rem; }
   textarea { min-height: 4rem; resize: vertical; }
   .panel { position: absolute; z-index: 6; top: 4.3rem; right: 1rem; max-height: calc(100vh - 5.3rem); overflow: auto; width: min(52rem, calc(100vw - 2rem)); padding: 1rem; }
+  .window-close { position: absolute; z-index: 9; top: 4.55rem; right: 1.3rem; padding: .1rem .5rem; font-size: 1.2rem; }
+  .game-window > h2 { margin: -1rem -1rem .8rem; padding: .55rem 2.8rem .55rem .7rem; background: #3b4f48; border-bottom: 2px solid #b38b51; }
   .game-window > header { display: flex; align-items: center; gap: .5rem; margin: -1rem -1rem .6rem; padding: .45rem .65rem; background: #3b4f48; border-bottom: 2px solid #b38b51; }
   .game-window > header h2 { margin: 0; flex: 1; }
   .close { padding: .1rem .5rem; font-size: 1.2rem; }
   h2, h3, h4 { color: #f3d783; text-shadow: 1px 2px #111; }
   .subtitle, .hint, small { color: #a9c8b5; }
+  .advanced { margin: .5rem 0; padding: .45rem; border: 1px solid #806f4b; }
+  .delivery { display: grid; gap: .4rem; margin: .6rem 0; padding: .6rem; border-left: 4px solid #d6c684; background: #101d22; }
   .split { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(18rem, 2fr); gap: 1rem; }
   ul { padding: 0; list-style: none; }
   li { margin: .35rem 0; }

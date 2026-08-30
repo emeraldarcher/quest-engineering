@@ -10,9 +10,18 @@ defmodule QuestEngineering.Server.RunWorkspaceProvisioner do
 
   def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
 
-  def ensure(run_id), do: GenServer.call(__MODULE__, {:ensure, run_id}, 10_000)
+  def ensure(run_id) do
+    case Process.whereis(__MODULE__) do
+      nil -> {:error, :background_service_not_running}
+      _pid -> GenServer.call(__MODULE__, {:ensure, run_id}, 10_000)
+    end
+  end
 
-  def redeliver(worker_id), do: GenServer.cast(__MODULE__, {:redeliver, worker_id})
+  def redeliver(worker_id) do
+    if Process.whereis(__MODULE__), do: GenServer.cast(__MODULE__, {:redeliver, worker_id})
+    :ok
+  end
+
   def deliver_assignment(assignment), do: deliver(assignment)
 
   @impl true

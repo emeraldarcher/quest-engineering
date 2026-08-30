@@ -86,6 +86,13 @@ export interface TacticSourceInline {
   body: JsonValue;
 }
 export type TacticSource = TacticSourceDefinition | TacticSourceInline;
+export type QuestLifecycleState =
+  | "ready"
+  | "working"
+  | "preparing_review"
+  | "awaiting_review"
+  | "complete"
+  | "needs_attention";
 export interface Quest {
   id: string;
   title: string;
@@ -93,6 +100,22 @@ export interface Quest {
   workspace_id: string;
   squad_id: string;
   tactic_source: TacticSource;
+  completion: {
+    completed_at: string | null;
+    completed_by_run_id: string | null;
+  };
+  lifecycle: {
+    state: QuestLifecycleState;
+    label: string;
+    current_run_id: string | null;
+    primary_action:
+      | "launch"
+      | "run_again"
+      | "retry_publishing"
+      | "open_pull_request"
+      | null;
+    delivery?: DeliveryProjection;
+  };
   archived_at: string | null;
 }
 export interface Workspace {
@@ -101,6 +124,11 @@ export interface Workspace {
   name: string;
   source_kind: "git_remote" | "local_git";
   source_fingerprint: string | null;
+  binding: {
+    state: "unbound" | "preparing" | "ready" | "attention_required" | "offline";
+    message: string;
+    issue?: { code: string };
+  };
   archived_at: string | null;
 }
 export interface WorkspaceSource {
@@ -174,6 +202,29 @@ export interface ArtifactSummary {
   producer_occurrence_id: string;
   preview: JsonValue;
 }
+export interface DeliveryProjection {
+  state:
+    | "preparing_review"
+    | "awaiting_review"
+    | "merged"
+    | "closed_unmerged"
+    | "no_changes"
+    | "attention_required";
+  changes: {
+    files_changed: number;
+    additions: number;
+    deletions: number;
+  } | null;
+  review: {
+    provider: "github";
+    state: string;
+    number: number;
+    url: string;
+  } | null;
+  revisions: { base: string | null; head: string | null };
+  issue: { code: string; message: string } | null;
+  can_retry: boolean;
+}
 export interface RunProjection {
   id: string;
   status: StepState | "completed" | "failed";
@@ -188,6 +239,7 @@ export interface RunProjection {
       | "ready"
       | "attention_required"
       | "retained"
+      | "cleanup_requested"
       | "removed";
     message: string;
     base_revision: string | null;
@@ -195,6 +247,7 @@ export interface RunProjection {
     source_dirty_changes_excluded: boolean | null;
     issue: { code: string; message: string } | null;
   };
+  delivery: DeliveryProjection | null;
   squad: { id: string; key: string; name: string; members: SnapshotMember[] };
   steps: RunStep[];
   artifacts: ArtifactSummary[];
@@ -207,6 +260,7 @@ export interface RunSummary {
   quest_title: string;
   launched_at: string;
   step_counts: Record<StepState, number>;
+  delivery: DeliveryProjection | null;
 }
 export interface ArtifactDetail extends ArtifactSummary {
   value: JsonValue;
