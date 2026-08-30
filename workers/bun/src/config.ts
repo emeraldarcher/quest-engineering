@@ -22,6 +22,8 @@ export interface WorkspaceBindingConfig {
   authorized_root_key: string;
   source_repository_root: string;
   source_fingerprint?: string | null;
+  publication_remote_name?: string | null;
+  publication_repository_identity?: string | null;
   max_access: WorkspaceAccess;
   allow_unconfined_shell: boolean;
 }
@@ -46,6 +48,8 @@ export interface WorkerConfig {
   provider: "pi" | "fake";
   fakeOutputs: Record<string, JsonValue>;
   fakeDelayMs: number;
+  gitAuthorName?: string;
+  gitAuthorEmail?: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
@@ -148,6 +152,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     provider,
     fakeOutputs,
     fakeDelayMs,
+    ...(env.QE_GIT_AUTHOR_NAME?.trim()
+      ? { gitAuthorName: env.QE_GIT_AUTHOR_NAME.trim() }
+      : {}),
+    ...(env.QE_GIT_AUTHOR_EMAIL?.trim()
+      ? { gitAuthorEmail: env.QE_GIT_AUTHOR_EMAIL.trim() }
+      : {}),
   };
 }
 
@@ -209,6 +219,14 @@ function parseBindings(
       source_repository_root: source,
       source_fingerprint:
         typeof x.source_fingerprint === "string" ? x.source_fingerprint : null,
+      publication_remote_name:
+        typeof x.publication_remote_name === "string"
+          ? x.publication_remote_name
+          : null,
+      publication_repository_identity:
+        typeof x.publication_repository_identity === "string"
+          ? x.publication_repository_identity
+          : null,
       max_access: access(String(x.max_access ?? root.max_access)),
       allow_unconfined_shell:
         x.allow_unconfined_shell === undefined

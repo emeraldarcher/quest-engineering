@@ -28,6 +28,11 @@ import type { AgentProvider } from "./providers/types.ts";
 import { LocalHerdrConnectionProvider } from "./session-host/herdr/connection.ts";
 import { HerdrSessionHost } from "./session-host/herdr/session-host.ts";
 import {
+  type DeliveryCommand,
+  DeliveryError,
+  RunDeliveryRegistry,
+} from "./workspace/run-delivery.ts";
+import {
   type ProvisionRunWorktree,
   type RunWorktreeRecord,
   RunWorktreeRegistry,
@@ -37,6 +42,7 @@ export class QuestEngineeringWorker {
   readonly registry: DispatchRegistry;
   readonly executor: DispatchExecutor;
   readonly worktrees: RunWorktreeRegistry;
+  readonly deliveries: RunDeliveryRegistry;
   private readonly channel: PhoenixWorkerChannel;
   private readonly capabilities: WorkerCapabilities;
   private stopping = false;
@@ -49,11 +55,14 @@ export class QuestEngineeringWorker {
       maxAccess: "none" | "read_only" | "read_write";
       allowShell: boolean;
       fingerprint: string | null;
+      publicationRemoteName: string | null;
+      publicationRepositoryIdentity: string | null;
     }
   >();
 
   constructor(private readonly config: WorkerConfig) {
     this.worktrees = new RunWorktreeRegistry(config);
+    this.deliveries = new RunDeliveryRegistry(config, this.worktrees);
     this.registry = new DispatchRegistry(
       join(config.dataRoot, "dispatches.sqlite"),
       config.dataRoot,
@@ -121,6 +130,7 @@ export class QuestEngineeringWorker {
     this.channel.close();
     this.executor.disconnect();
     this.registry.close();
+    this.deliveries.close();
     this.worktrees.close();
   }
 
@@ -132,9 +142,65 @@ export class QuestEngineeringWorker {
       return;
     }
     if (message.type === "bind_workspace_source") {
-      await this.bindWorkspaceSource(
-        message.binding as Record<string, unknown>,
-      );
+      const binding = message.binding as Record<string, unknown>;
+      try {
+        await this.bindWorkspaceSource(binding);
+      } catch (error) {
+        await this.channel.sendProtocol({
+          type: "workspace_binding_failed",
+          protocol_version: WORKER_PROTOCOL_VERSION,
+          worker_id: this.config.workerId,
+          binding: {
+            binding_id: String(binding.binding_id ?? ""),
+            failure_code: "workspace_binding_failed",
+            failure_details: {
+              message:
+                error instanceof Error
+                  ? error.message.slice(0, 300)
+                  : "Project setup failed.",
+            },
+          },
+        });
+      }
+      return;
+    }
+    if (message.type === "retain_run_worktree") {
+      const request = message.worktree as Record<string, unknown>;
+      try {
+        const id = String(request.worktree_id ?? "");
+        this.assertRunIdle(String(request.run_id ?? ""));
+        const record = await this.worktrees.retain(id);
+        await this.reportWorktreeState("run_worktree_retained", record);
+      } catch (error) {
+        await this.reportWorktreeCommandFailure(request, error);
+      }
+      return;
+    }
+    if (message.type === "cleanup_run_worktree") {
+      const request = message.worktree as Record<string, unknown>;
+      try {
+        this.assertRunIdle(String(request.run_id ?? ""));
+        const record = await this.worktrees.cleanup(
+          String(request.worktree_id ?? ""),
+        );
+        if (record.state === "removed")
+          await this.reportWorktreeState("run_worktree_removed", record);
+        else await this.reportWorktree(record);
+      } catch (error) {
+        await this.reportWorktreeCommandFailure(request, error);
+      }
+      return;
+    }
+    if (message.type === "inspect_run_delivery") {
+      const command = message.delivery as unknown as DeliveryCommand;
+      await this.handleDelivery(command, "inspect");
+      return;
+    }
+    if (message.type === "publish_run_delivery") {
+      const command = message.delivery as unknown as DeliveryCommand & {
+        quest_title?: string;
+      };
+      await this.handleDelivery(command, "publish");
       return;
     }
     if (message.type === "provision_run_worktree") {
@@ -154,11 +220,24 @@ export class QuestEngineeringWorker {
         const request = item as Record<string, unknown>;
         const record = this.worktrees.get(id);
         if (record) {
-          const observed =
-            record.state === "ready" || record.state === "retained"
-              ? await this.worktrees.verify(id)
-              : record;
-          await this.reportWorktree(observed);
+          const desired = String(request.desired_state ?? "");
+          if (desired === "retained") {
+            this.assertRunIdle(String(request.run_id ?? ""));
+            const retained = await this.worktrees.retain(id);
+            await this.reportWorktreeState("run_worktree_retained", retained);
+          } else if (desired === "cleanup_requested" || desired === "removed") {
+            this.assertRunIdle(String(request.run_id ?? ""));
+            const removed = await this.worktrees.cleanup(id);
+            if (removed.state === "removed")
+              await this.reportWorktreeState("run_worktree_removed", removed);
+            else await this.reportWorktree(removed);
+          } else {
+            const observed =
+              record.state === "ready" || record.state === "retained"
+                ? await this.worktrees.verify(id)
+                : record;
+            await this.reportWorktree(observed);
+          }
         } else {
           await this.channel.sendProtocol({
             type: "run_worktree_attention",
@@ -249,19 +328,24 @@ export class QuestEngineeringWorker {
         const candidateId = createHash("sha256")
           .update(`${this.config.workerId}\n${path}`)
           .digest("hex");
-        const fingerprint = await remoteFingerprint(path);
+        const publication = await publicationMetadata(path);
+        const fingerprint = publication.fingerprint;
         this.sourceCandidates.set(candidateId, {
           rootKey: root.key,
           path,
           maxAccess: root.max_access,
           allowShell: root.allow_unconfined_shell,
           fingerprint,
+          publicationRemoteName: publication.remoteName,
+          publicationRepositoryIdentity: publication.repositoryIdentity,
         });
         candidates.push({
           candidate_id: candidateId,
           name: basename(path),
           source_kind: fingerprint ? "git_remote" : "local_git",
           source_fingerprint: fingerprint,
+          publication_remote_name: publication.remoteName,
+          publication_repository_identity: publication.repositoryIdentity,
           max_access: root.max_access,
           allow_unconfined_shell: root.allow_unconfined_shell,
         });
@@ -306,6 +390,8 @@ export class QuestEngineeringWorker {
       authorized_root_key: candidate.rootKey,
       source_repository_root: candidate.path,
       source_fingerprint: candidate.fingerprint,
+      publication_remote_name: candidate.publicationRemoteName,
+      publication_repository_identity: candidate.publicationRepositoryIdentity,
       max_access: candidate.maxAccess,
       allow_unconfined_shell: candidate.allowShell,
     };
@@ -344,6 +430,132 @@ export class QuestEngineeringWorker {
     });
   }
 
+  private assertRunIdle(runId: string): void {
+    const occupied = this.registry
+      .list()
+      .some(
+        (dispatch) =>
+          dispatch.action.run_id === runId &&
+          ["accepted", "running", "uncertain"].includes(dispatch.state),
+      );
+    if (occupied)
+      throw new DeliveryError(
+        "run_execution_not_settled",
+        "Run still has active or uncertain local execution.",
+      );
+  }
+
+  private async handleDelivery(
+    command: DeliveryCommand & { quest_title?: string },
+    operation: "inspect" | "publish",
+  ): Promise<void> {
+    try {
+      this.assertRunIdle(command.run_id);
+      if (operation === "inspect") {
+        const result = await this.deliveries.inspect(command);
+        await this.channel.sendProtocol({
+          type: "run_delivery_inspected",
+          protocol_version: WORKER_PROTOCOL_VERSION,
+          worker_id: this.config.workerId,
+          delivery: {
+            delivery_id: command.delivery_id,
+            run_id: command.run_id,
+            worktree_id: command.worktree_id,
+            identity_hash: command.identity_hash,
+            fingerprint: result.fingerprint,
+            evidence: result.evidence,
+            no_changes: result.noChanges,
+            base_revision: result.record.baseRevision,
+            base_branch_name: result.record.baseBranchName,
+            branch_name: result.record.branchName,
+            head_before_finalize: result.evidence.head_before_finalize,
+            repository_host: "github.com",
+            repository_identity: result.record.publicationRepositoryIdentity,
+            remote_name: result.record.publicationRemoteName,
+          },
+        });
+      } else {
+        const result = await this.deliveries.publish(
+          command,
+          command.quest_title ?? "changes",
+        );
+        await this.channel.sendProtocol({
+          type: "run_delivery_published",
+          protocol_version: WORKER_PROTOCOL_VERSION,
+          worker_id: this.config.workerId,
+          delivery: {
+            delivery_id: command.delivery_id,
+            run_id: command.run_id,
+            worktree_id: command.worktree_id,
+            identity_hash: command.identity_hash,
+            fingerprint: result.fingerprint,
+            branch_name: result.record.branchName,
+            head_revision: result.headRevision,
+          },
+        });
+      }
+    } catch (error) {
+      const code =
+        error instanceof DeliveryError ? error.code : "run_delivery_failed";
+      await this.channel.sendProtocol({
+        type: "run_delivery_failed",
+        protocol_version: WORKER_PROTOCOL_VERSION,
+        worker_id: this.config.workerId,
+        delivery: {
+          delivery_id: command.delivery_id,
+          run_id: command.run_id,
+          worktree_id: command.worktree_id,
+          identity_hash: command.identity_hash,
+          stage: operation,
+          code,
+          details: { message: safeDeliveryMessage(code) },
+        },
+      });
+    }
+  }
+
+  private async reportWorktreeCommandFailure(
+    request: Record<string, unknown>,
+    error: unknown,
+  ): Promise<void> {
+    await this.channel.sendProtocol({
+      type: "run_worktree_attention",
+      protocol_version: WORKER_PROTOCOL_VERSION,
+      worker_id: this.config.workerId,
+      worktree_id: String(request.worktree_id ?? ""),
+      run_id: String(request.run_id ?? ""),
+      workspace_binding_id: String(request.workspace_binding_id ?? ""),
+      identity_hash: String(request.identity_hash ?? ""),
+      failure: {
+        code:
+          error instanceof DeliveryError
+            ? error.code
+            : "run_worktree_operation_failed",
+        message:
+          error instanceof Error
+            ? error.message.slice(0, 500)
+            : "Run worktree operation failed.",
+      },
+    });
+  }
+
+  private async reportWorktreeState(
+    type: "run_worktree_retained" | "run_worktree_removed",
+    record: RunWorktreeRecord,
+  ): Promise<void> {
+    await this.channel.sendProtocol({
+      type,
+      protocol_version: WORKER_PROTOCOL_VERSION,
+      worker_id: this.config.workerId,
+      worktree: {
+        worktree_id: record.worktreeId,
+        run_id: record.runId,
+        workspace_binding_id: record.bindingId,
+        identity_hash: record.identityHash,
+      },
+    });
+  }
+
   private async reportWorktree(record: RunWorktreeRecord): Promise<void> {
     const common = {
       protocol_version: WORKER_PROTOCOL_VERSION,
@@ -362,7 +574,10 @@ export class QuestEngineeringWorker {
           run_id: record.runId,
           workspace_binding_id: record.bindingId,
           base_revision: record.baseRevision,
+          base_branch_name: record.baseBranchName,
           branch_name: record.branchName,
+          publication_remote_name: record.publicationRemoteName,
+          publication_repository_identity: record.publicationRepositoryIdentity,
           canonical_root: record.canonicalRoot,
           source_dirty_excluded: record.sourceDirtyExcluded,
           identity_hash: record.identityHash,
@@ -499,13 +714,43 @@ function contained(parent: string, child: string): boolean {
   const value = relative(resolve(parent), resolve(child));
   return value === "" || (!value.startsWith("..") && !value.startsWith("/"));
 }
-async function remoteFingerprint(path: string): Promise<string | null> {
+async function publicationMetadata(path: string): Promise<{
+  fingerprint: string | null;
+  remoteName: string | null;
+  repositoryIdentity: string | null;
+}> {
+  const namesProcess = Bun.spawn(["git", "-C", path, "remote"], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const names = (await new Response(namesProcess.stdout).text())
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  if ((await namesProcess.exited) !== 0)
+    return { fingerprint: null, remoteName: null, repositoryIdentity: null };
+  const remoteName = names.includes("origin")
+    ? "origin"
+    : names.length === 1
+      ? names[0]
+      : null;
+  if (!remoteName)
+    return { fingerprint: null, remoteName: null, repositoryIdentity: null };
   const process = Bun.spawn(
-    ["git", "-C", path, "config", "--get", "remote.origin.url"],
+    ["git", "-C", path, "remote", "get-url", remoteName],
     { stdout: "pipe", stderr: "ignore" },
   );
   const output = (await new Response(process.stdout).text()).trim();
-  if ((await process.exited) !== 0 || !output) return null;
+  if ((await process.exited) !== 0 || !output)
+    return { fingerprint: null, remoteName, repositoryIdentity: null };
+  const fingerprint = credentialFreeRemote(output);
+  return {
+    fingerprint,
+    remoteName,
+    repositoryIdentity: githubRepository(output),
+  };
+}
+function credentialFreeRemote(output: string): string {
   try {
     const url = new URL(output);
     url.username = "";
@@ -517,6 +762,32 @@ async function remoteFingerprint(path: string): Promise<string | null> {
       .replace(/\.git$/, "")
       .toLowerCase();
   }
+}
+function githubRepository(output: string): string | null {
+  const clean = output
+    .replace(/\?.*$/, "")
+    .replace(/\.git$/, "")
+    .replace(/\/$/, "");
+  const match = clean.match(
+    /(?:https?:\/\/|ssh:\/\/git@|git@)github\.com(?::|\/)([^/]+)\/([^/]+)$/i,
+  );
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
+function safeDeliveryMessage(code: string): string {
+  const messages: Record<string, string> = {
+    git_identity_missing: "Git commit identity is not configured.",
+    git_identity_invalid: "Git commit identity configuration is incomplete.",
+    remote_branch_conflict: "The remote Run branch differs from this Delivery.",
+    delivery_content_changed:
+      "Run workspace content changed after Delivery inspection.",
+    cross_repository_pull_request_not_supported:
+      "v0.13 supports same-repository GitHub Pull Requests only.",
+    base_branch_unresolved: "The Run base branch is unavailable.",
+    base_branch_missing_on_remote:
+      "The persisted base branch is unavailable on the publication remote.",
+  };
+  return messages[code] ?? "Publishing requires attention.";
 }
 
 function identityMessage(

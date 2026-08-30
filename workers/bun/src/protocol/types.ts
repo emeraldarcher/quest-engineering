@@ -110,12 +110,20 @@ export interface WorkerCapabilities {
   max_concurrency: number;
   tags: string[];
   executors: ExecutorCapability[];
+  features?: Array<
+    | "run_delivery_v1"
+    | "run_worktree_retention_v1"
+    | "run_worktree_cleanup_v1"
+    | "workspace_binding_status_v1"
+  >;
   workspace_bindings: Array<{
     binding_id: string;
     workspace_id: string;
     authorized_root_key: string;
     source_repository_root: string;
     source_fingerprint?: string | null;
+    publication_remote_name?: string | null;
+    publication_repository_identity?: string | null;
     max_access: WorkspaceAccess;
     allow_unconfined_shell: boolean;
   }>;

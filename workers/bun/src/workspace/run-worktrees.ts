@@ -20,7 +20,10 @@ export interface RunWorktreeRecord {
   bindingId: string;
   baseSelector: string;
   baseRevision: string | null;
+  baseBranchName: string | null;
   branchName: string;
+  publicationRemoteName: string | null;
+  publicationRepositoryIdentity: string | null;
   canonicalRoot: string;
   gitCommonDir: string;
   sourceDirtyExcluded: boolean;
@@ -44,7 +47,10 @@ interface Row {
   binding_id: string;
   base_selector: string;
   base_revision: string | null;
+  base_branch_name: string | null;
   branch_name: string;
+  publication_remote_name: string | null;
+  publication_repository_identity: string | null;
   canonical_root: string;
   git_common_dir: string;
   source_dirty_excluded: number;
@@ -93,7 +99,10 @@ export class RunWorktreeRegistry {
       binding_id TEXT NOT NULL,
       base_selector TEXT NOT NULL,
       base_revision TEXT,
+      base_branch_name TEXT,
       branch_name TEXT NOT NULL,
+      publication_remote_name TEXT,
+      publication_repository_identity TEXT,
       canonical_root TEXT NOT NULL,
       git_common_dir TEXT NOT NULL,
       source_dirty_excluded INTEGER NOT NULL DEFAULT 0,
@@ -107,6 +116,21 @@ export class RunWorktreeRegistry {
       removed_at TEXT,
       updated_at TEXT NOT NULL
     )`);
+    for (const statement of [
+      "ALTER TABLE run_worktrees ADD COLUMN base_branch_name TEXT",
+      "ALTER TABLE run_worktrees ADD COLUMN publication_remote_name TEXT",
+      "ALTER TABLE run_worktrees ADD COLUMN publication_repository_identity TEXT",
+    ]) {
+      try {
+        this.db.exec(statement);
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !error.message.includes("duplicate column")
+        )
+          throw error;
+      }
+    }
   }
   close(): void {
     this.db.close();
@@ -154,11 +178,26 @@ export class RunWorktreeRegistry {
             "--end-of-options",
             "HEAD^{commit}",
           ]);
+          const baseBranchName = await gitOptional(
+            binding.source_repository_root,
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          );
+          const publication = await publicationRemote(
+            binding.source_repository_root,
+            binding,
+          );
           this.db
             .query(
-              "UPDATE run_worktrees SET base_revision=?,state='provisioning',updated_at=? WHERE worktree_id=?",
+              "UPDATE run_worktrees SET base_revision=?,base_branch_name=?,publication_remote_name=?,publication_repository_identity=?,state='provisioning',updated_at=? WHERE worktree_id=?",
             )
-            .run(baseRevision, now(), request.worktree_id);
+            .run(
+              baseRevision,
+              baseBranchName,
+              publication.remoteName,
+              publication.repositoryIdentity,
+              now(),
+              request.worktree_id,
+            );
         }
         const dirty =
           (
@@ -250,7 +289,11 @@ export class RunWorktreeRegistry {
 
   async verify(worktreeId: string): Promise<RunWorktreeRecord> {
     const record = this.required(worktreeId);
-    if (record.state !== "ready" && record.state !== "retained")
+    if (
+      record.state !== "ready" &&
+      record.state !== "retained" &&
+      record.state !== "cleanup_requested"
+    )
       throw coded("run_worktree_not_ready", `Worktree is ${record.state}.`);
     const binding = this.binding(record.bindingId, record.workspaceId);
     return this.locks.run(record.gitCommonDir, async () => {
@@ -266,6 +309,87 @@ export class RunWorktreeRegistry {
         return this.markProblem(worktreeId, error);
       }
     });
+  }
+
+  async retain(worktreeId: string): Promise<RunWorktreeRecord> {
+    const verified = await this.verify(worktreeId);
+    if (verified.state === "attention_required") return verified;
+    this.db
+      .query(
+        "UPDATE run_worktrees SET state='retained',retained_at=COALESCE(retained_at,?),updated_at=? WHERE worktree_id=?",
+      )
+      .run(now(), now(), worktreeId);
+    return this.required(worktreeId);
+  }
+
+  async cleanup(worktreeId: string): Promise<RunWorktreeRecord> {
+    const current = this.required(worktreeId);
+    if (current.state === "removed") return current;
+    if (!existsSync(current.canonicalRoot)) {
+      const binding = this.binding(current.bindingId, current.workspaceId);
+      const registration = (
+        await registeredWorktrees(binding.source_repository_root)
+      ).find((item) => resolve(item.path) === resolve(current.canonicalRoot));
+      if (!registration) {
+        this.db
+          .query(
+            "UPDATE run_worktrees SET state='removed',removed_at=COALESCE(removed_at,?),updated_at=? WHERE worktree_id=?",
+          )
+          .run(now(), now(), worktreeId);
+        return this.required(worktreeId);
+      }
+      return this.markAttention(worktreeId, "run_worktree_partial_state", {
+        message: "Worktree path is absent but Git registration remains.",
+      });
+    }
+    const record = await this.verify(worktreeId);
+    if (record.state === "attention_required") return record;
+    const status = await git(record.canonicalRoot, [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=normal",
+    ]);
+    if (status.length > 0)
+      return this.markAttention(worktreeId, "run_worktree_cleanup_dirty", {
+        message: "The retained Run workspace has uncommitted changes.",
+      });
+    const binding = this.binding(record.bindingId, record.workspaceId);
+    this.db
+      .query(
+        "UPDATE run_worktrees SET state='cleanup_requested',updated_at=? WHERE worktree_id=?",
+      )
+      .run(now(), worktreeId);
+    try {
+      await git(binding.source_repository_root, [
+        "worktree",
+        "remove",
+        record.canonicalRoot,
+      ]);
+      const registration = (
+        await registeredWorktrees(binding.source_repository_root)
+      ).find((item) => resolve(item.path) === resolve(record.canonicalRoot));
+      if (registration || existsSync(record.canonicalRoot))
+        throw coded(
+          "run_worktree_partial_state",
+          "Worktree removal did not converge.",
+        );
+      this.db
+        .query(
+          "UPDATE run_worktrees SET state='removed',removed_at=?,updated_at=? WHERE worktree_id=?",
+        )
+        .run(now(), now(), worktreeId);
+      return this.required(worktreeId);
+    } catch (error) {
+      if (!existsSync(record.canonicalRoot)) {
+        this.db
+          .query(
+            "UPDATE run_worktrees SET state='removed',removed_at=?,updated_at=? WHERE worktree_id=?",
+          )
+          .run(now(), now(), worktreeId);
+        return this.required(worktreeId);
+      }
+      return this.markProblem(worktreeId, error);
+    }
   }
 
   markAttention(
@@ -491,6 +615,55 @@ async function git(cwd: string, args: string[]): Promise<string> {
     );
   return stdout.trim();
 }
+async function gitOptional(
+  cwd: string,
+  args: string[],
+): Promise<string | null> {
+  const process = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const [stdout, code] = await Promise.all([
+    new Response(process.stdout).text(),
+    process.exited,
+  ]);
+  return code === 0 && stdout.trim() ? stdout.trim() : null;
+}
+
+async function publicationRemote(
+  source: string,
+  binding: WorkspaceBindingConfig,
+): Promise<{ remoteName: string | null; repositoryIdentity: string | null }> {
+  if (
+    binding.publication_remote_name &&
+    binding.publication_repository_identity
+  )
+    return {
+      remoteName: binding.publication_remote_name,
+      repositoryIdentity: binding.publication_repository_identity,
+    };
+  const remotes = (await git(source, ["remote"])).split("\n").filter(Boolean);
+  const remoteName = remotes.includes("origin")
+    ? "origin"
+    : remotes.length === 1
+      ? remotes[0]
+      : null;
+  if (!remoteName) return { remoteName: null, repositoryIdentity: null };
+  const url = await git(source, ["remote", "get-url", remoteName]);
+  return { remoteName, repositoryIdentity: githubRepository(url) };
+}
+
+function githubRepository(url: string): string | null {
+  const clean = url
+    .replace(/\?.*$/, "")
+    .replace(/\.git$/, "")
+    .replace(/\/$/, "");
+  const match = clean.match(
+    /(?:https?:\/\/|ssh:\/\/git@|git@)(github\.com)(?:[:/])([^/]+)\/([^/]+)$/i,
+  );
+  return match ? `${match[2]}/${match[3]}` : null;
+}
+
 async function gitSucceeds(cwd: string, args: string[]): Promise<boolean> {
   const process = Bun.spawn(["git", "-C", cwd, ...args], {
     stdout: "ignore",
@@ -506,7 +679,10 @@ function mapRow(row: Row): RunWorktreeRecord {
     bindingId: row.binding_id,
     baseSelector: row.base_selector,
     baseRevision: row.base_revision,
+    baseBranchName: row.base_branch_name,
     branchName: row.branch_name,
+    publicationRemoteName: row.publication_remote_name,
+    publicationRepositoryIdentity: row.publication_repository_identity,
     canonicalRoot: row.canonical_root,
     gitCommonDir: row.git_common_dir,
     sourceDirtyExcluded: row.source_dirty_excluded === 1,

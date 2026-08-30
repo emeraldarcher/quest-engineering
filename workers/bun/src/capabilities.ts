@@ -35,6 +35,12 @@ export function workerCapabilities(
     max_concurrency: config.maxConcurrency,
     tags: config.tags,
     executors: [executorCapabilities(config)],
+    features: [
+      "run_delivery_v1",
+      "run_worktree_retention_v1",
+      "run_worktree_cleanup_v1",
+      "workspace_binding_status_v1",
+    ],
     workspace_bindings: config.workspaceBindings.map((binding) => ({
       ...binding,
     })),
