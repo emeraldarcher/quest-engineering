@@ -9,7 +9,7 @@ interface PendingReply {
 
 export interface ChannelHandlers {
   onProtocol(message: Record<string, unknown>): void | Promise<void>;
-  onRegistered(): void | Promise<void>;
+  onRegistered(response: Record<string, unknown>): void | Promise<void>;
   onSuperseded(): void;
 }
 
@@ -138,7 +138,15 @@ export class PhoenixWorkerChannel {
       }
       this.registered = true;
       connected();
-      void this.handlers.onRegistered();
+      void Promise.resolve(
+        this.handlers.onRegistered(record(reply.response)),
+      ).catch((error) => {
+        console.error(
+          "Worker registration reconciliation failed",
+          error instanceof Error ? error.message : String(error),
+        );
+        this.close();
+      });
       return;
     }
     if (event === "phx_reply" && typeof ref === "string") {

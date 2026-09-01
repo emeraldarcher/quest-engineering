@@ -19,6 +19,12 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
          connection_id = Ecto.UUID.generate(),
          {:ok, worker} <-
            WorkerStore.register(hello.worker_id, hello.capabilities, connection_id),
+         {:ok, binding_reconciliation} <-
+           WorkerStore.reconcile_workspace_bindings(
+             hello.worker_id,
+             worker.connection_generation,
+             hello.capabilities["workspace_bindings"] || []
+           ),
          :ok <-
            WorkerConnections.activate(
              hello.worker_id,
@@ -33,7 +39,7 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
         |> assign(:connection_generation, worker.connection_generation)
 
       send(self(), :after_worker_join)
-      {:ok, WorkerProtocol.welcome(hello.worker_id), socket}
+      {:ok, WorkerProtocol.welcome(hello.worker_id, binding_reconciliation), socket}
     else
       {:error, %WorkerProtocol.Error{} = error} -> {:error, WorkerProtocol.protocol_error(error)}
       {:error, error} -> {:error, WorkerProtocol.application_error(error)}
@@ -42,7 +48,8 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
 
   @impl true
   def handle_in("protocol", payload, socket) do
-    with {:ok, message} <- WorkerProtocol.decode_worker_message(payload, socket.assigns.worker_id),
+    with {:ok, message} <-
+           WorkerProtocol.decode_worker_message(payload, socket.assigns.worker_id),
          {:ok, response} <-
            WorkerMessageHandler.handle(
              socket.assigns.worker_id,

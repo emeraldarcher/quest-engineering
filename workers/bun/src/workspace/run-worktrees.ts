@@ -157,7 +157,7 @@ export class RunWorktreeRegistry {
 
   async provision(request: ProvisionRunWorktree): Promise<RunWorktreeRecord> {
     validateRequest(request);
-    const binding = this.binding(
+    const binding = this.activeBinding(
       request.workspace_binding_id,
       request.workspace_id,
     );
@@ -295,7 +295,10 @@ export class RunWorktreeRegistry {
       record.state !== "cleanup_requested"
     )
       throw coded("run_worktree_not_ready", `Worktree is ${record.state}.`);
-    const binding = this.binding(record.bindingId, record.workspaceId);
+    const binding = this.historicalBinding(
+      record.bindingId,
+      record.workspaceId,
+    );
     return this.locks.run(record.gitCommonDir, async () => {
       try {
         await verifyPhysical(
@@ -326,7 +329,10 @@ export class RunWorktreeRegistry {
     const current = this.required(worktreeId);
     if (current.state === "removed") return current;
     if (!existsSync(current.canonicalRoot)) {
-      const binding = this.binding(current.bindingId, current.workspaceId);
+      const binding = this.historicalBinding(
+        current.bindingId,
+        current.workspaceId,
+      );
       const registration = (
         await registeredWorktrees(binding.source_repository_root)
       ).find((item) => resolve(item.path) === resolve(current.canonicalRoot));
@@ -353,7 +359,10 @@ export class RunWorktreeRegistry {
       return this.markAttention(worktreeId, "run_worktree_cleanup_dirty", {
         message: "The retained Run workspace has uncommitted changes.",
       });
-    const binding = this.binding(record.bindingId, record.workspaceId);
+    const binding = this.historicalBinding(
+      record.bindingId,
+      record.workspaceId,
+    );
     this.db
       .query(
         "UPDATE run_worktrees SET state='cleanup_requested',updated_at=? WHERE worktree_id=?",
@@ -482,19 +491,42 @@ export class RunWorktreeRegistry {
       );
     return this.required(worktreeId);
   }
-  private binding(
+  private activeBinding(
     bindingId: string,
     workspaceId: string,
   ): WorkspaceBindingConfig {
-    const binding = this.config.workspaceBindings.find(
+    return this.findBinding(
+      this.config.workspaceBindings,
+      bindingId,
+      workspaceId,
+      "Requested source binding is not active on this Worker.",
+    );
+  }
+  private historicalBinding(
+    bindingId: string,
+    workspaceId: string,
+  ): WorkspaceBindingConfig {
+    return this.findBinding(
+      [
+        ...this.config.workspaceBindings,
+        ...(this.config.retiredWorkspaceBindings ?? []),
+      ],
+      bindingId,
+      workspaceId,
+      "Recorded source binding is unavailable on this Worker.",
+    );
+  }
+  private findBinding(
+    bindings: WorkspaceBindingConfig[],
+    bindingId: string,
+    workspaceId: string,
+    message: string,
+  ): WorkspaceBindingConfig {
+    const binding = bindings.find(
       (item) =>
         item.binding_id === bindingId && item.workspace_id === workspaceId,
     );
-    if (!binding)
-      throw coded(
-        "run_worktree_binding_mismatch",
-        "Requested source binding is not configured on this Worker.",
-      );
+    if (!binding) throw coded("run_worktree_binding_mismatch", message);
     return binding;
   }
   private required(worktreeId: string): RunWorktreeRecord {

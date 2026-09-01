@@ -4,7 +4,10 @@ defmodule QuestEngineering.Server.WorkerStore do
 
   import Ecto.Query
 
+  require Logger
+
   alias Ecto.Changeset
+  alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.ProductChangeNotifier
@@ -26,7 +29,7 @@ defmodule QuestEngineering.Server.WorkerStore do
 
       attributes = %{
         id: worker_id,
-        capabilities: capabilities,
+        capabilities: Map.put(capabilities, "workspace_bindings", []),
         max_concurrency: capabilities["max_concurrency"],
         active_dispatches: active_dispatches,
         status: "connected",
@@ -38,10 +41,30 @@ defmodule QuestEngineering.Server.WorkerStore do
       }
 
       registered = persist_registration(worker, attributes)
-      sync_workspace_bindings!(registered, capabilities["workspace_bindings"] || [])
+
+      from(binding in WorkerWorkspaceBinding, where: binding.worker_id == ^registered.id)
+      |> Repo.update_all(set: [status: "unavailable", updated_at: now])
+
       registered
     end)
     |> notify_availability_transition()
+  end
+
+  @doc "Reconciles advertised Workspace bindings independently under the current generation fence."
+  def reconcile_workspace_bindings(worker_id, generation, bindings) when is_list(bindings) do
+    result =
+      Enum.reduce_while(bindings, {:ok, []}, fn binding, {:ok, outcomes} ->
+        case reconcile_workspace_binding(worker_id, generation, binding) do
+          {:ok, outcome} -> {:cont, {:ok, outcomes ++ [outcome]}}
+          {:error, error} -> {:halt, {:error, error}}
+        end
+      end)
+
+    with {:ok, outcomes} <- result,
+         {:ok, _worker} <- mark_unadvertised_bindings(worker_id, generation, bindings) do
+      ProductChangeNotifier.notify(["workspaces", "workspace_sources", "execution_options"])
+      {:ok, outcomes}
+    end
   end
 
   def heartbeat(worker_id, generation) do
@@ -106,12 +129,43 @@ defmodule QuestEngineering.Server.WorkerStore do
     )
   end
 
-  # credo:disable-for-next-line Credo.Check.Refactor.Nesting
-  defp sync_workspace_bindings!(worker, bindings) do
-    now = now()
-    advertised_ids = Enum.map(bindings, & &1["binding_id"])
+  defp reconcile_workspace_binding(worker_id, generation, binding) do
+    result =
+      with_current(worker_id, generation, fn worker ->
+        if Repo.get(ProductWorkspace, binding["workspace_id"]) do
+          persist_reconciled_binding(worker, binding)
+        else
+          reconciliation_outcome(binding, "stale_workspace", "workspace_not_found")
+        end
+      end)
 
-    Enum.each(bindings, fn binding ->
+    case result do
+      {:ok, %{status: "stale_workspace"} = outcome} ->
+        Logger.warning(
+          "Worker #{worker_id} reported binding #{binding["binding_id"]} for missing Workspace #{binding["workspace_id"]}"
+        )
+
+        {:ok, outcome}
+
+      {:ok, %{status: "conflict"} = outcome} ->
+        Logger.warning(
+          "Worker #{worker_id} reported conflicting Workspace binding #{binding["binding_id"]}"
+        )
+
+        {:ok, outcome}
+
+      other ->
+        other
+    end
+  end
+
+  defp persist_reconciled_binding(worker, binding) do
+    existing = Repo.get(WorkerWorkspaceBinding, binding["binding_id"])
+
+    if existing &&
+         (existing.worker_id != worker.id || existing.workspace_id != binding["workspace_id"]) do
+      reconciliation_outcome(binding, "conflict", "binding_identity_conflict")
+    else
       attributes = %{
         binding_id: binding["binding_id"],
         worker_id: worker.id,
@@ -125,24 +179,39 @@ defmodule QuestEngineering.Server.WorkerStore do
         allow_unconfined_shell: binding["allow_unconfined_shell"],
         status: "available",
         last_seen_generation: worker.connection_generation,
-        last_seen_at: now
+        last_seen_at: now()
       }
-
-      existing = Repo.get(WorkerWorkspaceBinding, binding["binding_id"])
 
       changeset =
         WorkerWorkspaceBinding.changeset(existing || %WorkerWorkspaceBinding{}, attributes)
 
       case if(existing, do: Repo.update(changeset), else: Repo.insert(changeset)) do
-        {:ok, _row} -> :ok
-        {:error, changeset} -> Repo.rollback(changeset_error(changeset))
+        {:ok, _row} -> reconciliation_outcome(binding, "accepted")
+        {:error, _changeset} -> reconciliation_outcome(binding, "conflict", "constraint_failure")
       end
-    end)
+    end
+  end
 
-    from(binding in WorkerWorkspaceBinding,
-      where: binding.worker_id == ^worker.id and binding.binding_id not in ^advertised_ids
-    )
-    |> Repo.update_all(set: [status: "unavailable", updated_at: now])
+  defp mark_unadvertised_bindings(worker_id, generation, bindings) do
+    advertised_ids = Enum.map(bindings, & &1["binding_id"])
+
+    with_current(worker_id, generation, fn worker ->
+      from(binding in WorkerWorkspaceBinding,
+        where: binding.worker_id == ^worker.id and binding.binding_id not in ^advertised_ids
+      )
+      |> Repo.update_all(set: [status: "unavailable", updated_at: now()])
+
+      worker
+    end)
+  end
+
+  defp reconciliation_outcome(binding, status, code \\ nil) do
+    %{
+      binding_id: binding["binding_id"],
+      workspace_id: binding["workspace_id"],
+      status: status,
+      code: code
+    }
   end
 
   defp persist_registration(worker, attributes) do

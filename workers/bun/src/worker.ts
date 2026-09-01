@@ -1,11 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  readdirSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import {
@@ -27,6 +21,10 @@ import { PiProvider } from "./providers/pi/provider.ts";
 import type { AgentProvider } from "./providers/types.ts";
 import { LocalHerdrConnectionProvider } from "./session-host/herdr/connection.ts";
 import { HerdrSessionHost } from "./session-host/herdr/session-host.ts";
+import {
+  applyBindingReconciliation,
+  persistWorkspaceBindings,
+} from "./workspace/binding-state.ts";
 import {
   type DeliveryCommand,
   DeliveryError,
@@ -85,7 +83,7 @@ export class QuestEngineeringWorker {
       capabilities,
       {
         onProtocol: (message) => this.handleProtocol(message),
-        onRegistered: () => this.onRegistered(),
+        onRegistered: (response) => this.onRegistered(response),
         onSuperseded: () => {
           console.warn(
             "Worker connection was superseded by a newer generation; stopping this controller.",
@@ -302,7 +300,12 @@ export class QuestEngineeringWorker {
     }
   }
 
-  private async onRegistered(): Promise<void> {
+  private async onRegistered(response: Record<string, unknown>): Promise<void> {
+    applyBindingReconciliation(
+      this.config,
+      this.capabilities,
+      response.workspace_binding_reconciliation,
+    );
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = setInterval(() => {
       void this.channel
@@ -407,21 +410,7 @@ export class QuestEngineeringWorker {
       )
     )
       this.capabilities.workspace_bindings.push(binding);
-    const configuredIds = new Set(
-      (process.env.QE_WORKSPACE_BINDINGS_JSON
-        ? JSON.parse(process.env.QE_WORKSPACE_BINDINGS_JSON)
-        : []
-      ).map((item: { binding_id?: string }) => item.binding_id),
-    );
-    const persisted = this.config.workspaceBindings.filter(
-      (item) => !configuredIds.has(item.binding_id),
-    );
-    const path = join(this.config.dataRoot, "workspace-bindings.json");
-    const temporary = `${path}.tmp`;
-    writeFileSync(temporary, JSON.stringify(persisted, null, 2), {
-      mode: 0o600,
-    });
-    renameSync(temporary, path);
+    persistWorkspaceBindings(this.config);
     await this.channel.sendProtocol({
       type: "workspace_binding_ready",
       protocol_version: WORKER_PROTOCOL_VERSION,

@@ -98,11 +98,12 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   def decode_worker_message(_payload, _worker_id), do: error(:malformed_message)
 
-  def welcome(worker_id) do
+  def welcome(worker_id, binding_reconciliation \\ []) do
     %{
       "type" => "worker_welcome",
       "protocol_version" => @version,
-      "worker_id" => worker_id
+      "worker_id" => worker_id,
+      "workspace_binding_reconciliation" => binding_reconciliation
     }
   end
 

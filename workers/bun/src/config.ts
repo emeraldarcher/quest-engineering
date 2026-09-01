@@ -36,6 +36,9 @@ export interface WorkerConfig {
   herdrSession: string;
   allowedRoots: AuthorizedRoot[];
   workspaceBindings: WorkspaceBindingConfig[];
+  retiredWorkspaceBindings?: WorkspaceBindingConfig[];
+  configuredWorkspaceBindingIds?: string[];
+  workspaceBindingsPath?: string;
   worktreeRoot: string;
   executorModels?: Array<{ provider: string; model: string }>;
   reasoningLevels?: Reasoning[];
@@ -67,22 +70,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   );
   mkdirSync(worktreeRoot, { recursive: true });
   const allowedRoots = parseAllowedRoots(env.QE_ALLOWED_ROOTS_JSON);
-  const persistedBindingsPath = join(dataRoot, "workspace-bindings.json");
-  const configuredBindings = env.QE_WORKSPACE_BINDINGS_JSON?.trim()
-    ? JSON.parse(env.QE_WORKSPACE_BINDINGS_JSON)
-    : [];
-  const persistedBindings = existsSync(persistedBindingsPath)
-    ? JSON.parse(readFileSync(persistedBindingsPath, "utf8"))
-    : [];
-  const combinedBindings = [
-    ...(Array.isArray(configuredBindings) ? configuredBindings : []),
-    ...(Array.isArray(persistedBindings) ? persistedBindings : []),
-  ];
-  const workspaceBindings = parseBindings(
-    JSON.stringify(combinedBindings),
+  const workspaceBindingsPath = join(dataRoot, "workspace-bindings.json");
+  const configuredBindings = parseBindings(
+    env.QE_WORKSPACE_BINDINGS_JSON,
     allowedRoots,
     realpathSync(worktreeRoot),
   );
+  const persistedState = existsSync(workspaceBindingsPath)
+    ? persistedBindingState(
+        JSON.parse(readFileSync(workspaceBindingsPath, "utf8")),
+      )
+    : { active: [], retired: [] };
+  const persistedBindings = parseBindings(
+    JSON.stringify(persistedState.active),
+    allowedRoots,
+    realpathSync(worktreeRoot),
+  );
+  const retiredWorkspaceBindings = parseBindings(
+    JSON.stringify(persistedState.retired),
+    allowedRoots,
+    realpathSync(worktreeRoot),
+  );
+  const workspaceBindings = [...configuredBindings, ...persistedBindings];
   const maxConcurrency = positiveInteger(
     env.QE_MAX_CONCURRENCY ?? "1",
     "QE_MAX_CONCURRENCY",
@@ -140,6 +149,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     herdrSession,
     allowedRoots,
     workspaceBindings,
+    retiredWorkspaceBindings,
+    configuredWorkspaceBindingIds: configuredBindings.map(
+      (binding) => binding.binding_id,
+    ),
+    workspaceBindingsPath,
     worktreeRoot,
     executorModels,
     reasoningLevels,
@@ -185,6 +199,28 @@ function parseAllowedRoots(encoded: string | undefined): AuthorizedRoot[] {
     };
   });
 }
+function persistedBindingState(value: unknown): {
+  active: unknown[];
+  retired: unknown[];
+} {
+  if (Array.isArray(value)) return { active: value, retired: [] };
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).version === 2 &&
+    Array.isArray((value as Record<string, unknown>).active) &&
+    Array.isArray((value as Record<string, unknown>).retired)
+  )
+    return {
+      active: (value as Record<string, unknown>).active as unknown[],
+      retired: (value as Record<string, unknown>).retired as unknown[],
+    };
+  throw new Error(
+    "workspace-bindings.json must be an array or a version 2 binding state object.",
+  );
+}
+
 function parseBindings(
   encoded: string | undefined,
   roots: AuthorizedRoot[],

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { workerCapabilities } from "../src/capabilities.ts";
 import type { WorkerConfig } from "../src/config.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
 
@@ -44,9 +45,27 @@ test("isolates simultaneous Runs and serializes linked bindings by Git common di
   expect(fenced.state).toBe("attention_required");
   expect(fenced.failureCode).toBe("run_worktree_branch_mismatch");
 
+  const retiredBinding = fixture.config.workspaceBindings.pop();
+  expect(retiredBinding?.binding_id).toBe(binding(2));
+  fixture.config.retiredWorkspaceBindings = retiredBinding
+    ? [retiredBinding]
+    : [];
+
   registry.close();
   const restarted = new RunWorktreeRegistry(fixture.config);
   expect((await restarted.verify(second.worktreeId)).state).toBe("ready");
+  expect(
+    workerCapabilities(fixture.config, "test", "test").workspace_bindings.some(
+      (item) => item.binding_id === binding(2),
+    ),
+  ).toBe(false);
+  await expect(
+    restarted.provision(request("3", workspace(2), binding(2))),
+  ).rejects.toMatchObject({ code: "run_worktree_binding_mismatch" });
+  expect(
+    restarted.get(request("3", workspace(2), binding(2)).worktree_id),
+  ).toBe(null);
+  expect((await restarted.cleanup(second.worktreeId)).state).toBe("removed");
   restarted.close();
 });
 
