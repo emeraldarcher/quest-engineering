@@ -17,7 +17,9 @@ const ready: Workspace = {
 };
 const product: ProductState = {
   classes: [],
+  classCatalog: [],
   loadouts: [],
+  loadoutCatalog: [],
   squads: [],
   tactics: [],
   quests: [],

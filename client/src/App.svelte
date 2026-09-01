@@ -4,13 +4,13 @@ import type {
   ArtifactDetail,
   JsonValue,
   Quest,
-  Squad,
 } from "./api/contracts";
 import TownCanvas from "./components/TownCanvas.svelte";
 import ValidationSummary from "./components/ValidationSummary.svelte";
 import ProjectsWindow from "./components/projects/ProjectsWindow.svelte";
 import GuildHallWindow from "./components/guild/GuildHallWindow.svelte";
 import ForgeWindow from "./components/forge/ForgeWindow.svelte";
+import TavernWindow from "./components/tavern/TavernWindow.svelte";
 import { openPullRequest } from "./platform/open-pull-request";
 import { createStarterCrew } from "./domain/starter-crew";
 import type { AppStore, BuildingId } from "./state/app-store";
@@ -26,18 +26,6 @@ const {
   realtimeStatus: realtimeStatusStore,
   bootstrapRunning: bootstrapRunningStore,
 } = store;
-let squadDraft: {
-  id?: string;
-  key: string;
-  name: string;
-  description: string;
-  members: Array<{
-    member_key: string;
-    name: string;
-    class_id: string;
-    loadout_id: string;
-  }>;
-} = { key: "", name: "", description: "", members: [] };
 let questDraft: {
   id?: string;
   title: string;
@@ -52,7 +40,6 @@ let questDraft: {
   squad_id: "",
   tactic_definition_id: "",
 };
-let selectedSquad: Squad | null = null;
 let selectedQuest: Quest | null = null;
 let preview: unknown = null;
 let selectedMemberKey: string | null = null;
@@ -64,6 +51,7 @@ let journalOpen = new URLSearchParams(location.search).get("journal") === "1";
 let FixtureChooserComponent: Component | null = null;
 let guildWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let forgeWindow: { requestLeave: (continuation: () => void) => void } | null = null;
+let tavernWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 
 onMount(async () => {
   if (import.meta.env.DEV)
@@ -75,7 +63,6 @@ onMount(async () => {
   if (buildings.some((item) => item.id === fixtureBuilding)) selectBuilding(fixtureBuilding as BuildingId);
   if (store.fixture?.name === "member-inspector") selectedMemberKey = "member-1";
   await store.loadProduct();
-  if (store.fixture && fixtureBuilding === "tavern" && product.squads[0]) editSquad(product.squads[0]);
   if (store.fixture && fixtureBuilding === "quest-board" && product.quests[0]) editQuest(product.quests[0]);
   const match = location.hash.match(/^#\/run\/(.+)$/);
   if (match?.[1]) await store.selectRun(decodeURIComponent(match[1]));
@@ -153,6 +140,10 @@ function selectBuilding(id: BuildingId) {
     forgeWindow.requestLeave(() => commitBuildingSelection(id));
     return;
   }
+  if ($selectedBuildingStore === "tavern" && id !== "tavern" && tavernWindow) {
+    tavernWindow.requestLeave(() => commitBuildingSelection(id));
+    return;
+  }
   if ($selectedBuildingStore && $selectedBuildingStore !== id && isWindowDirty() &&
       !confirm("Discard unsaved changes and open another management window?")) return;
   commitBuildingSelection(id);
@@ -167,14 +158,6 @@ function commitBuildingSelection(id: BuildingId) {
 }
 function isWindowDirty() {
   if ($selectedBuildingStore === "gatehouse") return false;
-  if ($selectedBuildingStore === "tavern") {
-    if (!selectedSquad) return !!(squadDraft.key || squadDraft.name || squadDraft.description || squadDraft.members.length);
-    return JSON.stringify(squadDraft) !== JSON.stringify({
-      id: selectedSquad.id, key: selectedSquad.key, name: selectedSquad.name,
-      description: selectedSquad.description,
-      members: selectedSquad.members.map((item) => ({ ...item })),
-    });
-  }
   if ($selectedBuildingStore === "quest-board") {
     if (!selectedQuest) return !!(questDraft.title || questDraft.objective);
     if (selectedQuest.tactic_source.type === "inline") return false;
@@ -197,6 +180,10 @@ function requestCloseWindow() {
     forgeWindow.requestLeave(closeWindow);
     return;
   }
+  if ($selectedBuildingStore === "tavern" && tavernWindow) {
+    tavernWindow.requestLeave(closeWindow);
+    return;
+  }
   if (isWindowDirty() && !confirm("Discard unsaved changes and close this window?")) return;
   closeWindow();
 }
@@ -213,64 +200,6 @@ async function openJournalRun(id: string) {
   journalOpen = false;
   selectBuilding("work-area");
 }
-function newSquad() {
-  selectedSquad = null;
-  squadDraft = { key: "", name: "", description: "", members: [] };
-}
-function editSquad(value: Squad) {
-  selectedSquad = value;
-  squadDraft = {
-    id: value.id,
-    key: value.key,
-    name: value.name,
-    description: value.description,
-    members: value.members.map((item) => ({ ...item })),
-  };
-}
-function addMember() {
-  const classId = product.classes[0]?.id ?? "";
-  const loadoutId = product.loadouts[0]?.id ?? "";
-  squadDraft.members = [
-    ...squadDraft.members,
-    {
-      member_key: `member-${squadDraft.members.length + 1}`,
-      name: "New Member",
-      class_id: classId,
-      loadout_id: loadoutId,
-    },
-  ];
-}
-function moveMember(index: number, direction: number) {
-  const next = index + direction;
-  if (next < 0 || next >= squadDraft.members.length) return;
-  const members = [...squadDraft.members];
-  const current = members[index];
-  const other = members[next];
-  if (!current || !other) return;
-  members[index] = other;
-  members[next] = current;
-  squadDraft.members = members;
-}
-async function saveSquad() {
-  const input = {
-    key: squadDraft.key,
-    name: squadDraft.name,
-    description: squadDraft.description,
-    members: squadDraft.members,
-  };
-  if (selectedSquad) await store.api.updateSquad(selectedSquad.id, input);
-  else await store.api.createSquad(input);
-  await store.refreshProduct();
-  newSquad();
-}
-async function archiveSquad() {
-  if (selectedSquad && confirm(`Archive ${selectedSquad.name}?`)) {
-    await store.api.archiveSquad(selectedSquad.id);
-    await store.refreshProduct();
-    newSquad();
-  }
-}
-
 function newQuest() {
   selectedQuest = null;
   questDraft = {
@@ -418,7 +347,7 @@ function optionKey(option: {
 
   {#if run}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
 
-  {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
+  {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith", "tavern"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
   {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
 
@@ -426,7 +355,7 @@ function optionKey(option: {
 
   {#if $selectedBuildingStore === "blacksmith"}<ForgeWindow bind:this={forgeWindow} {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("forge") : null} />{/if}
 
-  {#if $selectedBuildingStore === "tavern"}<aside class="panel game-window"><h2>Tavern — Squads</h2><div class="split"><ul>{#each product.squads as item}<li><button on:click={() => editSquad(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveSquad}><h3>{selectedSquad ? "Edit" : "Create"} Squad</h3><label>Key <input disabled={!!selectedSquad} bind:value={squadDraft.key} required /></label><label>Name <input bind:value={squadDraft.name} required /></label><label>Description <textarea bind:value={squadDraft.description}></textarea></label><h3>Roster</h3>{#each squadDraft.members as item, index}<fieldset><input aria-label="Member key" bind:value={item.member_key} /><input aria-label="Display name" bind:value={item.name} /><select bind:value={item.class_id}>{#each product.classes as value}<option value={value.id}>{value.name}</option>{/each}</select><select bind:value={item.loadout_id}>{#each product.loadouts as value}<option value={value.id}>{value.name}</option>{/each}</select><button type="button" on:click={() => moveMember(index, -1)}>↑</button><button type="button" on:click={() => moveMember(index, 1)}>↓</button><button type="button" on:click={() => squadDraft.members = squadDraft.members.filter((_, i) => i !== index)}>Remove</button></fieldset>{/each}<ValidationSummary details={$errorStore?.details ?? []} /><button type="button" on:click={addMember}>Add Member</button><button>Save Squad</button><button type="button" on:click={newSquad}>New</button>{#if selectedSquad}<button type="button" class="danger" on:click={archiveSquad}>Archive</button>{/if}</form></div></aside>{/if}
+  {#if $selectedBuildingStore === "tavern"}<TavernWindow bind:this={tavernWindow} {store} {product} scene={store.fixture ? new URLSearchParams(location.search).get("tavern") : null} onClose={closeWindow} />{/if}
 
   {#if $selectedBuildingStore === "quest-board"}<aside class="panel game-window"><h2>Quest Board</h2>{#if selectedQuest}<section class="quest-lifecycle"><strong>{selectedQuest.lifecycle.label}</strong>{#if selectedQuest.lifecycle.primary_action === "open_pull_request"}<button type="button" class="launch" on:click={openSelectedQuestReview}>Open Pull Request</button>{:else if selectedQuest.lifecycle.primary_action === "retry_publishing"}<button type="button" on:click={retrySelectedQuestPublishing}>Retry Publishing</button>{/if}</section>{/if}<div class="split"><ul>{#each product.quests as item}<li><button on:click={() => item.tactic_source.type === "definition" ? editQuest(item) : selectedQuest = item}>{item.title}</button>{#if item.tactic_source.type === "inline"}<small> inline tactic — read only</small>{/if}</li>{/each}</ul><form on:submit|preventDefault={saveQuest}><h3>{selectedQuest ? "Edit" : "Create"} Quest</h3>{#if selectedQuest?.tactic_source.type === "inline"}<p>This Quest uses an inline Tactic and remains read-only.</p>{:else}<label>Title <input bind:value={questDraft.title} required /></label><label>Objective <textarea bind:value={questDraft.objective} required></textarea></label><label>Project <select bind:value={questDraft.workspace_id}>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label><label>Squad <select bind:value={questDraft.squad_id}>{#each product.squads as squad}<option value={squad.id}>{squad.name}</option>{/each}</select></label><label>Tactic <select bind:value={questDraft.tactic_definition_id}>{#each product.tactics as tactic}<option value={tactic.id}>{tactic.name} — {tactic.description}</option>{/each}</select></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Quest</button>{#if selectedQuest}<button type="button" on:click={previewQuest}>Preview</button>{#if selectedQuest.lifecycle.primary_action === "launch"}<button type="button" class="launch" on:click={launchQuest}>Launch Quest</button>{:else if selectedQuest.lifecycle.primary_action === "run_again"}<button type="button" class="launch" on:click={launchQuest}>Run Again</button>{/if}<button type="button" class="danger" on:click={archiveQuest}>Archive</button>{/if}<button type="button" on:click={newQuest}>New</button>{/if}</form></div>{#if preview}<pre>{JSON.stringify(preview, null, 2)}</pre>{/if}<h3>Reusable Tactics</h3>{#each product.tactics as tactic}<article><strong>{tactic.name}</strong><p>{tactic.description}</p></article>{/each}</aside>{/if}
 
@@ -477,8 +406,6 @@ function optionKey(option: {
   ul { padding: 0; list-style: none; }
   li { margin: .35rem 0; }
   form { display: grid; align-content: start; gap: .3rem; }
-  fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3rem; border-color: #806f4b; }
-  fieldset button { min-width: 0; }
   .run-status { position: absolute; z-index: 4; left: .75rem; bottom: .75rem; width: min(19rem, calc(100vw - 1.5rem)); max-height: 42vh; overflow: auto; padding: .65rem; display: grid; gap: .35rem; }
   .run-status div { display: flex; gap: .4rem; flex-wrap: wrap; font-size: .75rem; }
   .member-status { text-align: left; }

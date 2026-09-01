@@ -74,7 +74,9 @@ const squad: Squad = {
 };
 const product: ProductState = {
   classes: [builder, reviewer],
+  classCatalog: [builder, reviewer],
   loadouts: [],
+  loadoutCatalog: [],
   squads: [squad],
   tactics: [],
   quests: [],

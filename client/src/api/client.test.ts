@@ -60,6 +60,28 @@ test("decodes safe repository identity and Project diagnostics", async () => {
   );
 });
 
+test("requests archived Class and Loadout catalogs only when asked", async () => {
+  const requested: string[] = [];
+  globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    requested.push(path);
+    return new Response(
+      JSON.stringify(
+        path.includes("/classes") ? { classes: [] } : { loadouts: [] },
+      ),
+    );
+  }) as unknown as typeof fetch;
+  const api = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+
+  await api.listClasses(true);
+  await api.listLoadouts(true);
+
+  expect(requested).toEqual([
+    "http://example.test/api/v1/classes?include_archived=true",
+    "http://example.test/api/v1/loadouts?include_archived=true",
+  ]);
+});
+
 test("maps Product validation envelope into a typed client error", async () => {
   globalThis.fetch = mock(
     async () =>

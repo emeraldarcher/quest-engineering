@@ -102,7 +102,9 @@ const squad: Squad = {
 };
 const product: ProductState = {
   classes: [],
+  classCatalog: [],
   loadouts: [coding, review, custom],
+  loadoutCatalog: [coding, review, custom],
   squads: [squad],
   tactics: [],
   quests: [],

@@ -9,7 +9,9 @@ import { createAppStore, type ProductState } from "../src/state/app-store";
 
 const emptyProduct: ProductState = {
   classes: [],
+  classCatalog: [],
   loadouts: [],
+  loadoutCatalog: [],
   squads: [],
   tactics: [],
   quests: [],

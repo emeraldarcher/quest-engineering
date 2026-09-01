@@ -26,7 +26,9 @@ export type BuildingId =
   | "work-area";
 export interface ProductState {
   classes: ClassDefinition[];
+  classCatalog: ClassDefinition[];
   loadouts: Loadout[];
+  loadoutCatalog: Loadout[];
   squads: Squad[];
   tactics: Tactic[];
   quests: Quest[];
@@ -37,7 +39,9 @@ export interface ProductState {
 }
 const emptyProduct: ProductState = {
   classes: [],
+  classCatalog: [],
   loadouts: [],
+  loadoutCatalog: [],
   squads: [],
   tactics: [],
   quests: [],
@@ -94,9 +98,10 @@ export function createAppStore(
     if (!quiet) loading.set(true);
     error.set(null);
     try {
+      const includeArchivedDefinitions = get(selectedBuilding) === "tavern";
       const [
-        classes,
-        loadouts,
+        classCatalog,
+        loadoutCatalog,
         squads,
         tactics,
         quests,
@@ -105,8 +110,8 @@ export function createAppStore(
         executionOptions,
         runs,
       ] = await Promise.all([
-        api.listClasses(),
-        api.listLoadouts(),
+        api.listClasses(includeArchivedDefinitions),
+        api.listLoadouts(includeArchivedDefinitions),
         api.listSquads(),
         api.listTactics(),
         api.listQuests(),
@@ -116,8 +121,10 @@ export function createAppStore(
         api.listRuns(),
       ]);
       product.set({
-        classes,
-        loadouts,
+        classes: classCatalog.filter((item) => item.archived_at === null),
+        classCatalog,
+        loadouts: loadoutCatalog.filter((item) => item.archived_at === null),
+        loadoutCatalog,
         squads,
         tactics,
         quests,
@@ -151,6 +158,20 @@ export function createAppStore(
 
   async function refreshProduct() {
     await loadProduct();
+  }
+
+  async function loadTavernCatalogs() {
+    if (fixture) return;
+    error.set(null);
+    try {
+      const [classCatalog, loadoutCatalog] = await Promise.all([
+        api.listClasses(true),
+        api.listLoadouts(true),
+      ]);
+      product.update((value) => ({ ...value, classCatalog, loadoutCatalog }));
+    } catch (cause) {
+      reportError(cause);
+    }
   }
 
   async function refreshWorkspaceSources() {
@@ -275,6 +296,7 @@ export function createAppStore(
     bootstrapRunning,
     loadProduct,
     refreshProduct,
+    loadTavernCatalogs,
     refreshWorkspaceSources,
     command,
     reportError,

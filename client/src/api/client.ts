@@ -89,10 +89,16 @@ export class ApiClient {
       decodeWorkspace(asRecord(value, "workspace").workspace),
     );
 
-  listClasses = () =>
-    this.get("/classes", (value) => list(value, "classes", decodeClass));
-  listLoadouts = () =>
-    this.get("/loadouts", (value) => list(value, "loadouts", decodeLoadout));
+  listClasses = (includeArchived = false) =>
+    this.get(
+      `/classes${includeArchived ? "?include_archived=true" : ""}`,
+      (value) => list(value, "classes", decodeClass),
+    );
+  listLoadouts = (includeArchived = false) =>
+    this.get(
+      `/loadouts${includeArchived ? "?include_archived=true" : ""}`,
+      (value) => list(value, "loadouts", decodeLoadout),
+    );
   listSquads = () =>
     this.get("/squads", (value) => list(value, "squads", decodeSquad));
   listTactics = () =>

@@ -35,6 +35,9 @@ export const fixtureNames = [
   "forge",
   "forge-empty",
   "forge-custom",
+  "tavern",
+  "tavern-archived",
+  "tavern-empty",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -91,6 +94,14 @@ const customLoadout: Loadout = {
   description: "Custom equipment for specialist Product work.",
   model: { provider: "acme-labs", model: "experimental-model-x" },
   tools: ["workspace.filesystem", "acme.special-tool"],
+};
+const archivedReviewerClass: ClassDefinition = {
+  ...reviewerClass,
+  archived_at: "2026-08-29T12:00:00Z",
+};
+const archivedReviewLoadout: Loadout = {
+  ...reviewLoadout,
+  archived_at: "2026-08-29T12:00:00Z",
 };
 const workspace: Workspace = {
   id: "workspace-quest-engineering",
@@ -184,6 +195,46 @@ const productSquad: Squad = {
     ...member,
     loadout_id: index % 4 === 3 ? reviewLoadout.id : loadout.id,
   })),
+};
+const engineeringPair: Squad = {
+  id: "squad-engineering-pair",
+  key: "engineering-pair",
+  name: "Engineering Pair",
+  description: "A small implementation and review team.",
+  members: [
+    {
+      member_key: "rowan",
+      name: "Rowan",
+      class_id: classDefinition.id,
+      loadout_id: loadout.id,
+    },
+    {
+      member_key: "mira",
+      name: "Mira",
+      class_id: reviewerClass.id,
+      loadout_id: reviewLoadout.id,
+    },
+  ],
+  archived_at: null,
+};
+const backendTeam: Squad = {
+  id: "squad-backend-team",
+  key: "backend-team",
+  name: "Backend Team",
+  description: "Implementation team for larger Product changes.",
+  members: ["Theo", "Iris", "Alda", "Brom"].map((name) => ({
+    member_key: name.toLocaleLowerCase(),
+    name,
+    class_id: classDefinition.id,
+    loadout_id: loadout.id,
+  })),
+  archived_at: null,
+};
+const archivedReferenceSquad: Squad = {
+  ...engineeringPair,
+  id: "squad-archived-reference",
+  key: "legacy-pair",
+  name: "Legacy Pair",
 };
 
 function delivery(state: DeliveryProjection["state"]): DeliveryProjection {
@@ -449,19 +500,63 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
     step_counts: value.step_counts,
     delivery: value.delivery,
   }));
+  const tavernQuests = ["Compiler Cleanup", "Roster UX", "API Polish"].map(
+    (title, index): Quest => ({
+      ...quest,
+      id: `quest-tavern-${index + 1}`,
+      title,
+      squad_id:
+        name === "tavern-archived"
+          ? archivedReferenceSquad.id
+          : engineeringPair.id,
+    }),
+  );
+  const fixtureClasses =
+    name === "guild-empty"
+      ? []
+      : name === "tavern-archived"
+        ? [classDefinition]
+        : [classDefinition, reviewerClass];
+  const classCatalog =
+    name === "tavern-archived"
+      ? [classDefinition, archivedReviewerClass]
+      : fixtureClasses;
+  const fixtureLoadouts =
+    name === "forge-empty"
+      ? []
+      : name === "tavern-archived"
+        ? [loadout]
+        : name === "forge-custom"
+          ? [loadout, reviewLoadout, customLoadout]
+          : [loadout, reviewLoadout];
+  const loadoutCatalog =
+    name === "tavern-archived"
+      ? [loadout, archivedReviewLoadout]
+      : fixtureLoadouts;
+  const fixtureSquads =
+    name === "tavern-empty"
+      ? []
+      : name === "tavern-archived"
+        ? [archivedReferenceSquad]
+        : name === "tavern"
+          ? [engineeringPair, backendTeam]
+          : [productSquad];
   return {
     name,
     product: {
-      classes: name === "guild-empty" ? [] : [classDefinition, reviewerClass],
-      loadouts:
-        name === "forge-empty"
-          ? []
-          : name === "forge-custom"
-            ? [loadout, reviewLoadout, customLoadout]
-            : [loadout, reviewLoadout],
-      squads: [productSquad],
+      classes: fixtureClasses,
+      classCatalog,
+      loadouts: fixtureLoadouts,
+      loadoutCatalog,
+      squads: fixtureSquads,
       tactics: [tactic],
-      quests: name === "density" ? [quest, reviewQuest] : [quest],
+      quests: name.startsWith("tavern")
+        ? name === "tavern-empty"
+          ? []
+          : tavernQuests
+        : name === "density"
+          ? [quest, reviewQuest]
+          : [quest],
       workspaces:
         name === "projects-empty"
           ? []
