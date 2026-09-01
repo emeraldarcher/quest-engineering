@@ -1,0 +1,376 @@
+{
+  "name": "Sunnyside — Effects",
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 11,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "properties": [
+    {
+      "name": "category",
+      "type": "string",
+      "value": "effects"
+    },
+    {
+      "name": "qeSunnysideGenerated",
+      "type": "bool",
+      "value": true
+    }
+  ],
+  "tiles": [
+    {
+      "id": 0,
+      "image": "../../../assets/sunnyside/effects/chimney-smoke-strip30.png",
+      "imagewidth": 540,
+      "imageheight": 21,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Chimney Smoke/chimneysmoke_03_strip30.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 30
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "image": "../../../assets/sunnyside/effects/fire-strip4.png",
+      "imagewidth": 20,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Fire/spr_deco_fire_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "image": "../../../assets/sunnyside/effects/glint-strip6.png",
+      "imagewidth": 42,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Glint/spr_deco_glint_01_strip6.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "image": "../../../assets/sunnyside/imported/effects/Elements/VFX/Chimney Smoke/chimneysmoke_01_strip30.png",
+      "imagewidth": 450,
+      "imageheight": 37,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Chimney Smoke/chimneysmoke_01_strip30.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 30
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "image": "../../../assets/sunnyside/imported/effects/Elements/VFX/Chimney Smoke/chimneysmoke_02_strip30.png",
+      "imagewidth": 300,
+      "imageheight": 30,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Chimney Smoke/chimneysmoke_02_strip30.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 30
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "image": "../../../assets/sunnyside/imported/effects/Elements/VFX/Chimney Smoke/chimneysmoke_04_strip30.png",
+      "imagewidth": 600,
+      "imageheight": 32,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Chimney Smoke/chimneysmoke_04_strip30.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 30
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "image": "../../../assets/sunnyside/imported/effects/Elements/VFX/Chimney Smoke/chimneysmoke_05_strip30.png",
+      "imagewidth": 720,
+      "imageheight": 19,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Chimney Smoke/chimneysmoke_05_strip30.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 30
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "image": "../../../assets/sunnyside/imported/effects/Elements/VFX/Fire/spr_deco_fire_02_strip4.png",
+      "imagewidth": 32,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Fire/spr_deco_fire_02_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "image": "../../../assets/sunnyside/imported/effects/Elements/VFX/Glint/spr_deco_glint_02_strip4.png",
+      "imagewidth": 28,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/VFX/Glint/spr_deco_glint_02_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "image": "../../../assets/sunnyside/imported/effects/gamemaker/spr_deco_campfire/d292d1cc-d3d3-4222-9506-b1c7072c523c.png",
+      "imagewidth": 23,
+      "imageheight": 20,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_campfire/d292d1cc-d3d3-4222-9506-b1c7072c523c.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "image": "../../../assets/sunnyside/imported/effects/gamemaker/spr_deco_firepit/31ab948f-42c9-47ce-9cb7-456406ed0139.png",
+      "imagewidth": 14,
+      "imageheight": 17,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "effects"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_firepit/31ab948f-42c9-47ce-9cb7-456406ed0139.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    }
+  ]
+}

@@ -27,3 +27,4 @@ workers/bun/.quest-engineering-worker/
 # Operating systems and editors
 .DS_Store
 *.swp
+*.tiled-session

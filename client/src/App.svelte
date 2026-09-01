@@ -134,6 +134,11 @@ $: {
   const freshProject = selectedWorkspace && product.workspaces.find((item) => item.id === selectedWorkspace?.id);
   if (freshProject && freshProject !== selectedWorkspace) selectedWorkspace = freshProject;
 }
+$: isEmptyFirstRun =
+  product.classes.length === 0 &&
+  product.loadouts.length === 0 &&
+  product.squads.length === 0 &&
+  product.tactics.length === 0;
 $: run = $selectedRunStore;
 $: world = $worldStore;
 $: townStatus = {
@@ -550,7 +555,7 @@ async function archiveQuest() {
 }
 
 async function bootstrap() {
-  if (!store.isEmptyFirstRun() || !selectedOption || !starterWorkspace) return;
+  if (!isEmptyFirstRun || !selectedOption || !starterWorkspace) return;
   store.bootstrapRunning.set(true);
   try {
     await createStarterCrew(store.api, {
@@ -590,13 +595,13 @@ function optionKey(option: {
 
 <main>
   <TownCanvas model={world} status={townStatus} selectedBuilding={$selectedBuildingStore} selectedMember={selectedMemberKey} onBuilding={selectBuilding} onMember={selectMember} />
-  <header class="topbar"><strong>QUEST ENGINEERING</strong><span class="version">v0.14a · LIVING TOWN</span><span class:bad={$realtimeStatusStore !== "connected"}>◆ control plane {$realtimeStatusStore}</span><span class:bad={!product.workspaceSources.length}>◇ {product.workspaceSources.length ? "Worker source online" : "No Worker source"}</span><nav aria-label="Town menu">{#each buildings as building}<button title={`${building.hotkey} · ${building.label}`} on:click={() => selectBuilding(building.id)}><kbd>{building.hotkey}</kbd> {building.label}</button>{/each}<button aria-expanded={journalOpen} on:click={() => journalOpen = !journalOpen}>Journal</button></nav></header>
+  <header class="topbar"><strong>QUEST ENGINEERING</strong><span class="version">v0.14b · AUTHORED TOWN</span><span class:bad={$realtimeStatusStore !== "connected"}>◆ control plane {$realtimeStatusStore}</span><span class:bad={!product.workspaceSources.length}>◇ {product.workspaceSources.length ? "Worker source online" : "No Worker source"}</span><nav aria-label="Town menu">{#each buildings as building}<button title={`${building.hotkey} · ${building.label}`} on:click={() => selectBuilding(building.id)}><kbd>{building.hotkey}</kbd> {building.label}</button>{/each}<button aria-expanded={journalOpen} on:click={() => journalOpen = !journalOpen}>Journal</button></nav></header>
   {#if $loadingStore}<div class="notice">Loading Product data…</div>{/if}
   {#if $errorStore}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}</div>{/if}
 
   {#if journalOpen}<aside class="journal-drawer" aria-label="Recent Quest and Run journal"><header><h2>Quest Journal</h2><button aria-label="Close journal" on:click={() => journalOpen = false}>×</button></header>{#each product.runs as summary}<button class="journal-entry" on:click={() => openJournalRun(summary.id)}><strong>{summary.quest_title}</strong><small>{summary.status}{summary.delivery ? ` · ${summary.delivery.state.replaceAll("_", " ")}` : ""}</small></button>{:else}<p>No recent Runs.</p>{/each}<details class="art-credits"><summary>Art credits</summary><p><strong>Mini Medieval by VEXED</strong></p><ul><li>Mini Medieval 2.4.1</li><li>Mini Medieval Kingdom Interior 1.2</li><li>Mini Medieval User Interface 1.1</li></ul><p>Licensed CC BY 4.0. Base palette: fruitpunch24 by Polyphrog.</p><code>creativecommons.org/licenses/by/4.0/</code><p class="hint">Artwork is framed, combined, animated, and integer-scaled for Quest Engineering.</p></details></aside>{/if}
 
-  {#if store.isEmptyFirstRun()}
+  {#if isEmptyFirstRun}
     <section class="first-run" aria-label="First-run starter crew">
       <h1>Raise a starter crew</h1><p>Create ordinary Product rows for a Builder, Reviewer, Loadouts, Squad, and reusable Tactic.</p>
       {#if product.executionOptions.filter((item) => item.available).length && product.workspaces.length}

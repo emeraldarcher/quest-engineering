@@ -12,6 +12,15 @@
     "check": "biome check . && bun run typecheck && bun test && vitest run",
     "smoke:real": "bun run scripts/live-contract-smoke.ts",
     "screenshots:v014a": "bun run scripts/capture-v014a.ts",
+    "screenshots:sunnyside-checkpoint-a": "bun run scripts/capture-sunnyside-checkpoint-a.ts",
+    "screenshots:pipeline-checkpoint": "bun run scripts/capture-pipeline-checkpoint.ts",
+    "validate:town": "bun run scripts/validate-town.ts",
+    "import:sunnyside-assets": "bun run scripts/import-sunnyside-assets.ts",
+    "export:sunnyside-human-v1": "bun run scripts/export-sunnyside-human-v1.ts",
+    "validate:sunnyside-assets": "bun run scripts/validate-sunnyside-assets.ts",
+    "import:sunnyside-example": "bun run scripts/sunnyside-example-importer.ts",
+    "validate:reference-map": "bun run scripts/validate-reference-map.ts",
+    "screenshots:sunnyside-example": "bun run scripts/render-sunnyside-example.ts",
     "tauri": "tauri"
   },
   "dependencies": {

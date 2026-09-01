@@ -1,0 +1,79 @@
+{
+  "name": "Sunnyside — Buildings",
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 2,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "properties": [
+    {
+      "name": "category",
+      "type": "string",
+      "value": "buildings"
+    },
+    {
+      "name": "qeSunnysideGenerated",
+      "type": "bool",
+      "value": true
+    }
+  ],
+  "tiles": [
+    {
+      "id": 0,
+      "image": "../../../assets/sunnyside/imported/buildings/gamemaker/spr_deco_well/c3d011a3-e1d2-4f14-83d7-d21b9f689713.png",
+      "imagewidth": 20,
+      "imageheight": 25,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "buildings"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_well/c3d011a3-e1d2-4f14-83d7-d21b9f689713.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "image": "../../../assets/sunnyside/props/well.png",
+      "imagewidth": 20,
+      "imageheight": 40,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "buildings"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_well_covered/28ee3935-0d63-4141-b01a-2338fa50e040.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    }
+  ]
+}

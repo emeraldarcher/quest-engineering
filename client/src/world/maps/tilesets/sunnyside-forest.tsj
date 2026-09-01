@@ -1,0 +1,227 @@
+{
+  "columns": 10,
+  "image": "../../../assets/sunnyside/terrain/forest-32px.png",
+  "imageheight": 576,
+  "imagewidth": 320,
+  "margin": 0,
+  "name": "sunnyside-forest",
+  "spacing": 0,
+  "tilecount": 180,
+  "tileheight": 32,
+  "tilewidth": 32,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "wangsets": [
+    {
+      "name": "Forest",
+      "tile": 11,
+      "type": "edge",
+      "colors": [
+        {
+          "color": "#2f844a",
+          "name": "Forest",
+          "probability": 1,
+          "tile": 11
+        }
+      ],
+      "wangtiles": [
+        {
+          "tileid": 10,
+          "wangid": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 11,
+          "wangid": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 12,
+          "wangid": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 13,
+          "wangid": [
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 14,
+          "wangid": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 15,
+          "wangid": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 16,
+          "wangid": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 17,
+          "wangid": [
+            0,
+            1,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "tileid": 20,
+          "wangid": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "tileid": 21,
+          "wangid": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "tileid": 22,
+          "wangid": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "tileid": 23,
+          "wangid": [
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "tileid": 24,
+          "wangid": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            1
+          ]
+        },
+        {
+          "tileid": 25,
+          "wangid": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            1,
+            0,
+            1
+          ]
+        },
+        {
+          "tileid": 26,
+          "wangid": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            1,
+            0,
+            1
+          ]
+        }
+      ]
+    }
+  ]
+}

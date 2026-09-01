@@ -1,0 +1,22 @@
+{
+  "source": "Sunnyside World Asset Pack v2.1",
+  "room": "Sunnyside_World_Gamemaker/rooms/Room1/Room1.yy",
+  "tileEncoding": "TileCompressedData format 1: positive literal count, small negative repeat count; tile ID in low 28 bits; GameMaker bits 28/29/30 are mirror/flip/90-degree clockwise rotation; -2147483648 is empty.",
+  "tilesets": {
+    "tileset_sunnysideworld": {
+      "sourceTexture": "spr_tileset_sunnysideworld (1024x1024)",
+      "tileWidth": 16,
+      "tileHeight": 16,
+      "target": "../tilesets/sunnyside-world.tsj",
+      "localId": "row * target columns + column (verified dimensions and tile count)"
+    },
+    "tileset_forest": {
+      "sourceTexture": "spr_tileset_sunnysideworld_forest (320x576)",
+      "tileWidth": 32,
+      "tileHeight": 32,
+      "target": "../tilesets/sunnyside-forest.tsj",
+      "localId": "row * target columns + column (verified dimensions and tile count)"
+    }
+  },
+  "autotiles": "Resolved room cells are exported; no GameMaker autotile behavior is emulated."
+}

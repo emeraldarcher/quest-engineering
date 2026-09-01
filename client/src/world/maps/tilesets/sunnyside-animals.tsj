@@ -1,0 +1,254 @@
+{
+  "name": "Sunnyside — Animals",
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 7,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "properties": [
+    {
+      "name": "category",
+      "type": "string",
+      "value": "animals"
+    },
+    {
+      "name": "qeSunnysideGenerated",
+      "type": "bool",
+      "value": true
+    }
+  ],
+  "tiles": [
+    {
+      "id": 0,
+      "image": "../../../assets/sunnyside/animals/bird_01_strip4.png",
+      "imagewidth": 64,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "animals"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Animals/spr_deco_bird_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "image": "../../../assets/sunnyside/animals/chicken_01_strip4.png",
+      "imagewidth": 128,
+      "imageheight": 32,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "animals"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Animals/spr_deco_chicken_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "image": "../../../assets/sunnyside/animals/duck_01_strip4.png",
+      "imagewidth": 64,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "animals"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Animals/spr_deco_duck_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "image": "../../../assets/sunnyside/imported/animals/Elements/Animals/spr_deco_blinking_strip12.png",
+      "imagewidth": 192,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "animals"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Animals/spr_deco_blinking_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "image": "../../../assets/sunnyside/imported/animals/Elements/Animals/spr_deco_cow_strip4.png",
+      "imagewidth": 128,
+      "imageheight": 32,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "animals"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Animals/spr_deco_cow_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "image": "../../../assets/sunnyside/imported/animals/Elements/Animals/spr_deco_pig_01_strip4.png",
+      "imagewidth": 128,
+      "imageheight": 32,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "animals"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Animals/spr_deco_pig_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "image": "../../../assets/sunnyside/imported/animals/Elements/Animals/spr_deco_sheep_01_strip4.png",
+      "imagewidth": 128,
+      "imageheight": 32,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "animals"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Animals/spr_deco_sheep_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    }
+  ]
+}

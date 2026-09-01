@@ -1,0 +1,4421 @@
+{
+  "name": "Sunnyside — Nature",
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 156,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "properties": [
+    {
+      "name": "category",
+      "type": "string",
+      "value": "nature"
+    },
+    {
+      "name": "qeSunnysideGenerated",
+      "type": "bool",
+      "value": true
+    }
+  ],
+  "tiles": [
+    {
+      "id": 0,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/beetroot_00.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/beetroot_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/beetroot_01.png",
+      "imagewidth": 6,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/beetroot_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/beetroot_02.png",
+      "imagewidth": 8,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/beetroot_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/beetroot_03.png",
+      "imagewidth": 8,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/beetroot_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/beetroot_04.png",
+      "imagewidth": 12,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/beetroot_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/beetroot_05.png",
+      "imagewidth": 16,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/beetroot_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cabbage_00.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cabbage_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cabbage_01.png",
+      "imagewidth": 10,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cabbage_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cabbage_02.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cabbage_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cabbage_03.png",
+      "imagewidth": 12,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cabbage_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cabbage_04.png",
+      "imagewidth": 16,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cabbage_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cabbage_05.png",
+      "imagewidth": 12,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cabbage_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/carrot_00.png",
+      "imagewidth": 7,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/carrot_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/carrot_01.png",
+      "imagewidth": 6,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/carrot_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/carrot_02.png",
+      "imagewidth": 6,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/carrot_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/carrot_03.png",
+      "imagewidth": 8,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/carrot_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/carrot_04.png",
+      "imagewidth": 10,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/carrot_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/carrot_05.png",
+      "imagewidth": 12,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/carrot_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cauliflower_00.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cauliflower_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cauliflower_01.png",
+      "imagewidth": 6,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cauliflower_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cauliflower_02.png",
+      "imagewidth": 8,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cauliflower_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cauliflower_03.png",
+      "imagewidth": 10,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cauliflower_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cauliflower_04.png",
+      "imagewidth": 12,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cauliflower_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/cauliflower_05.png",
+      "imagewidth": 12,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/cauliflower_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/crate_base.png",
+      "imagewidth": 16,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/crate_base.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/crate_top.png",
+      "imagewidth": 16,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/crate_top.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/egg.png",
+      "imagewidth": 10,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/egg.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/fish.png",
+      "imagewidth": 11,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/fish.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/kale_00.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/kale_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/kale_01.png",
+      "imagewidth": 4,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/kale_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/kale_02.png",
+      "imagewidth": 6,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/kale_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/kale_03.png",
+      "imagewidth": 10,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/kale_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/kale_04.png",
+      "imagewidth": 14,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/kale_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/kale_05.png",
+      "imagewidth": 14,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/kale_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/milk.png",
+      "imagewidth": 10,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/milk.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/parsnip_00.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/parsnip_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/parsnip_01.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/parsnip_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/parsnip_02.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/parsnip_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/parsnip_03.png",
+      "imagewidth": 8,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/parsnip_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/parsnip_04.png",
+      "imagewidth": 10,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/parsnip_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/parsnip_05.png",
+      "imagewidth": 14,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/parsnip_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/potato_00.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/potato_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/potato_01.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/potato_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/potato_02.png",
+      "imagewidth": 8,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/potato_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/potato_03.png",
+      "imagewidth": 8,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/potato_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/potato_04.png",
+      "imagewidth": 11,
+      "imageheight": 15,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/potato_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/potato_05.png",
+      "imagewidth": 10,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/potato_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/pumpkin_00.png",
+      "imagewidth": 7,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/pumpkin_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/pumpkin_01.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/pumpkin_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/pumpkin_02.png",
+      "imagewidth": 9,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/pumpkin_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/pumpkin_03.png",
+      "imagewidth": 12,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/pumpkin_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/pumpkin_04.png",
+      "imagewidth": 12,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/pumpkin_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/pumpkin_05.png",
+      "imagewidth": 12,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/pumpkin_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 53,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/radish_00.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/radish_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 54,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/radish_01.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/radish_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 55,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/radish_02.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/radish_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 56,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/radish_03.png",
+      "imagewidth": 8,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/radish_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 57,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/radish_04.png",
+      "imagewidth": 12,
+      "imageheight": 15,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/radish_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 58,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/radish_05.png",
+      "imagewidth": 12,
+      "imageheight": 15,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/radish_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 59,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/rock.png",
+      "imagewidth": 10,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/rock.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/seeds_generic.png",
+      "imagewidth": 11,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/seeds_generic.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/soil_00.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/soil_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 62,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/soil_01.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/soil_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 63,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/soil_03.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/soil_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 64,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/soil_04.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/soil_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/sunflower_00.png",
+      "imagewidth": 7,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/sunflower_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 66,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/sunflower_01.png",
+      "imagewidth": 10,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/sunflower_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 67,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/sunflower_02.png",
+      "imagewidth": 11,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/sunflower_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 68,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/sunflower_03.png",
+      "imagewidth": 11,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/sunflower_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 69,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/sunflower_04.png",
+      "imagewidth": 13,
+      "imageheight": 19,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/sunflower_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/sunflower_05.png",
+      "imagewidth": 13,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/sunflower_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 71,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/wheat_00.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/wheat_00.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/wheat_01.png",
+      "imagewidth": 11,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/wheat_01.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/wheat_02.png",
+      "imagewidth": 11,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/wheat_02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 74,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/wheat_03.png",
+      "imagewidth": 13,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/wheat_03.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/wheat_04.png",
+      "imagewidth": 13,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/wheat_04.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 76,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/wheat_05.png",
+      "imagewidth": 13,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/wheat_05.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 77,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Crops/wood.png",
+      "imagewidth": 11,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Crops/wood.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 78,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Plants/spr_deco_mushroom_blue_01_strip4.png",
+      "imagewidth": 64,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Plants/spr_deco_mushroom_blue_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 79,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Plants/spr_deco_mushroom_blue_02_strip4.png",
+      "imagewidth": 64,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Plants/spr_deco_mushroom_blue_02_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 80,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Plants/spr_deco_mushroom_blue_03_strip4.png",
+      "imagewidth": 64,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Plants/spr_deco_mushroom_blue_03_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 81,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Plants/spr_deco_mushroom_red_01_strip4.png",
+      "imagewidth": 64,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Plants/spr_deco_mushroom_red_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 82,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Plants/spr_deco_tree_01_strip4.png",
+      "imagewidth": 128,
+      "imageheight": 34,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Plants/spr_deco_tree_01_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 83,
+      "image": "../../../assets/sunnyside/imported/nature/Elements/Plants/spr_deco_tree_02_strip4.png",
+      "imagewidth": 112,
+      "imageheight": 43,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Plants/spr_deco_tree_02_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 84,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/beetroot_00/7b05b8c6-a8a0-4d67-916b-8a7ea933ed5d.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/beetroot_00/7b05b8c6-a8a0-4d67-916b-8a7ea933ed5d.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 85,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/beetroot_01/9a1a58b9-8aa9-4792-91a2-f134f47a40f1.png",
+      "imagewidth": 6,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/beetroot_01/9a1a58b9-8aa9-4792-91a2-f134f47a40f1.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 86,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/beetroot_02/5b4a6a8a-fd11-43a6-bb35-30c4c2f31cea.png",
+      "imagewidth": 8,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/beetroot_02/5b4a6a8a-fd11-43a6-bb35-30c4c2f31cea.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 87,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/beetroot_03/6daa5863-95fc-4e76-a6ef-27cf5b14a4cb.png",
+      "imagewidth": 8,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/beetroot_03/6daa5863-95fc-4e76-a6ef-27cf5b14a4cb.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 88,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/beetroot_04/c97caa5c-8a3e-42f5-979f-af1341c42401.png",
+      "imagewidth": 12,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/beetroot_04/c97caa5c-8a3e-42f5-979f-af1341c42401.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 89,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/beetroot_05/bc1c265c-5b8e-4244-8745-7ece26badad7.png",
+      "imagewidth": 16,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/beetroot_05/bc1c265c-5b8e-4244-8745-7ece26badad7.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cabbage_00/dd8d5670-7f28-4bc3-8402-564786d5749a.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cabbage_00/dd8d5670-7f28-4bc3-8402-564786d5749a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 91,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cabbage_01/65b8cdcf-6520-4677-8000-72d1b6d4059b.png",
+      "imagewidth": 10,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cabbage_01/65b8cdcf-6520-4677-8000-72d1b6d4059b.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 92,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cabbage_02/1c9251db-4a5e-4f96-a719-23f0a1033c69.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cabbage_02/1c9251db-4a5e-4f96-a719-23f0a1033c69.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 93,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cabbage_03/747fbd5a-5d6c-49f6-bc0d-d534b4254c86.png",
+      "imagewidth": 12,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cabbage_03/747fbd5a-5d6c-49f6-bc0d-d534b4254c86.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 94,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cabbage_04/022c2570-016b-471e-a1ff-9491c67a5df4.png",
+      "imagewidth": 16,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cabbage_04/022c2570-016b-471e-a1ff-9491c67a5df4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 95,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cabbage_05/82dd573b-089b-4bf0-b2c1-94ee66c2c3bb.png",
+      "imagewidth": 12,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cabbage_05/82dd573b-089b-4bf0-b2c1-94ee66c2c3bb.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 96,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/carrot_00/d7f56578-377a-4a72-a8c5-6b970b34a9da.png",
+      "imagewidth": 7,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/carrot_00/d7f56578-377a-4a72-a8c5-6b970b34a9da.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 97,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/carrot_01/d5db07da-286b-4554-8f72-f19d76b70258.png",
+      "imagewidth": 6,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/carrot_01/d5db07da-286b-4554-8f72-f19d76b70258.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 98,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/carrot_02/3bd58caa-d998-47f9-a50a-2a250bfd0d51.png",
+      "imagewidth": 6,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/carrot_02/3bd58caa-d998-47f9-a50a-2a250bfd0d51.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 99,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/carrot_03/9c956029-2523-4bf3-9f1f-59e35932bdf7.png",
+      "imagewidth": 8,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/carrot_03/9c956029-2523-4bf3-9f1f-59e35932bdf7.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 100,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/carrot_04/fdb69745-89fe-4877-b0d5-c8de0a391eb7.png",
+      "imagewidth": 10,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/carrot_04/fdb69745-89fe-4877-b0d5-c8de0a391eb7.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/carrot_05/f99e1b5c-0ce4-4891-ab71-eba05040038e.png",
+      "imagewidth": 12,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/carrot_05/f99e1b5c-0ce4-4891-ab71-eba05040038e.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cauliflower_00/836dd7a1-6d20-4b0f-a279-63f814f5339b.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cauliflower_00/836dd7a1-6d20-4b0f-a279-63f814f5339b.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cauliflower_01/43ed3ea7-1e76-4220-8169-7b1ad3b7d93a.png",
+      "imagewidth": 6,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cauliflower_01/43ed3ea7-1e76-4220-8169-7b1ad3b7d93a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cauliflower_02/6e92abc9-ca6a-4969-964b-82895e700fc3.png",
+      "imagewidth": 8,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cauliflower_02/6e92abc9-ca6a-4969-964b-82895e700fc3.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 105,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cauliflower_03/9971890e-30f1-4302-a2c7-b95c782cda6f.png",
+      "imagewidth": 10,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cauliflower_03/9971890e-30f1-4302-a2c7-b95c782cda6f.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cauliflower_04/d7924979-0a15-40d9-8ff7-b68d466b8976.png",
+      "imagewidth": 12,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cauliflower_04/d7924979-0a15-40d9-8ff7-b68d466b8976.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 107,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/cauliflower_05/f6ad26bf-fb77-46a6-a753-480c577291ff.png",
+      "imagewidth": 12,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/cauliflower_05/f6ad26bf-fb77-46a6-a753-480c577291ff.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 108,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/kale_00/85d1feaa-513d-44f4-97fc-a287eacf0c3b.png",
+      "imagewidth": 5,
+      "imageheight": 5,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/kale_00/85d1feaa-513d-44f4-97fc-a287eacf0c3b.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 109,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/kale_01/798d8a5c-4bdc-4779-a0f3-48ceae45bf48.png",
+      "imagewidth": 4,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/kale_01/798d8a5c-4bdc-4779-a0f3-48ceae45bf48.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 110,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/kale_02/1ee89552-13a2-40f9-8279-70b3384d4363.png",
+      "imagewidth": 6,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/kale_02/1ee89552-13a2-40f9-8279-70b3384d4363.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 111,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/kale_03/fa0a96ea-84fe-40a8-89ac-eaf0c937cf89.png",
+      "imagewidth": 10,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/kale_03/fa0a96ea-84fe-40a8-89ac-eaf0c937cf89.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 112,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/kale_04/36b109f7-8ff8-4c7f-ab11-31783c7459d2.png",
+      "imagewidth": 14,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/kale_04/36b109f7-8ff8-4c7f-ab11-31783c7459d2.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 113,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/kale_05/5d623640-cd9c-4a55-b511-d6584de65b68.png",
+      "imagewidth": 14,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/kale_05/5d623640-cd9c-4a55-b511-d6584de65b68.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 114,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/parsnip_00/890a9d4a-e357-4462-8e91-e9671617dbd6.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/parsnip_00/890a9d4a-e357-4462-8e91-e9671617dbd6.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 115,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/parsnip_01/b3368ce6-e8bc-4fa1-9e3c-3ae9f65700e7.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/parsnip_01/b3368ce6-e8bc-4fa1-9e3c-3ae9f65700e7.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 116,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/parsnip_02/e564f873-dcfa-42f4-9a4b-d6f30693695a.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/parsnip_02/e564f873-dcfa-42f4-9a4b-d6f30693695a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 117,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/parsnip_03/61c96aa4-7448-423e-9fef-367ab54df73f.png",
+      "imagewidth": 8,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/parsnip_03/61c96aa4-7448-423e-9fef-367ab54df73f.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 118,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/parsnip_04/f49abbd7-bee0-44a3-a5cc-a65d327ddc36.png",
+      "imagewidth": 10,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/parsnip_04/f49abbd7-bee0-44a3-a5cc-a65d327ddc36.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 119,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/parsnip_05/f5e719c0-0026-40bd-92f4-f0924dd03aab.png",
+      "imagewidth": 14,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/parsnip_05/f5e719c0-0026-40bd-92f4-f0924dd03aab.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 120,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/potato_00/198bd439-bad7-4646-b177-dc774feeac8a.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/potato_00/198bd439-bad7-4646-b177-dc774feeac8a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 121,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/potato_01/f546f042-b99d-4488-a71f-f136ee5c7e3d.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/potato_01/f546f042-b99d-4488-a71f-f136ee5c7e3d.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 122,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/potato_02/f3d3674a-8b42-4d30-9b4b-7e24663e1b3a.png",
+      "imagewidth": 8,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/potato_02/f3d3674a-8b42-4d30-9b4b-7e24663e1b3a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 123,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/potato_03/4ad96dec-7019-4110-a498-3d526962c81f.png",
+      "imagewidth": 8,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/potato_03/4ad96dec-7019-4110-a498-3d526962c81f.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 124,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/potato_04/2b05700b-2e1f-44ab-bfec-17d4abd06038.png",
+      "imagewidth": 11,
+      "imageheight": 15,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/potato_04/2b05700b-2e1f-44ab-bfec-17d4abd06038.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 125,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/potato_05/117c0924-f9b1-48ab-b825-f76493bd05b1.png",
+      "imagewidth": 10,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/potato_05/117c0924-f9b1-48ab-b825-f76493bd05b1.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 126,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/pumpkin_00/4e84e333-a012-4261-886e-b57335a163ee.png",
+      "imagewidth": 7,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/pumpkin_00/4e84e333-a012-4261-886e-b57335a163ee.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 127,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/pumpkin_01/c27a55f0-5bf4-4a5b-bbcc-893c915896c0.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/pumpkin_01/c27a55f0-5bf4-4a5b-bbcc-893c915896c0.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 128,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/pumpkin_02/e587fcda-80e7-4fa6-b268-8a09cbb8663d.png",
+      "imagewidth": 9,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/pumpkin_02/e587fcda-80e7-4fa6-b268-8a09cbb8663d.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 129,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/pumpkin_03/ed3cb033-30d4-40b1-bca7-5e9699f119af.png",
+      "imagewidth": 12,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/pumpkin_03/ed3cb033-30d4-40b1-bca7-5e9699f119af.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 130,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/pumpkin_04/88b05a14-8f96-4465-b94a-69d8a5eb366b.png",
+      "imagewidth": 12,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/pumpkin_04/88b05a14-8f96-4465-b94a-69d8a5eb366b.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 131,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/pumpkin_05/e5b34d16-0083-4af3-b94f-d4453f2cbe91.png",
+      "imagewidth": 12,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/pumpkin_05/e5b34d16-0083-4af3-b94f-d4453f2cbe91.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 132,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/radish_00/f70f5de0-41f2-4889-8318-b3415885cdda.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/radish_00/f70f5de0-41f2-4889-8318-b3415885cdda.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 133,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/radish_01/b294e85d-f6a8-4c6e-aa2d-80af89b7058f.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/radish_01/b294e85d-f6a8-4c6e-aa2d-80af89b7058f.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 134,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/radish_02/e81402ec-4753-4347-953a-291b85c40c7a.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/radish_02/e81402ec-4753-4347-953a-291b85c40c7a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 135,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/radish_03/9084bb82-9959-4c35-ab5e-d8ee12e80a3f.png",
+      "imagewidth": 8,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/radish_03/9084bb82-9959-4c35-ab5e-d8ee12e80a3f.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 136,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/radish_04/a646a6e4-160a-4814-babb-759f4e2ea223.png",
+      "imagewidth": 12,
+      "imageheight": 15,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/radish_04/a646a6e4-160a-4814-babb-759f4e2ea223.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 137,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/radish_05/5a50ec7a-e217-407c-865e-ec3cffc5301e.png",
+      "imagewidth": 12,
+      "imageheight": 15,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/radish_05/5a50ec7a-e217-407c-865e-ec3cffc5301e.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 138,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/seeds_generic/531561fd-aa94-4817-95a1-0b7f9ef80704.png",
+      "imagewidth": 11,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/seeds_generic/531561fd-aa94-4817-95a1-0b7f9ef80704.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 139,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/soil_00/5d08d48d-8346-41fc-9510-46ba82c65f4e.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/soil_00/5d08d48d-8346-41fc-9510-46ba82c65f4e.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 140,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/soil_01/ac80b66e-b239-4bc2-aca0-096cce776170.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/soil_01/ac80b66e-b239-4bc2-aca0-096cce776170.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 141,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/soil_03/e435d274-f8f7-4659-8b77-55a66751d2c3.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/soil_03/e435d274-f8f7-4659-8b77-55a66751d2c3.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 142,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/soil_04/b92b5ce3-8649-4b85-95ac-f15d19b2c96a.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/soil_04/b92b5ce3-8649-4b85-95ac-f15d19b2c96a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 143,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/spr_deco_truffle/e6dbb225-174c-41bd-ab66-36e9fff04f0a.png",
+      "imagewidth": 10,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_truffle/e6dbb225-174c-41bd-ab66-36e9fff04f0a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 144,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/sunflower_00/a1cd5f3b-e0f2-4c31-82f2-21cf485f7beb.png",
+      "imagewidth": 7,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/sunflower_00/a1cd5f3b-e0f2-4c31-82f2-21cf485f7beb.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 145,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/sunflower_01/98fba696-47a9-4f44-b34c-03427bdebabe.png",
+      "imagewidth": 10,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/sunflower_01/98fba696-47a9-4f44-b34c-03427bdebabe.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 146,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/sunflower_02/801afcd9-2c97-425e-8732-fda2c64b61ae.png",
+      "imagewidth": 11,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/sunflower_02/801afcd9-2c97-425e-8732-fda2c64b61ae.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 147,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/sunflower_03/36d85b58-5290-414c-8b7b-7565849799ad.png",
+      "imagewidth": 11,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/sunflower_03/36d85b58-5290-414c-8b7b-7565849799ad.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 148,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/sunflower_04/9f2d764f-e4b4-45e7-afab-c2119fafce4d.png",
+      "imagewidth": 13,
+      "imageheight": 19,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/sunflower_04/9f2d764f-e4b4-45e7-afab-c2119fafce4d.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 149,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/sunflower_05/eb436e96-2179-4036-bf7a-09199876548b.png",
+      "imagewidth": 13,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/sunflower_05/eb436e96-2179-4036-bf7a-09199876548b.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 150,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/wheat_00/896b572c-528f-42bf-aded-78720b823879.png",
+      "imagewidth": 6,
+      "imageheight": 6,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/wheat_00/896b572c-528f-42bf-aded-78720b823879.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 151,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/wheat_01/619e4a12-3571-4353-96e1-5aec819ab843.png",
+      "imagewidth": 11,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/wheat_01/619e4a12-3571-4353-96e1-5aec819ab843.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 152,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/wheat_02/053e5dfc-145b-45c8-b994-8429b3b679d5.png",
+      "imagewidth": 11,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/wheat_02/053e5dfc-145b-45c8-b994-8429b3b679d5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 153,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/wheat_03/8d48d50f-50f0-4ba2-a203-c649ad699651.png",
+      "imagewidth": 13,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/wheat_03/8d48d50f-50f0-4ba2-a203-c649ad699651.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 154,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/wheat_04/e0318614-e999-4d36-a011-1b092ea7046f.png",
+      "imagewidth": 13,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/wheat_04/e0318614-e999-4d36-a011-1b092ea7046f.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 155,
+      "image": "../../../assets/sunnyside/imported/nature/gamemaker/wheat_05/dd6c210b-f3ac-4ddf-b4ea-9e4abd500748.png",
+      "imagewidth": 13,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "nature"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/wheat_05/dd6c210b-f3ac-4ddf-b4ea-9e4abd500748.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    }
+  ]
+}

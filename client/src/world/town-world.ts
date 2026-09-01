@@ -3,6 +3,7 @@ import {
   Assets,
   Container,
   Graphics,
+  Polygon,
   Rectangle,
   Sprite,
   Text,
@@ -10,30 +11,37 @@ import {
 } from "pixi.js";
 import type { BuildingId } from "../state/app-store";
 import {
-  cameraPosition,
-  normalizeZoom,
-  stepZoom,
-  type ZoomLevel,
-} from "./camera";
-import {
-  type MiniMedievalFrame,
-  type MiniMedievalSheet,
-  miniMedievalFrames,
-  miniMedievalSheets,
-} from "./mini-medieval-assets";
+  authoredCameraPosition,
+  fitAuthoredBounds,
+  unobscuredViewport,
+} from "./authored/authored-camera";
+import type {
+  AuthoredImageTile,
+  AuthoredInteractionRegion,
+  AuthoredLocationId,
+  AuthoredTilePlacement,
+  AuthoredTownMap,
+  PanelSide,
+  TownRect,
+} from "./authored/map-schema";
 import type {
   MemberWorldModel,
   RunWorldModel,
   VisualActivity,
 } from "./projector";
 import {
-  futureWarRoom,
-  idleHomes,
-  TOWN_SIZE,
-  townBuildings,
-  workSites,
-} from "./town-layout";
-import { assignWorkSites, memberIdentity, stableHash } from "./visual-identity";
+  allRuntimeAssets,
+  type HairStyle,
+  hairStyles,
+  type SpikeCharacterAction,
+  type SunnysideAsset,
+  SunnysideAssets,
+} from "./runtime/sunnyside-assets";
+import {
+  assignMemberHomes,
+  assignWorkSites,
+  memberIdentity,
+} from "./visual-identity";
 
 export interface TownWorldEvents {
   onBuildingSelected(id: BuildingId): void;
@@ -47,73 +55,63 @@ export interface TownStatusModel {
   complete: number;
 }
 
+export interface TownWorldOptions {
+  debugMap?: boolean;
+}
+
 interface MemberEntity {
   container: Container;
-  sprite: Sprite;
+  base: Sprite;
+  hair: Sprite;
   marker: Graphics;
   glyph: Graphics;
   name: Text;
   status: Text;
   model: MemberWorldModel;
   identity: ReturnType<typeof memberIdentity>;
+  hairStyle: HairStyle;
   target: { x: number; y: number };
+  home: { x: number; y: number };
   previousCompleted: Set<string>;
   completedUntil: number;
   hovered: boolean;
 }
 
-interface AmbientAnimal {
+interface AnimatedSprite {
   sprite: Sprite;
-  origin: { x: number; y: number };
+  asset: SunnysideAsset;
   phase: number;
-}
-
-function frameAt(
-  frames: MiniMedievalFrame[],
-  index: number,
-): MiniMedievalFrame {
-  const frame = frames[index] ?? frames[0];
-  if (!frame) throw new Error("Mini Medieval animation has no frames.");
-  return frame;
+  route?: Array<{ x: number; y: number }>;
 }
 
 const palette = {
-  ink: 0x120e23,
-  panel: 0x2a2942,
-  water: 0x24505f,
-  waterLight: 0x2a7d75,
-  grassDark: 0x56642e,
-  grass: 0x7e9432,
-  grassLight: 0xc9c03d,
-  dirt: 0xa15c34,
-  woodDark: 0x402e2b,
-  wood: 0x764032,
-  woodLight: 0xc78539,
-  cream: 0xfff1a9,
-  parchment: 0xdacea4,
-  stone: 0x6f6e72,
-  stoneLight: 0xaea47e,
-  success: 0x6dba79,
-  warning: 0xebb85b,
-  failure: 0xe67a84,
-  review: 0xc9c03d,
-  pink: 0xe67a84,
+  ink: 0x29373a,
+  cream: 0xfff3d4,
+  paper: 0xf3dfb5,
+  success: 0x4d9468,
+  moving: 0x4e8ca0,
+  warning: 0xd99a45,
+  failure: 0xc35458,
+  uncertain: 0x845d99,
+  review: 0xd98545,
 };
 
 export class TownWorld {
   private app = new Application();
   private scene = new Container();
-  private terrain = new Container();
-  private places = new Container();
+  private staticWorld = new Container();
   private activity = new Container();
+  private foreground = new Container();
   private overlays = new Container();
-  private members = new Map<string, MemberEntity>();
-  private buildingHighlights = new Map<BuildingId, Graphics>();
-  private focusedBuilding: BuildingId | null = null;
+  private interactionLayer = new Container();
   private orderLayer = new Container();
   private statusLayer = new Container();
-  private sheets = new Map<MiniMedievalSheet, Texture>();
-  private textures = new Map<string, Texture>();
+  private debugLayer = new Container();
+  private loaded = new Map<string, Texture>();
+  private framed = new Map<string, Texture>();
+  private members = new Map<string, MemberEntity>();
+  private labels = new Map<AuthoredLocationId, Text>();
+  private animated: AnimatedSprite[] = [];
   private model: RunWorldModel | null = null;
   private status: TownStatusModel = {
     preparingReview: 0,
@@ -121,26 +119,34 @@ export class TownWorld {
     attention: 0,
     complete: 0,
   };
-  private focused = { x: TOWN_SIZE.width / 2, y: TOWN_SIZE.height / 2 };
-  private targetFocus = { ...this.focused };
+  private focusedBuilding: AuthoredLocationId | null = null;
+  private selectedMemberKey: string | null = null;
+  private focus = { x: 320, y: 208 };
+  private targetFocus = { ...this.focus };
+  private zoom: 1 | 2 | 3;
+  private cameraMode: "town" | "location" | "member" | "manual" = "town";
+  private preferredPanelSide: PanelSide = "right";
+  private panelBounds: TownRect | null = null;
   private dragging: { x: number; y: number } | null = null;
   private dragDistance = 0;
-  private zoom: ZoomLevel;
-  private selectedMemberKey: string | null = null;
   private completionUntil = 0;
-  private completionFlourish: Graphics | null = null;
-  private animals: AmbientAnimal[] = [];
   private reducedMotion = matchMedia(
     "(prefers-reduced-motion: reduce)",
   ).matches;
+  private initialized = false;
+  private destroyed = false;
   private mounted = false;
 
   constructor(
     private readonly host: HTMLElement,
     private readonly events: TownWorldEvents,
-    initialZoom = 3,
+    private readonly map: AuthoredTownMap,
+    initialZoom = 2,
+    private readonly options: TownWorldOptions = {},
   ) {
-    this.zoom = normalizeZoom(initialZoom);
+    this.zoom = this.normalizeZoom(initialZoom);
+    this.focus = this.rectCenter(map.functionalTownBounds);
+    this.targetFocus = { ...this.focus };
   }
 
   async mount(): Promise<void> {
@@ -150,37 +156,56 @@ export class TownWorld {
     );
     await this.app.init({
       resizeTo: this.host,
-      background: "#120e23",
+      background: "#cfe7bd",
       antialias: false,
       autoDensity: true,
       preference: "webgl",
       preserveDrawingBuffer: true,
       resolution,
     });
+    this.initialized = true;
+    if (this.destroyed) {
+      this.app.destroy(true, { children: true });
+      return;
+    }
     this.host.appendChild(this.app.canvas);
-    const loaded = await Promise.all(
-      Object.entries(miniMedievalSheets).map(async ([key, url]) => {
+    const urls = new Set([
+      ...this.map.tileLayers.flatMap((layer) =>
+        layer.tiles.map((tile) => tile.image.url),
+      ),
+      ...this.map.staticObjects.map((object) => object.image.url),
+      ...allRuntimeAssets().map((asset) => asset.url),
+    ]);
+    await Promise.all(
+      [...urls].map(async (url) => {
         const texture = await Assets.load<Texture>(url);
         texture.source.scaleMode = "nearest";
-        return [key as MiniMedievalSheet, texture] as const;
+        this.loaded.set(url, texture);
       }),
     );
-    for (const [key, texture] of loaded) this.sheets.set(key, texture);
+    if (this.destroyed) return;
 
     this.scene.addChild(
-      this.terrain,
-      this.places,
+      this.staticWorld,
       this.activity,
+      this.foreground,
       this.overlays,
+      this.debugLayer,
     );
-    this.activity.addChild(this.orderLayer);
-    this.overlays.addChild(this.statusLayer);
+    this.activity.sortableChildren = true;
+    this.overlays.addChild(
+      this.orderLayer,
+      this.statusLayer,
+      this.interactionLayer,
+    );
     this.app.stage.addChild(this.scene);
-    this.drawTerrain();
-    this.drawPlaces();
-    this.drawAmbientLife();
+    this.buildStaticMap();
+    this.buildInteractions();
+    this.buildAmbientLife();
+    if (this.options.debugMap) this.buildDebugOverlay();
     this.updateStatusMarker();
     this.updateMembers();
+    this.focusTown();
 
     this.app.stage.eventMode = "static";
     this.app.stage.hitArea = this.app.screen;
@@ -201,7 +226,8 @@ export class TownWorld {
       this.dragDistance += Math.hypot(dx, dy);
       this.targetFocus.x -= Math.round(dx / this.zoom);
       this.targetFocus.y -= Math.round(dy / this.zoom);
-      this.focused = { ...this.targetFocus };
+      this.focus = { ...this.targetFocus };
+      this.cameraMode = "manual";
       this.dragging = { x: event.global.x, y: event.global.y };
     });
     this.host.addEventListener("wheel", this.onWheel, { passive: false });
@@ -216,61 +242,85 @@ export class TownWorld {
   }
 
   setStatus(status: TownStatusModel): void {
-    if (this.mounted && status.complete > this.status.complete) {
+    if (this.mounted && status.complete > this.status.complete)
       this.completionUntil =
         performance.now() + (this.reducedMotion ? 0 : 2200);
-    }
     this.status = status;
     if (this.mounted) this.updateStatusMarker();
   }
 
   setZoom(value: number): void {
-    this.zoom = normalizeZoom(value);
-    this.updateHitAreas();
+    this.zoom = this.normalizeZoom(value);
   }
 
-  getZoom(): ZoomLevel {
+  getZoom(): 1 | 2 | 3 {
     return this.zoom;
   }
 
+  setPanelBounds(bounds: TownRect | null): void {
+    this.panelBounds = bounds;
+    if (this.mounted && this.cameraMode === "town")
+      this.zoom = this.overviewZoom();
+  }
+
   focusBuilding(id: BuildingId): void {
-    const value = townBuildings.find((item) => item.id === id);
-    this.focusedBuilding = id;
-    for (const [key, highlight] of this.buildingHighlights)
-      highlight.visible = key === id;
-    if (value) this.targetFocus = { x: value.x + 36, y: value.y };
+    const anchor = this.map.cameraAnchors.find((value) => value.id === id);
+    if (!anchor) return;
+    this.focusedBuilding = anchor.id;
+    this.selectedMemberKey = null;
+    this.cameraMode = "location";
+    this.zoom = anchor.zoom;
+    this.preferredPanelSide = anchor.panelSide;
+    this.targetFocus = { x: anchor.x, y: anchor.y };
+    this.refreshHighlights();
   }
 
   clearBuildingFocus(): void {
     this.focusedBuilding = null;
-    for (const highlight of this.buildingHighlights.values())
-      highlight.visible = false;
+    this.refreshHighlights();
   }
 
   focusMember(memberKey: string): void {
     this.selectedMemberKey = memberKey;
-    const value = this.members.get(memberKey);
-    if (value) {
-      this.targetFocus = { x: value.container.x + 32, y: value.container.y };
-      this.refreshMemberPresentation(value);
-    }
+    const entity = this.members.get(memberKey);
+    if (!entity) return;
+    this.cameraMode = "member";
+    this.targetFocus = { x: entity.container.x, y: entity.container.y - 10 };
+    this.refreshMemberPresentation(entity);
   }
 
   focusTown(): void {
-    this.targetFocus = { x: 312, y: 236 };
+    this.cameraMode = "town";
+    this.focusedBuilding = null;
+    this.selectedMemberKey = null;
+    this.zoom = this.overviewZoom();
+    this.targetFocus = this.rectCenter(this.map.functionalTownBounds);
+    this.refreshHighlights();
+    for (const entity of this.members.values())
+      this.refreshMemberPresentation(entity);
   }
 
   destroy(): void {
+    this.destroyed = true;
+    this.mounted = false;
     this.host.removeEventListener("wheel", this.onWheel);
     window.removeEventListener("keydown", this.onKeydown);
-    this.app.ticker.remove(this.tick);
-    this.app.destroy(true, { children: true });
+    if (this.initialized) {
+      this.app.ticker.remove(this.tick);
+      this.app.destroy(true, { children: true });
+    }
+  }
+
+  private normalizeZoom(value: number): 1 | 2 | 3 {
+    return [1, 2, 3].reduce((best, zoom) =>
+      Math.abs(zoom - value) < Math.abs(best - value) ? zoom : best,
+    ) as 1 | 2 | 3;
   }
 
   private onWheel = (event: WheelEvent) => {
     event.preventDefault();
-    this.zoom = stepZoom(this.zoom, event.deltaY > 0 ? -1 : 1);
-    this.updateHitAreas();
+    this.zoom = this.normalizeZoom(this.zoom + (event.deltaY > 0 ? -1 : 1));
+    this.cameraMode = "manual";
   };
 
   private onKeydown = (event: KeyboardEvent) => {
@@ -282,8 +332,8 @@ export class TownWorld {
       return;
     const amount = event.shiftKey ? 48 : 24;
     if (event.key === "+" || event.key === "=")
-      this.zoom = stepZoom(this.zoom, 1);
-    else if (event.key === "-") this.zoom = stepZoom(this.zoom, -1);
+      this.zoom = this.normalizeZoom(this.zoom + 1);
+    else if (event.key === "-") this.zoom = this.normalizeZoom(this.zoom - 1);
     else if (event.key === "0") this.focusTown();
     else if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a")
       this.targetFocus.x -= amount;
@@ -294,341 +344,261 @@ export class TownWorld {
     else if (event.key === "ArrowDown" || event.key.toLowerCase() === "s")
       this.targetFocus.y += amount;
     else return;
+    if (event.key !== "0") this.cameraMode = "manual";
     event.preventDefault();
-    this.updateHitAreas();
   };
 
   private tick = () => {
     const now = performance.now();
+    this.app.stage.hitArea = this.app.screen;
     if (!this.reducedMotion) {
-      this.focused.x += (this.targetFocus.x - this.focused.x) * 0.24;
-      this.focused.y += (this.targetFocus.y - this.focused.y) * 0.24;
-    } else this.focused = { ...this.targetFocus };
-
-    this.scene.scale.set(this.zoom);
-    const position = cameraPosition(
-      this.focused,
-      this.app.screen,
-      TOWN_SIZE,
-      this.zoom,
-      0.44,
-    );
-    this.scene.position.set(position.x, position.y + 28);
-
+      this.focus.x += (this.targetFocus.x - this.focus.x) * 0.24;
+      this.focus.y += (this.targetFocus.y - this.focus.y) * 0.24;
+    } else this.focus = { ...this.targetFocus };
+    this.positionCamera();
     for (const entity of this.members.values()) this.animateMember(entity, now);
-    if (this.completionFlourish && now >= this.completionUntil) {
-      this.completionFlourish.visible = false;
-      this.completionFlourish = null;
-    }
-    if (!this.reducedMotion) {
-      for (const animal of this.animals) {
-        const offset = Math.round(Math.sin(now / 1800 + animal.phase) * 10);
-        animal.sprite.x = animal.origin.x + offset;
-        animal.sprite.texture = this.frameTexture(
-          frameAt(
-            miniMedievalFrames.animals.chickenWalk,
-            Math.floor(now / 180) %
-              miniMedievalFrames.animals.chickenWalk.length,
-          ),
-        );
+    this.animated = this.animated.filter(
+      (animated) => !animated.sprite.destroyed,
+    );
+    for (const animated of this.animated) {
+      const frames = animated.asset.frames ?? 1;
+      const frame = this.reducedMotion
+        ? 0
+        : (Math.floor(now / (animated.asset.frameDurationMs ?? 120)) +
+            animated.phase) %
+          frames;
+      animated.sprite.texture = this.assetFrame(animated.asset, frame);
+      if (!this.reducedMotion && animated.route && animated.route.length > 1) {
+        const segments = animated.route.length - 1;
+        const progress = (now / 2400 + animated.phase) % (segments * 2);
+        const reflected =
+          progress > segments ? segments * 2 - progress : progress;
+        const index = Math.min(segments - 1, Math.floor(reflected));
+        const start = animated.route[index];
+        const end = animated.route[index + 1];
+        if (start && end) {
+          const amount = reflected - index;
+          animated.sprite.position.set(
+            Math.round(start.x + (end.x - start.x) * amount),
+            Math.round(start.y + (end.y - start.y) * amount),
+          );
+          animated.sprite.zIndex = Math.round(animated.sprite.y);
+        }
       }
     }
   };
 
-  private frameTexture(frame: MiniMedievalFrame): Texture {
-    const key = `${frame.sheet}:${frame.x},${frame.y},${frame.width},${frame.height}`;
-    const existing = this.textures.get(key);
-    if (existing) return existing;
-    const sheet = this.sheets.get(frame.sheet);
-    if (!sheet) return Texture.EMPTY;
+  private viewport(): TownRect {
+    return unobscuredViewport(
+      { width: this.app.screen.width, height: this.app.screen.height },
+      this.panelBounds,
+      this.preferredPanelSide,
+    );
+  }
+
+  private overviewZoom(): 1 | 2 | 3 {
+    return fitAuthoredBounds(this.map.functionalTownBounds, this.viewport());
+  }
+
+  private positionCamera(): void {
+    const placement = authoredCameraPosition(
+      this.focus,
+      this.viewport(),
+      this.map.bounds,
+      this.zoom,
+    );
+    this.scene.scale.set(this.zoom);
+    this.scene.position.set(placement.x, placement.y);
+    for (const [id, label] of this.labels)
+      label.visible = id === this.focusedBuilding;
+  }
+
+  private rectCenter(rect: TownRect): { x: number; y: number } {
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  }
+
+  private buildStaticMap(): void {
+    for (const layer of this.map.tileLayers) {
+      const container = new Container();
+      container.label = layer.name;
+      for (const tile of layer.tiles) container.addChild(this.mapSprite(tile));
+      if (layer.foreground) this.foreground.addChild(container);
+      else this.staticWorld.addChild(container);
+    }
+    const objects = new Container();
+    objects.label = "Static Objects Below Members";
+    for (const object of [...this.map.staticObjects].sort((a, b) => a.y - b.y))
+      objects.addChild(this.mapSprite(object));
+    this.staticWorld.addChild(objects);
+  }
+
+  private mapTexture(image: AuthoredImageTile): Texture {
+    const key = `${image.url}:${image.localId}`;
+    const cached = this.framed.get(key);
+    if (cached) return cached;
+    const source = this.loaded.get(image.url) ?? Texture.EMPTY;
+    if (image.collectionImage) return source;
     const texture = new Texture({
-      source: sheet.source,
-      frame: new Rectangle(frame.x, frame.y, frame.width, frame.height),
+      source: source.source,
+      frame: new Rectangle(
+        (image.localId % image.columns) * image.tileWidth,
+        Math.floor(image.localId / image.columns) * image.tileHeight,
+        image.tileWidth,
+        image.tileHeight,
+      ),
     });
-    this.textures.set(key, texture);
+    this.framed.set(key, texture);
     return texture;
   }
 
-  private sprite(frame: MiniMedievalFrame): Sprite {
-    const value = new Sprite(this.frameTexture(frame));
-    if (frame.anchor) value.anchor.set(frame.anchor[0], frame.anchor[1]);
-    return value;
+  private mapSprite(tile: AuthoredTilePlacement): Sprite {
+    const sprite = new Sprite(this.mapTexture(tile.image));
+    const width = tile.width ?? tile.image.sourceWidth;
+    const height = tile.height ?? tile.image.sourceHeight;
+    sprite.anchor.set(0.5);
+    sprite.width = width;
+    sprite.height = height;
+    sprite.position.set(
+      tile.x + width / 2,
+      tile.anchor === "bottom-left" ? tile.y - height / 2 : tile.y + height / 2,
+    );
+    if (tile.flipHorizontal) sprite.scale.x *= -1;
+    if (tile.flipVertical) sprite.scale.y *= -1;
+    if (tile.flipDiagonal) sprite.rotation = Math.PI / 2;
+    return sprite;
   }
 
-  private drawTerrain(): void {
-    const ground = new Graphics()
-      .rect(0, 0, TOWN_SIZE.width, TOWN_SIZE.height)
-      .fill(palette.grassDark);
-    this.terrain.addChild(ground);
-
-    const commons = new Graphics()
-      .roundRect(78, 70, 500, 330, 26)
-      .fill(palette.grass)
-      .stroke({ color: palette.grassLight, alpha: 0.18, width: 1 });
-    this.terrain.addChild(commons);
-
-    const paths = new Graphics()
-      .moveTo(90, 214)
-      .lineTo(328, 232)
-      .lineTo(360, 326)
-      .moveTo(168, 322)
-      .lineTo(328, 232)
-      .lineTo(280, 108)
-      .moveTo(328, 232)
-      .lineTo(470, 124)
-      .stroke({ color: palette.dirt, width: 10, alpha: 0.75 });
-    this.terrain.addChild(paths);
-
-    const pond = new Graphics()
-      .roundRect(18, 274, 82, 94, 20)
-      .fill(palette.water)
-      .stroke({ color: palette.waterLight, width: 3 });
-    this.terrain.addChild(pond);
-
-    for (let index = 0; index < 70; index += 1) {
-      const hash = stableHash(`terrain-${index}`);
-      const detail = this.sprite(
-        hash % 4 === 0
-          ? miniMedievalFrames.terrain.grassFlowers
-          : miniMedievalFrames.terrain.grass,
-      );
-      detail.alpha = hash % 4 === 0 ? 0.6 : 0.32;
-      detail.position.set(
-        24 + (hash % 650),
-        36 + (Math.floor(hash / 650) % 380),
-      );
-      this.terrain.addChild(detail);
+  private buildInteractions(): void {
+    for (const location of this.map.locations) {
+      const label = this.worldText(location.label, 6, palette.cream);
+      label.anchor.set(0.5, 0);
+      label.position.set(location.x, location.y + 4);
+      label.visible = false;
+      this.labels.set(location.id, label);
+      this.overlays.addChild(label);
     }
-
-    const treePositions = [
-      [28, 88],
-      [62, 112],
-      [650, 74],
-      [682, 110],
-      [30, 424],
-      [70, 438],
-      [642, 416],
-      [682, 440],
-      [20, 208],
-      [674, 264],
-      [598, 52],
-      [108, 44],
-    ];
-    treePositions.forEach(([x, y], index) => {
-      const tree = this.sprite(
-        index % 3 === 0
-          ? miniMedievalFrames.terrain.treePine
-          : miniMedievalFrames.terrain.treeRound,
-      );
-      tree.position.set(x ?? 0, y ?? 0);
-      this.terrain.addChild(tree);
-    });
+    for (const region of this.map.interactionRegions)
+      this.buildInteraction(region);
   }
 
-  private drawPlaces(): void {
-    for (const building of townBuildings) this.drawBuilding(building);
-    this.drawWorkYard();
-    const site = new Container();
-    const foundation = new Graphics()
-      .rect(
-        -futureWarRoom.width / 2,
-        -futureWarRoom.height / 2,
-        futureWarRoom.width,
-        futureWarRoom.height,
-      )
-      .fill({ color: palette.woodDark, alpha: 0.38 })
-      .stroke({ color: palette.stone, width: 2, alpha: 0.7 })
-      .moveTo(-30, -20)
-      .lineTo(30, 20)
-      .moveTo(30, -20)
-      .lineTo(-30, 20)
-      .stroke({ color: palette.stoneLight, width: 1, alpha: 0.5 });
-    const label = this.worldText("COMMAND SITE", 6, palette.stoneLight);
-    label.anchor.set(0.5);
-    label.y = 36;
-    site.addChild(foundation, label);
-    site.position.set(futureWarRoom.x, futureWarRoom.y);
-    this.places.addChild(site);
-  }
-
-  private drawBuilding(building: (typeof townBuildings)[number]): void {
-    const house = new Container();
-    const hit = new Graphics()
-      .roundRect(
-        -building.width / 2 - 4,
-        -building.height + 4,
-        building.width + 8,
-        building.height + 14,
-        4,
-      )
-      .fill({ color: palette.cream, alpha: 0.001 });
-    const highlight = new Graphics()
-      .ellipse(0, 3, building.width + 14, 15)
-      .fill({ color: palette.cream, alpha: 0.22 });
-    highlight.visible = false;
-    const body = new Graphics()
-      .rect(-building.width / 2 + 6, -30, building.width - 12, 30)
-      .fill(building.roof === "blue" ? palette.water : palette.wood)
-      .stroke({ color: palette.ink, width: 2 });
-    const roofFrame =
-      building.roof === "orange"
-        ? miniMedievalFrames.buildings.roofOrange
-        : building.roof === "blue"
-          ? miniMedievalFrames.buildings.roofBlue
-          : miniMedievalFrames.buildings.roofThatch;
-    const roof = this.sprite(roofFrame);
-    roof.position.set(0, -22);
-    const door = this.sprite(
-      building.roof === "blue"
-        ? miniMedievalFrames.buildings.doorBlue
-        : miniMedievalFrames.buildings.doorOrange,
-    );
-    door.position.set(0, 0);
-    const accents = new Container();
-    if (building.id === "quest-board") {
-      body.visible = false;
-      roof.visible = false;
-      door.visible = false;
-      accents.addChild(
-        new Graphics()
-          .rect(-24, -32, 48, 28)
-          .fill(palette.parchment)
-          .stroke({ color: palette.woodDark, width: 3 })
-          .moveTo(-18, -24)
-          .lineTo(15, -24)
-          .moveTo(-18, -17)
-          .lineTo(10, -17)
-          .moveTo(-18, -10)
-          .lineTo(18, -10)
-          .stroke({ color: palette.wood, width: 2 })
-          .rect(-22, -4, 4, 12)
-          .fill(palette.woodDark)
-          .rect(18, -4, 4, 12)
-          .fill(palette.woodDark),
-      );
-    } else if (building.id === "blacksmith") {
-      const anvil = this.sprite(miniMedievalFrames.props.anvil);
-      anvil.position.set(17, -1);
-      accents.addChild(anvil);
-    } else if (building.id === "tavern") {
-      const lantern = this.sprite(miniMedievalFrames.props.lantern);
-      lantern.position.set(18, -12);
-      accents.addChild(lantern);
-    } else if (building.id === "gatehouse") {
-      const sign = this.sprite(miniMedievalFrames.props.sign);
-      sign.position.set(18, 0);
-      accents.addChild(sign);
-    } else if (building.id === "guild") {
-      const flag = this.sprite(miniMedievalFrames.props.flag);
-      flag.position.set(-20, -34);
-      accents.addChild(flag);
-    } else if (building.id === "work-area") {
-      door.visible = false;
-      body.alpha = 0.65;
+  private buildInteraction(region: AuthoredInteractionRegion): void {
+    const root = new Container();
+    root.position.set(region.x, region.y);
+    root.eventMode = "static";
+    root.cursor = "pointer";
+    const hit = new Graphics();
+    if (region.polygon) {
+      const values = region.polygon.flatMap((point) => [point.x, point.y]);
+      hit.poly(values).fill({ color: palette.cream, alpha: 0.001 });
+      root.hitArea = new Polygon(values);
+    } else {
+      hit
+        .rect(0, 0, region.width, region.height)
+        .fill({ color: palette.cream, alpha: 0.001 });
+      root.hitArea = new Rectangle(0, 0, region.width, region.height);
     }
-    const title = this.worldText(building.label, 7, palette.cream);
-    title.anchor.set(0.5);
-    title.y = 10;
-    const subtitle = this.worldText(
-      building.functionLabel,
-      5,
-      palette.parchment,
-    );
-    subtitle.anchor.set(0.5);
-    subtitle.y = 18;
-    subtitle.visible = false;
-    house.addChild(highlight, body, roof, door, accents, title, subtitle, hit);
-    house.position.set(building.x, building.y);
-    house.hitArea = new Rectangle(
-      -building.width / 2 - 5,
-      -building.height,
-      building.width + 10,
-      building.height + 24,
-    );
-    house.eventMode = "static";
-    house.cursor = "pointer";
-    this.buildingHighlights.set(building.id, highlight);
-    house.on("pointerover", () => {
-      highlight.visible = true;
-      subtitle.visible = true;
+    root.addChild(hit);
+    root.on("pointerover", () => {
+      const label = this.labels.get(region.locationId);
+      if (label) label.visible = true;
     });
-    house.on("pointerout", () => {
-      highlight.visible = this.focusedBuilding === building.id;
-      subtitle.visible = false;
+    root.on("pointerout", () => {
+      const label = this.labels.get(region.locationId);
+      if (label) label.visible = this.focusedBuilding === region.locationId;
     });
-    house.on("pointertap", () => {
+    root.on("pointertap", () => {
       if (this.dragDistance >= 5) return;
-      this.focusBuilding(building.id);
-      this.events.onBuildingSelected(building.id);
+      this.focusBuilding(region.locationId as BuildingId);
+      this.events.onBuildingSelected(region.locationId as BuildingId);
     });
-    this.places.addChild(house);
+    this.interactionLayer.addChild(root);
   }
 
-  private drawWorkYard(): void {
-    const fence = new Graphics()
-      .roundRect(282, 264, 104, 108, 6)
-      .stroke({ color: palette.woodDark, width: 4, alpha: 0.9 });
-    this.places.addChild(fence);
-    for (const site of workSites) {
-      const station = new Container();
-      if (site.kind === "table") {
-        const table = this.sprite(miniMedievalFrames.props.table);
-        table.position.set(0, 3);
-        station.addChild(table);
-      } else {
-        station.addChild(
-          new Graphics()
-            .rect(-8, -3, 16, 5)
-            .fill(site.kind === "bench" ? palette.stone : palette.wood)
-            .stroke({ color: palette.ink, width: 1 }),
-        );
-      }
-      if (site.kind === "bench") {
-        const anvil = this.sprite(miniMedievalFrames.props.anvil);
-        anvil.position.set(0, -3);
-        station.addChild(anvil);
-      }
-      station.position.set(site.x, site.y);
-      this.places.addChild(station);
-    }
-    const rack = new Graphics()
-      .rect(276, 276, 12, 66)
-      .fill(palette.woodDark)
-      .stroke({ color: palette.woodLight, width: 1 });
-    this.places.addChild(rack);
+  private drawRegion(
+    graphics: Graphics,
+    region: AuthoredInteractionRegion,
+    color: number,
+    alpha: number,
+  ): void {
+    if (region.polygon)
+      graphics
+        .poly(region.polygon.flatMap((point) => [point.x, point.y]))
+        .fill({ color, alpha })
+        .stroke({ color, width: 1 });
+    else
+      graphics
+        .roundRect(0, 0, region.width, region.height, 4)
+        .fill({ color, alpha })
+        .stroke({ color, width: 1 });
   }
 
-  private drawAmbientLife(): void {
-    for (const [index, position] of [
-      [118, 292],
-      [232, 382],
-      [392, 156],
-    ].entries()) {
-      const sprite = this.sprite(
-        frameAt(miniMedievalFrames.animals.chickenIdle, index % 2),
-      );
-      sprite.position.set(position[0] ?? 0, position[1] ?? 0);
-      this.activity.addChild(sprite);
-      this.animals.push({
-        sprite,
-        origin: { x: position[0] ?? 0, y: position[1] ?? 0 },
-        phase: index * 2.1,
-      });
-    }
-    const flag = this.sprite(miniMedievalFrames.props.flag);
-    flag.position.set(270, 66);
-    this.activity.addChild(flag);
+  private refreshHighlights(): void {
+    for (const [id, label] of this.labels)
+      label.visible = id === this.focusedBuilding;
+  }
 
-    const smoke = new Graphics()
-      .circle(0, 0, 3)
-      .fill({ color: palette.parchment, alpha: 0.35 });
-    smoke.position.set(486, 78);
-    this.activity.addChild(smoke);
-    if (!this.reducedMotion)
-      this.app.ticker.add(() => {
-        smoke.y = 78 - Math.round((performance.now() / 400) % 18);
-        smoke.alpha = 0.42 - ((performance.now() / 400) % 18) / 60;
-      });
+  private buildAmbientLife(): void {
+    const routes = new Map(
+      this.map.animalRoutes.map((route) => [route.variant, route]),
+    );
+    for (const [index, zone] of this.map.ambientZones.entries()) {
+      const asset =
+        zone.variant === "duck"
+          ? SunnysideAssets.animals.duck
+          : zone.variant === "bird"
+            ? SunnysideAssets.animals.bird
+            : SunnysideAssets.animals.chicken;
+      const route = routes.get(zone.variant);
+      const point = route?.points[0] ?? {
+        x: zone.x + zone.width / 2,
+        y: zone.y + zone.height / 2,
+      };
+      this.addAnimated(asset, point.x, point.y, index * 3, route?.points);
+    }
+  }
+
+  private texture(asset: SunnysideAsset): Texture {
+    return this.loaded.get(asset.url) ?? Texture.EMPTY;
+  }
+
+  private assetFrame(asset: SunnysideAsset, frame = 0): Texture {
+    if (!asset.rect) return this.texture(asset);
+    const x = asset.rect.x + asset.rect.width * frame;
+    const key = `${asset.url}:${x}:${asset.rect.y}:${asset.rect.width}:${asset.rect.height}`;
+    const cached = this.framed.get(key);
+    if (cached) return cached;
+    const source = this.texture(asset);
+    const texture = new Texture({
+      source: source.source,
+      frame: new Rectangle(
+        x,
+        asset.rect.y,
+        asset.rect.width,
+        asset.rect.height,
+      ),
+    });
+    this.framed.set(key, texture);
+    return texture;
+  }
+
+  private addAnimated(
+    asset: SunnysideAsset,
+    x: number,
+    y: number,
+    phase: number,
+    route?: Array<{ x: number; y: number }>,
+  ): void {
+    const sprite = new Sprite(this.assetFrame(asset));
+    sprite.anchor.set(asset.anchor[0], asset.anchor[1]);
+    sprite.position.set(x, y);
+    sprite.zIndex = Math.round(y);
+    this.activity.addChild(sprite);
+    this.animated.push({
+      sprite,
+      asset,
+      phase,
+      ...(route ? { route } : {}),
+    });
   }
 
   private updateMembers(): void {
@@ -645,18 +615,28 @@ export class TownWorld {
       this.updateOrders();
       return;
     }
+    const memberKeys = this.model.members.map(
+      (member) => member.member.member_key,
+    );
+    const homes = assignMemberHomes(
+      this.model.squadKey,
+      memberKeys,
+      this.map.memberHomes,
+    );
     const assignments = this.model.members
       .filter((member) => member.activeOccurrenceId)
       .map((member) => ({
         occurrenceId: member.activeOccurrenceId as string,
         memberKey: member.member.member_key,
       }));
-    const sites = assignWorkSites(assignments);
+    const sites = assignWorkSites(assignments, this.map.workstations);
     for (const member of this.model.members) {
       const key = member.member.member_key;
+      const home = homes.get(key) ?? this.map.memberHomes[0];
+      if (!home) continue;
       let entity = this.members.get(key);
       if (!entity) {
-        entity = this.createMember(member, this.model.squadKey);
+        entity = this.createMember(member, this.model.squadKey, home);
         this.members.set(key, entity);
         this.activity.addChild(entity.container);
       }
@@ -666,59 +646,66 @@ export class TownWorld {
       if (newlyCompleted) entity.completedUntil = performance.now() + 1400;
       entity.previousCompleted = new Set(member.completedOccurrenceIds);
       entity.model = member;
+      entity.home = { x: home.x, y: home.y };
       const site = member.activeOccurrenceId
         ? sites.get(member.activeOccurrenceId)
         : null;
       entity.target = site
-        ? { x: site.x, y: site.y - 5 }
-        : { ...(entity.identity.home ?? idleHomes[0]) };
+        ? { x: site.x, y: site.y }
+        : { x: home.x, y: home.y };
       if (
         member.visual === "working" ||
         member.visual === "failed" ||
         member.visual === "uncertain"
-      ) {
+      )
         entity.container.position.set(entity.target.x, entity.target.y);
-      }
       this.refreshMemberPresentation(entity);
     }
     this.updateOrders();
-    this.updateHitAreas();
   }
 
   private createMember(
     model: MemberWorldModel,
     squadKey: string,
+    home: { x: number; y: number },
   ): MemberEntity {
     const identity = memberIdentity(squadKey, model.member.member_key);
+    const hairStyle =
+      hairStyles[identity.hash % hairStyles.length] ?? hairStyles[0];
+    const base = new Sprite();
+    const hair = new Sprite();
+    base.anchor.set(0.5, 1);
+    hair.anchor.set(0.5, 1);
     const container = new Container();
     const marker = new Graphics();
-    const sprite = this.sprite(
-      frameAt(miniMedievalFrames.units.idle, identity.spriteIndex),
-    );
     const glyph = new Graphics();
-    glyph.y = -14;
+    glyph.y = -22;
     const name = this.worldText(model.member.name, 6, palette.cream);
     name.anchor.set(0.5);
-    name.y = -24;
+    name.y = -36;
     name.visible = false;
-    const status = this.worldText("idle", 5, palette.parchment);
+    const status = this.worldText("idle", 5, palette.paper);
     status.anchor.set(0.5);
-    status.y = -18;
+    status.y = -29;
     status.visible = false;
-    container.addChild(marker, sprite, glyph, status, name);
-    container.position.set(identity.home?.x ?? 160, identity.home?.y ?? 360);
+    container.addChild(marker, base, hair, glyph, status, name);
+    container.position.set(home.x, home.y);
     container.eventMode = "static";
     container.cursor = "pointer";
+    container.zIndex = Math.round(home.y);
     const entity: MemberEntity = {
       container,
-      sprite,
+      base,
+      hair,
       marker,
       glyph,
       name,
       status,
       model,
       identity,
-      target: { ...(identity.home ?? idleHomes[0]) },
+      hairStyle,
+      target: { ...home },
+      home: { ...home },
       previousCompleted: new Set(model.completedOccurrenceIds),
       completedUntil: 0,
       hovered: false,
@@ -739,62 +726,62 @@ export class TownWorld {
     return entity;
   }
 
+  private actionFor(visual: VisualActivity): SpikeCharacterAction {
+    if (visual === "working") return "doing";
+    if (visual === "moving_to_work") return "walk";
+    return "idle";
+  }
+
   private animateMember(entity: MemberEntity, now: number): void {
     const transitional = entity.completedUntil > now;
     const visual: VisualActivity = transitional
       ? "completed_transition"
       : entity.model.visual;
-    const moving = visual === "moving_to_work" || visual === "idle";
-    if (moving && !this.reducedMotion) {
-      const home = entity.identity.home ?? idleHomes[0];
-      const wander =
+    const action = this.actionFor(visual);
+    const animation = SunnysideAssets.characters[action];
+    const frame = this.reducedMotion
+      ? 0
+      : (Math.floor(now / 100) + (entity.identity.hash % 17)) %
+        animation.frames;
+    entity.base.texture = this.assetFrame(animation.base, frame);
+    entity.hair.texture = this.assetFrame(
+      animation.hair[entity.hairStyle],
+      frame,
+    );
+    if (
+      !this.reducedMotion &&
+      (visual === "moving_to_work" || visual === "idle")
+    ) {
+      const destination =
         visual === "idle"
           ? {
               x:
-                home.x +
-                Math.round(Math.sin(now / 2600 + entity.identity.hash) * 6),
+                entity.home.x +
+                Math.round(Math.sin(now / 2600 + entity.identity.hash) * 5),
               y:
-                home.y +
-                Math.round(Math.cos(now / 3100 + entity.identity.hash) * 4),
+                entity.home.y +
+                Math.round(Math.cos(now / 3100 + entity.identity.hash) * 3),
             }
           : entity.target;
-      const dx = wander.x - entity.container.x;
-      const dy = wander.y - entity.container.y;
+      const dx = destination.x - entity.container.x;
+      const dy = destination.y - entity.container.y;
       const distance = Math.hypot(dx, dy);
       if (distance > 0.5) {
         const amount = Math.min(distance, visual === "idle" ? 0.18 : 0.55);
-        entity.container.x = Math.round(
-          entity.container.x + (dx / distance) * amount,
-        );
-        entity.container.y = Math.round(
-          entity.container.y + (dy / distance) * amount,
-        );
+        entity.container.x += (dx / distance) * amount;
+        entity.container.y += (dy / distance) * amount;
       }
     }
-    if (visual === "moving_to_work") {
-      const frames = miniMedievalFrames.units.run;
-      entity.sprite.texture = this.frameTexture(
-        frameAt(frames, Math.floor(now / 120) % frames.length),
-      );
-    } else if (visual === "working") {
-      const frames = miniMedievalFrames.units.work;
-      entity.sprite.texture = this.frameTexture(
-        frameAt(frames, Math.floor(now / 160) % frames.length),
-      );
-      entity.sprite.y = this.reducedMotion
-        ? 0
-        : Math.floor(now / 180) % 2 === 0
-          ? 0
-          : -1;
-    } else {
-      entity.sprite.texture = this.frameTexture(
-        frameAt(miniMedievalFrames.units.idle, entity.identity.spriteIndex),
-      );
-      entity.sprite.y =
-        transitional && !this.reducedMotion && Math.floor(now / 160) % 2 === 0
-          ? -1
-          : 0;
-    }
+    entity.container.position.set(
+      Math.round(entity.container.x),
+      Math.round(entity.container.y),
+    );
+    entity.container.zIndex = Math.round(entity.container.y);
+    if (
+      this.cameraMode === "member" &&
+      this.selectedMemberKey === entity.model.member.member_key
+    )
+      this.targetFocus = { x: entity.container.x, y: entity.container.y - 10 };
     this.drawStatusGlyph(entity.glyph, visual);
   }
 
@@ -808,45 +795,49 @@ export class TownWorld {
     entity.status.text = entity.model.visual.replaceAll("_", " ");
     entity.marker
       .clear()
-      .ellipse(0, 1, selected ? 14 : 11, selected ? 6 : 4)
+      .ellipse(0, 0, selected ? 17 : 13, selected ? 7 : 5)
       .fill({
         color: selected ? palette.cream : palette.ink,
-        alpha: selected ? 0.8 : 0.42,
+        alpha: selected ? 0.82 : 0.28,
       });
+    const size = Math.ceil(36 / this.zoom);
+    entity.container.hitArea = new Rectangle(-size / 2, -size + 5, size, size);
   }
 
   private drawStatusGlyph(glyph: Graphics, visual: VisualActivity): void {
     glyph.clear();
-    if (visual === "idle" || visual === "moving_to_work") return;
+    if (visual === "idle") return;
     const color =
       visual === "working"
         ? palette.success
-        : visual === "waiting"
-          ? palette.warning
+        : visual === "moving_to_work"
+          ? palette.moving
           : visual === "failed"
             ? palette.failure
             : visual === "uncertain"
-              ? palette.parchment
+              ? palette.uncertain
               : palette.review;
-    glyph
-      .circle(0, 0, 5)
-      .fill({ color: palette.ink, alpha: 0.95 })
-      .stroke({ color, width: 1 });
+    glyph.circle(0, 0, 6).fill(palette.cream).stroke({ color, width: 2 });
     if (visual === "working")
       glyph
-        .moveTo(-2, 2)
-        .lineTo(2, -2)
-        .moveTo(-2, -2)
-        .lineTo(2, 2)
-        .stroke({ color, width: 1 });
-    else if (visual === "waiting")
-      glyph.rect(-1, -3, 2, 4).fill(color).rect(-1, 2, 2, 1).fill(color);
+        .moveTo(-3, 0)
+        .lineTo(0, 3)
+        .lineTo(4, -3)
+        .stroke({ color, width: 1.5 });
+    else if (visual === "moving_to_work")
+      glyph
+        .moveTo(-3, 0)
+        .lineTo(3, 0)
+        .lineTo(1, -2)
+        .moveTo(3, 0)
+        .lineTo(1, 2)
+        .stroke({ color, width: 1.5 });
     else if (visual === "failed")
       glyph
-        .moveTo(-2, -2)
-        .lineTo(2, 2)
-        .moveTo(2, -2)
-        .lineTo(-2, 2)
+        .moveTo(-3, -3)
+        .lineTo(3, 3)
+        .moveTo(3, -3)
+        .lineTo(-3, 3)
         .stroke({ color, width: 1.5 });
     else if (visual === "uncertain")
       glyph
@@ -858,25 +849,22 @@ export class TownWorld {
         .moveTo(0, 3)
         .lineTo(0, 3)
         .stroke({ color, width: 1 });
-    else
-      glyph
-        .moveTo(-3, 0)
-        .lineTo(-1, 2)
-        .lineTo(3, -2)
-        .stroke({ color, width: 1.5 });
   }
 
   private updateOrders(): void {
-    this.orderLayer.removeChildren().forEach((child) => {
+    for (const child of this.orderLayer.removeChildren())
       child.destroy({ children: true });
-    });
+    const workArea = this.map.locations.find(
+      (location) => location.id === "work-area",
+    );
+    if (!workArea) return;
     for (const [index, marker] of (this.model?.orderMarkers ?? [])
       .slice(0, 8)
       .entries()) {
       const token = new Container();
       const back = new Graphics()
-        .rect(-5, -5, 10, 10)
-        .fill(marker.state === "waiting" ? palette.warning : palette.stone)
+        .roundRect(-7, -7, 14, 14, 3)
+        .fill(marker.state === "waiting" ? palette.warning : 0x718b86)
         .stroke({ color: palette.ink, width: 1 });
       const glyph = this.worldText(
         marker.state === "waiting" ? "!" : "·",
@@ -884,13 +872,11 @@ export class TownWorld {
         palette.ink,
       );
       glyph.anchor.set(0.5);
-      glyph.y = -1;
       const label = this.worldText(marker.name, 5, palette.cream);
-      label.x = 8;
-      label.y = -4;
+      label.position.set(10, -4);
       label.visible = false;
       token.addChild(back, glyph, label);
-      token.position.set(282, 286 + index * 13);
+      token.position.set(workArea.x - 54 + index * 17, workArea.y + 42);
       token.eventMode = "static";
       token.cursor = "help";
       token.on("pointerover", () => {
@@ -904,18 +890,13 @@ export class TownWorld {
   }
 
   private updateStatusMarker(): void {
-    this.statusLayer.removeChildren().forEach((child) => {
+    for (const child of this.statusLayer.removeChildren())
       child.destroy({ children: true });
-    });
-    this.completionFlourish = null;
-    const board = townBuildings.find((value) => value.id === "quest-board");
-    if (!board) return;
-    const values: Array<{
-      count: number;
-      symbol: string;
-      color: number;
-      label: string;
-    }> = [
+    const anchor = this.map.statusAnchors.find(
+      (value) => value.locationId === "quest-board",
+    );
+    if (!anchor) return;
+    const values = [
       {
         count: this.status.attention,
         symbol: "!",
@@ -924,7 +905,7 @@ export class TownWorld {
       },
       {
         count: this.status.awaitingReview,
-        symbol: "R",
+        symbol: "PR",
         color: palette.review,
         label: "PR awaiting review",
       },
@@ -944,58 +925,100 @@ export class TownWorld {
     const active = values.find((value) => value.count > 0);
     if (!active) return;
     const marker = new Container();
-    const packArt = this.sprite(
-      active.label === "Quest complete"
-        ? miniMedievalFrames.overlays.banner
-        : miniMedievalFrames.overlays.review,
-    );
-    packArt.anchor.set(0.5);
-    packArt.position.set(-9, -1);
-    const seal = new Graphics()
-      .circle(0, 0, 7)
-      .fill(palette.ink)
+    const back = new Graphics()
+      .roundRect(-18, -9, 36, 18, 8)
+      .fill(palette.cream)
       .stroke({ color: active.color, width: 2 });
     const symbol = this.worldText(active.symbol, 7, active.color);
     symbol.anchor.set(0.5);
-    symbol.y = -1;
-    const count = this.worldText(
+    const label = this.worldText(
       active.count > 1 ? String(active.count) : active.label,
       5,
       palette.cream,
     );
-    count.anchor.set(0.5);
-    count.y = -12;
-    marker.addChild(packArt, seal, symbol, count);
+    label.anchor.set(0.5);
+    label.y = -13;
+    marker.addChild(back, symbol, label);
     if (
-      this.completionUntil > performance.now() &&
-      active.label === "Quest complete"
+      active.label === "Quest complete" &&
+      this.completionUntil > performance.now()
     ) {
-      const banner = new Graphics()
-        .moveTo(-24, -8)
-        .lineTo(24, -8)
-        .lineTo(20, 4)
-        .lineTo(0, 0)
-        .lineTo(-20, 4)
-        .closePath()
-        .fill(palette.success)
-        .stroke({ color: palette.ink, width: 1 });
-      banner.y = -14;
-      this.completionFlourish = banner;
-      marker.addChildAt(banner, 0);
+      const glint = new Sprite(this.assetFrame(SunnysideAssets.effects.glint));
+      glint.anchor.set(0.5);
+      glint.position.set(22, -10);
+      marker.addChild(glint);
+      this.animated.push({
+        sprite: glint,
+        asset: SunnysideAssets.effects.glint,
+        phase: 0,
+      });
     }
-    marker.position.set(board.x + 24, board.y - 34);
+    marker.position.set(anchor.x, anchor.y);
     this.statusLayer.addChild(marker);
   }
 
-  private updateHitAreas(): void {
-    const size = Math.ceil(36 / this.zoom);
-    for (const entity of this.members.values()) {
-      entity.container.hitArea = new Rectangle(
-        -size / 2,
-        -size + 5,
-        size,
-        size,
-      );
+  private buildDebugOverlay(): void {
+    const townBounds = this.map.functionalTownBounds;
+    const boundsGraphic = new Graphics()
+      .rect(townBounds.x, townBounds.y, townBounds.width, townBounds.height)
+      .fill({ color: 0xfacc15, alpha: 0.025 })
+      .stroke({ color: 0xfacc15, width: 1 });
+    const boundsLabel = this.worldText("functional-town-bounds", 5, 0xfacc15);
+    boundsLabel.position.set(townBounds.x + 3, townBounds.y + 3);
+    this.debugLayer.addChild(boundsGraphic, boundsLabel);
+
+    const drawPoint = (x: number, y: number, color: number, label: string) => {
+      const graphic = new Graphics()
+        .moveTo(x - 4, y)
+        .lineTo(x + 4, y)
+        .moveTo(x, y - 4)
+        .lineTo(x, y + 4)
+        .stroke({ color, width: 1 });
+      const text = this.worldText(label, 5, color);
+      text.position.set(x + 5, y - 4);
+      this.debugLayer.addChild(graphic, text);
+    };
+
+    for (const location of this.map.locations)
+      drawPoint(location.x, location.y, 0x3b82f6, `location:${location.id}`);
+    for (const region of this.map.interactionRegions) {
+      const graphics = new Graphics();
+      graphics.position.set(region.x, region.y);
+      this.drawRegion(graphics, region, 0x22c55e, 0.08);
+      this.debugLayer.addChild(graphics);
+    }
+    for (const anchor of this.map.cameraAnchors)
+      drawPoint(anchor.x, anchor.y, 0xfacc15, `camera:${anchor.id}`);
+    for (const station of this.map.workstations)
+      drawPoint(station.x, station.y, 0xf97316, station.id);
+    for (const home of this.map.memberHomes)
+      drawPoint(home.x, home.y, 0xa855f7, home.id);
+    for (const anchor of this.map.statusAnchors)
+      drawPoint(anchor.x, anchor.y, 0xef4444, anchor.id);
+    for (const zone of this.map.ambientZones) {
+      const graphic = new Graphics()
+        .rect(zone.x, zone.y, zone.width, zone.height)
+        .fill({ color: 0x06b6d4, alpha: 0.08 })
+        .stroke({ color: 0x06b6d4, width: 1 });
+      this.debugLayer.addChild(graphic);
+    }
+    for (const route of this.map.animalRoutes) {
+      const first = route.points[0];
+      if (!first) continue;
+      const graphic = new Graphics().moveTo(first.x, first.y);
+      for (const point of route.points.slice(1))
+        graphic.lineTo(point.x, point.y);
+      graphic.stroke({ color: 0x38bdf8, width: 1 });
+      this.debugLayer.addChild(graphic);
+    }
+    for (const site of this.map.reservedSites) {
+      const graphic = new Graphics()
+        .rect(site.x, site.y, site.width, site.height)
+        .fill({ color: 0x9ca3af, alpha: 0.08 })
+        .stroke({ color: 0x9ca3af, width: 1 });
+      const text = this.worldText(`reserved:${site.id}`, 5, 0x9ca3af);
+      text.position.set(site.x + 3, site.y + 3);
+      this.debugLayer.addChild(graphic, text);
     }
   }
 
@@ -1004,7 +1027,7 @@ export class TownWorld {
       text,
       style: {
         fill: color,
-        fontFamily: "system-ui, sans-serif",
+        fontFamily: "Georgia, ui-serif, serif",
         fontSize: size,
         fontWeight: "700",
         stroke: { color: palette.ink, width: 2 },

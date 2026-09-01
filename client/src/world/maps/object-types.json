@@ -1,0 +1,96 @@
+[
+  {
+    "name": "location",
+    "color": "#3b82f6",
+    "description": "Functional Quest Engineering location. Move it to the logical center of the building or district. Keep its stable name unchanged.",
+    "properties": [{ "name": "qeLabel", "type": "string", "value": "" }]
+  },
+  {
+    "name": "interaction_region",
+    "color": "#22c55e",
+    "description": "Clickable area for a functional location. Move and resize it visually around the building or yard.",
+    "properties": [{ "name": "qeLocation", "type": "string", "value": "" }]
+  },
+  {
+    "name": "camera_anchor",
+    "color": "#facc15",
+    "description": "Camera focus point for a location. Move this point visually instead of editing camera coordinates in code.",
+    "properties": [
+      { "name": "qeLocation", "type": "string", "value": "" },
+      { "name": "qeZoom", "type": "int", "value": 2 },
+      { "name": "qePanelSide", "type": "string", "value": "right" }
+    ]
+  },
+  {
+    "name": "overview_bounds",
+    "color": "#facc15",
+    "description": "Rectangle fitted by Town camera mode. Resize it around the functional town, excluding marker staging areas.",
+    "properties": []
+  },
+  {
+    "name": "workstation",
+    "color": "#f97316",
+    "description": "Generic factual Member work position. It is presentation metadata and is never tied to Step names or engineering semantics.",
+    "properties": [
+      { "name": "qeGroup", "type": "string", "value": "work-yard" },
+      { "name": "qeVariant", "type": "string", "value": "general" }
+    ]
+  },
+  {
+    "name": "member_home",
+    "color": "#a855f7",
+    "description": "Possible idle or gathering position for a factual Member. Move the point; never author Member identity here.",
+    "properties": [
+      { "name": "qeGroup", "type": "string", "value": "town-square" }
+    ]
+  },
+  {
+    "name": "ambient_zone",
+    "color": "#06b6d4",
+    "description": "Moveable and resizable area for presentation-only ambient activity.",
+    "properties": [{ "name": "qeVariant", "type": "string", "value": "bird" }]
+  },
+  {
+    "name": "animal_route",
+    "color": "#38bdf8",
+    "description": "Simple presentation-only animal polyline. Move its points to edit the route; no pathfinding is implied.",
+    "properties": [{ "name": "qeVariant", "type": "string", "value": "bird" }]
+  },
+  {
+    "name": "status_anchor",
+    "color": "#ef4444",
+    "description": "Preferred point for a building-level runtime or lifecycle status glyph.",
+    "properties": [
+      { "name": "qeLocation", "type": "string", "value": "" },
+      {
+        "name": "qeVariant",
+        "type": "string",
+        "value": "quest-lifecycle"
+      }
+    ]
+  },
+  {
+    "name": "reserved_site",
+    "color": "#9ca3af",
+    "description": "Reserved future presentation area. It has no runtime interaction or accessible control.",
+    "properties": [
+      {
+        "name": "qeVariant",
+        "type": "string",
+        "value": "future-location"
+      }
+    ]
+  },
+  {
+    "name": "static_sprite",
+    "color": "#d1d5db",
+    "description": "Freestanding visual object placed below runtime Members.",
+    "properties": []
+  },
+  {
+    "name": "authoring_note",
+    "color": "#ffffff",
+    "description": "Editor-only guidance. Authoring Notes are ignored by Quest Engineering runtime.",
+    "properties": [{ "name": "qeLabel", "type": "string", "value": "" }]
+  }
+]

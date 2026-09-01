@@ -1,0 +1,6581 @@
+{
+  "name": "Sunnyside — Characters",
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 176,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "properties": [
+    {
+      "name": "category",
+      "type": "string",
+      "value": "characters"
+    },
+    {
+      "name": "qeSunnysideGenerated",
+      "type": "bool",
+      "value": true
+    }
+  ],
+  "tiles": [
+    {
+      "id": 0,
+      "image": "../../../assets/sunnyside/characters/doing-base.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/base_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "image": "../../../assets/sunnyside/characters/doing-bowlhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/bowlhair_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "image": "../../../assets/sunnyside/characters/doing-curlyhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/curlyhair_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "image": "../../../assets/sunnyside/characters/doing-longhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/longhair_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "image": "../../../assets/sunnyside/characters/doing-mophair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/mophair_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "image": "../../../assets/sunnyside/characters/doing-shorthair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/shorthair_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "image": "../../../assets/sunnyside/characters/doing-spikeyhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/spikeyhair_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "image": "../../../assets/sunnyside/characters/idle-base.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/base_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "image": "../../../assets/sunnyside/characters/idle-bowlhair.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/bowlhair_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "image": "../../../assets/sunnyside/characters/idle-curlyhair.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/curlyhair_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "image": "../../../assets/sunnyside/characters/idle-longhair.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/longhair_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "image": "../../../assets/sunnyside/characters/idle-mophair.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/mophair_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "image": "../../../assets/sunnyside/characters/idle-shorthair.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/shorthair_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "image": "../../../assets/sunnyside/characters/idle-spikeyhair.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/spikeyhair_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "image": "../../../assets/sunnyside/characters/walk-base.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WALKING/base_walk_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "image": "../../../assets/sunnyside/characters/walk-bowlhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/bowlhair_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "image": "../../../assets/sunnyside/characters/walk-curlyhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/curlyhair_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "image": "../../../assets/sunnyside/characters/walk-longhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/longhair_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "image": "../../../assets/sunnyside/characters/walk-mophair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/mophair_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "image": "../../../assets/sunnyside/characters/walk-shorthair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/shorthair_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "image": "../../../assets/sunnyside/characters/walk-spikeyhair.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WALKING/spikeyhair_walk_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_attack_strip10.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_carry_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_casting_strip15.png",
+      "imagewidth": 960,
+      "imageheight": 128,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_death_strip13.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_dig_strip13.png",
+      "imagewidth": 960,
+      "imageheight": 128,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_doing_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_hammering_strip23.png",
+      "imagewidth": 960,
+      "imageheight": 192,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_hammering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_idle_strip9.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_mining_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_mining_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_reeling_strip13.png",
+      "imagewidth": 960,
+      "imageheight": 128,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_swimming_strip12.png",
+      "imagewidth": 384,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_waiting_strip9.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_walk_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_walk_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Goblin/PNG/spr_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/base_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/base_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/bowlhair_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/bowlhair_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/curlyhair_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/curlyhair_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/longhair_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/longhair_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/mophair_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/mophair_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/shorthair_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/shorthair_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/spikeyhair_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/spikeyhair_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 48,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ATTACK/tools_attack_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/tools_attack_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 49,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/base_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/base_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/bowlhair_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/bowlhair_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/curlyhair_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/curlyhair_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/longhair_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/longhair_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 53,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/mophair_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/mophair_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 54,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/shorthair_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/shorthair_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 55,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/spikeyhair_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/spikeyhair_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 56,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/AXE/tools_axe_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/AXE/tools_axe_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 57,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CARRY/base_carry_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/base_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 58,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CARRY/spikeyhair_carry_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/spikeyhair_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 59,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CARRY/tools_carry_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CARRY/tools_carry_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/base_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/base_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/bowlhair_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/bowlhair_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 62,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/curlyhair_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/curlyhair_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 63,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/longhair_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/longhair_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 64,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/mophair_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/mophair_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/shorthair_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/shorthair_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 66,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/spikeyhair_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/spikeyhair_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 67,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CASTING/tools_casting_strip15.png",
+      "imagewidth": 1440,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CASTING/tools_casting_strip15.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 15
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 68,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/base_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/base_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 69,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/bowlhair_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/bowlhair_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/curlyhair_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/curlyhair_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 71,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/longhair_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/longhair_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/mophair_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/mophair_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 73,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/shorthair_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/shorthair_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 74,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/spikeyhair_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/spikeyhair_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 75,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/CAUGHT/tools_caught_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/tools_caught_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 76,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/base_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/base_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 77,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/bowlhair_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/bowlhair_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 78,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/curlyhair_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/curlyhair_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 79,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/longhair_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/longhair_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 80,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/mophair_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/mophair_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 81,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/shorthair_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/shorthair_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 82,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/spikeyhair_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/spikeyhair_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 83,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DEATH/tools_death_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DEATH/tools_death_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 84,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/base_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/base_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 85,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/bowlhair_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/bowlhair_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 86,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/curlyhair_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/curlyhair_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 87,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/longhair_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/longhair_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 88,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/mophair_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/mophair_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 89,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/shorthair_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/shorthair_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/spikeyhair_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/spikeyhair_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 91,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DIG/tools_dig_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DIG/tools_dig_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 92,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/DOING/tools_doing_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/DOING/tools_doing_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 93,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/base_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/base_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 94,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/bowlhair_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/bowlhair_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 95,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/curlyhair_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/curlyhair_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 96,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/longhair_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/longhair_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 97,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/mophair_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/mophair_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 98,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/shorthair_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/shorthair_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 99,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/spikeyhair_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/spikeyhair_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 100,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HAMMERING/tools_hamering_strip23.png",
+      "imagewidth": 2208,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/tools_hamering_strip23.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 23
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/base_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/base_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/bowlhair_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/bowlhair_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/curlyhair_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/curlyhair_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/longhair_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/longhair_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 105,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/mophair_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/mophair_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/shorthair_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/shorthair_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 107,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/spikeyhair_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/spikeyhair_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 108,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/HURT/tools_hurt_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/HURT/tools_hurt_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 109,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/IDLE/tools_idle_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/IDLE/tools_idle_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 110,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/base_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/base_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 111,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/bowlhair_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/bowlhair_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 112,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/curlyhair_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/curlyhair_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 113,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/longhair_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/longhair_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 114,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/mophair_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/mophair_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 115,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/shorthair_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/shorthair_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 116,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/spikeyhair_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/spikeyhair_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 117,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/JUMP/tools_jump_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/JUMP/tools_jump_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 118,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/MINING/base_mining_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/MINING/base_mining_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 119,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/MINING/spikeyhair_mining_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/MINING/spikeyhair_mining_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 120,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/MINING/tools_mining_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/MINING/tools_mining_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 121,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/base_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/base_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 122,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/bowlhair_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/bowlhair_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 123,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/curlyhair_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/curlyhair_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 124,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/longhair_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/longhair_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 125,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/mophair_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/mophair_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 126,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/shorthair_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/shorthair_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 127,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/spikeyhair_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/spikeyhair_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 128,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/REELING/tools_reeling_strip13.png",
+      "imagewidth": 1248,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/REELING/tools_reeling_strip13.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 13
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 129,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/base_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/base_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 130,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/bowlhair_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/bowlhair_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 131,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/curlyhair_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/curlyhair_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 132,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/longhair_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/longhair_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 133,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/mophair_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/mophair_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 134,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/shorthair_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/shorthair_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 135,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/spikeyhair_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/spikeyhair_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 136,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/ROLL/tools_roll_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/ROLL/tools_roll_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 137,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/base_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/base_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 138,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/bowlhair_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/bowlhair_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 139,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/curlyhair_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/curlyhair_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 140,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/longhair_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/longhair_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 141,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/mophair_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/mophair_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 142,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/shorthair_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/shorthair_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 143,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/spikeyhair_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/spikeyhair_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 144,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/RUN/tools_run_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/RUN/tools_run_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 145,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/base_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/base_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 146,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/bowlhair_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/bowlhair_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 147,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/curlyhair_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/curlyhair_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 148,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/longhair_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/longhair_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 149,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/mophair_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/mophair_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 150,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/shorthair_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/shorthair_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 151,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/spikeyhair_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/spikeyhair_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 152,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/SWIMMING/tools_swimming_strip12.png",
+      "imagewidth": 1152,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/tools_swimming_strip12.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 12
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 153,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/base_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/base_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 154,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/bowlhair_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/bowlhair_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 155,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/curlyhair_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/curlyhair_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 156,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/longhair_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/longhair_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 157,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/mophair_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/mophair_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 158,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/shorthair_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/shorthair_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 159,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/spikeyhair_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/spikeyhair_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 160,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WAITING/tools_waiting_strip9.png",
+      "imagewidth": 864,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WAITING/tools_waiting_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 161,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WALKING/tools_walk_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WALKING/tools_walk_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 162,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/base_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/base_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "base"
+        }
+      ]
+    },
+    {
+      "id": 163,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/bowlhair_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/bowlhair_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "bowlhair"
+        }
+      ]
+    },
+    {
+      "id": 164,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/curlyhair_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/curlyhair_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "curlyhair"
+        }
+      ]
+    },
+    {
+      "id": 165,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/longhair_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/longhair_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "longhair"
+        }
+      ]
+    },
+    {
+      "id": 166,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/mophair_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/mophair_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "mophair"
+        }
+      ]
+    },
+    {
+      "id": 167,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/shorthair_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/shorthair_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "shorthair"
+        }
+      ]
+    },
+    {
+      "id": 168,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/spikeyhair_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/spikeyhair_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "spikeyhair"
+        }
+      ]
+    },
+    {
+      "id": 169,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Human/WATERING/tools_watering_strip5.png",
+      "imagewidth": 480,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Human/WATERING/tools_watering_strip5.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "name": "compositingLayer",
+          "type": "string",
+          "value": "tools"
+        }
+      ]
+    },
+    {
+      "id": 170,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Skeleton/PNG/skeleton_attack_strip7.png",
+      "imagewidth": 672,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_attack_strip7.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 7
+        }
+      ]
+    },
+    {
+      "id": 171,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Skeleton/PNG/skeleton_death_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_death_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "id": 172,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Skeleton/PNG/skeleton_hurt_strip7.png",
+      "imagewidth": 672,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_hurt_strip7.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 7
+        }
+      ]
+    },
+    {
+      "id": 173,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Skeleton/PNG/skeleton_idle_strip6.png",
+      "imagewidth": 576,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_idle_strip6.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "id": 174,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Skeleton/PNG/skeleton_jump_strip10.png",
+      "imagewidth": 960,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_jump_strip10.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 10
+        }
+      ]
+    },
+    {
+      "id": 175,
+      "image": "../../../assets/sunnyside/imported/characters/Characters/Skeleton/PNG/skeleton_walk_strip8.png",
+      "imagewidth": 768,
+      "imageheight": 64,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_walk_strip8.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 8
+        }
+      ]
+    }
+  ]
+}

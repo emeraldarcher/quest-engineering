@@ -1,0 +1,995 @@
+{
+  "name": "Sunnyside — Props",
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 34,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "properties": [
+    {
+      "name": "category",
+      "type": "string",
+      "value": "props"
+    },
+    {
+      "name": "qeSunnysideGenerated",
+      "type": "bool",
+      "value": true
+    }
+  ],
+  "tiles": [
+    {
+      "id": 0,
+      "image": "../../../assets/sunnyside/imported/props/Elements/Other/spr_deco_coracle_land.png",
+      "imagewidth": 32,
+      "imageheight": 30,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Other/spr_deco_coracle_land.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "image": "../../../assets/sunnyside/imported/props/Elements/Other/spr_deco_coracle_strip4.png",
+      "imagewidth": 192,
+      "imageheight": 37,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Other/spr_deco_coracle_strip4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "image": "../../../assets/sunnyside/imported/props/Elements/Other/spr_deco_windmill_strip9.png",
+      "imagewidth": 1008,
+      "imageheight": 112,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Other/spr_deco_windmill_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "image": "../../../assets/sunnyside/imported/props/Elements/Other/spr_deco_windmill_withshadow_strip9.png",
+      "imagewidth": 1008,
+      "imageheight": 112,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Other/spr_deco_windmill_withshadow_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "image": "../../../assets/sunnyside/imported/props/Elements/Other/spr_deco_windmillshadow_strip9.png",
+      "imagewidth": 1008,
+      "imageheight": 112,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Assets/Elements/Other/spr_deco_windmillshadow_strip9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "assets"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": true
+        },
+        {
+          "name": "frames",
+          "type": "int",
+          "value": 9
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/egg/12954bb5-d774-466e-aea3-1a568798b47a.png",
+      "imagewidth": 10,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/egg/12954bb5-d774-466e-aea3-1a568798b47a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/fish/117e0d35-906f-4e51-a973-324d0e18d633.png",
+      "imagewidth": 11,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/fish/117e0d35-906f-4e51-a973-324d0e18d633.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_bc/a1f2c25f-394f-4aaf-a27f-3147f3631422.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_bc/a1f2c25f-394f-4aaf-a27f-3147f3631422.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_bl/e80fdfe2-8fbd-4255-bf0a-809132faebc9.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_bl/e80fdfe2-8fbd-4255-bf0a-809132faebc9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_br/ba443816-3427-4b47-a98b-3017971f1bba.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_br/ba443816-3427-4b47-a98b-3017971f1bba.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_c/6c7b6240-2119-4af1-babe-8b4f8e55ab3a.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_c/6c7b6240-2119-4af1-babe-8b4f8e55ab3a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_lc/64202e67-c4d0-4bc8-bfad-f37905413036.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_lc/64202e67-c4d0-4bc8-bfad-f37905413036.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_rc/90f71b29-4a20-4b77-be53-38e50883cdf6.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_rc/90f71b29-4a20-4b77-be53-38e50883cdf6.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_tc/d815ce1b-bc0b-43b3-8d45-26f148a614ae.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_tc/d815ce1b-bc0b-43b3-8d45-26f148a614ae.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_tl/1df43fc2-d470-4225-8dad-42089170bb82.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_tl/1df43fc2-d470-4225-8dad-42089170bb82.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/lt_box_9slice_tr/a8752b46-5260-4964-b1b0-b754f7158555.png",
+      "imagewidth": 3,
+      "imageheight": 3,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/lt_box_9slice_tr/a8752b46-5260-4964-b1b0-b754f7158555.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/milk/6ad71f81-80b2-4913-b007-44f3409fa81b.png",
+      "imagewidth": 10,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/milk/6ad71f81-80b2-4913-b007-44f3409fa81b.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_acron/ada48c07-f133-4861-ac13-16e671ac36cd.png",
+      "imagewidth": 10,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_acron/ada48c07-f133-4861-ac13-16e671ac36cd.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_buckect_rope/b594dcb2-acad-4436-9c37-783f762cd98c.png",
+      "imagewidth": 11,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_buckect_rope/b594dcb2-acad-4436-9c37-783f762cd98c.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_charactershadow/038b20d1-2d9f-4f29-8596-ea9b6a36e77e.png",
+      "imagewidth": 16,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_charactershadow/038b20d1-2d9f-4f29-8596-ea9b6a36e77e.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_chinmney/31ab948f-42c9-47ce-9cb7-456406ed0139.png",
+      "imagewidth": 11,
+      "imageheight": 37,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_chinmney/31ab948f-42c9-47ce-9cb7-456406ed0139.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_coin/5aeaf3c7-f8a8-4609-9bd8-3ff390a2c287.png",
+      "imagewidth": 8,
+      "imageheight": 7,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_coin/5aeaf3c7-f8a8-4609-9bd8-3ff390a2c287.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_coins/688830ed-a0e4-454f-b0e3-a9381229b94e.png",
+      "imagewidth": 16,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_coins/688830ed-a0e4-454f-b0e3-a9381229b94e.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_cook_chinmney/31ab948f-42c9-47ce-9cb7-456406ed0139.png",
+      "imagewidth": 27,
+      "imageheight": 37,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_cook_chinmney/31ab948f-42c9-47ce-9cb7-456406ed0139.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_flowers_house_02/93175c94-bed5-4a79-9562-232e8f9f075e.png",
+      "imagewidth": 12,
+      "imageheight": 19,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_flowers_house_02/93175c94-bed5-4a79-9562-232e8f9f075e.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_oar/fe38398a-e5f7-4553-ad1e-1bda5dfe3054.png",
+      "imagewidth": 16,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_oar/fe38398a-e5f7-4553-ad1e-1bda5dfe3054.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_shadow/e31f4d0f-d796-4b05-b6ee-16d3432afe0f.png",
+      "imagewidth": 16,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_shadow/e31f4d0f-d796-4b05-b6ee-16d3432afe0f.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_sword_floor/c73f6cdb-ee94-4a33-be69-c0cb0a6eb581.png",
+      "imagewidth": 10,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_sword_floor/c73f6cdb-ee94-4a33-be69-c0cb0a6eb581.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_waterbowl/fb5f5698-0641-4a29-aad1-d97504abe0d6.png",
+      "imagewidth": 8,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_waterbowl/fb5f5698-0641-4a29-aad1-d97504abe0d6.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "image": "../../../assets/sunnyside/imported/props/gamemaker/spr_deco_wool/41561382-d892-49ce-924d-89e938245419.png",
+      "imagewidth": 10,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_wool/41561382-d892-49ce-924d-89e938245419.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "image": "../../../assets/sunnyside/props/flowers.png",
+      "imagewidth": 8,
+      "imageheight": 18,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_flowers_house_01/36388643-e82c-4037-97b4-3d1fa4cb65fb.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "image": "../../../assets/sunnyside/props/ore-stone.png",
+      "imagewidth": 10,
+      "imageheight": 10,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/rock/a5c55e60-bf90-4025-b3d2-0bfe48f778e9.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "image": "../../../assets/sunnyside/props/trough.png",
+      "imagewidth": 29,
+      "imageheight": 16,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_trough/e83dc18e-a89c-4aae-999e-4531c1c9bb02.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "image": "../../../assets/sunnyside/terrain/world-16px.png",
+      "imagewidth": 1024,
+      "imageheight": 1024,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "props"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_tileset_sunnysideworld/01c7190f-24e1-476f-bc93-8df9dc5c4275.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    }
+  ]
+}

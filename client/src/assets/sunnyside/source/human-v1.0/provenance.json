@@ -1,0 +1,10 @@
+{
+  "sourceFile": "sunnyside_world_chatacter_anim_human_v1.0.aseprite",
+  "version": "1.0",
+  "sha256": "95eca6266c76c029798e85896a1173134cadd915b3fc73170848553b25768259",
+  "frames": 310,
+  "layers": 19,
+  "tags": 34,
+  "grid": "16x16",
+  "exportStatus": "pending-aseprite-compatible-cli"
+}

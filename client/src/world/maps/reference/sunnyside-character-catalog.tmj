@@ -1,0 +1,6219 @@
+{
+  "compressionlevel": -1,
+  "height": 2560,
+  "infinite": false,
+  "layers": [
+    {
+      "id": 1,
+      "name": "— CHARACTERS —",
+      "type": "objectgroup",
+      "x": 0,
+      "y": 0,
+      "opacity": 1,
+      "visible": true,
+      "draworder": "topdown",
+      "objects": [
+        {
+          "id": 1,
+          "gid": 1,
+          "name": "base doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 120,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/base_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "base doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 124,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 3,
+          "gid": 2,
+          "name": "bowlhair doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 352,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/bowlhair_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "name": "bowlhair doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 356,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 5,
+          "gid": 3,
+          "name": "curlyhair doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 584,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/curlyhair_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "name": "curlyhair doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 588,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 7,
+          "gid": 4,
+          "name": "longhair doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 816,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/longhair_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "name": "longhair doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 820,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 9,
+          "gid": 5,
+          "name": "mophair doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 1048,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/mophair_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "name": "mophair doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 1052,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 11,
+          "gid": 6,
+          "name": "shorthair doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 1280,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/shorthair_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "name": "shorthair doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 1284,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 13,
+          "gid": 7,
+          "name": "spikeyhair doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 1512,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/spikeyhair_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "name": "spikeyhair doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 1516,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 15,
+          "gid": 8,
+          "name": "base idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 1744,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/base_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "name": "base idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 1748,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 17,
+          "gid": 9,
+          "name": "bowlhair idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 1976,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/bowlhair_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "name": "bowlhair idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 1980,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 19,
+          "gid": 10,
+          "name": "curlyhair idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 2208,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/curlyhair_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "name": "curlyhair idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 2212,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 21,
+          "gid": 11,
+          "name": "longhair idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 2440,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/longhair_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 22,
+          "name": "longhair idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 2444,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 23,
+          "gid": 12,
+          "name": "mophair idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 2672,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/mophair_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 24,
+          "name": "mophair idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 2676,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 25,
+          "gid": 13,
+          "name": "shorthair idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 2904,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/shorthair_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 26,
+          "name": "shorthair idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 2908,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 27,
+          "gid": 14,
+          "name": "spikeyhair idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 3136,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/spikeyhair_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 28,
+          "name": "spikeyhair idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 3140,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 29,
+          "gid": 15,
+          "name": "base walk strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 3368,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WALKING/base_walk_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 30,
+          "name": "base walk strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 3372,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base walk strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 31,
+          "gid": 16,
+          "name": "bowlhair carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 3600,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/bowlhair_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 32,
+          "name": "bowlhair carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 3604,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 33,
+          "gid": 17,
+          "name": "curlyhair carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 3832,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/curlyhair_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 34,
+          "name": "curlyhair carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 3836,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 35,
+          "gid": 18,
+          "name": "longhair carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 4064,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/longhair_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 36,
+          "name": "longhair carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 4068,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 37,
+          "gid": 19,
+          "name": "mophair carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 4296,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/mophair_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 38,
+          "name": "mophair carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 4300,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 39,
+          "gid": 20,
+          "name": "shorthair carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 4528,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/shorthair_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 40,
+          "name": "shorthair carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 4532,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 41,
+          "gid": 21,
+          "name": "spikeyhair walk strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 4760,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WALKING/spikeyhair_walk_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 42,
+          "name": "spikeyhair walk strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 4764,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair walk strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 43,
+          "gid": 22,
+          "name": "attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 4992,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 44,
+          "name": "attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 4996,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 45,
+          "gid": 23,
+          "name": "axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 5224,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 46,
+          "name": "axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 5228,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 47,
+          "gid": 24,
+          "name": "carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 5456,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 48,
+          "name": "carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 5460,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 49,
+          "gid": 25,
+          "name": "casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 5752,
+          "width": 960,
+          "height": 128,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 50,
+          "name": "casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 5756,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 51,
+          "gid": 26,
+          "name": "caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 5920,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 52,
+          "name": "caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 5924,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 53,
+          "gid": 27,
+          "name": "death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 6152,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 54,
+          "name": "death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 6156,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 55,
+          "gid": 28,
+          "name": "dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 6448,
+          "width": 960,
+          "height": 128,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 56,
+          "name": "dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 6452,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 57,
+          "gid": 29,
+          "name": "doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 6616,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 58,
+          "name": "doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 6620,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 59,
+          "gid": 30,
+          "name": "hammering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 6976,
+          "width": 960,
+          "height": 192,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_hammering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 60,
+          "name": "hammering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 6980,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "hammering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 61,
+          "gid": 31,
+          "name": "hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 7080,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 62,
+          "name": "hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 7084,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 63,
+          "gid": 32,
+          "name": "idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 7312,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 64,
+          "name": "idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 7316,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 65,
+          "gid": 33,
+          "name": "jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 7544,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 66,
+          "name": "jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 7548,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 67,
+          "gid": 34,
+          "name": "mining strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 7776,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_mining_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 68,
+          "name": "mining strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 7780,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mining strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 69,
+          "gid": 35,
+          "name": "reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 8072,
+          "width": 960,
+          "height": 128,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 70,
+          "name": "reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 8076,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 71,
+          "gid": 36,
+          "name": "roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 8240,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 72,
+          "name": "roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 8244,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 73,
+          "gid": 37,
+          "name": "run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 8472,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 74,
+          "name": "run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 8476,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 75,
+          "gid": 38,
+          "name": "swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 8704,
+          "width": 384,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 76,
+          "name": "swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 8708,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 77,
+          "gid": 39,
+          "name": "waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 8936,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 78,
+          "name": "waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 8940,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 79,
+          "gid": 40,
+          "name": "walk strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 9168,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_walk_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 80,
+          "name": "walk strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 9172,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "walk strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 81,
+          "gid": 41,
+          "name": "watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 9400,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Goblin/PNG/spr_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 82,
+          "name": "watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 9404,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 83,
+          "gid": 42,
+          "name": "base attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 9632,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/base_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 84,
+          "name": "base attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 9636,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 85,
+          "gid": 43,
+          "name": "bowlhair attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 9864,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/bowlhair_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 86,
+          "name": "bowlhair attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 9868,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 87,
+          "gid": 44,
+          "name": "curlyhair attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 10096,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/curlyhair_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 88,
+          "name": "curlyhair attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 10100,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 89,
+          "gid": 45,
+          "name": "longhair attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 10328,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/longhair_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 90,
+          "name": "longhair attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 10332,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 91,
+          "gid": 46,
+          "name": "mophair attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 10560,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/mophair_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 92,
+          "name": "mophair attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 10564,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 93,
+          "gid": 47,
+          "name": "shorthair attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 10792,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/shorthair_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 94,
+          "name": "shorthair attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 10796,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 95,
+          "gid": 48,
+          "name": "spikeyhair attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 11024,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/spikeyhair_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 96,
+          "name": "spikeyhair attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 11028,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 97,
+          "gid": 49,
+          "name": "tools attack strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 11256,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ATTACK/tools_attack_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 98,
+          "name": "tools attack strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 11260,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools attack strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 99,
+          "gid": 50,
+          "name": "base axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 11488,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/base_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 100,
+          "name": "base axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 11492,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 101,
+          "gid": 51,
+          "name": "bowlhair axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 11720,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/bowlhair_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 102,
+          "name": "bowlhair axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 11724,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 103,
+          "gid": 52,
+          "name": "curlyhair axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 11952,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/curlyhair_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 104,
+          "name": "curlyhair axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 11956,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 105,
+          "gid": 53,
+          "name": "longhair axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 12184,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/longhair_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 106,
+          "name": "longhair axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 12188,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 107,
+          "gid": 54,
+          "name": "mophair axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 12416,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/mophair_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 108,
+          "name": "mophair axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 12420,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 109,
+          "gid": 55,
+          "name": "shorthair axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 12648,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/shorthair_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 110,
+          "name": "shorthair axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 12652,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 111,
+          "gid": 56,
+          "name": "spikeyhair axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 12880,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/spikeyhair_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 112,
+          "name": "spikeyhair axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 12884,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 113,
+          "gid": 57,
+          "name": "tools axe strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 13112,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/AXE/tools_axe_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 114,
+          "name": "tools axe strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 13116,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools axe strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 115,
+          "gid": 58,
+          "name": "base carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 13344,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/base_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 116,
+          "name": "base carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 13348,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 117,
+          "gid": 59,
+          "name": "spikeyhair carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 13576,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/spikeyhair_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 118,
+          "name": "spikeyhair carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 13580,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 119,
+          "gid": 60,
+          "name": "tools carry strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 13808,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CARRY/tools_carry_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 120,
+          "name": "tools carry strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 13812,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools carry strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 121,
+          "gid": 61,
+          "name": "base casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 14040,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/base_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 122,
+          "name": "base casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 14044,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 123,
+          "gid": 62,
+          "name": "bowlhair casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 14272,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/bowlhair_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 124,
+          "name": "bowlhair casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 14276,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 125,
+          "gid": 63,
+          "name": "curlyhair casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 14504,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/curlyhair_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 126,
+          "name": "curlyhair casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 14508,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 127,
+          "gid": 64,
+          "name": "longhair casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 14736,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/longhair_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 128,
+          "name": "longhair casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 14740,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 129,
+          "gid": 65,
+          "name": "mophair casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 14968,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/mophair_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 130,
+          "name": "mophair casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 14972,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 131,
+          "gid": 66,
+          "name": "shorthair casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 15200,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/shorthair_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 132,
+          "name": "shorthair casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 15204,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 133,
+          "gid": 67,
+          "name": "spikeyhair casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 15432,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/spikeyhair_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 134,
+          "name": "spikeyhair casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 15436,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 135,
+          "gid": 68,
+          "name": "tools casting strip15",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 15664,
+          "width": 1440,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CASTING/tools_casting_strip15.png"
+            }
+          ]
+        },
+        {
+          "id": 136,
+          "name": "tools casting strip15",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 15668,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools casting strip15",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 137,
+          "gid": 69,
+          "name": "base caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 15896,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/base_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 138,
+          "name": "base caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 15900,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 139,
+          "gid": 70,
+          "name": "bowlhair caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 16128,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/bowlhair_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 140,
+          "name": "bowlhair caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 16132,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 141,
+          "gid": 71,
+          "name": "curlyhair caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 16360,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/curlyhair_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 142,
+          "name": "curlyhair caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 16364,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 143,
+          "gid": 72,
+          "name": "longhair caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 16592,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/longhair_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 144,
+          "name": "longhair caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 16596,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 145,
+          "gid": 73,
+          "name": "mophair caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 16824,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/mophair_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 146,
+          "name": "mophair caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 16828,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 147,
+          "gid": 74,
+          "name": "shorthair caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 17056,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/shorthair_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 148,
+          "name": "shorthair caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 17060,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 149,
+          "gid": 75,
+          "name": "spikeyhair caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 17288,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/spikeyhair_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 150,
+          "name": "spikeyhair caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 17292,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 151,
+          "gid": 76,
+          "name": "tools caught strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 17520,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/CAUGHT/tools_caught_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 152,
+          "name": "tools caught strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 17524,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools caught strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 153,
+          "gid": 77,
+          "name": "base death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 17752,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/base_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 154,
+          "name": "base death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 17756,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 155,
+          "gid": 78,
+          "name": "bowlhair death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 17984,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/bowlhair_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 156,
+          "name": "bowlhair death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 17988,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 157,
+          "gid": 79,
+          "name": "curlyhair death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 18216,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/curlyhair_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 158,
+          "name": "curlyhair death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 18220,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 159,
+          "gid": 80,
+          "name": "longhair death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 18448,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/longhair_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 160,
+          "name": "longhair death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 18452,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 161,
+          "gid": 81,
+          "name": "mophair death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 18680,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/mophair_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 162,
+          "name": "mophair death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 18684,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 163,
+          "gid": 82,
+          "name": "shorthair death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 18912,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/shorthair_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 164,
+          "name": "shorthair death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 18916,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 165,
+          "gid": 83,
+          "name": "spikeyhair death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 19144,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/spikeyhair_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 166,
+          "name": "spikeyhair death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 19148,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 167,
+          "gid": 84,
+          "name": "tools death strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 19376,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DEATH/tools_death_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 168,
+          "name": "tools death strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 19380,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools death strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 169,
+          "gid": 85,
+          "name": "base dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 19608,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/base_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 170,
+          "name": "base dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 19612,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 171,
+          "gid": 86,
+          "name": "bowlhair dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 19840,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/bowlhair_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 172,
+          "name": "bowlhair dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 19844,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 173,
+          "gid": 87,
+          "name": "curlyhair dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 20072,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/curlyhair_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 174,
+          "name": "curlyhair dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 20076,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 175,
+          "gid": 88,
+          "name": "longhair dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 20304,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/longhair_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 176,
+          "name": "longhair dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 20308,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 177,
+          "gid": 89,
+          "name": "mophair dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 20536,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/mophair_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 178,
+          "name": "mophair dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 20540,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 179,
+          "gid": 90,
+          "name": "shorthair dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 20768,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/shorthair_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 180,
+          "name": "shorthair dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 20772,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 181,
+          "gid": 91,
+          "name": "spikeyhair dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 21000,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/spikeyhair_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 182,
+          "name": "spikeyhair dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 21004,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 183,
+          "gid": 92,
+          "name": "tools dig strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 21232,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DIG/tools_dig_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 184,
+          "name": "tools dig strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 21236,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools dig strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 185,
+          "gid": 93,
+          "name": "tools doing strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 21464,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/DOING/tools_doing_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 186,
+          "name": "tools doing strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 21468,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools doing strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 187,
+          "gid": 94,
+          "name": "base hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 21696,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/base_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 188,
+          "name": "base hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 21700,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 189,
+          "gid": 95,
+          "name": "bowlhair hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 21928,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/bowlhair_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 190,
+          "name": "bowlhair hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 21932,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 191,
+          "gid": 96,
+          "name": "curlyhair hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 22160,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/curlyhair_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 192,
+          "name": "curlyhair hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 22164,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 193,
+          "gid": 97,
+          "name": "longhair hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 22392,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/longhair_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 194,
+          "name": "longhair hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 22396,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 195,
+          "gid": 98,
+          "name": "mophair hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 22624,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/mophair_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 196,
+          "name": "mophair hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 22628,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 197,
+          "gid": 99,
+          "name": "shorthair hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 22856,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/shorthair_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 198,
+          "name": "shorthair hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 22860,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 199,
+          "gid": 100,
+          "name": "spikeyhair hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 23088,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/spikeyhair_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 200,
+          "name": "spikeyhair hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 23092,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 201,
+          "gid": 101,
+          "name": "tools hamering strip23",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 23320,
+          "width": 2208,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HAMMERING/tools_hamering_strip23.png"
+            }
+          ]
+        },
+        {
+          "id": 202,
+          "name": "tools hamering strip23",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 23324,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools hamering strip23",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 203,
+          "gid": 102,
+          "name": "base hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 23552,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/base_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 204,
+          "name": "base hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 23556,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 205,
+          "gid": 103,
+          "name": "bowlhair hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 23784,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/bowlhair_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 206,
+          "name": "bowlhair hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 23788,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 207,
+          "gid": 104,
+          "name": "curlyhair hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 24016,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/curlyhair_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 208,
+          "name": "curlyhair hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 24020,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 209,
+          "gid": 105,
+          "name": "longhair hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 24248,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/longhair_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 210,
+          "name": "longhair hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 24252,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 211,
+          "gid": 106,
+          "name": "mophair hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 24480,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/mophair_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 212,
+          "name": "mophair hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 24484,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 213,
+          "gid": 107,
+          "name": "shorthair hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 24712,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/shorthair_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 214,
+          "name": "shorthair hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 24716,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 215,
+          "gid": 108,
+          "name": "spikeyhair hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 24944,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/spikeyhair_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 216,
+          "name": "spikeyhair hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 24948,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 217,
+          "gid": 109,
+          "name": "tools hurt strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 25176,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/HURT/tools_hurt_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 218,
+          "name": "tools hurt strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 25180,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools hurt strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 219,
+          "gid": 110,
+          "name": "tools idle strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 25408,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/IDLE/tools_idle_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 220,
+          "name": "tools idle strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 25412,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools idle strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 221,
+          "gid": 111,
+          "name": "base jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 25640,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/base_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 222,
+          "name": "base jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 25644,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 223,
+          "gid": 112,
+          "name": "bowlhair jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 25872,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/bowlhair_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 224,
+          "name": "bowlhair jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 25876,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 225,
+          "gid": 113,
+          "name": "curlyhair jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 26104,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/curlyhair_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 226,
+          "name": "curlyhair jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 26108,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 227,
+          "gid": 114,
+          "name": "longhair jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 26336,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/longhair_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 228,
+          "name": "longhair jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 26340,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 229,
+          "gid": 115,
+          "name": "mophair jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 26568,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/mophair_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 230,
+          "name": "mophair jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 26572,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 231,
+          "gid": 116,
+          "name": "shorthair jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 26800,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/shorthair_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 232,
+          "name": "shorthair jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 26804,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 233,
+          "gid": 117,
+          "name": "spikeyhair jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 27032,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/spikeyhair_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 234,
+          "name": "spikeyhair jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 27036,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 235,
+          "gid": 118,
+          "name": "tools jump strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 27264,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/JUMP/tools_jump_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 236,
+          "name": "tools jump strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 27268,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools jump strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 237,
+          "gid": 119,
+          "name": "base mining strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 27496,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/MINING/base_mining_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 238,
+          "name": "base mining strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 27500,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base mining strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 239,
+          "gid": 120,
+          "name": "spikeyhair mining strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 27728,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/MINING/spikeyhair_mining_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 240,
+          "name": "spikeyhair mining strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 27732,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair mining strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 241,
+          "gid": 121,
+          "name": "tools mining strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 27960,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/MINING/tools_mining_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 242,
+          "name": "tools mining strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 27964,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools mining strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 243,
+          "gid": 122,
+          "name": "base reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 28192,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/base_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 244,
+          "name": "base reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 28196,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 245,
+          "gid": 123,
+          "name": "bowlhair reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 28424,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/bowlhair_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 246,
+          "name": "bowlhair reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 28428,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 247,
+          "gid": 124,
+          "name": "curlyhair reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 28656,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/curlyhair_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 248,
+          "name": "curlyhair reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 28660,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 249,
+          "gid": 125,
+          "name": "longhair reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 28888,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/longhair_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 250,
+          "name": "longhair reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 28892,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 251,
+          "gid": 126,
+          "name": "mophair reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 29120,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/mophair_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 252,
+          "name": "mophair reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 29124,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 253,
+          "gid": 127,
+          "name": "shorthair reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 29352,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/shorthair_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 254,
+          "name": "shorthair reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 29356,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 255,
+          "gid": 128,
+          "name": "spikeyhair reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 29584,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/spikeyhair_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 256,
+          "name": "spikeyhair reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 29588,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 257,
+          "gid": 129,
+          "name": "tools reeling strip13",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 29816,
+          "width": 1248,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/REELING/tools_reeling_strip13.png"
+            }
+          ]
+        },
+        {
+          "id": 258,
+          "name": "tools reeling strip13",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 29820,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools reeling strip13",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 259,
+          "gid": 130,
+          "name": "base roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 30048,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/base_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 260,
+          "name": "base roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 30052,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 261,
+          "gid": 131,
+          "name": "bowlhair roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 30280,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/bowlhair_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 262,
+          "name": "bowlhair roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 30284,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 263,
+          "gid": 132,
+          "name": "curlyhair roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 30512,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/curlyhair_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 264,
+          "name": "curlyhair roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 30516,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 265,
+          "gid": 133,
+          "name": "longhair roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 30744,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/longhair_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 266,
+          "name": "longhair roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 30748,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 267,
+          "gid": 134,
+          "name": "mophair roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 30976,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/mophair_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 268,
+          "name": "mophair roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 30980,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 269,
+          "gid": 135,
+          "name": "shorthair roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 31208,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/shorthair_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 270,
+          "name": "shorthair roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 31212,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 271,
+          "gid": 136,
+          "name": "spikeyhair roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 31440,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/spikeyhair_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 272,
+          "name": "spikeyhair roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 31444,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 273,
+          "gid": 137,
+          "name": "tools roll strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 31672,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/ROLL/tools_roll_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 274,
+          "name": "tools roll strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 31676,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools roll strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 275,
+          "gid": 138,
+          "name": "base run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 31904,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/base_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 276,
+          "name": "base run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 31908,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 277,
+          "gid": 139,
+          "name": "bowlhair run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 32136,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/bowlhair_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 278,
+          "name": "bowlhair run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 32140,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 279,
+          "gid": 140,
+          "name": "curlyhair run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 32368,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/curlyhair_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 280,
+          "name": "curlyhair run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 32372,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 281,
+          "gid": 141,
+          "name": "longhair run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 32600,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/longhair_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 282,
+          "name": "longhair run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 32604,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 283,
+          "gid": 142,
+          "name": "mophair run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 32832,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/mophair_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 284,
+          "name": "mophair run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 32836,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 285,
+          "gid": 143,
+          "name": "shorthair run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 33064,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/shorthair_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 286,
+          "name": "shorthair run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 33068,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 287,
+          "gid": 144,
+          "name": "spikeyhair run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 33296,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/spikeyhair_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 288,
+          "name": "spikeyhair run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 33300,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 289,
+          "gid": 145,
+          "name": "tools run strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 33528,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/RUN/tools_run_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 290,
+          "name": "tools run strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 33532,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools run strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 291,
+          "gid": 146,
+          "name": "base swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 33760,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/base_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 292,
+          "name": "base swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 33764,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 293,
+          "gid": 147,
+          "name": "bowlhair swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 33992,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/bowlhair_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 294,
+          "name": "bowlhair swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 33996,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 295,
+          "gid": 148,
+          "name": "curlyhair swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 34224,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/curlyhair_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 296,
+          "name": "curlyhair swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 34228,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 297,
+          "gid": 149,
+          "name": "longhair swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 34456,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/longhair_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 298,
+          "name": "longhair swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 34460,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 299,
+          "gid": 150,
+          "name": "mophair swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 34688,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/mophair_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 300,
+          "name": "mophair swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 34692,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 301,
+          "gid": 151,
+          "name": "shorthair swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 34920,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/shorthair_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 302,
+          "name": "shorthair swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 34924,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 303,
+          "gid": 152,
+          "name": "spikeyhair swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 35152,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/spikeyhair_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 304,
+          "name": "spikeyhair swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 35156,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 305,
+          "gid": 153,
+          "name": "tools swimming strip12",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 35384,
+          "width": 1152,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/SWIMMING/tools_swimming_strip12.png"
+            }
+          ]
+        },
+        {
+          "id": 306,
+          "name": "tools swimming strip12",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 35388,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools swimming strip12",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 307,
+          "gid": 154,
+          "name": "base waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 35616,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/base_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 308,
+          "name": "base waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 35620,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 309,
+          "gid": 155,
+          "name": "bowlhair waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 35848,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/bowlhair_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 310,
+          "name": "bowlhair waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 35852,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 311,
+          "gid": 156,
+          "name": "curlyhair waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 36080,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/curlyhair_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 312,
+          "name": "curlyhair waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 36084,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 313,
+          "gid": 157,
+          "name": "longhair waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 36312,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/longhair_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 314,
+          "name": "longhair waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 36316,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 315,
+          "gid": 158,
+          "name": "mophair waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 36544,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/mophair_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 316,
+          "name": "mophair waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 36548,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 317,
+          "gid": 159,
+          "name": "shorthair waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 36776,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/shorthair_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 318,
+          "name": "shorthair waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 36780,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 319,
+          "gid": 160,
+          "name": "spikeyhair waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 37008,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/spikeyhair_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 320,
+          "name": "spikeyhair waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 37012,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 321,
+          "gid": 161,
+          "name": "tools waiting strip9",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 37240,
+          "width": 864,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WAITING/tools_waiting_strip9.png"
+            }
+          ]
+        },
+        {
+          "id": 322,
+          "name": "tools waiting strip9",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 37244,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools waiting strip9",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 323,
+          "gid": 162,
+          "name": "tools walk strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 37472,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WALKING/tools_walk_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 324,
+          "name": "tools walk strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 37476,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools walk strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 325,
+          "gid": 163,
+          "name": "base watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 37704,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/base_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 326,
+          "name": "base watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 37708,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "base watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 327,
+          "gid": 164,
+          "name": "bowlhair watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 37936,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/bowlhair_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 328,
+          "name": "bowlhair watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 37940,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "bowlhair watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 329,
+          "gid": 165,
+          "name": "curlyhair watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 38168,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/curlyhair_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 330,
+          "name": "curlyhair watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 38172,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "curlyhair watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 331,
+          "gid": 166,
+          "name": "longhair watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 38400,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/longhair_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 332,
+          "name": "longhair watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 38404,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "longhair watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 333,
+          "gid": 167,
+          "name": "mophair watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 38632,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/mophair_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 334,
+          "name": "mophair watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 38636,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "mophair watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 335,
+          "gid": 168,
+          "name": "shorthair watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 38864,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/shorthair_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 336,
+          "name": "shorthair watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 38868,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "shorthair watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 337,
+          "gid": 169,
+          "name": "spikeyhair watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 39096,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/spikeyhair_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 338,
+          "name": "spikeyhair watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 39100,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "spikeyhair watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 339,
+          "gid": 170,
+          "name": "tools watering strip5",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 39328,
+          "width": 480,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Human/WATERING/tools_watering_strip5.png"
+            }
+          ]
+        },
+        {
+          "id": 340,
+          "name": "tools watering strip5",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 39332,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "tools watering strip5",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 341,
+          "gid": 171,
+          "name": "skeleton attack strip7",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 39560,
+          "width": 672,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_attack_strip7.png"
+            }
+          ]
+        },
+        {
+          "id": 342,
+          "name": "skeleton attack strip7",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 39564,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "skeleton attack strip7",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 343,
+          "gid": 172,
+          "name": "skeleton death strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 39792,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_death_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 344,
+          "name": "skeleton death strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 39796,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "skeleton death strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 345,
+          "gid": 173,
+          "name": "skeleton hurt strip7",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 40024,
+          "width": 672,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_hurt_strip7.png"
+            }
+          ]
+        },
+        {
+          "id": 346,
+          "name": "skeleton hurt strip7",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 40028,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "skeleton hurt strip7",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 347,
+          "gid": 174,
+          "name": "skeleton idle strip6",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 40256,
+          "width": 576,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_idle_strip6.png"
+            }
+          ]
+        },
+        {
+          "id": 348,
+          "name": "skeleton idle strip6",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 40260,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "skeleton idle strip6",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 349,
+          "gid": 175,
+          "name": "skeleton jump strip10",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 40488,
+          "width": 960,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_jump_strip10.png"
+            }
+          ]
+        },
+        {
+          "id": 350,
+          "name": "skeleton jump strip10",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 40492,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "skeleton jump strip10",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        },
+        {
+          "id": 351,
+          "gid": 176,
+          "name": "skeleton walk strip8",
+          "type": "sunnyside_asset",
+          "x": 16,
+          "y": 40720,
+          "width": 768,
+          "height": 64,
+          "visible": true,
+          "properties": [
+            {
+              "name": "source",
+              "type": "string",
+              "value": "Sunnyside_World_Assets/Characters/Skeleton/PNG/skeleton_walk_strip8.png"
+            }
+          ]
+        },
+        {
+          "id": 352,
+          "name": "skeleton walk strip8",
+          "type": "sunnyside_label",
+          "x": 16,
+          "y": 40724,
+          "width": 2232,
+          "height": 16,
+          "visible": true,
+          "text": {
+            "text": "skeleton walk strip8",
+            "fontfamily": "sans-serif",
+            "pixelsize": 10,
+            "wrap": true,
+            "color": "#2f2721"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "characters"
+        }
+      ]
+    }
+  ],
+  "nextlayerid": 2,
+  "nextobjectid": 353,
+  "orientation": "orthogonal",
+  "renderorder": "right-down",
+  "tiledversion": "1.10.2",
+  "tileheight": 16,
+  "tilewidth": 16,
+  "type": "map",
+  "version": "1.10",
+  "width": 142,
+  "tilesets": [
+    {
+      "firstgid": 1,
+      "source": "../tilesets/sunnyside-characters.tsj"
+    }
+  ],
+  "properties": [
+    {
+      "name": "qeReferenceMap",
+      "type": "bool",
+      "value": true
+    },
+    {
+      "name": "qeRuntimeMap",
+      "type": "bool",
+      "value": false
+    },
+    {
+      "name": "qeReferencePurpose",
+      "type": "string",
+      "value": "Generated exhaustive Sunnyside asset browser. Do not design a scene here."
+    }
+  ]
+}

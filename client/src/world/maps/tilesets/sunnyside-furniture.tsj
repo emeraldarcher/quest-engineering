@@ -1,0 +1,555 @@
+{
+  "name": "Sunnyside — Furniture",
+  "tilewidth": 16,
+  "tileheight": 16,
+  "tilecount": 19,
+  "type": "tileset",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "properties": [
+    {
+      "name": "category",
+      "type": "string",
+      "value": "furniture"
+    },
+    {
+      "name": "qeSunnysideGenerated",
+      "type": "bool",
+      "value": true
+    }
+  ],
+  "tiles": [
+    {
+      "id": 0,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_book_01/8846673b-d1ab-4a11-8cf2-b304a7704950.png",
+      "imagewidth": 7,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_book_01/8846673b-d1ab-4a11-8cf2-b304a7704950.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_book_02/e89c7bfb-161c-4ba7-b9b9-b3ddcedd39ac.png",
+      "imagewidth": 5,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_book_02/e89c7bfb-161c-4ba7-b9b9-b3ddcedd39ac.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_chest_01_open/5578aba6-58ee-41ae-ba04-2ef8911e81e6.png",
+      "imagewidth": 16,
+      "imageheight": 25,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_chest_01_open/5578aba6-58ee-41ae-ba04-2ef8911e81e6.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_chest_02_closed/791d5570-e16a-4994-afed-848c60f51ac2.png",
+      "imagewidth": 16,
+      "imageheight": 21,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_chest_02_closed/791d5570-e16a-4994-afed-848c60f51ac2.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_chest_02_open/a5797610-9270-4be9-b1cf-4653faf8f131.png",
+      "imagewidth": 16,
+      "imageheight": 27,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_chest_02_open/a5797610-9270-4be9-b1cf-4653faf8f131.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_jar_01/d022fe0a-a813-4c94-8b2d-06cb8134bf3e.png",
+      "imagewidth": 10,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_jar_01/d022fe0a-a813-4c94-8b2d-06cb8134bf3e.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_jar_02/444fe324-4156-4434-a1bc-3bd13543f718.png",
+      "imagewidth": 10,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_jar_02/444fe324-4156-4434-a1bc-3bd13543f718.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_knifeandfork/78e9a01e-2b05-4886-9c02-321576bf9ec4.png",
+      "imagewidth": 6,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_knifeandfork/78e9a01e-2b05-4886-9c02-321576bf9ec4.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_mug_01/0fa1147d-dfb2-4ed6-8f5c-f18eaccb518c.png",
+      "imagewidth": 5,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_mug_01/0fa1147d-dfb2-4ed6-8f5c-f18eaccb518c.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_mug_02/3b66c172-f07f-4ab2-b873-c99789076790.png",
+      "imagewidth": 7,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_mug_02/3b66c172-f07f-4ab2-b873-c99789076790.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_picture_01_1/79b102c9-782c-4b8a-86a9-93f41042485c.png",
+      "imagewidth": 11,
+      "imageheight": 11,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_picture_01_1/79b102c9-782c-4b8a-86a9-93f41042485c.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_picture_01/7958b214-effa-4c97-b329-91addd38ef5c.png",
+      "imagewidth": 9,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_picture_01/7958b214-effa-4c97-b329-91addd38ef5c.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_plate_food/228f3267-d04d-4cb2-b221-c192bce48019.png",
+      "imagewidth": 7,
+      "imageheight": 8,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_plate_food/228f3267-d04d-4cb2-b221-c192bce48019.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_plate_knifeandfork/dccf9a58-bb66-470b-a383-cd92b544bdc0.png",
+      "imagewidth": 7,
+      "imageheight": 13,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_plate_knifeandfork/dccf9a58-bb66-470b-a383-cd92b544bdc0.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_plate/29c430b0-56e0-4b35-8ffa-f1fb8a7cb88a.png",
+      "imagewidth": 7,
+      "imageheight": 9,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_plate/29c430b0-56e0-4b35-8ffa-f1fb8a7cb88a.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "image": "../../../assets/sunnyside/imported/furniture/gamemaker/spr_deco_rug_01/027742b0-79ce-4754-88e8-5ccb994a91a3.png",
+      "imagewidth": 10,
+      "imageheight": 12,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_rug_01/027742b0-79ce-4754-88e8-5ccb994a91a3.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "image": "../../../assets/sunnyside/props/chair.png",
+      "imagewidth": 10,
+      "imageheight": 14,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_chair_01/feef7d7c-b629-41cb-8196-d20519255aba.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "image": "../../../assets/sunnyside/props/chest.png",
+      "imagewidth": 16,
+      "imageheight": 21,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_chest_01_closed/496b079e-4729-46a2-8b47-cff42b294c71.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "image": "../../../assets/sunnyside/props/side-table.png",
+      "imagewidth": 12,
+      "imageheight": 26,
+      "properties": [
+        {
+          "name": "category",
+          "type": "string",
+          "value": "furniture"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "value": "Sunnyside_World_Gamemaker/sprites/spr_deco_sidetable_01/e6e599b0-3edb-47fe-95cc-6aa5a7510470.png"
+        },
+        {
+          "name": "sourceKind",
+          "type": "string",
+          "value": "gamemaker"
+        },
+        {
+          "name": "animated",
+          "type": "bool",
+          "value": false
+        }
+      ]
+    }
+  ]
+}
