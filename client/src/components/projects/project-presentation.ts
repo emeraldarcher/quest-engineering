@@ -1,4 +1,5 @@
 import type { Workspace, WorkspaceSource } from "../../api/contracts";
+import { availableProductKey } from "../management/management-key";
 
 export type ProjectStatusTone =
   | "ready"
@@ -135,28 +136,7 @@ export function availableProjectKey(
   existingKeys: Iterable<string>,
   preferredSuffix = 1,
 ): string {
-  const keys = new Set(existingKeys);
-  const base = keyBase(name);
-  if (preferredSuffix <= 1 && !keys.has(base)) return base;
-  let suffix = Math.max(2, preferredSuffix);
-  while (suffix < 10_000) {
-    const ending = `-${suffix}`;
-    const candidate = `${base.slice(0, 64 - ending.length).replace(/-+$/, "")}${ending}`;
-    if (!keys.has(candidate)) return candidate;
-    suffix += 1;
-  }
-  throw new Error("Unable to derive an available Project key.");
-}
-
-function keyBase(name: string): string {
-  let key = name
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  if (!key || !/^[a-z]/.test(key)) key = `project${key ? `-${key}` : ""}`;
-  return key.slice(0, 64).replace(/-+$/, "") || "project";
+  return availableProductKey(name, existingKeys, "project", preferredSuffix);
 }
 
 function titleCase(value: string): string {

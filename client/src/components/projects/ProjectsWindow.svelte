@@ -2,6 +2,7 @@
 import { onMount, tick } from "svelte";
 import type { Workspace, WorkspaceSource } from "../../api/contracts";
 import type { ProductState, AppStore } from "../../state/app-store";
+import "../management/management-window.css";
 import { ProjectAddCoordinator } from "./project-add-coordinator";
 import {
   defaultProjectName,
@@ -241,7 +242,7 @@ function sourceIsCompatible(workspace: Workspace, source: WorkspaceSource): bool
 }
 </script>
 
-<aside class="projects-window panel" aria-labelledby="projects-title">
+<aside class="projects-window management-window management-window-shell panel" aria-labelledby="projects-title">
   <header class="window-header">
     <div>
       <span class="window-kicker">Repository wayfinder</span>
@@ -430,33 +431,6 @@ function sourceIsCompatible(workspace: Workspace, source: WorkspaceSource): bool
 </aside>
 
 <style>
-  .projects-window {
-    --app-cream: #fff4d8;
-    --app-paper: #f7e7c4;
-    --app-paper-soft: #ecd3a7;
-    --app-ink: #29373a;
-    --app-muted: #68756e;
-    --app-wood: #75513e;
-    --app-wood-dark: #4b352e;
-    --app-teal: #4c8179;
-    --app-teal-dark: #35645f;
-    --app-green: #4f8a61;
-    --app-amber: #c68738;
-    --app-coral: #bd5d55;
-    position: absolute;
-    z-index: 8;
-    top: 4.4rem;
-    right: 1rem;
-    width: min(56rem, calc(100vw - 2rem));
-    max-height: calc(100vh - 5.4rem);
-    overflow: hidden;
-    padding: 0;
-    color: var(--app-ink);
-    background: var(--app-cream);
-    border: 2px solid var(--app-wood);
-    border-radius: 14px;
-    box-shadow: 0 18px 48px #24383266, inset 0 0 0 2px #fff9e8aa;
-  }
   button, input { font: inherit; }
   button { min-height: 2.6rem; border-radius: 8px; }
   button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid #e2a84e; outline-offset: 2px; }

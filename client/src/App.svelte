@@ -2,17 +2,15 @@
 import { onDestroy, onMount, tick, type Component } from "svelte";
 import type {
   ArtifactDetail,
-  ClassDefinition,
   JsonValue,
-  Loadout,
   Quest,
-  Reasoning,
   Squad,
-  WorkspaceAccess,
 } from "./api/contracts";
 import TownCanvas from "./components/TownCanvas.svelte";
 import ValidationSummary from "./components/ValidationSummary.svelte";
 import ProjectsWindow from "./components/projects/ProjectsWindow.svelte";
+import GuildHallWindow from "./components/guild/GuildHallWindow.svelte";
+import ForgeWindow from "./components/forge/ForgeWindow.svelte";
 import { openPullRequest } from "./platform/open-pull-request";
 import { createStarterCrew } from "./domain/starter-crew";
 import type { AppStore, BuildingId } from "./state/app-store";
@@ -28,26 +26,6 @@ const {
   realtimeStatus: realtimeStatusStore,
   bootstrapRunning: bootstrapRunningStore,
 } = store;
-let classDraft = { key: "", name: "", description: "", instructions: "" };
-let loadoutDraft: {
-  key: string;
-  name: string;
-  description: string;
-  provider: string;
-  model: string;
-  reasoning: Reasoning;
-  tools: string;
-  workspace_access: WorkspaceAccess;
-} = {
-  key: "",
-  name: "",
-  description: "",
-  provider: "",
-  model: "",
-  reasoning: "medium",
-  tools: "workspace.filesystem",
-  workspace_access: "read_write",
-};
 let squadDraft: {
   id?: string;
   key: string;
@@ -74,8 +52,6 @@ let questDraft: {
   squad_id: "",
   tactic_definition_id: "",
 };
-let selectedClass: ClassDefinition | null = null;
-let selectedLoadout: Loadout | null = null;
 let selectedSquad: Squad | null = null;
 let selectedQuest: Quest | null = null;
 let preview: unknown = null;
@@ -86,6 +62,8 @@ let starterWorkspace = "";
 let previousFocus: HTMLElement | null = null;
 let journalOpen = new URLSearchParams(location.search).get("journal") === "1";
 let FixtureChooserComponent: Component | null = null;
+let guildWindow: { requestLeave: (continuation: () => void) => void } | null = null;
+let forgeWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 
 onMount(async () => {
   if (import.meta.env.DEV)
@@ -97,8 +75,6 @@ onMount(async () => {
   if (buildings.some((item) => item.id === fixtureBuilding)) selectBuilding(fixtureBuilding as BuildingId);
   if (store.fixture?.name === "member-inspector") selectedMemberKey = "member-1";
   await store.loadProduct();
-  if (store.fixture && fixtureBuilding === "guild" && product.classes[0]) editClass(product.classes[0]);
-  if (store.fixture && fixtureBuilding === "blacksmith" && product.loadouts[0]) editLoadout(product.loadouts[0]);
   if (store.fixture && fixtureBuilding === "tavern" && product.squads[0]) editSquad(product.squads[0]);
   if (store.fixture && fixtureBuilding === "quest-board" && product.quests[0]) editQuest(product.quests[0]);
   const match = location.hash.match(/^#\/run\/(.+)$/);
@@ -169,8 +145,19 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 function selectBuilding(id: BuildingId) {
+  if ($selectedBuildingStore === "guild" && id !== "guild" && guildWindow) {
+    guildWindow.requestLeave(() => commitBuildingSelection(id));
+    return;
+  }
+  if ($selectedBuildingStore === "blacksmith" && id !== "blacksmith" && forgeWindow) {
+    forgeWindow.requestLeave(() => commitBuildingSelection(id));
+    return;
+  }
   if ($selectedBuildingStore && $selectedBuildingStore !== id && isWindowDirty() &&
       !confirm("Discard unsaved changes and open another management window?")) return;
+  commitBuildingSelection(id);
+}
+function commitBuildingSelection(id: BuildingId) {
   if (!$selectedBuildingStore)
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   store.selectBuildingId(id);
@@ -180,24 +167,6 @@ function selectBuilding(id: BuildingId) {
 }
 function isWindowDirty() {
   if ($selectedBuildingStore === "gatehouse") return false;
-  if ($selectedBuildingStore === "guild") {
-    if (!selectedClass) return Object.values(classDraft).some(Boolean);
-    return JSON.stringify(classDraft) !== JSON.stringify({
-      key: selectedClass.key, name: selectedClass.name,
-      description: selectedClass.description, instructions: selectedClass.instructions,
-    });
-  }
-  if ($selectedBuildingStore === "blacksmith") {
-    if (!selectedLoadout) return !!(loadoutDraft.key || loadoutDraft.name || loadoutDraft.description || loadoutDraft.provider || loadoutDraft.model);
-    return JSON.stringify(loadoutDraft) !== JSON.stringify({
-      key: selectedLoadout.key, name: selectedLoadout.name,
-      description: selectedLoadout.description,
-      provider: selectedLoadout.model.provider, model: selectedLoadout.model.model,
-      reasoning: selectedLoadout.reasoning,
-      tools: selectedLoadout.tools.join(", "),
-      workspace_access: selectedLoadout.workspace_access,
-    });
-  }
   if ($selectedBuildingStore === "tavern") {
     if (!selectedSquad) return !!(squadDraft.key || squadDraft.name || squadDraft.description || squadDraft.members.length);
     return JSON.stringify(squadDraft) !== JSON.stringify({
@@ -220,7 +189,18 @@ function isWindowDirty() {
   return false;
 }
 function requestCloseWindow() {
+  if ($selectedBuildingStore === "guild" && guildWindow) {
+    guildWindow.requestLeave(closeWindow);
+    return;
+  }
+  if ($selectedBuildingStore === "blacksmith" && forgeWindow) {
+    forgeWindow.requestLeave(closeWindow);
+    return;
+  }
   if (isWindowDirty() && !confirm("Discard unsaved changes and close this window?")) return;
+  closeWindow();
+}
+function closeWindow() {
   store.selectBuildingId(null);
   void tick().then(() => previousFocus?.focus());
 }
@@ -233,110 +213,6 @@ async function openJournalRun(id: string) {
   journalOpen = false;
   selectBuilding("work-area");
 }
-function newClass() {
-  selectedClass = null;
-  classDraft = { key: "", name: "", description: "", instructions: "" };
-}
-function editClass(value: ClassDefinition) {
-  selectedClass = value;
-  classDraft = {
-    key: value.key,
-    name: value.name,
-    description: value.description,
-    instructions: value.instructions,
-  };
-}
-async function saveClass() {
-  if (selectedClass) await store.api.updateClass(selectedClass.id, classDraft);
-  else await store.api.createClass(classDraft);
-  await store.refreshProduct();
-  newClass();
-}
-async function archiveClass() {
-  if (selectedClass && confirm(`Archive ${selectedClass.name}?`)) {
-    await store.api.archiveClass(selectedClass.id);
-    await store.refreshProduct();
-    newClass();
-  }
-}
-
-function applyExecutionOption(key: string) {
-  const option = product.executionOptions.find(
-    (item) => optionKey(item) === key,
-  );
-  if (!option) return;
-  const access = option.workspaces.some((workspace) =>
-    workspace.workspace_access.includes("read_write"),
-  )
-    ? "read_write"
-    : option.workspaces.some((workspace) =>
-          workspace.workspace_access.includes("read_only"),
-        )
-      ? "read_only"
-      : "none";
-  loadoutDraft = {
-    ...loadoutDraft,
-    provider: option.model.provider,
-    model: option.model.model,
-    reasoning: option.reasoning.includes("medium")
-      ? "medium"
-      : (option.reasoning[0] ?? "low"),
-    tools: option.tools.join(", "),
-    workspace_access: access,
-  };
-}
-function newLoadout() {
-  selectedLoadout = null;
-  loadoutDraft = {
-    key: "",
-    name: "",
-    description: "",
-    provider: selectedOption?.model.provider ?? "",
-    model: selectedOption?.model.model ?? "",
-    reasoning: "medium",
-    tools: "workspace.filesystem",
-    workspace_access: "read_write",
-  };
-}
-function editLoadout(value: Loadout) {
-  selectedLoadout = value;
-  loadoutDraft = {
-    key: value.key,
-    name: value.name,
-    description: value.description,
-    provider: value.model.provider,
-    model: value.model.model,
-    reasoning: value.reasoning,
-    tools: value.tools.join(", "),
-    workspace_access: value.workspace_access,
-  };
-}
-async function saveLoadout() {
-  const input = {
-    key: loadoutDraft.key,
-    name: loadoutDraft.name,
-    description: loadoutDraft.description,
-    model: { provider: loadoutDraft.provider, model: loadoutDraft.model },
-    reasoning: loadoutDraft.reasoning,
-    tools: loadoutDraft.tools
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-    workspace_access: loadoutDraft.workspace_access,
-  };
-  if (selectedLoadout) await store.api.updateLoadout(selectedLoadout.id, input);
-  else await store.api.createLoadout(input);
-  await store.refreshProduct();
-  newLoadout();
-}
-async function archiveLoadout() {
-  if (selectedLoadout && confirm(`Archive ${selectedLoadout.name}?`)) {
-    await store.api.archiveLoadout(selectedLoadout.id);
-    await store.refreshProduct();
-    newLoadout();
-  }
-}
-
 function newSquad() {
   selectedSquad = null;
   squadDraft = { key: "", name: "", description: "", members: [] };
@@ -542,13 +418,13 @@ function optionKey(option: {
 
   {#if run}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
 
-  {#if $selectedBuildingStore && $selectedBuildingStore !== "gatehouse"}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
+  {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
   {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
 
-  {#if $selectedBuildingStore === "guild"}<aside class="panel game-window"><h2>Guild Hall — Classes</h2><div class="split"><ul>{#each product.classes as item}<li><button on:click={() => editClass(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveClass}><h3>{selectedClass ? "Edit" : "Create"} Class</h3><label>Key <input disabled={!!selectedClass} bind:value={classDraft.key} required /></label><label>Name <input bind:value={classDraft.name} required /></label><label>Description <textarea bind:value={classDraft.description}></textarea></label><label>Instructions <textarea bind:value={classDraft.instructions} required></textarea></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Class</button><button type="button" on:click={newClass}>New</button>{#if selectedClass}<button type="button" class="danger" on:click={archiveClass}>Archive</button>{/if}</form></div></aside>{/if}
+  {#if $selectedBuildingStore === "guild"}<GuildHallWindow bind:this={guildWindow} {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("guild") : null} />{/if}
 
-  {#if $selectedBuildingStore === "blacksmith"}<aside class="panel game-window"><h2>Forge — Loadouts</h2><div class="split"><ul>{#each product.loadouts as item}<li><button on:click={() => editLoadout(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveLoadout}><h3>{selectedLoadout ? "Edit" : "Create"} Loadout</h3><label>Key <input disabled={!!selectedLoadout} bind:value={loadoutDraft.key} required /></label><label>Name <input bind:value={loadoutDraft.name} required /></label><label>Description <textarea bind:value={loadoutDraft.description}></textarea></label><label>Known execution profile <select on:change={(event) => applyExecutionOption(event.currentTarget.value)}><option value="">Choose a discovered profile</option>{#each product.executionOptions as option}<option value={optionKey(option)}>{option.model.provider} / {option.model.model} — {option.available ? "available" : "offline"}</option>{/each}</select></label><label>Provider <input bind:value={loadoutDraft.provider} required /></label><label>Model <input bind:value={loadoutDraft.model} required /></label><label>Reasoning <select bind:value={loadoutDraft.reasoning}><option>low</option><option>medium</option><option>high</option></select></label><label>QE capabilities <input bind:value={loadoutDraft.tools} /></label><label>Workspace access <select bind:value={loadoutDraft.workspace_access}><option>none</option><option>read_only</option><option>read_write</option></select></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Loadout</button><button type="button" on:click={newLoadout}>New</button>{#if selectedLoadout}<button type="button" class="danger" on:click={archiveLoadout}>Archive</button>{/if}</form></div><p class="hint">Known execution profiles are a convenience; custom Product capability values remain valid.</p></aside>{/if}
+  {#if $selectedBuildingStore === "blacksmith"}<ForgeWindow bind:this={forgeWindow} {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("forge") : null} />{/if}
 
   {#if $selectedBuildingStore === "tavern"}<aside class="panel game-window"><h2>Tavern — Squads</h2><div class="split"><ul>{#each product.squads as item}<li><button on:click={() => editSquad(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveSquad}><h3>{selectedSquad ? "Edit" : "Create"} Squad</h3><label>Key <input disabled={!!selectedSquad} bind:value={squadDraft.key} required /></label><label>Name <input bind:value={squadDraft.name} required /></label><label>Description <textarea bind:value={squadDraft.description}></textarea></label><h3>Roster</h3>{#each squadDraft.members as item, index}<fieldset><input aria-label="Member key" bind:value={item.member_key} /><input aria-label="Display name" bind:value={item.name} /><select bind:value={item.class_id}>{#each product.classes as value}<option value={value.id}>{value.name}</option>{/each}</select><select bind:value={item.loadout_id}>{#each product.loadouts as value}<option value={value.id}>{value.name}</option>{/each}</select><button type="button" on:click={() => moveMember(index, -1)}>↑</button><button type="button" on:click={() => moveMember(index, 1)}>↓</button><button type="button" on:click={() => squadDraft.members = squadDraft.members.filter((_, i) => i !== index)}>Remove</button></fieldset>{/each}<ValidationSummary details={$errorStore?.details ?? []} /><button type="button" on:click={addMember}>Add Member</button><button>Save Squad</button><button type="button" on:click={newSquad}>New</button>{#if selectedSquad}<button type="button" class="danger" on:click={archiveSquad}>Archive</button>{/if}</form></div></aside>{/if}
 

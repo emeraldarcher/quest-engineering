@@ -31,6 +31,10 @@ export const fixtureNames = [
   "projects-empty",
   "projects-preparing",
   "projects-attention",
+  "guild-empty",
+  "forge",
+  "forge-empty",
+  "forge-custom",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -54,18 +58,39 @@ const reviewerClass: ClassDefinition = {
   id: "class-reviewer",
   key: "reviewer",
   name: "Reviewer",
-  description: "Reviews completed work.",
+  description: "Independently reviews completed work.",
+  instructions:
+    "Review completed work independently. Check it against the objective and report factual findings.",
 };
 const loadout: Loadout = {
   id: "loadout-coding",
   key: "coding",
   name: "Coding Tools",
-  description: "Repository tools and a connected model.",
+  description: "A full implementation environment for Product changes.",
   model: { provider: "fixture", model: "town-model" },
-  reasoning: "medium",
-  tools: ["workspace.filesystem"],
+  reasoning: "high",
+  tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
   workspace_access: "read_write",
   archived_at: null,
+};
+const reviewLoadout: Loadout = {
+  ...loadout,
+  id: "loadout-review",
+  key: "review",
+  name: "Review Tools",
+  description: "Read-only tools for independent review.",
+  reasoning: "medium",
+  tools: ["workspace.filesystem", "workspace.search"],
+  workspace_access: "read_only",
+};
+const customLoadout: Loadout = {
+  ...loadout,
+  id: "loadout-experimental",
+  key: "experimental",
+  name: "Experimental Bench",
+  description: "Custom equipment for specialist Product work.",
+  model: { provider: "acme-labs", model: "experimental-model-x" },
+  tools: ["workspace.filesystem", "acme.special-tool"],
 };
 const workspace: Workspace = {
   id: "workspace-quest-engineering",
@@ -152,6 +177,13 @@ const squad: Squad = {
     loadout_id: member.loadout.id,
   })),
   archived_at: null,
+};
+const productSquad: Squad = {
+  ...squad,
+  members: squad.members.map((member, index) => ({
+    ...member,
+    loadout_id: index % 4 === 3 ? reviewLoadout.id : loadout.id,
+  })),
 };
 
 function delivery(state: DeliveryProjection["state"]): DeliveryProjection {
@@ -420,9 +452,14 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
   return {
     name,
     product: {
-      classes: [classDefinition, reviewerClass],
-      loadouts: [loadout],
-      squads: [squad],
+      classes: name === "guild-empty" ? [] : [classDefinition, reviewerClass],
+      loadouts:
+        name === "forge-empty"
+          ? []
+          : name === "forge-custom"
+            ? [loadout, reviewLoadout, customLoadout]
+            : [loadout, reviewLoadout],
+      squads: [productSquad],
       tactics: [tactic],
       quests: name === "density" ? [quest, reviewQuest] : [quest],
       workspaces:
