@@ -8,11 +8,11 @@ import type {
   Quest,
   Reasoning,
   Squad,
-  Workspace,
   WorkspaceAccess,
 } from "./api/contracts";
 import TownCanvas from "./components/TownCanvas.svelte";
 import ValidationSummary from "./components/ValidationSummary.svelte";
+import ProjectsWindow from "./components/projects/ProjectsWindow.svelte";
 import { openPullRequest } from "./platform/open-pull-request";
 import { createStarterCrew } from "./domain/starter-crew";
 import type { AppStore, BuildingId } from "./state/app-store";
@@ -28,12 +28,6 @@ const {
   realtimeStatus: realtimeStatusStore,
   bootstrapRunning: bootstrapRunningStore,
 } = store;
-let workspaceDraft: { key: string; name: string; source_kind: "git_remote" | "local_git"; source_fingerprint: string } = {
-  key: "",
-  name: "",
-  source_kind: "local_git",
-  source_fingerprint: "",
-};
 let classDraft = { key: "", name: "", description: "", instructions: "" };
 let loadoutDraft: {
   key: string;
@@ -80,8 +74,6 @@ let questDraft: {
   squad_id: "",
   tactic_definition_id: "",
 };
-let selectedWorkspace: Workspace | null = null;
-let selectedWorkspaceSource = "";
 let selectedClass: ClassDefinition | null = null;
 let selectedLoadout: Loadout | null = null;
 let selectedSquad: Squad | null = null;
@@ -105,7 +97,6 @@ onMount(async () => {
   if (buildings.some((item) => item.id === fixtureBuilding)) selectBuilding(fixtureBuilding as BuildingId);
   if (store.fixture?.name === "member-inspector") selectedMemberKey = "member-1";
   await store.loadProduct();
-  if (store.fixture && fixtureBuilding === "gatehouse" && product.workspaces[0]) editWorkspace(product.workspaces[0]);
   if (store.fixture && fixtureBuilding === "guild" && product.classes[0]) editClass(product.classes[0]);
   if (store.fixture && fixtureBuilding === "blacksmith" && product.loadouts[0]) editLoadout(product.loadouts[0]);
   if (store.fixture && fixtureBuilding === "tavern" && product.squads[0]) editSquad(product.squads[0]);
@@ -120,7 +111,7 @@ onDestroy(() => {
 });
 
 const buildings: Array<{ id: BuildingId; label: string; hotkey: string }> = [
-  { id: "gatehouse", label: "Wayfinder", hotkey: "1" },
+  { id: "gatehouse", label: "Projects", hotkey: "1" },
   { id: "guild", label: "Guild Hall", hotkey: "2" },
   { id: "blacksmith", label: "Forge", hotkey: "3" },
   { id: "tavern", label: "Tavern", hotkey: "4" },
@@ -131,8 +122,6 @@ $: product = $productStore;
 $: {
   const freshQuest = selectedQuest && product.quests.find((item) => item.id === selectedQuest?.id);
   if (freshQuest && freshQuest !== selectedQuest) selectedQuest = freshQuest;
-  const freshProject = selectedWorkspace && product.workspaces.find((item) => item.id === selectedWorkspace?.id);
-  if (freshProject && freshProject !== selectedWorkspace) selectedWorkspace = freshProject;
 }
 $: isEmptyFirstRun =
   product.classes.length === 0 &&
@@ -169,6 +158,7 @@ function handleUnhandledRejection(event: PromiseRejectionEvent) {
 }
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
+    if (document.querySelector("dialog[open]")) return;
     if ($selectedBuildingStore) requestCloseWindow();
     else journalOpen = false;
     return;
@@ -189,14 +179,7 @@ function selectBuilding(id: BuildingId) {
   void tick().then(() => document.querySelector<HTMLElement>(".panel input:not([disabled]), .panel select, .panel button")?.focus());
 }
 function isWindowDirty() {
-  if ($selectedBuildingStore === "gatehouse") {
-    if (!selectedWorkspace) return !!(workspaceDraft.key || workspaceDraft.name || workspaceDraft.source_fingerprint);
-    return JSON.stringify(workspaceDraft) !== JSON.stringify({
-      key: selectedWorkspace.key, name: selectedWorkspace.name,
-      source_kind: selectedWorkspace.source_kind,
-      source_fingerprint: selectedWorkspace.source_fingerprint ?? "",
-    });
-  }
+  if ($selectedBuildingStore === "gatehouse") return false;
   if ($selectedBuildingStore === "guild") {
     if (!selectedClass) return Object.values(classDraft).some(Boolean);
     return JSON.stringify(classDraft) !== JSON.stringify({
@@ -250,64 +233,6 @@ async function openJournalRun(id: string) {
   journalOpen = false;
   selectBuilding("work-area");
 }
-function newWorkspace() {
-  selectedWorkspace = null;
-  selectedWorkspaceSource = "";
-  workspaceDraft = { key: "", name: "", source_kind: "local_git", source_fingerprint: "" };
-}
-function chooseWorkspaceSource(candidateId: string) {
-  selectedWorkspaceSource = candidateId;
-  if (selectedWorkspace) return;
-  const source = product.workspaceSources.find((item) => item.candidate_id === candidateId);
-  if (!source) return;
-  workspaceDraft = {
-    ...workspaceDraft,
-    key: workspaceDraft.key || source.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
-    name: workspaceDraft.name || source.name,
-    source_kind: source.source_kind,
-    source_fingerprint: source.source_fingerprint ?? "",
-  };
-}
-function editWorkspace(value: Workspace) {
-  selectedWorkspace = value;
-  workspaceDraft = {
-    key: value.key,
-    name: value.name,
-    source_kind: value.source_kind,
-    source_fingerprint: value.source_fingerprint ?? "",
-  };
-}
-async function saveWorkspace() {
-  const input = {
-    key: workspaceDraft.key,
-    name: workspaceDraft.name,
-    source_kind: workspaceDraft.source_kind,
-    source_fingerprint: workspaceDraft.source_fingerprint || null,
-  };
-  if (selectedWorkspace) {
-    await store.api.updateWorkspace(selectedWorkspace.id, input);
-  } else {
-    const workspace = await store.api.createWorkspace(input);
-    if (selectedWorkspaceSource)
-      await store.api.bindWorkspaceSource(workspace.id, selectedWorkspaceSource);
-  }
-  await store.refreshProduct();
-  newWorkspace();
-}
-async function bindWorkspaceSource() {
-  if (!selectedWorkspace || !selectedWorkspaceSource) return;
-  await store.api.bindWorkspaceSource(selectedWorkspace.id, selectedWorkspaceSource);
-  selectedWorkspaceSource = "";
-  await store.refreshProduct();
-}
-async function archiveWorkspace() {
-  if (selectedWorkspace && confirm(`Archive ${selectedWorkspace.name}?`)) {
-    await store.api.archiveWorkspace(selectedWorkspace.id);
-    await store.refreshProduct();
-    newWorkspace();
-  }
-}
-
 function newClass() {
   selectedClass = null;
   classDraft = { key: "", name: "", description: "", instructions: "" };
@@ -595,7 +520,7 @@ function optionKey(option: {
 
 <main>
   <TownCanvas model={world} status={townStatus} selectedBuilding={$selectedBuildingStore} selectedMember={selectedMemberKey} onBuilding={selectBuilding} onMember={selectMember} />
-  <header class="topbar"><strong>QUEST ENGINEERING</strong><span class="version">v0.14b · AUTHORED TOWN</span><span class:bad={$realtimeStatusStore !== "connected"}>◆ control plane {$realtimeStatusStore}</span><span class:bad={!product.workspaceSources.length}>◇ {product.workspaceSources.length ? "Worker source online" : "No Worker source"}</span><nav aria-label="Town menu">{#each buildings as building}<button title={`${building.hotkey} · ${building.label}`} on:click={() => selectBuilding(building.id)}><kbd>{building.hotkey}</kbd> {building.label}</button>{/each}<button aria-expanded={journalOpen} on:click={() => journalOpen = !journalOpen}>Journal</button></nav></header>
+  <header class="topbar"><strong>QUEST ENGINEERING</strong><span class="version">v0.14b · AUTHORED TOWN</span><span class:bad={$realtimeStatusStore !== "connected"}>◆ control plane {$realtimeStatusStore}</span><span class:bad={!product.workspaceSources.length}>◇ {product.workspaceSources.length ? "Repositories available" : "No repositories available"}</span><nav aria-label="Town menu">{#each buildings as building}<button title={`${building.hotkey} · ${building.label}`} on:click={() => selectBuilding(building.id)}><kbd>{building.hotkey}</kbd> {building.label}</button>{/each}<button aria-expanded={journalOpen} on:click={() => journalOpen = !journalOpen}>Journal</button></nav></header>
   {#if $loadingStore}<div class="notice">Loading Product data…</div>{/if}
   {#if $errorStore}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}</div>{/if}
 
@@ -606,17 +531,20 @@ function optionKey(option: {
       <h1>Raise a starter crew</h1><p>Create ordinary Product rows for a Builder, Reviewer, Loadouts, Squad, and reusable Tactic.</p>
       {#if product.executionOptions.filter((item) => item.available).length && product.workspaces.length}
         <label>Known model <select bind:value={starterOption}><option value="">Choose a connected execution profile</option>{#each product.executionOptions.filter((item) => item.available) as option}<option value={optionKey(option)}>{option.model.provider} / {option.model.model}</option>{/each}</select></label>
-        <label>Project <select bind:value={starterWorkspace}><option value="">Choose workspace</option>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label>
+        <label>Project <select bind:value={starterWorkspace}><option value="">Choose Project</option>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label>
         <button disabled={!selectedOption || !starterWorkspace || $bootstrapRunningStore} on:click={bootstrap}>{$bootstrapRunningStore ? "Creating…" : "Create starter crew"}</button>
-      {:else}<p class="error">Connect a compatible Worker and configure a workspace, then refresh the town. Manual editors remain available.</p>{/if}
+      {:else if !product.workspaces.length}
+        <p>Add a Project before raising your starter crew.</p>
+        <button on:click={() => selectBuilding("gatehouse")}>Add your first Project</button>
+      {:else}<p class="error">Connect a compatible Worker, then refresh the town. Manual editors remain available.</p>{/if}
     </section>
   {/if}
 
   {#if run}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
 
-  {#if $selectedBuildingStore}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
+  {#if $selectedBuildingStore && $selectedBuildingStore !== "gatehouse"}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
-  {#if $selectedBuildingStore === "gatehouse"}<aside class="panel game-window"><header><span>✦</span><h2>Projects</h2></header><p class="subtitle">Projects available to your Quests</p><div class="split"><ul class="ledger">{#each product.workspaces as item}<li><button on:click={() => editWorkspace(item)}><strong>{item.name}</strong><small>{item.key} · {item.source_kind}</small></button></li>{/each}</ul><form on:submit|preventDefault={saveWorkspace}><h3>{selectedWorkspace ? "Edit Project" : "Add Project"}</h3><label>Immutable key <input disabled={!!selectedWorkspace} bind:value={workspaceDraft.key} required /></label><label>Repository <select value={selectedWorkspaceSource} on:change={(event) => chooseWorkspaceSource(event.currentTarget.value)}><option value="">Choose a discovered repository</option>{#each product.workspaceSources as source}<option value={source.candidate_id}>{source.name}</option>{/each}</select></label><label>Display name <input bind:value={workspaceDraft.name} required /></label><details class="advanced"><summary>Advanced Git identity and Worker binding</summary><label>Source identity <select bind:value={workspaceDraft.source_kind} disabled={!!selectedWorkspace}><option value="local_git">Local Git</option><option value="git_remote">Git remote</option></select></label><label>Remote fingerprint <input bind:value={workspaceDraft.source_fingerprint} placeholder="Optional for local Git" /></label><fieldset><legend>Worker source binding</legend><label>Discovered authorized repository <select value={selectedWorkspaceSource} on:change={(event) => chooseWorkspaceSource(event.currentTarget.value)}><option value="">Choose a source</option>{#each product.workspaceSources.filter((source) => !selectedWorkspace || source.source_kind === selectedWorkspace.source_kind && source.source_fingerprint === selectedWorkspace.source_fingerprint) as source}<option value={source.candidate_id}>{source.name} · {source.source_kind} · {source.max_access}{source.shell_available ? " · shell" : ""}</option>{/each}</select></label><button type="button" disabled={!selectedWorkspace || !selectedWorkspaceSource} on:click={bindWorkspaceSource}>Bind selected source</button></fieldset><p class="hint">Discovery is mediated by the control plane; local paths never enter Product data.</p></details><ValidationSummary details={$errorStore?.details ?? []} /><footer><button>Save Project</button><button type="button" on:click={newWorkspace}>New</button>{#if selectedWorkspace}<button type="button" class="danger" on:click={archiveWorkspace}>Archive</button>{/if}</footer></form></div></aside>{/if}
+  {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
 
   {#if $selectedBuildingStore === "guild"}<aside class="panel game-window"><h2>Guild Hall — Classes</h2><div class="split"><ul>{#each product.classes as item}<li><button on:click={() => editClass(item)}>{item.name}</button></li>{/each}</ul><form on:submit|preventDefault={saveClass}><h3>{selectedClass ? "Edit" : "Create"} Class</h3><label>Key <input disabled={!!selectedClass} bind:value={classDraft.key} required /></label><label>Name <input bind:value={classDraft.name} required /></label><label>Description <textarea bind:value={classDraft.description}></textarea></label><label>Instructions <textarea bind:value={classDraft.instructions} required></textarea></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Class</button><button type="button" on:click={newClass}>New</button>{#if selectedClass}<button type="button" class="danger" on:click={archiveClass}>Archive</button>{/if}</form></div></aside>{/if}
 
@@ -663,11 +591,8 @@ function optionKey(option: {
   .window-close { position: absolute; z-index: 9; top: 4.55rem; right: 1.3rem; padding: .1rem .5rem; font-size: 1.2rem; }
   .game-window::before { content: ""; position: absolute; z-index: 1; top: 0; left: 0; width: 24px; height: 24px; pointer-events: none; image-rendering: pixelated; background: url("./assets/mini-medieval/ui-1.1/Frames.png") -8px -8px no-repeat; }
   .game-window > h2 { margin: -.85rem -.85rem .8rem; padding: .55rem 2.8rem .55rem .9rem; background: #24505f; border-bottom: 2px solid #aea47e; }
-  .game-window > header { display: flex; align-items: center; gap: .5rem; margin: -.85rem -.85rem .6rem; padding: .45rem .9rem; background: #24505f; border-bottom: 2px solid #aea47e; }
-  .game-window > header h2 { margin: 0; flex: 1; }
   h2, h3, h4 { color: #f3d783; text-shadow: 1px 2px #111; }
-  .subtitle, .hint, small { color: #a9c8b5; }
-  .advanced { margin: .5rem 0; padding: .45rem; border: 1px solid #806f4b; }
+  .hint, small { color: #a9c8b5; }
   .delivery { display: grid; gap: .4rem; margin: .6rem 0; padding: .6rem; border-left: 4px solid #d6c684; background: #101d22; }
   .quest-lifecycle { position: sticky; z-index: 3; top: -.85rem; display: flex; align-items: center; gap: .6rem; margin: -.1rem -.1rem .6rem; padding: .45rem .55rem; background: #120e23f2; border-left: 4px solid #c9c03d; }
   .quest-lifecycle strong { flex: 1; color: #c9c03d; }
@@ -675,10 +600,7 @@ function optionKey(option: {
   .split { display: grid; grid-template-columns: minmax(8rem, .7fr) minmax(16rem, 1.3fr); gap: .7rem; }
   ul { padding: 0; list-style: none; }
   li { margin: .35rem 0; }
-  .ledger button { display: grid; width: 100%; text-align: left; }
-  .ledger small { display: block; }
   form { display: grid; align-content: start; gap: .3rem; }
-  form footer { display: flex; gap: .4rem; flex-wrap: wrap; }
   fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .3rem; border-color: #806f4b; }
   fieldset button { min-width: 0; }
   .run-status { position: absolute; z-index: 4; left: .75rem; bottom: .75rem; width: min(19rem, calc(100vw - 1.5rem)); max-height: 42vh; overflow: auto; padding: .65rem; display: grid; gap: .35rem; }

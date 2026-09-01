@@ -14,6 +14,7 @@
     "screenshots:v014a": "bun run scripts/capture-v014a.ts",
     "screenshots:sunnyside-checkpoint-a": "bun run scripts/capture-sunnyside-checkpoint-a.ts",
     "screenshots:pipeline-checkpoint": "bun run scripts/capture-pipeline-checkpoint.ts",
+    "screenshots:projects-ux": "bun run scripts/capture-projects-ux.ts",
     "validate:town": "bun run scripts/validate-town.ts",
     "import:sunnyside-assets": "bun run scripts/import-sunnyside-assets.ts",
     "export:sunnyside-human-v1": "bun run scripts/export-sunnyside-human-v1.ts",

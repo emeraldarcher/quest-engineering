@@ -465,6 +465,16 @@ function decodeWorkspace(value: unknown): Workspace {
           "Project binding",
         ) as Workspace["binding"]["state"],
         message: asString(binding.message, "Project binding"),
+        ...(binding.issue
+          ? {
+              issue: {
+                code: asString(
+                  asRecord(binding.issue, "Project issue").code,
+                  "Project issue",
+                ),
+              },
+            }
+          : {}),
       };
     })(),
     archived_at: nullableString(x.archived_at, "workspace"),
@@ -481,6 +491,10 @@ function decodeWorkspaceSource(value: unknown): WorkspaceSource {
     source_kind: sourceKind,
     source_fingerprint: nullableString(
       x.source_fingerprint,
+      "Workspace source",
+    ),
+    publication_repository_identity: nullableString(
+      x.publication_repository_identity,
       "Workspace source",
     ),
     max_access: access(x.max_access),

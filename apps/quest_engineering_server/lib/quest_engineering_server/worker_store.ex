@@ -7,6 +7,7 @@ defmodule QuestEngineering.Server.WorkerStore do
   alias Ecto.Changeset
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
+  alias QuestEngineering.Server.ProductChangeNotifier
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.WorkerError
 
@@ -40,6 +41,7 @@ defmodule QuestEngineering.Server.WorkerStore do
       sync_workspace_bindings!(registered, capabilities["workspace_bindings"] || [])
       registered
     end)
+    |> notify_availability_transition()
   end
 
   def heartbeat(worker_id, generation) do
@@ -67,6 +69,7 @@ defmodule QuestEngineering.Server.WorkerStore do
           Repo.update!(Changeset.change(worker, status: "disconnected", disconnected_at: now()))
       end
     end)
+    |> notify_availability_transition()
   end
 
   def fetch(worker_id) do
@@ -166,6 +169,13 @@ defmodule QuestEngineering.Server.WorkerStore do
       details: %{errors: Changeset.traverse_errors(changeset, &elem(&1, 0))}
     }
   end
+
+  defp notify_availability_transition({:ok, %Worker{}} = result) do
+    ProductChangeNotifier.notify(["workspaces", "workspace_sources", "execution_options"])
+    result
+  end
+
+  defp notify_availability_transition(result), do: result
 
   defp transact(fun) do
     case Repo.transaction(fun) do

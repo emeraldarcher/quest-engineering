@@ -1,6 +1,6 @@
 defmodule QuestEngineering.Server.GitHubProvider do
   @moduledoc "GitHub Pull Request provider boundary."
-  @callback preflight(map()) :: {:ok, map()} | {:error, map()}
+  @callback preflight(map()) :: :ok | {:error, map()}
   @callback find_by_head(map()) :: {:ok, nil | map()} | {:error, map()}
   @callback create(map(), String.t(), String.t()) :: {:ok, map()} | {:error, map()}
   @callback inspect(map()) :: {:ok, map()} | {:error, map()}

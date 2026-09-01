@@ -109,53 +109,66 @@ defmodule QuestEngineering.Server.WorkspaceControl do
 
   def record_candidates(worker_id, candidates) do
     now = now()
+    previous = candidate_signature(worker_id)
 
-    Repo.transaction(fn ->
-      ids = Enum.map(candidates, & &1.candidate_id)
+    result =
+      Repo.transaction(fn ->
+        ids = Enum.map(candidates, & &1.candidate_id)
 
-      Repo.update_all(
-        from(candidate in WorkerWorkspaceCandidate,
-          where: candidate.worker_id == ^worker_id and candidate.candidate_id not in ^ids
-        ),
-        set: [status: "unavailable", updated_at: now]
-      )
-
-      Enum.each(candidates, fn candidate ->
-        attributes = %{
-          candidate_id: candidate.candidate_id,
-          worker_id: worker_id,
-          name: candidate.name,
-          source_kind: candidate.source_kind,
-          source_fingerprint: candidate.source_fingerprint,
-          publication_remote_name: candidate.publication_remote_name,
-          publication_repository_identity: candidate.publication_repository_identity,
-          max_access: candidate.max_access,
-          allow_unconfined_shell: candidate.allow_unconfined_shell,
-          status: "available",
-          last_seen_at: now,
-          inserted_at: now,
-          updated_at: now
-        }
-
-        Repo.insert_all(WorkerWorkspaceCandidate, [attributes],
-          on_conflict:
-            {:replace,
-             [
-               :name,
-               :source_kind,
-               :source_fingerprint,
-               :publication_remote_name,
-               :publication_repository_identity,
-               :max_access,
-               :allow_unconfined_shell,
-               :status,
-               :last_seen_at,
-               :updated_at
-             ]},
-          conflict_target: [:candidate_id]
+        Repo.update_all(
+          from(candidate in WorkerWorkspaceCandidate,
+            where: candidate.worker_id == ^worker_id and candidate.candidate_id not in ^ids
+          ),
+          set: [status: "unavailable", updated_at: now]
         )
+
+        Enum.each(candidates, fn candidate ->
+          attributes = %{
+            candidate_id: candidate.candidate_id,
+            worker_id: worker_id,
+            name: candidate.name,
+            source_kind: candidate.source_kind,
+            source_fingerprint: candidate.source_fingerprint,
+            publication_remote_name: candidate.publication_remote_name,
+            publication_repository_identity: candidate.publication_repository_identity,
+            max_access: candidate.max_access,
+            allow_unconfined_shell: candidate.allow_unconfined_shell,
+            status: "available",
+            last_seen_at: now,
+            inserted_at: now,
+            updated_at: now
+          }
+
+          Repo.insert_all(WorkerWorkspaceCandidate, [attributes],
+            on_conflict:
+              {:replace,
+               [
+                 :name,
+                 :source_kind,
+                 :source_fingerprint,
+                 :publication_remote_name,
+                 :publication_repository_identity,
+                 :max_access,
+                 :allow_unconfined_shell,
+                 :status,
+                 :last_seen_at,
+                 :updated_at
+               ]},
+            conflict_target: [:candidate_id]
+          )
+        end)
+
+        candidate_signature(worker_id) != previous
       end)
-    end)
+
+    case result do
+      {:ok, true} ->
+        ProductChangeNotifier.notify(["workspace_sources"])
+        result
+
+      _ ->
+        result
+    end
   end
 
   def record_binding(worker_id, generation, binding) do
@@ -210,20 +223,69 @@ defmodule QuestEngineering.Server.WorkspaceControl do
   end
 
   def binding_state(workspace_id) do
-    Repo.one(
-      from attempt in WorkspaceBindingAttempt,
-        where: attempt.workspace_id == ^workspace_id,
-        order_by: [desc: attempt.inserted_at],
-        limit: 1
-    ) ||
-      case Repo.one(
-             from binding in WorkerWorkspaceBinding,
-               where: binding.workspace_id == ^workspace_id and binding.status == "available",
-               limit: 1
-           ) do
-        nil -> nil
-        _ -> %{state: "available"}
-      end
+    ready? =
+      Repo.exists?(
+        from binding in WorkerWorkspaceBinding,
+          join: worker in Worker,
+          on: worker.id == binding.worker_id,
+          where:
+            binding.workspace_id == ^workspace_id and binding.status == "available" and
+              worker.status == "connected" and
+              binding.last_seen_generation == worker.connection_generation
+      )
+
+    durable_binding? =
+      Repo.exists?(
+        from binding in WorkerWorkspaceBinding,
+          where: binding.workspace_id == ^workspace_id
+      )
+
+    latest_attempt =
+      Repo.one(
+        from attempt in WorkspaceBindingAttempt,
+          where: attempt.workspace_id == ^workspace_id,
+          order_by: [desc: attempt.inserted_at],
+          limit: 1
+      )
+
+    cond do
+      ready? ->
+        %{state: "available"}
+
+      match?(%{state: "pending"}, latest_attempt) ->
+        latest_attempt
+
+      durable_binding? ->
+        %{state: "offline"}
+
+      match?(%{state: state} when state in ["attention_required", "offline"], latest_attempt) ->
+        %{
+          state: "attention_required",
+          failure_code: latest_attempt.failure_code,
+          failure_details: latest_attempt.failure_details
+        }
+
+      true ->
+        nil
+    end
+  end
+
+  defp candidate_signature(worker_id) do
+    Repo.all(
+      from candidate in WorkerWorkspaceCandidate,
+        where: candidate.worker_id == ^worker_id and candidate.status == "available",
+        order_by: [asc: candidate.candidate_id],
+        select: {
+          candidate.candidate_id,
+          candidate.name,
+          candidate.source_kind,
+          candidate.source_fingerprint,
+          candidate.publication_remote_name,
+          candidate.publication_repository_identity,
+          candidate.max_access,
+          candidate.allow_unconfined_shell
+        }
+    )
   end
 
   defp safe_failure(value) when is_map(value),

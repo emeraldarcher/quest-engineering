@@ -27,12 +27,19 @@ defmodule QuestEngineering.Server.ProductApi.View do
     }
   end
 
-  defp binding_projection(nil), do: %{state: "unbound", message: "Add this Project to a Worker."}
+  defp binding_projection(nil),
+    do: %{state: "unbound", message: "This Project is not connected to a repository."}
 
   defp binding_projection(%{state: "pending"}),
     do: %{state: "preparing", message: "Preparing Project…"}
 
   defp binding_projection(%{state: "available"}), do: %{state: "ready", message: "Project ready."}
+
+  defp binding_projection(%{state: "offline"}),
+    do: %{
+      state: "offline",
+      message: "This Project is configured, but its repository is currently offline."
+    }
 
   defp binding_projection(%{state: state, failure_code: code}),
     do: %{

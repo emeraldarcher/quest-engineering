@@ -7,6 +7,59 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
+test("decodes safe repository identity and Project diagnostics", async () => {
+  globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.endsWith("/workspace-sources"))
+      return new Response(
+        JSON.stringify({
+          workspace_sources: [
+            {
+              candidate_id: "candidate-1",
+              name: "quest-engineering",
+              source_kind: "git_remote",
+              source_fingerprint:
+                "https://github.com/emeraldarcher/quest-engineering",
+              publication_repository_identity:
+                "emeraldarcher/quest-engineering",
+              max_access: "read_write",
+              shell_available: true,
+            },
+          ],
+        }),
+      );
+    return new Response(
+      JSON.stringify({
+        workspaces: [
+          {
+            id: "workspace-1",
+            key: "quest-engineering",
+            name: "Quest Engineering",
+            source_kind: "git_remote",
+            source_fingerprint:
+              "https://github.com/emeraldarcher/quest-engineering",
+            binding: {
+              state: "attention_required",
+              message: "Project setup requires attention.",
+              issue: { code: "workspace_binding_failed" },
+            },
+            archived_at: null,
+          },
+        ],
+      }),
+    );
+  }) as unknown as typeof fetch;
+  const api = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+
+  const [workspace] = await api.listWorkspaces();
+  const [source] = await api.listWorkspaceSources();
+
+  expect(workspace?.binding.issue?.code).toBe("workspace_binding_failed");
+  expect(source?.publication_repository_identity).toBe(
+    "emeraldarcher/quest-engineering",
+  );
+});
+
 test("maps Product validation envelope into a typed client error", async () => {
   globalThis.fetch = mock(
     async () =>

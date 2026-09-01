@@ -153,6 +153,19 @@ export function createAppStore(
     await loadProduct();
   }
 
+  async function refreshWorkspaceSources() {
+    if (fixture) return get(product).workspaceSources;
+    error.set(null);
+    try {
+      const workspaceSources = await api.listWorkspaceSources();
+      product.update((value) => ({ ...value, workspaceSources }));
+      return workspaceSources;
+    } catch (cause) {
+      reportError(cause);
+      return [];
+    }
+  }
+
   async function selectRun(runId: string) {
     if (fixture) {
       selectedRun.set(fixture.runs[runId] ?? null);
@@ -262,6 +275,7 @@ export function createAppStore(
     bootstrapRunning,
     loadProduct,
     refreshProduct,
+    refreshWorkspaceSources,
     command,
     reportError,
     retryPublishing,

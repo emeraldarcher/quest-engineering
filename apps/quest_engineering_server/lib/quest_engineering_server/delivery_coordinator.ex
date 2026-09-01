@@ -2,6 +2,8 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
   @moduledoc "Durable post-Run Delivery wakeup and central GitHub reconciliation loop."
   use GenServer
 
+  require Logger
+
   import Ecto.Query
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Persistence.ProductQuest
@@ -108,21 +110,18 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
   end
 
   defp process_delivery(%{state: "publishing"} = delivery, provider) do
-    with {:ok, _} <- provider.preflight(delivery),
-         {:ok, assignment, worker} <- eligible(delivery),
-         message =
-           WorkerProtocol.publish_run_delivery(worker.id, delivery, assignment)
-           |> put_in(["delivery", "quest_title"], title(delivery)),
-         :ok <- send_message(worker, message) do
-      :ok
-    else
-      {:error, %{code: code, details: details}} ->
-        DeliveryStore.mark_attention(delivery.run_id, "provider_preflight", code, details)
-        :ok
+    result =
+      run_after_preflight(provider, delivery, fn ->
+        with {:ok, assignment, worker} <- eligible(delivery) do
+          message =
+            WorkerProtocol.publish_run_delivery(worker.id, delivery, assignment)
+            |> put_in(["delivery", "quest_title"], title(delivery))
 
-      _ ->
-        :ok
-    end
+          send_message(worker, message)
+        end
+      end)
+
+    handle_publish_result(delivery, result)
   end
 
   defp process_delivery(%{state: "creating_review"} = delivery, provider) do
@@ -156,6 +155,74 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
   end
 
   defp process_delivery(_delivery, _provider), do: :ok
+
+  @doc false
+  def run_after_preflight(provider, delivery, continuation) when is_function(continuation, 0) do
+    case provider.preflight(delivery) do
+      :ok ->
+        continuation.()
+
+      {:error, %{code: code, details: details}} = error
+      when is_binary(code) and is_map(details) ->
+        error
+
+      result ->
+        {:error,
+         %{
+           code: "github_provider_contract_invalid",
+           details: %{received: result_shape(result)}
+         }}
+    end
+  end
+
+  defp handle_publish_result(_delivery, :ok), do: :ok
+
+  defp handle_publish_result(delivery, {:error, %{code: code, details: details}}) do
+    if code == "github_provider_contract_invalid" do
+      Logger.error("GitHub provider violated the preflight contract for Delivery #{delivery.id}")
+    end
+
+    DeliveryStore.mark_attention(delivery.run_id, "provider_preflight", code, details)
+    :ok
+  end
+
+  defp handle_publish_result(delivery, {:error, :worker_upgrade_required}) do
+    DeliveryStore.mark_attention(delivery.run_id, "eligibility", "worker_upgrade_required")
+    :ok
+  end
+
+  defp handle_publish_result(_delivery, {:error, reason})
+       when reason in [
+              :workspace_not_retained,
+              :worker_offline,
+              :execution_not_settled,
+              :not_connected
+            ],
+       do: :ok
+
+  defp handle_publish_result(_delivery, {:error, {:stale_connection_generation, _generation}}),
+    do: :ok
+
+  defp handle_publish_result(delivery, result) do
+    Logger.error(
+      "Unexpected publishing result for Delivery #{delivery.id}: #{result_shape(result)}"
+    )
+
+    DeliveryStore.mark_attention(
+      delivery.run_id,
+      "publishing",
+      "delivery_coordinator_result_invalid",
+      %{received: result_shape(result)}
+    )
+
+    :ok
+  end
+
+  defp result_shape(value) when is_atom(value), do: Atom.to_string(value)
+  defp result_shape({tag, _value}) when is_atom(tag), do: "{#{tag}, _}"
+  defp result_shape(value) when is_map(value), do: "map"
+  defp result_shape(value) when is_list(value), do: "list"
+  defp result_shape(_value), do: "other"
 
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp eligible(delivery) do

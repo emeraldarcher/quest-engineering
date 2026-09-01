@@ -27,6 +27,10 @@ export const fixtureNames = [
   "recent-runs",
   "member-inspector",
   "cleanup-available",
+  "projects",
+  "projects-empty",
+  "projects-preparing",
+  "projects-attention",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -67,10 +71,34 @@ const workspace: Workspace = {
   id: "workspace-quest-engineering",
   key: "quest-engineering",
   name: "Quest Engineering",
-  source_kind: "local_git",
-  source_fingerprint: null,
+  source_kind: "git_remote",
+  source_fingerprint: "https://github.com/emeraldarcher/quest-engineering",
   binding: { state: "ready", message: "Project ready." },
   archived_at: null,
+};
+const offlineWorkspace: Workspace = {
+  ...workspace,
+  id: "workspace-qtest",
+  key: "qtest",
+  name: "qtest",
+  source_fingerprint: "https://github.com/emeraldarcher/qtest",
+  binding: { state: "offline", message: "Project repository offline." },
+};
+const attentionWorkspace: Workspace = {
+  ...workspace,
+  id: "workspace-attention",
+  key: "garden-tools",
+  name: "Garden Tools",
+  source_fingerprint: "https://github.com/emeraldarcher/garden-tools",
+  binding: {
+    state: "attention_required",
+    message: "Project setup requires attention.",
+    issue: { code: "workspace_binding_failed" },
+  },
+};
+const preparingWorkspace: Workspace = {
+  ...workspace,
+  binding: { state: "preparing", message: "Preparing Project…" },
 };
 const tactic: Tactic = {
   id: "tactic-standard",
@@ -397,15 +425,44 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
       squads: [squad],
       tactics: [tactic],
       quests: name === "density" ? [quest, reviewQuest] : [quest],
-      workspaces: [workspace],
+      workspaces:
+        name === "projects-empty"
+          ? []
+          : name === "projects-preparing"
+            ? [preparingWorkspace]
+            : name === "projects-attention"
+              ? [attentionWorkspace]
+              : name === "projects"
+                ? [workspace, offlineWorkspace, attentionWorkspace]
+                : [workspace],
       workspaceSources: [
         {
           candidate_id: "fixture-source",
-          name: "Quest Engineering",
-          source_kind: "local_git",
-          source_fingerprint: null,
+          name: "quest-engineering",
+          source_kind: "git_remote",
+          source_fingerprint:
+            "https://github.com/emeraldarcher/quest-engineering",
+          publication_repository_identity: "emeraldarcher/quest-engineering",
           max_access: "read_write",
           shell_available: true,
+        },
+        {
+          candidate_id: "fixture-qtest",
+          name: "qtest",
+          source_kind: "git_remote",
+          source_fingerprint: "https://github.com/emeraldarcher/qtest",
+          publication_repository_identity: "emeraldarcher/qtest",
+          max_access: "read_write",
+          shell_available: true,
+        },
+        {
+          candidate_id: "fixture-local",
+          name: "garden-notes",
+          source_kind: "local_git",
+          source_fingerprint: null,
+          publication_repository_identity: null,
+          max_access: "read_write",
+          shell_available: false,
         },
       ],
       executionOptions: [

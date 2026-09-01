@@ -136,6 +136,7 @@ export interface WorkspaceSource {
   name: string;
   source_kind: "git_remote" | "local_git";
   source_fingerprint: string | null;
+  publication_repository_identity: string | null;
   max_access: WorkspaceAccess;
   shell_available: boolean;
 }
