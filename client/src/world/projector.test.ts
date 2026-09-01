@@ -13,6 +13,7 @@ const base = (): RunProjection => ({
   status: "running",
   launched_at: "2026-01-01T00:00:00Z",
   revision: 1,
+  launch: { id: "launch-1" },
   quest: { id: "quest", title: "Quest", objective: "Work" },
   delivery: null,
   execution_environment: {
@@ -62,6 +63,7 @@ const step = (
   phase: null,
   remediation_cycle: null,
   control_path: [],
+  attempt: null,
   member: bound ? member("alice") : null,
   performer: {
     selector: "class",

@@ -2,6 +2,7 @@ import { derived, get, writable } from "svelte/store";
 import type { ApiClient } from "../api/client";
 import {
   ApiError,
+  type ArtifactDetail,
   type ClassDefinition,
   type ExecutionOption,
   type Loadout,
@@ -255,6 +256,14 @@ export function createAppStore(
     }
   }
 
+  async function loadArtifact(
+    runId: string,
+    artifactId: string,
+  ): Promise<ArtifactDetail | null> {
+    if (fixture) return fixture.artifactDetails?.[runId]?.[artifactId] ?? null;
+    return command(() => api.getArtifact(runId, artifactId));
+  }
+
   async function retryPublishing(runId: string) {
     const result = await command(() => api.retryDelivery(runId));
     if (result) await invalidateRun(runId);
@@ -300,6 +309,7 @@ export function createAppStore(
     refreshWorkspaceSources,
     command,
     reportError,
+    loadArtifact,
     retryPublishing,
     cleanupWorktree,
     selectRun,

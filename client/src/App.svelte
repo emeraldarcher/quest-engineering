@@ -1,16 +1,13 @@
 <script lang="ts">
 import { onDestroy, onMount, tick, type Component } from "svelte";
-import type {
-  ArtifactDetail,
-  JsonValue,
-  Quest,
-} from "./api/contracts";
+import type { Quest } from "./api/contracts";
 import TownCanvas from "./components/TownCanvas.svelte";
 import ValidationSummary from "./components/ValidationSummary.svelte";
 import ProjectsWindow from "./components/projects/ProjectsWindow.svelte";
 import GuildHallWindow from "./components/guild/GuildHallWindow.svelte";
 import ForgeWindow from "./components/forge/ForgeWindow.svelte";
 import TavernWindow from "./components/tavern/TavernWindow.svelte";
+import WorkYardWindow from "./components/work-yard/WorkYardWindow.svelte";
 import { openPullRequest } from "./platform/open-pull-request";
 import { createStarterCrew } from "./domain/starter-crew";
 import type { AppStore, BuildingId } from "./state/app-store";
@@ -43,7 +40,6 @@ let questDraft: {
 let selectedQuest: Quest | null = null;
 let preview: unknown = null;
 let selectedMemberKey: string | null = null;
-let artifact: ArtifactDetail | null = null;
 let starterOption = "";
 let starterWorkspace = "";
 let previousFocus: HTMLElement | null = null;
@@ -103,18 +99,6 @@ $: selectedOption =
   product.executionOptions.find(
     (option) => optionKey(option) === starterOption,
   ) ?? null;
-$: member =
-  run?.squad.members.find((item) => item.member_key === selectedMemberKey) ??
-  null;
-$: memberSteps =
-  run?.steps.filter((step) => step.member?.member_key === selectedMemberKey) ?? [];
-$: memberStep =
-  memberSteps.find((step) =>
-    ["scheduled", "running", "failed", "uncertain"].includes(step.state),
-  ) ?? memberSteps.at(-1) ?? null;
-$: memberIsActive =
-  memberStep !== null && ["scheduled", "running", "uncertain"].includes(memberStep.state);
-
 function handleUnhandledRejection(event: PromiseRejectionEvent) {
   event.preventDefault();
   store.reportError(event.reason);
@@ -153,7 +137,6 @@ function commitBuildingSelection(id: BuildingId) {
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   store.selectBuildingId(id);
   preview = null;
-  artifact = null;
   void tick().then(() => document.querySelector<HTMLElement>(".panel input:not([disabled]), .panel select, .panel button")?.focus());
 }
 function isWindowDirty() {
@@ -262,20 +245,6 @@ async function retrySelectedQuestPublishing() {
   const runId = selectedQuest?.lifecycle.current_run_id;
   if (runId) await store.retryPublishing(runId);
 }
-async function retryPublishing() {
-  if (run) await store.retryPublishing(run.id);
-}
-async function cleanupWorktree() {
-  if (!run) return;
-  const acknowledge = run.delivery?.state === "closed_unmerged";
-  if (acknowledge && !confirm("This Pull Request closed without merge. Remove only the clean local worktree?")) return;
-  await store.cleanupWorktree(run.id, acknowledge);
-}
-async function reviewOnGitHub() {
-  if (store.fixture) return;
-  const review = run?.delivery?.review;
-  if (review) await store.command(() => openPullRequest(review.url, review.number));
-}
 async function archiveQuest() {
   if (selectedQuest && confirm(`Archive ${selectedQuest.title}?`)) {
     await store.api.archiveQuest(selectedQuest.id);
@@ -303,16 +272,6 @@ async function bootstrap() {
     store.bootstrapRunning.set(false);
   }
 }
-async function openArtifact(id: string) {
-  if (run) artifact = await store.api.getArtifact(run.id, id);
-}
-function artifactPreview(value: JsonValue): string {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return JSON.stringify(value);
-  if (value.kind === "scalar") return JSON.stringify(value.value);
-  return typeof value.summary === "string" ? value.summary : "value";
-}
-
 function optionKey(option: {
   model: { provider: string; model: string };
   reasoning: string[];
@@ -345,9 +304,9 @@ function optionKey(option: {
     </section>
   {/if}
 
-  {#if run}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
+  {#if run && $selectedBuildingStore !== "work-area"}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
 
-  {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith", "tavern"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
+  {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith", "tavern", "work-area"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
   {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
 
@@ -359,7 +318,7 @@ function optionKey(option: {
 
   {#if $selectedBuildingStore === "quest-board"}<aside class="panel game-window"><h2>Quest Board</h2>{#if selectedQuest}<section class="quest-lifecycle"><strong>{selectedQuest.lifecycle.label}</strong>{#if selectedQuest.lifecycle.primary_action === "open_pull_request"}<button type="button" class="launch" on:click={openSelectedQuestReview}>Open Pull Request</button>{:else if selectedQuest.lifecycle.primary_action === "retry_publishing"}<button type="button" on:click={retrySelectedQuestPublishing}>Retry Publishing</button>{/if}</section>{/if}<div class="split"><ul>{#each product.quests as item}<li><button on:click={() => item.tactic_source.type === "definition" ? editQuest(item) : selectedQuest = item}>{item.title}</button>{#if item.tactic_source.type === "inline"}<small> inline tactic — read only</small>{/if}</li>{/each}</ul><form on:submit|preventDefault={saveQuest}><h3>{selectedQuest ? "Edit" : "Create"} Quest</h3>{#if selectedQuest?.tactic_source.type === "inline"}<p>This Quest uses an inline Tactic and remains read-only.</p>{:else}<label>Title <input bind:value={questDraft.title} required /></label><label>Objective <textarea bind:value={questDraft.objective} required></textarea></label><label>Project <select bind:value={questDraft.workspace_id}>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label><label>Squad <select bind:value={questDraft.squad_id}>{#each product.squads as squad}<option value={squad.id}>{squad.name}</option>{/each}</select></label><label>Tactic <select bind:value={questDraft.tactic_definition_id}>{#each product.tactics as tactic}<option value={tactic.id}>{tactic.name} — {tactic.description}</option>{/each}</select></label><ValidationSummary details={$errorStore?.details ?? []} /><button>Save Quest</button>{#if selectedQuest}<button type="button" on:click={previewQuest}>Preview</button>{#if selectedQuest.lifecycle.primary_action === "launch"}<button type="button" class="launch" on:click={launchQuest}>Launch Quest</button>{:else if selectedQuest.lifecycle.primary_action === "run_again"}<button type="button" class="launch" on:click={launchQuest}>Run Again</button>{/if}<button type="button" class="danger" on:click={archiveQuest}>Archive</button>{/if}<button type="button" on:click={newQuest}>New</button>{/if}</form></div>{#if preview}<pre>{JSON.stringify(preview, null, 2)}</pre>{/if}<h3>Reusable Tactics</h3>{#each product.tactics as tactic}<article><strong>{tactic.name}</strong><p>{tactic.description}</p></article>{/each}</aside>{/if}
 
-  {#if $selectedBuildingStore === "work-area"}<aside class="panel game-window"><h2>Work Yard — Selected Run</h2><label>Recent runs <select on:change={(event) => store.selectRun(event.currentTarget.value)} value={run?.id ?? ""}><option value="">Choose a run</option>{#each product.runs as summary}<option value={summary.id}>{summary.quest_title} — {summary.status}</option>{/each}</select></label>{#if run}<h3>{run.quest.title} <span class="pill">{run.status}</span></h3><section class="environment"><strong>{run.execution_environment.workspace.name}</strong><span>{run.execution_environment.message}</span>{#if run.execution_environment.branch}<code>{run.execution_environment.branch}</code>{/if}{#if run.execution_environment.source_dirty_changes_excluded}<small>Dirty source changes were excluded from the Run base.</small>{/if}{#if run.execution_environment.state === "retained"}<small>Changes remain in the isolated retained Run worktree; the source checkout was not modified.</small>{/if}</section>{#if run.delivery}<section class="delivery"><h3>Delivery · {run.delivery.state.replaceAll("_", " ")}</h3>{#if run.delivery.changes}<span>{run.delivery.changes.files_changed} files · +{run.delivery.changes.additions} / -{run.delivery.changes.deletions}</span>{/if}{#if run.delivery.review?.state === "open"}<button class="launch" on:click={reviewOnGitHub}>Open Pull Request</button>{/if}{#if run.delivery.can_retry}<button on:click={retryPublishing}>Retry Publishing</button>{/if}{#if run.delivery.issue}<p class="error">{run.delivery.issue.code}: {run.delivery.issue.message}</p>{/if}</section>{/if}{#if run.execution_environment.state === "retained" && ["awaiting_review", "merged", "closed_unmerged", "no_changes"].includes(run.delivery?.state ?? "")}<button on:click={cleanupWorktree}>Clean Up Worktree</button>{/if}{#if world?.orderMarkers.length}<p>Orders: {world.orderMarkers.map((item) => `${item.name} (${item.state})`).join(", ")}</p>{/if}{#if world?.diagnostics.length}<p class="error">{world.diagnostics.join(" ")}</p>{/if}<h3>Member inspector</h3>{#if member}<p><strong>{member.name}</strong> · {member.class.name} · {member.loadout.name}</p>{#if memberStep}<p>{memberIsActive ? "Active assignment" : "Last assignment"}: <strong>{memberStep.name}</strong> — {memberStep.state}</p><p>{memberStep.instruction}</p><small>Occurrence ID: {memberStep.occurrence_id}</small>{#if memberStep.inputs.length || memberStep.outputs.length}<h4>Assignment artifacts</h4>{#each [...memberStep.inputs, ...memberStep.outputs] as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{:else}<p>No assignment history for this Member.</p>{/if}{/if}<h3>Run artifacts</h3>{#if run.artifacts.length}{#each run.artifacts as item}<button on:click={() => openArtifact(item.id)}>{item.type} — {artifactPreview(item.preview)}</button>{/each}{:else}<p>No artifacts were produced.</p>{/if}{#if artifact}<h4>{artifact.type}</h4><pre>{JSON.stringify(artifact.value, null, 2)}</pre>{/if}<h3>Occurrence history</h3>{#each run.steps as step}<details><summary>{step.name ?? step.semantic_step_key} — {step.state}</summary><p>{step.instruction}</p>{#if step.member}<p>Member: {step.member.name}</p>{/if}<small>{step.occurrence_id}</small>{#if step.inputs.length}<h4>Inputs</h4>{#each step.inputs as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{#if step.outputs.length}<h4>Outputs</h4>{#each step.outputs as ref}<button on:click={() => openArtifact(ref.artifact_id)}>{ref.type}</button>{/each}{/if}{#if step.issue}<p class="error">{step.issue.code}: {step.issue.message}</p>{/if}</details>{/each}{/if}</aside>{/if}
+  {#if $selectedBuildingStore === "work-area"}<WorkYardWindow {store} {product} initialMemberKey={selectedMemberKey} onMember={(key) => (selectedMemberKey = key)} scene={store.fixture ? new URLSearchParams(location.search).get("work-yard") : null} onClose={requestCloseWindow} />{/if}
   {#if FixtureChooserComponent}<FixtureChooserComponent />{/if}
 </main>
 
@@ -396,9 +355,8 @@ function optionKey(option: {
   .window-close { position: absolute; z-index: 9; top: 4.55rem; right: 1.3rem; padding: .1rem .5rem; font-size: 1.2rem; }
   .game-window::before { content: ""; position: absolute; z-index: 1; top: 0; left: 0; width: 24px; height: 24px; pointer-events: none; image-rendering: pixelated; background: url("./assets/mini-medieval/ui-1.1/Frames.png") -8px -8px no-repeat; }
   .game-window > h2 { margin: -.85rem -.85rem .8rem; padding: .55rem 2.8rem .55rem .9rem; background: #24505f; border-bottom: 2px solid #aea47e; }
-  h2, h3, h4 { color: #f3d783; text-shadow: 1px 2px #111; }
+  h2, h3 { color: #f3d783; text-shadow: 1px 2px #111; }
   .hint, small { color: #a9c8b5; }
-  .delivery { display: grid; gap: .4rem; margin: .6rem 0; padding: .6rem; border-left: 4px solid #d6c684; background: #101d22; }
   .quest-lifecycle { position: sticky; z-index: 3; top: -.85rem; display: flex; align-items: center; gap: .6rem; margin: -.1rem -.1rem .6rem; padding: .45rem .55rem; background: #120e23f2; border-left: 4px solid #c9c03d; }
   .quest-lifecycle strong { flex: 1; color: #c9c03d; }
   .quest-lifecycle button { padding-block: .3rem; }
@@ -412,7 +370,6 @@ function optionKey(option: {
   .pill { color: #13242a; background: #d6c684; padding: .12rem .38rem; border: 1px solid #fff0ad; }
   .danger { border-color: #c46a62; color: #ffc0a9; }
   .launch { background: #4f7447; }
-  .environment { display: grid; gap: .3rem; padding: .6rem; background: #101d22; border-left: 4px solid #80a46e; }
   code { color: #b6d6ca; overflow-wrap: anywhere; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #0a151a; border: 1px solid #695d43; padding: .7rem; }
   article { border-left: 3px solid #d9c28f; padding-left: .5rem; }

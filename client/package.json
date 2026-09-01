@@ -18,6 +18,7 @@
     "screenshots:guild-hall-ux": "bun run scripts/capture-guild-hall-ux.ts",
     "screenshots:forge-ux": "bun run scripts/capture-forge-ux.ts",
     "screenshots:tavern-ux": "bun run scripts/capture-tavern-ux.ts",
+    "screenshots:work-yard-ux": "bun run scripts/capture-work-yard-ux.ts",
     "validate:town": "bun run scripts/validate-town.ts",
     "import:sunnyside-assets": "bun run scripts/import-sunnyside-assets.ts",
     "export:sunnyside-human-v1": "bun run scripts/export-sunnyside-human-v1.ts",

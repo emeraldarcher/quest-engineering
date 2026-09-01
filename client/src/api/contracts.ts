@@ -181,6 +181,11 @@ export interface RunStep {
   phase: string | null;
   remediation_cycle: number | null;
   control_path: string[];
+  attempt: {
+    id: string;
+    number: number;
+    state: string;
+  } | null;
   member: SnapshotMember | null;
   performer: {
     selector: string | null;
@@ -231,6 +236,7 @@ export interface RunProjection {
   status: StepState | "completed" | "failed";
   launched_at: string;
   revision: number;
+  launch: { id: string };
   quest: { id: string; title: string; objective: string };
   execution_environment: {
     workspace: { id: string; key: string; name: string };

@@ -1,4 +1,6 @@
 import type {
+  ArtifactDetail,
+  ArtifactSummary,
   ClassDefinition,
   DeliveryProjection,
   Loadout,
@@ -38,6 +40,15 @@ export const fixtureNames = [
   "tavern",
   "tavern-archived",
   "tavern-empty",
+  "work-yard-overview",
+  "work-yard-running",
+  "work-yard-remediation",
+  "work-yard-artifacts",
+  "work-yard-awaiting-review",
+  "work-yard-merged",
+  "work-yard-cleanup",
+  "work-yard-history",
+  "work-yard-empty",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -46,6 +57,7 @@ export interface ClientFixture {
   product: ProductState;
   runs: Record<string, RunProjection>;
   selectedRunId: string | null;
+  artifactDetails?: Record<string, Record<string, ArtifactDetail>>;
 }
 
 const classDefinition: ClassDefinition = {
@@ -284,6 +296,15 @@ function step(
     phase: null,
     remediation_cycle: null,
     control_path: [],
+    attempt: [
+      "scheduled",
+      "running",
+      "completed",
+      "failed",
+      "uncertain",
+    ].includes(state)
+      ? { id: `attempt-${index + 1}`, number: 1, state }
+      : null,
     member,
     performer: {
       selector: "class",
@@ -349,6 +370,7 @@ function run(
     status: terminal ? "completed" : "running",
     launched_at: "2026-08-30T12:00:00Z",
     revision: 7,
+    launch: { id: `launch-${id}` },
     quest: {
       id: "quest-density",
       title: "Living Town Overhaul",
@@ -420,8 +442,381 @@ function lifecycle(name: FixtureName): Quest["lifecycle"] {
   };
 }
 
+const workYardRowan: SnapshotMember = {
+  member_key: "rowan",
+  name: "Rowan",
+  class: { id: classDefinition.id, key: classDefinition.key, name: "Builder" },
+  loadout: { id: loadout.id, key: loadout.key, name: "Coding" },
+};
+const workYardMira: SnapshotMember = {
+  member_key: "mira",
+  name: "Mira",
+  class: { id: reviewerClass.id, key: reviewerClass.key, name: "Reviewer" },
+  loadout: { id: reviewLoadout.id, key: reviewLoadout.key, name: "Review" },
+};
+const workYardMembers = [workYardRowan, workYardMira];
+
+function workYardStep(
+  id: string,
+  semanticKey: string,
+  name: string,
+  state: RunStep["state"],
+  member: SnapshotMember,
+  outputs: Array<{ type: string; artifact_id: string }> = [],
+  remediationCycle: number | null = null,
+): RunStep {
+  return {
+    occurrence_id: id,
+    semantic_step_key: semanticKey,
+    name,
+    instruction: `${name} the requested Product change and report factual results.`,
+    state,
+    phase:
+      remediationCycle === null
+        ? null
+        : name === "Repair"
+          ? "otherwise"
+          : "check",
+    remediation_cycle: remediationCycle,
+    control_path: [],
+    attempt: ["pending", "waiting"].includes(state)
+      ? null
+      : {
+          id: `attempt-${id}`,
+          number: state === "running" ? 2 : 1,
+          state,
+        },
+    member,
+    performer: {
+      selector: "class",
+      class_key: member.class.key,
+      source_occurrence_id: null,
+      source_semantic_step_key: null,
+    },
+    context: {
+      mode: semanticKey === "implement" ? "fresh" : "continue_from",
+      source_occurrence_id:
+        semanticKey === "implement" ? null : "occ-implement",
+      source_semantic_step_key:
+        semanticKey === "implement" ? null : "implement",
+    },
+    inputs: [],
+    outputs,
+    issue:
+      state === "failed"
+        ? {
+            code: "execution_failed",
+            message: "Execution reported a terminal failure.",
+          }
+        : state === "uncertain"
+          ? {
+              code: "execution_uncertain",
+              message: "Execution state is being reconciled.",
+            }
+          : null,
+  };
+}
+
+function workYardArtifacts(): {
+  summaries: ArtifactSummary[];
+  details: Record<string, ArtifactDetail>;
+} {
+  const values: Array<ArtifactDetail> = [
+    {
+      id: "artifact-verdict",
+      type: "verdict",
+      producer_occurrence_id: "occ-review",
+      preview: { kind: "scalar", value: "approved" },
+      value: "approved",
+    },
+    {
+      id: "artifact-change-set",
+      type: "change_set",
+      producer_occurrence_id: "occ-implement",
+      preview: { kind: "json_summary", summary: "object" },
+      value: {
+        created: ["hello_world.md"],
+        updated: ["README.md"],
+        summary: "Added the documented greeting and verification notes.",
+      },
+    },
+    {
+      id: "artifact-custom",
+      type: "custom_metrics",
+      producer_occurrence_id: "occ-review",
+      preview: { kind: "json_summary", summary: "object" },
+      value: {
+        confidence: 0.94,
+        checks: [
+          { name: "contract", passed: true },
+          { name: "accessibility", passed: true },
+        ],
+        metadata: { source: "custom-review-adapter", schema: 3 },
+      },
+    },
+  ];
+  return {
+    summaries: values.map(({ value: _value, ...summary }) => summary),
+    details: Object.fromEntries(values.map((value) => [value.id, value])),
+  };
+}
+
+function workYardDelivery(
+  state: DeliveryProjection["state"],
+): DeliveryProjection {
+  const base = delivery(state);
+  if (state === "attention_required")
+    return {
+      ...base,
+      issue: {
+        code: "base_branch_unresolved",
+        message: "The Run base branch is unavailable.",
+      },
+      can_retry: true,
+    };
+  return base;
+}
+
+function createWorkYardFixture(name: FixtureName): ClientFixture {
+  const artifacts = workYardArtifacts();
+  const isRemediation = name === "work-yard-remediation";
+  const isRunning = name === "work-yard-running";
+  const deliveryState: DeliveryProjection["state"] | null =
+    name === "work-yard-awaiting-review" || name === "work-yard-cleanup"
+      ? "awaiting_review"
+      : name === "work-yard-merged"
+        ? "merged"
+        : isRunning
+          ? null
+          : "attention_required";
+  const steps = isRemediation
+    ? [
+        workYardStep(
+          "occ-implement",
+          "implement",
+          "Implement",
+          "completed",
+          workYardRowan,
+          [{ type: "change_set", artifact_id: "artifact-change-set" }],
+        ),
+        workYardStep(
+          "occ-review-first",
+          "review",
+          "Review",
+          "completed",
+          workYardMira,
+          [{ type: "verdict", artifact_id: "artifact-changes-requested" }],
+          0,
+        ),
+        workYardStep(
+          "occ-repair",
+          "repair",
+          "Repair",
+          "completed",
+          workYardRowan,
+          [],
+          1,
+        ),
+        workYardStep(
+          "occ-review",
+          "review",
+          "Review",
+          "completed",
+          workYardMira,
+          [{ type: "verdict", artifact_id: "artifact-verdict" }],
+          1,
+        ),
+      ]
+    : [
+        workYardStep(
+          "occ-implement",
+          "implement",
+          "Implement",
+          "completed",
+          workYardRowan,
+          [{ type: "change_set", artifact_id: "artifact-change-set" }],
+        ),
+        workYardStep(
+          "occ-review",
+          "review",
+          "Review",
+          isRunning ? "running" : "completed",
+          workYardMira,
+          isRunning
+            ? []
+            : [{ type: "verdict", artifact_id: "artifact-verdict" }],
+        ),
+      ];
+  const runArtifacts = isRunning
+    ? artifacts.summaries.slice(1, 2)
+    : artifacts.summaries;
+  if (isRemediation)
+    runArtifacts.push({
+      id: "artifact-changes-requested",
+      type: "verdict",
+      producer_occurrence_id: "occ-review-first",
+      preview: { kind: "scalar", value: "changes_requested" },
+    });
+  const runValue: RunProjection = {
+    id: "run-mini-test",
+    status: isRunning ? "running" : "completed",
+    launched_at: "2026-09-01T14:20:00Z",
+    revision: 12,
+    launch: { id: "launch-mini-test" },
+    quest: {
+      id: "quest-mini-test",
+      title: "Mini Test Run",
+      objective: "Add a small documented greeting and verify the result.",
+    },
+    execution_environment: {
+      workspace: {
+        id: "workspace-qe-test",
+        key: "qe-test-space",
+        name: "QE Test Space",
+      },
+      state: isRunning ? "ready" : "retained",
+      message: isRunning
+        ? "Run workspace ready."
+        : "Terminal Run workspace retained.",
+      base_revision: "a1b2c3d4e5f6789012345678901234567890abcd",
+      branch: "qe/run/mini-test-run",
+      source_dirty_changes_excluded: false,
+      issue: null,
+    },
+    delivery: deliveryState ? workYardDelivery(deliveryState) : null,
+    squad: {
+      id: engineeringPair.id,
+      key: engineeringPair.key,
+      name: "Engineering Pair",
+      members: workYardMembers,
+    },
+    steps,
+    artifacts: runArtifacts,
+    step_counts: counts(steps),
+    issues: [],
+  };
+  const questValue: Quest = {
+    id: runValue.quest.id,
+    title: runValue.quest.title,
+    objective: runValue.quest.objective,
+    workspace_id: runValue.execution_environment.workspace.id,
+    squad_id: runValue.squad.id,
+    tactic_source: { type: "definition", tactic_definition_id: tactic.id },
+    completion: {
+      completed_at: deliveryState === "merged" ? "2026-09-01T15:00:00Z" : null,
+      completed_by_run_id: deliveryState === "merged" ? runValue.id : null,
+    },
+    lifecycle:
+      deliveryState === "merged"
+        ? {
+            state: "complete",
+            label: "Complete",
+            current_run_id: runValue.id,
+            primary_action: null,
+            delivery: workYardDelivery("merged"),
+          }
+        : deliveryState === "attention_required"
+          ? {
+              state: "needs_attention",
+              label: "Needs Attention",
+              current_run_id: runValue.id,
+              primary_action: "retry_publishing",
+              delivery: workYardDelivery("attention_required"),
+            }
+          : deliveryState === "awaiting_review"
+            ? {
+                state: "awaiting_review",
+                label: "Awaiting Review",
+                current_run_id: runValue.id,
+                primary_action: "open_pull_request",
+                delivery: workYardDelivery("awaiting_review"),
+              }
+            : {
+                state: "working",
+                label: "Working",
+                current_run_id: runValue.id,
+                primary_action: null,
+              },
+    archived_at: null,
+  };
+  const history = Array.from(
+    { length: name === "work-yard-history" ? 5 : 0 },
+    (_, index) => {
+      const state: DeliveryProjection["state"] =
+        index % 2 === 0 ? "merged" : "no_changes";
+      const value: RunProjection = {
+        ...runValue,
+        id: `run-history-${index + 1}`,
+        launch: { id: `launch-history-${index + 1}` },
+        launched_at: `2026-08-${String(31 - index).padStart(2, "0")}T10:00:00Z`,
+        quest: {
+          ...runValue.quest,
+          id: `quest-history-${index + 1}`,
+          title:
+            [
+              "Accessibility Polish",
+              "API Contract Cleanup",
+              "Garden Notes",
+              "Roster Repair",
+              "Project Setup",
+            ][index] ?? "Historical Quest",
+        },
+        delivery: workYardDelivery(state),
+        artifacts: [],
+      };
+      return value;
+    },
+  );
+  const allRuns = [runValue, ...history];
+  const summaries = allRuns.map((value) => ({
+    id: value.id,
+    status: value.status,
+    quest_title: value.quest.title,
+    launched_at: value.launched_at,
+    step_counts: value.step_counts,
+    delivery: value.delivery,
+  }));
+  const isEmpty = name === "work-yard-empty";
+  return {
+    name,
+    product: {
+      classes: [classDefinition, reviewerClass],
+      classCatalog: [classDefinition, reviewerClass],
+      loadouts: [loadout, reviewLoadout],
+      loadoutCatalog: [loadout, reviewLoadout],
+      squads: [engineeringPair],
+      tactics: [tactic],
+      quests: isEmpty ? [] : [questValue],
+      workspaces: [workspace],
+      workspaceSources: [],
+      executionOptions: [],
+      runs: isEmpty ? [] : summaries,
+    },
+    runs: isEmpty
+      ? {}
+      : Object.fromEntries(allRuns.map((value) => [value.id, value])),
+    selectedRunId: isEmpty ? null : runValue.id,
+    artifactDetails: isEmpty
+      ? {}
+      : {
+          [runValue.id]: {
+            ...artifacts.details,
+            "artifact-changes-requested": {
+              id: "artifact-changes-requested",
+              type: "verdict",
+              producer_occurrence_id: "occ-review-first",
+              preview: { kind: "scalar", value: "changes_requested" },
+              value: "changes_requested",
+            },
+          },
+        },
+  };
+}
+
 export function createFixture(nameValue: string | null): ClientFixture | null {
   if (!nameValue) return null;
+  if (nameValue.startsWith("work-yard-"))
+    return createWorkYardFixture(nameValue as FixtureName);
   const name = fixtureNames.includes(nameValue as FixtureName)
     ? (nameValue as FixtureName)
     : "density";

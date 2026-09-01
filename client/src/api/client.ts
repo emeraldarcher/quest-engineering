@@ -592,11 +592,13 @@ function decodeRun(value: unknown): RunProjection {
     "run environment Workspace",
   );
   const counts = asRecord(x.step_counts, "step counts");
+  const launch = asRecord(x.launch, "run launch");
   return {
     id: asString(x.id, "run"),
     status: runStatus(x.status),
     launched_at: asString(x.launched_at, "run"),
     revision: asNumber(x.revision, "run"),
+    launch: { id: asString(launch.id, "run launch") },
     quest: {
       id: asString(quest.id, "quest"),
       title: asString(quest.title, "quest"),
@@ -697,6 +699,17 @@ function decodeRunStep(value: unknown) {
         ? null
         : asNumber(x.remediation_cycle, "step"),
     control_path: strings(x.control_path, "step"),
+    attempt:
+      x.attempt === null
+        ? null
+        : (() => {
+            const attempt = asRecord(x.attempt, "step attempt");
+            return {
+              id: asString(attempt.id, "step attempt"),
+              number: asNumber(attempt.number, "step attempt"),
+              state: asString(attempt.state, "step attempt"),
+            };
+          })(),
     member: x.member === null ? null : decodeSnapshotMember(x.member),
     performer: {
       selector: nullable(performer.selector, "performer"),
