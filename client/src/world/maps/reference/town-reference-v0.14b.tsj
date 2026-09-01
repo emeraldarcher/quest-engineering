@@ -1,0 +1,47 @@
+{
+  "name": "Quest Engineering v0.14b reference objects",
+  "tilewidth": 112,
+  "tileheight": 89,
+  "tilecount": 22,
+  "columns": 0,
+  "objectalignment": "bottomleft",
+  "type": "tileset",
+  "version": "1.11",
+  "tiledversion": "1.12.2",
+  "properties": [
+    {
+      "name": "questEngineeringReference",
+      "type": "bool",
+      "value": true
+    },
+    {
+      "name": "description",
+      "type": "string",
+      "value": "Non-production object collection retained only by the v0.14b town and construction reference maps."
+    }
+  ],
+  "tiles": [
+    { "id": 0, "image": "../../../assets/sunnyside/buildings/guild.png", "imagewidth": 112, "imageheight": 89 },
+    { "id": 1, "image": "../../../assets/sunnyside/buildings/forge.png", "imagewidth": 96, "imageheight": 64 },
+    { "id": 2, "image": "../../../assets/sunnyside/buildings/tavern.png", "imagewidth": 80, "imageheight": 70 },
+    { "id": 3, "image": "../../../assets/sunnyside/buildings/projects.png", "imagewidth": 56, "imageheight": 54 },
+    { "id": 4, "image": "../../../assets/sunnyside/foliage/tree-round.png", "imagewidth": 32, "imageheight": 34 },
+    { "id": 5, "image": "../../../assets/sunnyside/foliage/tree-pine.png", "imagewidth": 28, "imageheight": 43 },
+    { "id": 6, "image": "../../../assets/sunnyside/props/anvil.png", "imagewidth": 22, "imageheight": 16 },
+    { "id": 7, "image": "../../../assets/sunnyside/props/barrel-swords.png", "imagewidth": 13, "imageheight": 20 },
+    { "id": 8, "image": "../../../assets/sunnyside/props/barrel.png", "imagewidth": 13, "imageheight": 16 },
+    { "id": 9, "image": "../../../assets/sunnyside/props/beam.png", "imagewidth": 16, "imageheight": 16 },
+    { "id": 10, "image": "../../../assets/sunnyside/props/bucket.png", "imagewidth": 10, "imageheight": 11 },
+    { "id": 11, "image": "../../../assets/sunnyside/props/chair.png", "imagewidth": 10, "imageheight": 14 },
+    { "id": 12, "image": "../../../assets/sunnyside/props/chest.png", "imagewidth": 16, "imageheight": 21 },
+    { "id": 13, "image": "../../../assets/sunnyside/props/crate-alt.png", "imagewidth": 16, "imageheight": 21 },
+    { "id": 14, "image": "../../../assets/sunnyside/props/crate.png", "imagewidth": 16, "imageheight": 21 },
+    { "id": 15, "image": "../../../assets/sunnyside/props/flowers.png", "imagewidth": 8, "imageheight": 18 },
+    { "id": 16, "image": "../../../assets/sunnyside/props/minecart.png", "imagewidth": 14, "imageheight": 23 },
+    { "id": 17, "image": "../../../assets/sunnyside/props/ore-coal.png", "imagewidth": 10, "imageheight": 10 },
+    { "id": 18, "image": "../../../assets/sunnyside/props/ore-stone.png", "imagewidth": 10, "imageheight": 10 },
+    { "id": 19, "image": "../../../assets/sunnyside/props/side-table.png", "imagewidth": 12, "imageheight": 26 },
+    { "id": 20, "image": "../../../assets/sunnyside/props/trough.png", "imagewidth": 29, "imageheight": 16 },
+    { "id": 21, "image": "../../../assets/sunnyside/props/well.png", "imagewidth": 20, "imageheight": 40 }
+  ]
+}

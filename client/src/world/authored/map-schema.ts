@@ -8,6 +8,14 @@ export const REQUIRED_LOCATION_IDS = [
   "work-area",
 ] as const;
 export type AuthoredLocationId = (typeof REQUIRED_LOCATION_IDS)[number];
+export const REQUIRED_LOCATION_LABELS: Record<AuthoredLocationId, string> = {
+  gatehouse: "Projects",
+  guild: "Guild Hall",
+  blacksmith: "Forge",
+  tavern: "Tavern",
+  "quest-board": "Quest Board",
+  "work-area": "Work Yard",
+};
 export type PanelSide = "left" | "right";
 export type WorkstationVariant = "desk" | "bench" | "general" | "standing";
 

@@ -16,6 +16,7 @@ import {
   type PanelSide,
   QUEST_ENGINEERING_MAP_VERSION,
   REQUIRED_LOCATION_IDS,
+  REQUIRED_LOCATION_LABELS,
   type TownPoint,
   type TownRect,
   type WorkstationVariant,
@@ -405,9 +406,17 @@ export function parseAuthoredTownMap(
       issues.push(
         `Required location '${required}' is missing from the Locations layer. Undo the deletion in Tiled or copy it from ${AUTHORING_REFERENCE}.`,
       );
-  for (const location of locations)
-    if (!REQUIRED_LOCATION_IDS.includes(location.id))
+  for (const location of locations) {
+    if (!REQUIRED_LOCATION_IDS.includes(location.id)) {
       issues.push(`unknown semantic location '${location.id}'`);
+      continue;
+    }
+    const expectedLabel = REQUIRED_LOCATION_LABELS[location.id];
+    if (location.label !== expectedLabel)
+      issues.push(
+        `Location '${location.id}' must use the semantic label '${expectedLabel}'`,
+      );
+  }
 
   const interactionRegions = typed(
     "Interaction Regions",
@@ -457,11 +466,14 @@ export function parseAuthoredTownMap(
     issues,
   );
   const overviewObjects = typed("Camera Anchors", "overview_bounds");
-  if (overviewObjects.length !== 1)
+  const functionalTownBoundsObjects = overviewObjects.filter(
+    (object) => object.name === "functional-town-bounds",
+  );
+  if (overviewObjects.length !== 1 || functionalTownBoundsObjects.length !== 1)
     issues.push(
-      "Camera Anchors must contain exactly one overview_bounds object",
+      "Camera Anchors must contain exactly one 'functional-town-bounds' overview_bounds object",
     );
-  const overview = overviewObjects[0];
+  const overview = functionalTownBoundsObjects[0];
   const functionalTownBounds: TownRect = overview
     ? {
         x: overview.x,
@@ -610,18 +622,33 @@ export function parseAuthoredTownMap(
         `camera anchor '${anchor.id}' references an unknown location`,
       );
   for (const location of locations) {
-    if (!interactionRegions.some((region) => region.locationId === location.id))
+    const matchingRegions = interactionRegions.filter(
+      (region) => region.locationId === location.id,
+    );
+    if (matchingRegions.length === 0)
+      issues.push(`Required interaction region '${location.id}' is missing.`);
+    else if (matchingRegions.length > 1)
       issues.push(
-        `Location '${location.id}' needs a matching interaction_region in Interaction Regions. Undo the deletion or copy it from ${AUTHORING_REFERENCE}.`,
+        `Location '${location.id}' has multiple interaction regions; exactly one is required.`,
       );
-    if (!cameraAnchors.some((anchor) => anchor.id === location.id))
+    const matchingAnchors = cameraAnchors.filter(
+      (anchor) => anchor.id === location.id,
+    );
+    if (matchingAnchors.length === 0)
+      issues.push(`Required camera anchor '${location.id}' is missing.`);
+    else if (matchingAnchors.length > 1)
       issues.push(
-        `Location '${location.id}' needs a matching camera_anchor in Camera Anchors. Undo the deletion or copy it from ${AUTHORING_REFERENCE}.`,
+        `Location '${location.id}' has multiple camera anchors; exactly one is required.`,
       );
   }
-  if (!statusAnchors.some((anchor) => anchor.locationId === "quest-board"))
+  const questBoardStatusAnchors = statusAnchors.filter(
+    (anchor) => anchor.locationId === "quest-board",
+  );
+  if (questBoardStatusAnchors.length === 0)
+    issues.push("Required status anchor 'quest-board' is missing.");
+  else if (questBoardStatusAnchors.length > 1)
     issues.push(
-      `Location 'quest-board' needs its status_anchor in Status Anchors. Undo the deletion or copy it from ${AUTHORING_REFERENCE}.`,
+      "Location 'quest-board' has multiple status anchors; exactly one is required.",
     );
   for (const point of [
     ...locations,
@@ -653,14 +680,10 @@ export function parseAuthoredTownMap(
       issues.push(
         `animal route '${route.id}' requires at least two in-bounds points`,
       );
-  if (
-    functionalTownBounds.width <= 0 ||
-    functionalTownBounds.height <= 0 ||
-    !rectInBounds(functionalTownBounds, bounds)
-  )
-    issues.push(
-      "functional-town bounds must be a positive rectangle inside map bounds",
-    );
+  if (functionalTownBounds.width <= 0 || functionalTownBounds.height <= 0)
+    issues.push("functional-town-bounds must have positive dimensions.");
+  else if (!rectInBounds(functionalTownBounds, bounds))
+    issues.push("functional-town-bounds extends outside the authored map.");
 
   if (issues.length) throw new TownMapValidationError(issues);
   return {
