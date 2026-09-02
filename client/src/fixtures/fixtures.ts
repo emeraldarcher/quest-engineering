@@ -7,6 +7,7 @@ import type {
   Quest,
   RunProjection,
   RunStep,
+  RunSummary,
   SnapshotMember,
   Squad,
   StarterCrewStatus,
@@ -61,6 +62,24 @@ export const fixtureNames = [
   "starter-partial",
   "starter-conflict",
   "starter-manual",
+  "quest-board-empty",
+  "quest-board-new",
+  "quest-board-ready",
+  "quest-board-project-preparing",
+  "quest-board-project-offline",
+  "quest-board-invalid-squad",
+  "quest-board-tactic-error",
+  "quest-board-launching",
+  "quest-board-working",
+  "quest-board-preparing-review",
+  "quest-board-awaiting-review",
+  "quest-board-attention",
+  "quest-board-execution-complete",
+  "quest-board-complete",
+  "quest-board-closed-unmerged",
+  "quest-board-no-changes",
+  "quest-board-history",
+  "quest-board-dirty",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -587,6 +606,25 @@ function workYardDelivery(
       },
       can_retry: true,
     };
+  if (state === "closed_unmerged")
+    return {
+      ...base,
+      issue: {
+        code: "closed_unmerged",
+        message: "The Pull Request was closed without merge.",
+      },
+      can_retry: false,
+    };
+  if (state === "no_changes")
+    return {
+      ...base,
+      issue: {
+        code: "no_changes",
+        message:
+          "Agent work completed, but there are no repository changes to publish.",
+      },
+      can_retry: false,
+    };
   return base;
 }
 
@@ -826,6 +864,347 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
   };
 }
 
+function createQuestBoardFixture(name: FixtureName): ClientFixture {
+  const questTactic: Tactic = {
+    id: "tactic-implement-review",
+    key: "implement-and-review",
+    name: "Implement & Review",
+    description: "A small implementation and independent review workflow.",
+    body: {
+      type: "sequence",
+      children: [
+        {
+          type: "step",
+          key: "implement",
+          name: "Implement",
+          instruction: "Implement the Quest objective.",
+          performer: { selector: "class", value: "builder" },
+          context: { selector: "fresh", value: null },
+          consumes: [],
+          produces: [{ type: "change_set", source: null }],
+        },
+        {
+          type: "step",
+          key: "review",
+          name: "Review",
+          instruction: "Review the implementation.",
+          performer: { selector: "class", value: "reviewer" },
+          context: { selector: "fresh", value: null },
+          consumes: [{ type: "change_set", source: "implement" }],
+          produces: [{ type: "verdict", source: null }],
+        },
+      ],
+    },
+    archived_at: null,
+  };
+  const remediationTactic: Tactic = {
+    ...questTactic,
+    id: "tactic-remediation",
+    key: "implement-review-repair",
+    name: "Implement, Review & Repair",
+    description: "Review and repair until the result is accepted.",
+    body: {
+      type: "sequence",
+      children: [
+        {
+          type: "step",
+          key: "implement",
+          name: "Implement",
+          instruction: "Implement.",
+          performer: { selector: "class", value: "builder" },
+        },
+        {
+          type: "until",
+          check: {
+            type: "step",
+            key: "review",
+            name: "Review",
+            instruction: "Review.",
+            performer: { selector: "class", value: "reviewer" },
+          },
+          otherwise: {
+            type: "step",
+            key: "repair",
+            name: "Repair",
+            instruction: "Repair.",
+            performer: { selector: "class", value: "builder" },
+          },
+        },
+      ],
+    },
+  };
+  const selectedProject =
+    name === "quest-board-project-offline"
+      ? {
+          ...workspace,
+          binding: {
+            state: "offline" as const,
+            message: "Project repository offline.",
+          },
+        }
+      : name === "quest-board-project-preparing"
+        ? preparingWorkspace
+        : workspace;
+  const selectedSquad =
+    name === "quest-board-invalid-squad"
+      ? {
+          ...engineeringPair,
+          id: "squad-needs-configuration",
+          name: "Engineering Pair · Needs Configuration",
+        }
+      : engineeringPair;
+  const deliveryState: DeliveryProjection["state"] | null =
+    name === "quest-board-preparing-review"
+      ? "preparing_review"
+      : name === "quest-board-awaiting-review"
+        ? "awaiting_review"
+        : name === "quest-board-attention"
+          ? "attention_required"
+          : name === "quest-board-complete"
+            ? "merged"
+            : name === "quest-board-closed-unmerged"
+              ? "closed_unmerged"
+              : name === "quest-board-no-changes"
+                ? "no_changes"
+                : null;
+  const runId = "run-quest-board-current";
+  const isWorking = name === "quest-board-working";
+  const executionComplete =
+    deliveryState !== null || name === "quest-board-execution-complete";
+  const runSteps = [
+    workYardStep(
+      "quest-occ-implement",
+      "implement",
+      "Implement",
+      executionComplete || isWorking ? "completed" : "waiting",
+      workYardRowan,
+    ),
+    workYardStep(
+      "quest-occ-review",
+      "review",
+      "Review",
+      executionComplete ? "completed" : isWorking ? "running" : "pending",
+      workYardMira,
+    ),
+  ];
+  const runDelivery = deliveryState ? workYardDelivery(deliveryState) : null;
+  const runValue: RunProjection = {
+    id: runId,
+    status: executionComplete ? "completed" : "running",
+    launched_at: "2026-09-02T10:15:00Z",
+    revision: 4,
+    launch: { id: "launch-quest-board-current" },
+    quest: {
+      id: "quest-login-validation",
+      title: "Add login validation",
+      objective:
+        "Validate login requests and return clear errors for invalid credentials.",
+    },
+    execution_environment: {
+      workspace: {
+        id: selectedProject.id,
+        key: selectedProject.key,
+        name: selectedProject.name,
+      },
+      state: "retained",
+      message: executionComplete
+        ? "Terminal Run workspace retained."
+        : "Run workspace ready.",
+      base_revision: "1234567890abcdef1234567890abcdef12345678",
+      branch: "qe/run/quest-board-current",
+      source_dirty_changes_excluded: false,
+      issue: null,
+    },
+    delivery: runDelivery,
+    squad: {
+      id: selectedSquad.id,
+      key: selectedSquad.key,
+      name: selectedSquad.name,
+      members: workYardMembers,
+    },
+    steps: runSteps,
+    artifacts: [],
+    step_counts: counts(runSteps),
+    issues: [],
+  };
+  if (isWorking) runValue.execution_environment.state = "ready";
+  const lifecycleState: Quest["lifecycle"] =
+    name === "quest-board-working"
+      ? {
+          state: "working",
+          label: "Working",
+          current_run_id: runId,
+          primary_action: null,
+        }
+      : name === "quest-board-preparing-review" ||
+          name === "quest-board-execution-complete"
+        ? {
+            state: "preparing_review",
+            label: "Preparing Review",
+            current_run_id: runId,
+            primary_action: null,
+            ...(runDelivery ? { delivery: runDelivery } : {}),
+          }
+        : name === "quest-board-awaiting-review"
+          ? {
+              state: "awaiting_review",
+              label: "Awaiting Review",
+              current_run_id: runId,
+              primary_action: "open_pull_request",
+              delivery: runDelivery as DeliveryProjection,
+            }
+          : name === "quest-board-complete"
+            ? {
+                state: "complete",
+                label: "Complete",
+                current_run_id: runId,
+                primary_action: null,
+              }
+            : [
+                  "quest-board-attention",
+                  "quest-board-closed-unmerged",
+                  "quest-board-no-changes",
+                ].includes(name)
+              ? {
+                  state: "needs_attention",
+                  label: "Needs Attention",
+                  current_run_id: runId,
+                  primary_action:
+                    name === "quest-board-attention" ? null : "run_again",
+                  delivery: runDelivery as DeliveryProjection,
+                }
+              : {
+                  state: "ready",
+                  label: "Ready",
+                  current_run_id: null,
+                  primary_action: "launch",
+                };
+  const selectedQuest: Quest = {
+    id: runValue.quest.id,
+    title: runValue.quest.title,
+    objective: runValue.quest.objective,
+    workspace_id: selectedProject.id,
+    squad_id: selectedSquad.id,
+    tactic_source: { type: "definition", tactic_definition_id: questTactic.id },
+    completion: {
+      completed_at:
+        name === "quest-board-complete" ? "2026-09-02T11:30:00Z" : null,
+      completed_by_run_id: name === "quest-board-complete" ? runId : null,
+    },
+    lifecycle: lifecycleState,
+    archived_at: null,
+  };
+  const cardQuests: Quest[] = [
+    selectedQuest,
+    {
+      ...selectedQuest,
+      id: "quest-onboarding",
+      title: "Improve onboarding",
+      objective: "Make the first Project experience clearer.",
+      lifecycle: {
+        state: "working",
+        label: "Working",
+        current_run_id: "run-other-working",
+        primary_action: null,
+      },
+    },
+    {
+      ...selectedQuest,
+      id: "quest-export",
+      title: "Fix export handling",
+      objective: "Preserve exported settings safely.",
+      lifecycle: {
+        state: "needs_attention",
+        label: "Needs Attention",
+        current_run_id: "run-other-attention",
+        primary_action: "run_again",
+      },
+    },
+    {
+      ...selectedQuest,
+      id: "quest-settings",
+      title: "Create settings screen",
+      objective: "Create an approachable settings experience.",
+      lifecycle: {
+        state: "complete",
+        label: "Complete",
+        current_run_id: "run-other-complete",
+        primary_action: null,
+      },
+      completion: {
+        completed_at: "2026-09-01T16:00:00Z",
+        completed_by_run_id: "run-other-complete",
+      },
+    },
+  ];
+  const empty = name === "quest-board-empty" || name === "quest-board-new";
+  const hasCurrentRun = lifecycleState.current_run_id !== null;
+  const historySummaries: RunSummary[] =
+    name === "quest-board-history"
+      ? Array.from({ length: 3 }, (_, index) => ({
+          id: `run-quest-history-${index + 1}`,
+          status: "completed",
+          quest_title: selectedQuest.title,
+          launched_at: `2026-08-${29 - index}T12:00:00Z`,
+          step_counts: {
+            pending: 0,
+            waiting: 0,
+            scheduled: 0,
+            running: 0,
+            completed: 2,
+            failed: 0,
+            uncertain: 0,
+          },
+          delivery: workYardDelivery(
+            index === 0 ? "closed_unmerged" : "no_changes",
+          ),
+        }))
+      : [];
+  const currentSummary: RunSummary = {
+    id: runValue.id,
+    status: runValue.status,
+    quest_title: runValue.quest.title,
+    launched_at: runValue.launched_at,
+    step_counts: runValue.step_counts,
+    delivery: runValue.delivery,
+  };
+  return {
+    name,
+    product: {
+      classes:
+        name === "quest-board-invalid-squad"
+          ? [classDefinition]
+          : [classDefinition, reviewerClass],
+      classCatalog:
+        name === "quest-board-invalid-squad"
+          ? [classDefinition, archivedReviewerClass]
+          : [classDefinition, reviewerClass],
+      loadouts: [loadout, reviewLoadout],
+      loadoutCatalog: [loadout, reviewLoadout],
+      squads: [selectedSquad, backendTeam],
+      tactics: [questTactic, remediationTactic],
+      quests: empty ? [] : cardQuests,
+      workspaces: [selectedProject, offlineWorkspace],
+      workspaceSources: [
+        {
+          candidate_id: "quest-board-source",
+          name: "quest-engineering",
+          source_kind: "git_remote",
+          source_fingerprint: selectedProject.source_fingerprint,
+          publication_repository_identity: "emeraldarcher/quest-engineering",
+          max_access: "read_write",
+          shell_available: true,
+        },
+      ],
+      executionOptions: [],
+      runs: [...(hasCurrentRun ? [currentSummary] : []), ...historySummaries],
+    },
+    runs: hasCurrentRun ? { [runId]: runValue } : {},
+    selectedRunId: null,
+    starterStatus: { state: "manual_configuration", conflict: null },
+  };
+}
+
 function createStarterFixture(name: FixtureName): ClientFixture {
   const projectState =
     name === "starter-preparing"
@@ -1038,6 +1417,8 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
   if (!nameValue) return null;
   if (nameValue.startsWith("starter-"))
     return createStarterFixture(nameValue as FixtureName);
+  if (nameValue.startsWith("quest-board-"))
+    return createQuestBoardFixture(nameValue as FixtureName);
   if (nameValue.startsWith("work-yard-"))
     return createWorkYardFixture(nameValue as FixtureName);
   const name = fixtureNames.includes(nameValue as FixtureName)

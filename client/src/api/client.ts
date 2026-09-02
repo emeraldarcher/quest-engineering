@@ -101,15 +101,22 @@ export class ApiClient {
       `/loadouts${includeArchived ? "?include_archived=true" : ""}`,
       (value) => list(value, "loadouts", decodeLoadout),
     );
-  listSquads = () =>
-    this.get("/squads", (value) => list(value, "squads", decodeSquad));
-  listTactics = () =>
-    this.get("/tactics", (value) => list(value, "tactics", decodeTactic));
+  listSquads = (includeArchived = false) =>
+    this.get(
+      `/squads${includeArchived ? "?include_archived=true" : ""}`,
+      (value) => list(value, "squads", decodeSquad),
+    );
+  listTactics = (includeArchived = false) =>
+    this.get(
+      `/tactics${includeArchived ? "?include_archived=true" : ""}`,
+      (value) => list(value, "tactics", decodeTactic),
+    );
   listQuests = () =>
     this.get("/quests", (value) => list(value, "quests", decodeQuest));
-  listWorkspaces = () =>
-    this.get("/workspaces", (value) =>
-      list(value, "workspaces", decodeWorkspace),
+  listWorkspaces = (includeArchived = false) =>
+    this.get(
+      `/workspaces${includeArchived ? "?include_archived=true" : ""}`,
+      (value) => list(value, "workspaces", decodeWorkspace),
     );
   listWorkspaceSources = () =>
     this.get("/workspace-sources", (value) =>
@@ -215,6 +222,12 @@ export class ApiClient {
   archiveQuest = (id: string) =>
     this.post(`/quests/${id}/archive`, {}, (value) =>
       decodeQuest(asRecord(value, "quest").quest),
+    );
+  previewTacticDefinition = (id: string) =>
+    this.post(
+      `/tactics/${id}/preview`,
+      {},
+      (value) => asRecord(value, "preview").preview,
     );
   previewQuest = (id: string) =>
     this.post(

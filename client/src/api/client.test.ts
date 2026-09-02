@@ -82,6 +82,41 @@ test("requests archived Class and Loadout catalogs only when asked", async () =>
   ]);
 });
 
+test("Quest Board loads archived reference catalogs and semantic Tactic preview explicitly", async () => {
+  const requested: string[] = [];
+  globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    requested.push(path);
+    if (path.endsWith("/tactics/tactic-1/preview"))
+      return new Response(
+        JSON.stringify({
+          preview: { resolved_tactic: { type: "step", key: "implement" } },
+        }),
+      );
+    if (path.includes("/workspaces"))
+      return new Response(JSON.stringify({ workspaces: [] }));
+    if (path.includes("/squads"))
+      return new Response(JSON.stringify({ squads: [] }));
+    return new Response(JSON.stringify({ tactics: [] }));
+  }) as unknown as typeof fetch;
+  const api = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+
+  await api.listWorkspaces(true);
+  await api.listSquads(true);
+  await api.listTactics(true);
+  const preview = await api.previewTacticDefinition("tactic-1");
+
+  expect(requested).toEqual([
+    "http://example.test/api/v1/workspaces?include_archived=true",
+    "http://example.test/api/v1/squads?include_archived=true",
+    "http://example.test/api/v1/tactics?include_archived=true",
+    "http://example.test/api/v1/tactics/tactic-1/preview",
+  ]);
+  expect(preview).toEqual({
+    resolved_tactic: { type: "step", key: "implement" },
+  });
+});
+
 test("maps Product validation envelope into a typed client error", async () => {
   globalThis.fetch = mock(
     async () =>
