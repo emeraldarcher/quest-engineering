@@ -15,6 +15,8 @@ import {
 export let store: AppStore;
 export let product: ProductState;
 export let onClose: () => void;
+export let onProjectAdded: (project: Workspace) => void = () => undefined;
+export let startInAddMode = false;
 export let scene: string | null = null;
 
 type Mode = "detail" | "add-select" | "add-confirm" | "reconnect" | "edit";
@@ -58,6 +60,7 @@ $: selectedSource =
   product.workspaceSources.find((source) => source.candidate_id === selectedSourceId) ?? null;
 
 onMount(async () => {
+  if (startInAddMode) await beginAdd();
   if (scene === "list") selectedId = null;
   else selectedId = product.workspaces[0]?.id ?? null;
   if (scene === "add-selection") await beginAdd(false);
@@ -155,6 +158,7 @@ async function addProject() {
     if (result.connection === "issue")
       localIssue = "The Project was added, but its repository connection needs attention. The Project will not be created again.";
     await store.refreshProduct();
+    onProjectAdded(result.project);
   } catch {
     localIssue = "Quest Engineering couldn't add this Project. Check the Project name and try again.";
   } finally {

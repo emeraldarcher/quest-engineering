@@ -151,6 +151,27 @@ export type StepState =
   | "failed"
   | "uncertain";
 
+export type StarterCrewState =
+  | "empty"
+  | "recoverable_partial"
+  | "complete"
+  | "conflict"
+  | "manual_configuration";
+export interface StarterCrewStatus {
+  state: StarterCrewState;
+  conflict: {
+    entity_type: "class" | "loadout" | "squad" | "tactic";
+    key: string;
+  } | null;
+}
+export interface StarterCrewResult {
+  status: "ready";
+  classes: ClassDefinition[];
+  loadouts: Loadout[];
+  squad: Squad;
+  tactic: Tactic;
+}
+
 export interface ExecutionOption {
   model: { provider: string; model: string };
   reasoning: Reasoning[];

@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/svelte";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Workspace } from "../src/api/contracts";
 import ProjectsWindow from "../src/components/projects/ProjectsWindow.svelte";
@@ -42,8 +48,13 @@ const product: ProductState = {
 function fakeStore(): AppStore {
   return {
     api: {
-      createWorkspace: vi.fn(),
-      bindWorkspaceSource: vi.fn(),
+      createWorkspace: vi.fn(async (input) => ({
+        ...ready,
+        id: "workspace-created",
+        key: input.key ?? "quest-engineering",
+        name: input.name ?? "Quest Engineering",
+      })),
+      bindWorkspaceSource: vi.fn(async () => undefined),
       updateWorkspace: vi.fn(),
       archiveWorkspace: vi.fn(),
     },
@@ -83,6 +94,36 @@ test("Add Project opens keyboard-operable repository discovery", async () => {
   });
   repository.focus();
   expect(document.activeElement).toBe(repository);
+});
+
+test("onboarding integration opens directly in Add mode and reports the created Project", async () => {
+  const onProjectAdded = vi.fn();
+  render(ProjectsWindow, {
+    props: {
+      store: fakeStore(),
+      product: { ...product, workspaces: [] },
+      onClose: vi.fn(),
+      onProjectAdded,
+      startInAddMode: true,
+      scene: null,
+    },
+  });
+
+  const repository = await screen.findByRole("button", {
+    name: /Quest Engineering emeraldarcher\/quest-engineering Available/,
+  });
+  await fireEvent.click(repository);
+  const addButton = screen
+    .getAllByRole("button", { name: "Add Project" })
+    .at(-1);
+  if (!addButton) throw new Error("Add Project action unavailable");
+  await fireEvent.click(addButton);
+
+  await waitFor(() =>
+    expect(onProjectAdded).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "workspace-created" }),
+    ),
+  );
 });
 
 test("offline Project explains waiting without a misleading Retry action", () => {

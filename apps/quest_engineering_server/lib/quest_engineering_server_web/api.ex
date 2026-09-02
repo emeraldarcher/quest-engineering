@@ -5,6 +5,7 @@ defmodule QuestEngineering.ServerWeb.Api do
 
   alias Ecto.Changeset
   alias QuestEngineering.Core.Product.TacticPreview.Error, as: PreviewError
+  alias QuestEngineering.Server.Product.StarterCrew
   alias QuestEngineering.Server.ProductApi.Service.Error, as: RequestError
 
   def include_archived?(conn) do
@@ -23,6 +24,24 @@ defmodule QuestEngineering.ServerWeb.Api do
     |> put_status(status)
     |> json(%{error: %{code: code, message: message, details: details, meta: meta}})
   end
+
+  defp error_view(%StarterCrew.Error{code: :conflict} = error),
+    do:
+      {409, "starter_conflict", "Starter setup conflicts with existing Product configuration.",
+       [], %{entity_type: Atom.to_string(error.entity_type), key: error.key}}
+
+  defp error_view(%StarterCrew.Error{code: :manual_configuration}),
+    do:
+      {409, "starter_manual_configuration",
+       "Manual Product configuration already exists; starter setup was not changed.", [], %{}}
+
+  defp error_view(%StarterCrew.Error{code: :no_compatible_execution_option}),
+    do:
+      {409, "starter_precondition",
+       "No currently available execution configuration can create this starter crew.", [], %{}}
+
+  defp error_view(%StarterCrew.Error{code: :invalid_request, details: details}),
+    do: {400, "malformed_request", "The request body is malformed.", [], details}
 
   defp error_view(%RequestError{code: :archived_reference, details: details}),
     do:

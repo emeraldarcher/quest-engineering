@@ -9,6 +9,7 @@ import type {
   RunStep,
   SnapshotMember,
   Squad,
+  StarterCrewStatus,
   Tactic,
   Workspace,
 } from "../api/contracts";
@@ -49,6 +50,17 @@ export const fixtureNames = [
   "work-yard-cleanup",
   "work-yard-history",
   "work-yard-empty",
+  "starter-empty",
+  "starter-project-add",
+  "starter-preparing",
+  "starter-attention",
+  "starter-ready",
+  "starter-creating",
+  "starter-complete",
+  "starter-failure",
+  "starter-partial",
+  "starter-conflict",
+  "starter-manual",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -57,6 +69,7 @@ export interface ClientFixture {
   product: ProductState;
   runs: Record<string, RunProjection>;
   selectedRunId: string | null;
+  starterStatus?: StarterCrewStatus;
   artifactDetails?: Record<string, Record<string, ArtifactDetail>>;
 }
 
@@ -813,8 +826,218 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
   };
 }
 
+function createStarterFixture(name: FixtureName): ClientFixture {
+  const projectState =
+    name === "starter-preparing"
+      ? "preparing"
+      : name === "starter-attention"
+        ? "attention_required"
+        : "ready";
+  const starterProject: Workspace = {
+    id: "workspace-starter",
+    key: "starter-project",
+    name: "Quest Engineering",
+    source_kind: "git_remote",
+    source_fingerprint: "https://github.com/example/quest-engineering",
+    binding: {
+      state: projectState,
+      message:
+        projectState === "ready"
+          ? "Project ready."
+          : projectState === "preparing"
+            ? "Preparing Project…"
+            : "Project setup requires attention.",
+      ...(projectState === "attention_required"
+        ? { issue: { code: "workspace_binding_failed" } }
+        : {}),
+    },
+    archived_at: null,
+  };
+  const builder: ClassDefinition = {
+    id: "starter-class-builder",
+    key: "builder",
+    name: "Builder",
+    description: "Builds the requested change.",
+    instructions:
+      "Implement the requested change carefully and report the declared result.",
+    archived_at: null,
+  };
+  const reviewer: ClassDefinition = {
+    id: "starter-class-reviewer",
+    key: "reviewer",
+    name: "Reviewer",
+    description: "Independently reviews completed work.",
+    instructions:
+      "Review the supplied work independently and report the declared result.",
+    archived_at: null,
+  };
+  const coding: Loadout = {
+    id: "starter-loadout-coding",
+    key: "coding",
+    name: "Coding",
+    description: "Writable engineering capabilities.",
+    model: { provider: "fixture", model: "starter-model" },
+    reasoning: "medium",
+    tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+    workspace_access: "read_write",
+    archived_at: null,
+  };
+  const review: Loadout = {
+    id: "starter-loadout-review",
+    key: "review",
+    name: "Review",
+    description: "Read-only review capabilities.",
+    model: coding.model,
+    reasoning: coding.reasoning,
+    tools: ["workspace.filesystem", "workspace.search"],
+    workspace_access: "read_only",
+    archived_at: null,
+  };
+  const starterSquad: Squad = {
+    id: "starter-squad",
+    key: "engineering-pair",
+    name: "Engineering Pair",
+    description: "A builder and independent reviewer.",
+    members: [
+      {
+        member_key: "builder",
+        name: "Builder",
+        class_id: builder.id,
+        loadout_id: coding.id,
+      },
+      {
+        member_key: "reviewer",
+        name: "Reviewer",
+        class_id: reviewer.id,
+        loadout_id: review.id,
+      },
+    ],
+    archived_at: null,
+  };
+  const starterTactic: Tactic = {
+    id: "starter-tactic",
+    key: "implement-and-review",
+    name: "Implement & Review",
+    description:
+      "A small sequential implementation and independent review tactic.",
+    body: {
+      type: "sequence",
+      children: [
+        {
+          type: "step",
+          key: "implement",
+          name: "Implement",
+          instruction: "Implement the Quest objective.",
+          performer: { selector: "class", value: "builder" },
+          context: { selector: "fresh", value: null },
+          consumes: [],
+          produces: [{ type: "change_set", source: null }],
+        },
+        {
+          type: "step",
+          key: "review",
+          name: "Review",
+          instruction: "Review the implementation against the Quest objective.",
+          performer: { selector: "class", value: "reviewer" },
+          context: { selector: "fresh", value: null },
+          consumes: [{ type: "change_set", source: "implement" }],
+          produces: [{ type: "verdict", source: null }],
+        },
+      ],
+    },
+    archived_at: null,
+  };
+  const noProject = name === "starter-empty" || name === "starter-project-add";
+  const complete = name === "starter-complete";
+  const partial = name === "starter-partial";
+  const conflict = name === "starter-conflict";
+  const manual = name === "starter-manual";
+  const hasProject = !noProject;
+  const status: StarterCrewStatus = {
+    state: complete
+      ? "complete"
+      : partial
+        ? "recoverable_partial"
+        : conflict
+          ? "conflict"
+          : manual
+            ? "manual_configuration"
+            : "empty",
+    conflict: conflict ? { entity_type: "loadout", key: "coding" } : null,
+  };
+  const classes = complete
+    ? [builder, reviewer]
+    : partial
+      ? [builder]
+      : manual
+        ? [
+            {
+              ...builder,
+              id: "manual-class",
+              key: "architect",
+              name: "Architect",
+            },
+          ]
+        : [];
+  return {
+    name,
+    product: {
+      classes,
+      classCatalog: classes,
+      loadouts: complete
+        ? [coding, review]
+        : conflict
+          ? [{ ...coding, model: { provider: "custom", model: "different" } }]
+          : [],
+      loadoutCatalog: complete
+        ? [coding, review]
+        : conflict
+          ? [{ ...coding, model: { provider: "custom", model: "different" } }]
+          : [],
+      squads: complete ? [starterSquad] : [],
+      tactics: complete ? [starterTactic] : [],
+      quests: [],
+      workspaces: hasProject ? [starterProject] : [],
+      workspaceSources: [
+        {
+          candidate_id: "starter-source",
+          name: "quest-engineering",
+          source_kind: "git_remote",
+          source_fingerprint: starterProject.source_fingerprint,
+          publication_repository_identity: "example/quest-engineering",
+          max_access: "read_write",
+          shell_available: true,
+        },
+      ],
+      executionOptions:
+        hasProject && projectState === "ready"
+          ? [
+              {
+                model: coding.model,
+                reasoning: ["low", "medium"],
+                tools: coding.tools,
+                workspaces: [
+                  {
+                    workspace_id: starterProject.id,
+                    workspace_access: ["none", "read_only", "read_write"],
+                  },
+                ],
+                available: true,
+              },
+            ]
+          : [],
+      runs: [],
+    },
+    runs: {},
+    selectedRunId: null,
+    starterStatus: status,
+  };
+}
+
 export function createFixture(nameValue: string | null): ClientFixture | null {
   if (!nameValue) return null;
+  if (nameValue.startsWith("starter-"))
+    return createStarterFixture(nameValue as FixtureName);
   if (nameValue.startsWith("work-yard-"))
     return createWorkYardFixture(nameValue as FixtureName);
   const name = fixtureNames.includes(nameValue as FixtureName)

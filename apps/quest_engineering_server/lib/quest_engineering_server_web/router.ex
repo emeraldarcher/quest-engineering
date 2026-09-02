@@ -17,6 +17,8 @@ defmodule QuestEngineering.ServerWeb.Router do
     get "/workspace-sources", WorkspaceSourceController, :index
     post "/workspaces/:id/bindings", WorkspaceSourceController, :bind
     get "/execution-options", ExecutionOptionsController, :index
+    get "/starter-crew", StarterCrewController, :show
+    post "/starter-crew", StarterCrewController, :create
 
     get "/classes", ProductController, :index
     get "/classes/:id", ProductController, :show

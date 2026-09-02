@@ -8,8 +8,8 @@ import GuildHallWindow from "./components/guild/GuildHallWindow.svelte";
 import ForgeWindow from "./components/forge/ForgeWindow.svelte";
 import TavernWindow from "./components/tavern/TavernWindow.svelte";
 import WorkYardWindow from "./components/work-yard/WorkYardWindow.svelte";
+import StarterCrewOnboarding from "./components/onboarding/StarterCrewOnboarding.svelte";
 import { openPullRequest } from "./platform/open-pull-request";
-import { createStarterCrew } from "./domain/starter-crew";
 import type { AppStore, BuildingId } from "./state/app-store";
 
 export let store: AppStore;
@@ -21,7 +21,7 @@ const {
   loading: loadingStore,
   error: errorStore,
   realtimeStatus: realtimeStatusStore,
-  bootstrapRunning: bootstrapRunningStore,
+  starterStatus: starterStatusStore,
 } = store;
 let questDraft: {
   id?: string;
@@ -40,14 +40,18 @@ let questDraft: {
 let selectedQuest: Quest | null = null;
 let preview: unknown = null;
 let selectedMemberKey: string | null = null;
-let starterOption = "";
-let starterWorkspace = "";
 let previousFocus: HTMLElement | null = null;
 let journalOpen = new URLSearchParams(location.search).get("journal") === "1";
 let FixtureChooserComponent: Component | null = null;
 let guildWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let forgeWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let tavernWindow: { requestLeave: (continuation: () => void) => void } | null = null;
+let onboardingDismissed = false;
+let starterCompletionVisible = false;
+let onboardingProjectFlow = false;
+const onboardingScene = store.fixture
+  ? new URLSearchParams(location.search).get("onboarding")
+  : null;
 
 onMount(async () => {
   if (import.meta.env.DEV)
@@ -82,11 +86,16 @@ $: {
   const freshQuest = selectedQuest && product.quests.find((item) => item.id === selectedQuest?.id);
   if (freshQuest && freshQuest !== selectedQuest) selectedQuest = freshQuest;
 }
-$: isEmptyFirstRun =
-  product.classes.length === 0 &&
-  product.loadouts.length === 0 &&
-  product.squads.length === 0 &&
-  product.tactics.length === 0;
+$: starterStatus = $starterStatusStore;
+$: showOnboarding = Boolean(
+  !$loadingStore &&
+    !$selectedBuildingStore &&
+    !onboardingDismissed &&
+    starterStatus &&
+    (starterCompletionVisible ||
+      onboardingScene ||
+      ["empty", "recoverable_partial", "conflict"].includes(starterStatus.state)),
+);
 $: run = $selectedRunStore;
 $: world = $worldStore;
 $: townStatus = {
@@ -95,10 +104,6 @@ $: townStatus = {
   attention: product.quests.filter((quest) => quest.lifecycle.state === "needs_attention").length,
   complete: product.quests.filter((quest) => quest.lifecycle.state === "complete").length,
 };
-$: selectedOption =
-  product.executionOptions.find(
-    (option) => optionKey(option) === starterOption,
-  ) ?? null;
 function handleUnhandledRejection(event: PromiseRejectionEvent) {
   event.preventDefault();
   store.reportError(event.reason);
@@ -171,8 +176,25 @@ function requestCloseWindow() {
   closeWindow();
 }
 function closeWindow() {
+  if ($selectedBuildingStore === "gatehouse") onboardingProjectFlow = false;
   store.selectBuildingId(null);
   void tick().then(() => previousFocus?.focus());
+}
+function addOnboardingProject() {
+  onboardingProjectFlow = true;
+  selectBuilding("gatehouse");
+}
+function projectAddedFromOnboarding() {
+  if (!onboardingProjectFlow) return;
+  onboardingProjectFlow = false;
+  closeWindow();
+}
+function navigateFromOnboarding(building: BuildingId) {
+  if (building === "quest-board") {
+    starterCompletionVisible = false;
+    onboardingDismissed = true;
+  }
+  selectBuilding(building);
 }
 function selectMember(key: string) {
   selectedMemberKey = key;
@@ -253,33 +275,6 @@ async function archiveQuest() {
   }
 }
 
-async function bootstrap() {
-  if (!isEmptyFirstRun || !selectedOption || !starterWorkspace) return;
-  store.bootstrapRunning.set(true);
-  try {
-    await createStarterCrew(store.api, {
-      option: selectedOption,
-      workspace: product.workspaces.find(
-        (item) => item.id === starterWorkspace,
-      )!,
-    });
-    await store.refreshProduct();
-    selectBuilding("quest-board");
-    newQuest();
-  } catch (cause) {
-    store.reportError(cause);
-  } finally {
-    store.bootstrapRunning.set(false);
-  }
-}
-function optionKey(option: {
-  model: { provider: string; model: string };
-  reasoning: string[];
-  tools: string[];
-  workspaces: Array<{ workspace_id: string }>;
-}) {
-  return `${option.model.provider}/${option.model.model}/${option.reasoning.join(",")}/${option.tools.join(",")}/${option.workspaces.map((workspace) => workspace.workspace_id).join(",")}`;
-}
 </script>
 
 <main>
@@ -290,25 +285,13 @@ function optionKey(option: {
 
   {#if journalOpen}<aside class="journal-drawer" aria-label="Recent Quest and Run journal"><header><h2>Quest Journal</h2><button aria-label="Close journal" on:click={() => journalOpen = false}>×</button></header>{#each product.runs as summary}<button class="journal-entry" on:click={() => openJournalRun(summary.id)}><strong>{summary.quest_title}</strong><small>{summary.status}{summary.delivery ? ` · ${summary.delivery.state.replaceAll("_", " ")}` : ""}</small></button>{:else}<p>No recent Runs.</p>{/each}<details class="art-credits"><summary>Art credits</summary><p><strong>Mini Medieval by VEXED</strong></p><ul><li>Mini Medieval 2.4.1</li><li>Mini Medieval Kingdom Interior 1.2</li><li>Mini Medieval User Interface 1.1</li></ul><p>Licensed CC BY 4.0. Base palette: fruitpunch24 by Polyphrog.</p><code>creativecommons.org/licenses/by/4.0/</code><p class="hint">Artwork is framed, combined, animated, and integer-scaled for Quest Engineering.</p></details></aside>{/if}
 
-  {#if isEmptyFirstRun}
-    <section class="first-run" aria-label="First-run starter crew">
-      <h1>Raise a starter crew</h1><p>Create ordinary Product rows for a Builder, Reviewer, Loadouts, Squad, and reusable Tactic.</p>
-      {#if product.executionOptions.filter((item) => item.available).length && product.workspaces.length}
-        <label>Known model <select bind:value={starterOption}><option value="">Choose a connected execution profile</option>{#each product.executionOptions.filter((item) => item.available) as option}<option value={optionKey(option)}>{option.model.provider} / {option.model.model}</option>{/each}</select></label>
-        <label>Project <select bind:value={starterWorkspace}><option value="">Choose Project</option>{#each product.workspaces as workspace}<option value={workspace.id}>{workspace.name}</option>{/each}</select></label>
-        <button disabled={!selectedOption || !starterWorkspace || $bootstrapRunningStore} on:click={bootstrap}>{$bootstrapRunningStore ? "Creating…" : "Create starter crew"}</button>
-      {:else if !product.workspaces.length}
-        <p>Add a Project before raising your starter crew.</p>
-        <button on:click={() => selectBuilding("gatehouse")}>Add your first Project</button>
-      {:else}<p class="error">Connect a compatible Worker, then refresh the town. Manual editors remain available.</p>{/if}
-    </section>
-  {/if}
+  {#if showOnboarding && starterStatus}<StarterCrewOnboarding {store} {product} status={starterStatus} scene={onboardingScene} onAddProject={addOnboardingProject} onOpenProjects={() => selectBuilding("gatehouse")} onNavigate={navigateFromOnboarding} onDismiss={() => (onboardingDismissed = true)} onCompleted={() => (starterCompletionVisible = true)} />{/if}
 
   {#if run && $selectedBuildingStore !== "work-area"}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
 
   {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith", "tavern", "work-area"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
-  {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
+  {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} onProjectAdded={projectAddedFromOnboarding} startInAddMode={onboardingProjectFlow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
 
   {#if $selectedBuildingStore === "guild"}<GuildHallWindow bind:this={guildWindow} {store} {product} onClose={requestCloseWindow} scene={store.fixture ? new URLSearchParams(location.search).get("guild") : null} />{/if}
 
@@ -340,8 +323,7 @@ function optionKey(option: {
   .bad { color: #ffd174; }
   .notice, .error { position: relative; z-index: 7; margin: .7rem; padding: .6rem; background: #27394aee; }
   .error { color: #ffd174; border: 2px solid #a05b58; }
-  .first-run, .panel, .run-status, .journal-drawer { background: linear-gradient(145deg,#2a2942f2,#120e23f2); border: 4px double #aea47e; box-shadow: 0 10px 28px #120e23cc, inset 0 0 22px #120e2399; }
-  .first-run { position: absolute; z-index: 6; top: 5rem; left: 1rem; max-width: 31rem; padding: 1rem; }
+  .panel, .run-status, .journal-drawer { background: linear-gradient(145deg,#2a2942f2,#120e23f2); border: 4px double #aea47e; box-shadow: 0 10px 28px #120e23cc, inset 0 0 22px #120e2399; }
   .journal-drawer { position: absolute; z-index: 8; top: 4.15rem; left: .75rem; width: min(22rem, calc(100vw - 1.5rem)); max-height: calc(100vh - 5rem); overflow: auto; padding: .7rem; }
   .journal-drawer header { display: flex; align-items: center; gap: .5rem; }
   .journal-drawer header h2 { flex: 1; margin: 0; }

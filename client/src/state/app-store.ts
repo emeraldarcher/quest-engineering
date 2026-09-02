@@ -10,6 +10,8 @@ import {
   type RunProjection,
   type RunSummary,
   type Squad,
+  type StarterCrewResult,
+  type StarterCrewStatus,
   type Tactic,
   type Workspace,
   type WorkspaceSource,
@@ -17,6 +19,7 @@ import {
 import type { ClientFixture } from "../fixtures/fixtures";
 import { RealtimeClient, type RealtimeStatus } from "../realtime/client";
 import { projectRunWorld } from "../world/projector";
+import { executeStarterCrewCommand } from "./starter-crew-command";
 
 export type BuildingId =
   | "gatehouse"
@@ -68,6 +71,9 @@ export function createAppStore(
   const error = writable<ApiError | null>(null);
   const realtimeStatus = writable<RealtimeStatus>("disconnected");
   const bootstrapRunning = writable(false);
+  const starterStatus = writable<StarterCrewStatus | null>(
+    fixture?.starterStatus ?? null,
+  );
   const world = derived(selectedRun, (run) => run && projectRunWorld(run));
   let runRequest = 0;
   let refetching = false;
@@ -110,6 +116,7 @@ export function createAppStore(
         workspaceSources,
         executionOptions,
         runs,
+        loadedStarterStatus,
       ] = await Promise.all([
         api.listClasses(includeArchivedDefinitions),
         api.listLoadouts(includeArchivedDefinitions),
@@ -120,6 +127,7 @@ export function createAppStore(
         api.listWorkspaceSources(),
         api.listExecutionOptions(),
         api.listRuns(),
+        api.getStarterCrewStatus(),
       ]);
       product.set({
         classes: classCatalog.filter((item) => item.archived_at === null),
@@ -134,6 +142,7 @@ export function createAppStore(
         executionOptions,
         runs,
       });
+      starterStatus.set(loadedStarterStatus);
     } catch (cause) {
       error.set(toApiError(cause));
     } finally {
@@ -173,6 +182,44 @@ export function createAppStore(
     } catch (cause) {
       reportError(cause);
     }
+  }
+
+  async function refreshStarterStatus() {
+    if (fixture) return get(starterStatus);
+    try {
+      const value = await api.getStarterCrewStatus();
+      starterStatus.set(value);
+      return value;
+    } catch (cause) {
+      reportError(cause);
+      return null;
+    }
+  }
+
+  async function createStarterCrew(
+    workspaceId: string,
+  ): Promise<StarterCrewResult | { status: "ready"; recovered: true } | null> {
+    if (fixture) return null;
+    error.set(null);
+    const outcome = await executeStarterCrewCommand(api, workspaceId);
+    if (outcome.state === "ready") {
+      await loadProduct(true);
+      return outcome.result ?? { status: "ready", recovered: true };
+    }
+    if (outcome.status) starterStatus.set(outcome.status);
+    const failure = toApiError(outcome.cause);
+    error.set(
+      outcome.status
+        ? new ApiError(
+            failure.code,
+            failure.message,
+            failure.details,
+            { ...failure.meta, starter_status_refetched: true },
+            failure.status,
+          )
+        : failure,
+    );
+    return null;
   }
 
   async function refreshWorkspaceSources() {
@@ -303,9 +350,12 @@ export function createAppStore(
     error,
     realtimeStatus,
     bootstrapRunning,
+    starterStatus,
     loadProduct,
     refreshProduct,
     loadTavernCatalogs,
+    refreshStarterStatus,
+    createStarterCrew,
     refreshWorkspaceSources,
     command,
     reportError,

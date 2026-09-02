@@ -20,6 +20,8 @@ import {
   type RunSummary,
   type Squad,
   type SquadMember,
+  type StarterCrewResult,
+  type StarterCrewStatus,
   type StepState,
   strings,
   type Tactic,
@@ -122,6 +124,14 @@ export class ApiClient {
   listExecutionOptions = () =>
     this.get("/execution-options", (value) =>
       list(value, "execution_options", decodeExecutionOption),
+    );
+  getStarterCrewStatus = () =>
+    this.get("/starter-crew", (value) =>
+      decodeStarterCrewStatus(asRecord(value, "starter crew").starter_crew),
+    );
+  createStarterCrew = (workspaceId: string) =>
+    this.post("/starter-crew", { workspace_id: workspaceId }, (value) =>
+      decodeStarterCrewResult(asRecord(value, "starter crew").starter_crew),
     );
   listRuns = () =>
     this.get("/runs", (value) => list(value, "runs", decodeRunSummary));
@@ -505,6 +515,36 @@ function decodeWorkspaceSource(value: unknown): WorkspaceSource {
     ),
     max_access: access(x.max_access),
     shell_available: asBoolean(x.shell_available, "Workspace source"),
+  };
+}
+function decodeStarterCrewStatus(value: unknown): StarterCrewStatus {
+  const x = asRecord(value, "starter crew status");
+  const conflict =
+    x.conflict === null ? null : asRecord(x.conflict, "starter conflict");
+  return {
+    state: asString(
+      x.state,
+      "starter crew status",
+    ) as StarterCrewStatus["state"],
+    conflict: conflict
+      ? {
+          entity_type: asString(
+            conflict.entity_type,
+            "starter conflict",
+          ) as NonNullable<StarterCrewStatus["conflict"]>["entity_type"],
+          key: asString(conflict.key, "starter conflict"),
+        }
+      : null,
+  };
+}
+function decodeStarterCrewResult(value: unknown): StarterCrewResult {
+  const x = asRecord(value, "starter crew result");
+  return {
+    status: asString(x.status, "starter crew result") as "ready",
+    classes: asArray(x.classes, "starter classes").map(decodeClass),
+    loadouts: asArray(x.loadouts, "starter loadouts").map(decodeLoadout),
+    squad: decodeSquad(x.squad),
+    tactic: decodeTactic(x.tactic),
   };
 }
 function decodeExecutionOption(value: unknown): ExecutionOption {
