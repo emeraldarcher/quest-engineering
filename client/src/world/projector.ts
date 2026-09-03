@@ -36,13 +36,7 @@ const factualStates = new Set([
   "failed",
   "uncertain",
 ]);
-const activeStates = new Set([
-  "waiting",
-  "scheduled",
-  "running",
-  "failed",
-  "uncertain",
-]);
+const activeStates = new Set(["running"]);
 const priority: Record<VisualActivity, number> = {
   working: 7,
   moving_to_work: 6,
@@ -73,31 +67,29 @@ export function projectRunWorld(run: RunProjection): RunWorldModel {
     }
   }
 
-  const members = run.squad.members.map((member) => {
-    const steps = byMember.get(member.member_key) ?? [];
-    const active = steps.filter((step) => activeStates.has(step.state));
-    if (active.length > 1)
-      diagnostics.push(`${member.name} has multiple active occurrences.`);
-    const selected = [...active].sort(
-      (a, b) => visualFor(b).priority - visualFor(a).priority,
-    )[0];
-    const presentation = selected
-      ? visualFor(selected)
-      : { visual: "idle" as const, priority: priority.idle };
-    return {
-      member,
-      visual: active.length > 1 ? "idle" : presentation.visual,
-      activeOccurrenceId:
-        active.length === 1 ? (selected?.occurrence_id ?? null) : null,
-      activeStepName:
-        active.length === 1
-          ? (selected?.name ?? selected?.semantic_step_key ?? null)
-          : null,
-      completedOccurrenceIds: steps
-        .filter((step) => step.state === "completed")
-        .map((step) => step.occurrence_id),
-    };
-  });
+  const members = run.squad.members
+    .map((member) => {
+      const steps = byMember.get(member.member_key) ?? [];
+      const active = steps.filter((step) => activeStates.has(step.state));
+      if (active.length > 1)
+        diagnostics.push(`${member.name} has multiple active occurrences.`);
+      const selected = [...active].sort(
+        (a, b) => visualFor(b).priority - visualFor(a).priority,
+      )[0];
+      const presentation = selected
+        ? visualFor(selected)
+        : { visual: "idle" as const, priority: priority.idle };
+      return {
+        member,
+        visual: presentation.visual,
+        activeOccurrenceId: selected?.occurrence_id ?? null,
+        activeStepName: selected?.name ?? selected?.semantic_step_key ?? null,
+        completedOccurrenceIds: steps
+          .filter((step) => step.state === "completed")
+          .map((step) => step.occurrence_id),
+      };
+    })
+    .filter((member) => member.activeOccurrenceId !== null);
 
   return {
     runId: run.id,

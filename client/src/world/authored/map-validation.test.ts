@@ -1,9 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { createFixture } from "../../fixtures/fixtures";
-import { projectRunWorld } from "../projector";
-import { assignMemberHomes, assignWorkSites } from "../visual-identity";
 import { fitAuthoredBounds, unobscuredViewport } from "./authored-camera";
 import { REQUIRED_LOCATION_IDS, REQUIRED_LOCATION_LABELS } from "./map-schema";
 import {
@@ -126,8 +123,8 @@ test("production authored town satisfies semantic runtime contracts", async () =
   expectUnique(result.memberHomes.map((home) => home.id));
   expectUnique(result.statusAnchors.map((anchor) => anchor.id));
   expectUnique(result.reservedSites.map((site) => site.id));
-  expect(result.workstations.length).toBeGreaterThanOrEqual(8);
-  expect(result.memberHomes.length).toBeGreaterThanOrEqual(12);
+  expect(result.crewNavigation.enabled).toBe(false);
+  expect(result.crewNavigation.spawns).toEqual([]);
   expect(result.reservedSites.some((site) => site.id === "war-room")).toBe(
     false,
   );
@@ -163,41 +160,30 @@ test("authored town dimensions and object coordinates may change without breakin
   expect(result.locations[0]?.x).toBe((original.locations[0]?.x ?? 0) + 8);
 });
 
-test("representative runtime fixtures project onto production authored slots", async () => {
+test("legacy homes and workstations are optional compatibility metadata", async () => {
   const { map, resources } = await fixture();
-  const authored = parseAuthoredTownMap(map, resources);
-  const fixtureNames = [
-    "idle",
-    "single-active",
-    "parallel",
-    "waiting",
-    "pr-review",
-    "merged",
-  ] as const;
+  const withoutLegacySlots = clone(map);
+  withoutLegacySlots.layers = withoutLegacySlots.layers.filter(
+    (layer) => !["Member Homes", "Workstations"].includes(layer.name),
+  );
+  const result = parseAuthoredTownMap(withoutLegacySlots, resources);
+  expect(result.memberHomes).toEqual([]);
+  expect(result.workstations).toEqual([]);
+  expect(result.crewNavigation.enabled).toBe(false);
+});
 
-  for (const fixtureName of fixtureNames) {
-    const value = createFixture(fixtureName);
-    const run = value?.selectedRunId ? value.runs[value.selectedRunId] : null;
-    if (!run) throw new Error(`Fixture '${fixtureName}' has no selected Run.`);
-    const projected = projectRunWorld(run);
-    const homes = assignMemberHomes(
-      projected.squadKey,
-      projected.members.map((member) => member.member.member_key),
-      authored.memberHomes,
-    );
-    const assignments = projected.members
-      .filter((member) => member.activeOccurrenceId)
-      .map((member) => ({
-        occurrenceId: member.activeOccurrenceId as string,
-        memberKey: member.member.member_key,
-      }));
-    const sites = assignWorkSites(assignments, authored.workstations);
-
-    expect(homes.size).toBe(projected.members.length);
-    expect(sites.size).toBe(assignments.length);
-    expect(authored.cameraAnchors).toHaveLength(REQUIRED_LOCATION_IDS.length);
-    expect(authored.locations).toHaveLength(REQUIRED_LOCATION_IDS.length);
-  }
+test("crew authoring reference builds a connected route graph", async () => {
+  const { map, resources } = await fixture(
+    "reference/crew-authoring-fixture.tmj",
+  );
+  const result = parseAuthoredTownMap(map, resources);
+  expect(result.crewNavigation.enabled).toBe(true);
+  expect(result.crewNavigation.spawns).toHaveLength(1);
+  expect(result.crewNavigation.routes).toHaveLength(2);
+  expect(
+    result.crewNavigation.activities.map((value) => value.activity),
+  ).toEqual(["general", "crafting"]);
+  expect(result.crewNavigation.graph.nodes.length).toBeGreaterThan(2);
 });
 
 test("old-town reference preserves the previous authored pipeline wiring", async () => {

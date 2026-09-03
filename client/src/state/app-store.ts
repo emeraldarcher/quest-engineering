@@ -1,4 +1,4 @@
-import { derived, get, writable } from "svelte/store";
+import { get, writable } from "svelte/store";
 import type { ApiClient } from "../api/client";
 import {
   ApiError,
@@ -18,7 +18,8 @@ import {
 } from "../api/contracts";
 import type { ClientFixture } from "../fixtures/fixtures";
 import { RealtimeClient, type RealtimeStatus } from "../realtime/client";
-import { projectRunWorld } from "../world/projector";
+import { projectActiveCrewActivities } from "../world/crew/active-crew";
+import { ActiveRunTracker } from "./active-run-tracker";
 import { executeStarterCrewCommand } from "./starter-crew-command";
 
 export type BuildingId =
@@ -80,7 +81,16 @@ export function createAppStore(
   const starterStatus = writable<StarterCrewStatus | null>(
     fixture?.starterStatus ?? null,
   );
-  const world = derived(selectedRun, (run) => run && projectRunWorld(run));
+  const activeCrew = writable(
+    fixture
+      ? projectActiveCrewActivities(
+          Object.values(fixture.runs).filter(
+            (run) => run.status !== "completed" && run.status !== "failed",
+          ),
+        )
+      : [],
+  );
+  let activeRunTracker: ActiveRunTracker | null = null;
   let runRequest = 0;
   let refetching = false;
   let refetchNeeded = false;
@@ -90,11 +100,20 @@ export function createAppStore(
   const realtime = new RealtimeClient(socketUrl, {
     onStatus: (status) => {
       realtimeStatus.set(status);
-      if (status === "connected") serverReachable.set(true);
+      if (status === "connected") {
+        serverReachable.set(true);
+        activeRunTracker?.reconnect();
+      } else if (status === "reconnecting" || status === "disconnected")
+        activeRunTracker?.suspend();
     },
-    onJoined: (run) => selectedRun.set(run),
+    onJoined: (run) => {
+      selectedRun.set(run);
+      activeRunTracker?.seed(run);
+    },
     onInvalidated: (runId) => {
-      if (get(selectedRun)?.id === runId) void invalidateRun(runId);
+      if (activeRunTracker?.isTracking(runId))
+        activeRunTracker.invalidate(runId);
+      else if (get(selectedRun)?.id === runId) void invalidateRun(runId);
     },
     onProductInvalidated: () => void invalidateProduct(),
     onUnavailable: (runId) => {
@@ -104,6 +123,20 @@ export function createAppStore(
       void loadProduct();
     },
   });
+  if (!fixture)
+    activeRunTracker = new ActiveRunTracker({
+      getRun: (runId) => api.getRun(runId),
+      watchRun: (runId) => realtime.watchRun(runId),
+      onActivities: (activities) => activeCrew.set(activities),
+      onProjection: (projection) => {
+        if (get(selectedRun)?.id === projection.id) selectedRun.set(projection);
+      },
+      onError: (runId, cause) => {
+        if (get(selectedRun)?.id === runId) reportError(cause);
+        else if (import.meta.env.DEV)
+          console.warn("Active crew projection could not refresh.", cause);
+      },
+    });
 
   async function loadProduct(quiet = false) {
     if (fixture) {
@@ -153,6 +186,7 @@ export function createAppStore(
         runs,
       });
       starterStatus.set(loadedStarterStatus);
+      activeRunTracker?.updateSummaries(runs);
     } catch (cause) {
       serverReachable.set(false);
       error.set(toApiError(cause));
@@ -254,9 +288,11 @@ export function createAppStore(
     const request = ++runRequest;
     error.set(null);
     try {
-      const run = await api.getRun(runId);
+      const run =
+        activeRunTracker?.projection(runId) ?? (await api.getRun(runId));
       if (request !== runRequest) return;
       selectedRun.set(run);
+      activeRunTracker?.seed(run);
       realtime.selectRun(runId);
       history.replaceState(null, "", `#/run/${encodeURIComponent(runId)}`);
     } catch (cause) {
@@ -288,6 +324,7 @@ export function createAppStore(
         const run = await api.getRun(runId);
         if (request === runRequest && get(selectedRun)?.id === runId) {
           selectedRun.set(run);
+          activeRunTracker?.seed(run);
           error.set(null);
         }
       } while (refetchNeeded);
@@ -347,7 +384,10 @@ export function createAppStore(
     );
   }
   function dispose() {
-    if (!fixture) realtime.disconnect();
+    if (!fixture) {
+      activeRunTracker?.dispose();
+      realtime.disconnect();
+    }
   }
 
   return {
@@ -356,7 +396,7 @@ export function createAppStore(
     product,
     selectedBuilding,
     selectedRun,
-    world,
+    activeCrew,
     loading,
     error,
     realtimeStatus,

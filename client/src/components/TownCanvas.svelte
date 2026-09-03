@@ -2,15 +2,15 @@
 import { onDestroy, onMount } from "svelte";
 import type { BuildingId } from "../state/app-store";
 import { loadBundledTownMap } from "../world/authored/map-loader";
-import type { RunWorldModel } from "../world/projector";
+import type { ActiveCrewActivity } from "../world/crew/active-crew";
+import { projectCrewPresentation } from "../world/crew/crew-presentation";
 import { TownWorld, type TownStatusModel } from "../world/town-world";
 
-export let model: RunWorldModel | null = null;
+export let activities: ActiveCrewActivity[] = [];
 export let status: TownStatusModel = { preparingReview: 0, awaitingReview: 0, attention: 0, complete: 0 };
 export let selectedBuilding: BuildingId | null = null;
-export let selectedMember: string | null = null;
 export let onBuilding: (id: BuildingId) => void;
-export let onMember: (key: string) => void;
+export let onMember: (runId: string, memberKey: string) => void;
 let host: HTMLDivElement;
 let world: TownWorld | null = null;
 let mutationObserver: MutationObserver | null = null;
@@ -21,6 +21,7 @@ const requestedScale = Number(query.get("scale"));
 const keepTownFocused = query.get("camera") === "town";
 const debugMap = import.meta.env.DEV && query.get("debugMap") === "1";
 const result = loadBundledTownMap();
+$: crew = projectCrewPresentation(activities);
 let scale = [1, 2, 3].includes(requestedScale)
   ? requestedScale
   : innerWidth <= 960
@@ -58,23 +59,21 @@ onMount(() => {
     { debugMap },
   );
   void world.mount().then(() => {
-    world?.setModel(model);
+    world?.setCrew(crew);
     world?.setStatus(status);
     updatePanelBounds();
     if (selectedBuilding && !keepTownFocused)
       world?.focusBuilding(selectedBuilding);
     else world?.focusTown();
-    if (selectedMember) world?.focusMember(selectedMember);
   });
   mutationObserver = new MutationObserver(() => requestAnimationFrame(updatePanelBounds));
   mutationObserver.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("resize", updatePanelBounds);
 });
-$: world?.setModel(model);
+$: world?.setCrew(crew);
 $: world?.setStatus(status);
 $: if (selectedBuilding && !keepTownFocused) world?.focusBuilding(selectedBuilding);
 $: if (!selectedBuilding) world?.clearBuildingFocus();
-$: if (selectedMember) world?.focusMember(selectedMember);
 $: if (world) {
   selectedBuilding;
   requestAnimationFrame(updatePanelBounds);
@@ -111,8 +110,8 @@ function setScale(value: number) {
     {#each result.map?.locations ?? [] as location}
       <button on:focus={() => world?.focusBuilding(location.id as BuildingId)} on:click={() => onBuilding(location.id as BuildingId)}>{location.label}</button>
     {/each}
-    {#each model?.members ?? [] as member}
-      <button on:focus={() => world?.focusMember(member.member.member_key)} on:click={() => onMember(member.member.member_key)}>Inspect {member.member.name}: {member.visual.replaceAll("_", " ")}</button>
+    {#each crew as member}
+      <button on:click={() => onMember(member.runId, member.memberKey)}>Inspect {member.memberName}: {member.stepName} for {member.questTitle}</button>
     {/each}
   </div>
 {/if}

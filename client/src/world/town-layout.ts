@@ -88,31 +88,3 @@ export const futureWarRoom = {
   width: 72,
   height: 56,
 } as const;
-
-export const workSites = [
-  { x: 296, y: 286, kind: "table" },
-  { x: 320, y: 286, kind: "bench" },
-  { x: 344, y: 286, kind: "table" },
-  { x: 368, y: 286, kind: "bench" },
-  { x: 296, y: 316, kind: "pad" },
-  { x: 320, y: 316, kind: "table" },
-  { x: 344, y: 316, kind: "pad" },
-  { x: 368, y: 316, kind: "table" },
-  { x: 308, y: 346, kind: "trestle" },
-  { x: 356, y: 346, kind: "trestle" },
-] as const;
-
-export const idleHomes = [
-  { x: 208, y: 258 },
-  { x: 232, y: 266 },
-  { x: 256, y: 258 },
-  { x: 280, y: 270 },
-  { x: 208, y: 294 },
-  { x: 234, y: 304 },
-  { x: 260, y: 296 },
-  { x: 282, y: 310 },
-  { x: 214, y: 330 },
-  { x: 240, y: 340 },
-  { x: 266, y: 334 },
-  { x: 288, y: 350 },
-] as const;

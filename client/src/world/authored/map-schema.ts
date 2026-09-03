@@ -20,6 +20,15 @@ export const REQUIRED_LOCATION_LABELS: Record<AuthoredLocationId, string> = {
 };
 export type PanelSide = "left" | "right";
 export type WorkstationVariant = "desk" | "bench" | "general" | "standing";
+export const CREW_ACTIVITY_CATEGORIES = [
+  "general",
+  "crafting",
+  "research",
+  "mining",
+  "woodcutting",
+  "digging",
+] as const;
+export type CrewActivityCategory = (typeof CREW_ACTIVITY_CATEGORIES)[number];
 
 export interface TownPoint {
   x: number;
@@ -96,6 +105,46 @@ export interface AuthoredMemberHome extends TownPoint {
   group: string;
 }
 
+export interface AuthoredCrewSpawn extends TownPoint {
+  id: string;
+}
+
+export interface AuthoredCrewRoute {
+  id: string;
+  points: TownPoint[];
+}
+
+export interface AuthoredCrewActivity extends TownRect {
+  id: string;
+  activity: CrewActivityCategory;
+  shape: "point" | "rectangle";
+}
+
+export interface CrewRouteNode extends TownPoint {
+  id: string;
+}
+
+export interface CrewRouteEdge {
+  id: string;
+  routeId: string;
+  from: string;
+  to: string;
+  length: number;
+}
+
+export interface CrewRouteGraph {
+  nodes: CrewRouteNode[];
+  edges: CrewRouteEdge[];
+}
+
+export interface AuthoredCrewNavigation {
+  enabled: boolean;
+  spawns: AuthoredCrewSpawn[];
+  routes: AuthoredCrewRoute[];
+  activities: AuthoredCrewActivity[];
+  graph: CrewRouteGraph;
+}
+
 export interface AuthoredAmbientZone extends TownRect {
   id: string;
   variant: string;
@@ -130,8 +179,11 @@ export interface AuthoredTownMap {
   locations: AuthoredLocation[];
   interactionRegions: AuthoredInteractionRegion[];
   cameraAnchors: AuthoredCameraAnchor[];
+  /** Legacy markers retained for map compatibility; not active-crew capacity. */
   workstations: AuthoredWorkstation[];
+  /** Legacy markers retained for map compatibility; not Member homes at runtime. */
   memberHomes: AuthoredMemberHome[];
+  crewNavigation: AuthoredCrewNavigation;
   ambientZones: AuthoredAmbientZone[];
   animalRoutes: AuthoredAnimalRoute[];
   statusAnchors: AuthoredStatusAnchor[];

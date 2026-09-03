@@ -85,7 +85,7 @@ test("pending and waiting remain work orders without fabricated Member assignmen
   const run = base();
   run.steps = [step("pending"), step("waiting")];
   const world = projectRunWorld(run);
-  expect(world.members.map((item) => item.visual)).toEqual(["idle", "idle"]);
+  expect(world.members).toEqual([]);
   expect(world.orderMarkers.map((item) => item.state)).toEqual([
     "pending",
     "waiting",
@@ -103,27 +103,23 @@ test("parallel bound running work projects simultaneously", () => {
     },
   ];
   const world = projectRunWorld(run);
-  expect(world.members.map((item) => item.visual)).toEqual([
-    "working",
-    "moving_to_work",
-  ]);
+  expect(world.members.map((item) => item.visual)).toEqual(["working"]);
 });
 
-test("a waiting Member is shown only when the API supplies a factual binding", () => {
+test("a waiting Member is never projected as active crew", () => {
   const run = base();
   run.steps = [
     step("waiting"),
     { ...step("waiting", true), occurrence_id: "bound-waiting" },
   ];
   const world = projectRunWorld(run);
-  expect(world.members.map((item) => item.visual)).toEqual(["waiting", "idle"]);
+  expect(world.members).toEqual([]);
   expect(world.orderMarkers).toHaveLength(2);
 });
 
-test("historical completed work settles to idle and exposes transition evidence", () => {
+test("historical completed work does not remain in the town projection", () => {
   const run = base();
   run.steps = [step("completed", true)];
   const world = projectRunWorld(run);
-  expect(world.members[0]?.visual).toBe("idle");
-  expect(world.members[0]?.completedOccurrenceIds).toEqual(["occ-completed"]);
+  expect(world.members).toEqual([]);
 });

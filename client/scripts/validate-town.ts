@@ -42,8 +42,11 @@ try {
       `${result.tileLayers.reduce((sum, layer) => sum + layer.tiles.length, 0)} static tiles`,
       `${result.staticObjects.length} static objects`,
       `${result.locations.length} locations`,
-      `${result.workstations.length} workstations`,
-      `${result.memberHomes.length} Member homes`,
+      `${result.workstations.length} legacy workstations`,
+      `${result.memberHomes.length} legacy Member homes`,
+      result.crewNavigation.enabled
+        ? `${result.crewNavigation.spawns.length} crew entrances · ${result.crewNavigation.routes.length} crew routes · ${result.crewNavigation.activities.length} crew activity areas`
+        : "legacy map compatibility mode (crew navigation not authored)",
       `${result.ambientZones.length} ambient zones`,
       `${result.reservedSites.length} reserved sites`,
     ].join(" · "),

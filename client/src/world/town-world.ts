@@ -24,28 +24,16 @@ import type {
   PanelSide,
   TownRect,
 } from "./authored/map-schema";
-import type {
-  MemberWorldModel,
-  RunWorldModel,
-  VisualActivity,
-} from "./projector";
+import type { ActiveCrewPresentation } from "./crew/crew-presentation";
 import {
   allRuntimeAssets,
-  type HairStyle,
-  hairStyles,
-  type SpikeCharacterAction,
   type SunnysideAsset,
   SunnysideAssets,
 } from "./runtime/sunnyside-assets";
-import {
-  assignMemberHomes,
-  assignWorkSites,
-  memberIdentity,
-} from "./visual-identity";
 
 export interface TownWorldEvents {
   onBuildingSelected(id: BuildingId): void;
-  onMemberSelected(memberKey: string): void;
+  onMemberSelected(runId: string, memberKey: string): void;
 }
 
 export interface TownStatusModel {
@@ -57,24 +45,6 @@ export interface TownStatusModel {
 
 export interface TownWorldOptions {
   debugMap?: boolean;
-}
-
-interface MemberEntity {
-  container: Container;
-  base: Sprite;
-  hair: Sprite;
-  marker: Graphics;
-  glyph: Graphics;
-  name: Text;
-  status: Text;
-  model: MemberWorldModel;
-  identity: ReturnType<typeof memberIdentity>;
-  hairStyle: HairStyle;
-  target: { x: number; y: number };
-  home: { x: number; y: number };
-  previousCompleted: Set<string>;
-  completedUntil: number;
-  hovered: boolean;
 }
 
 interface AnimatedSprite {
@@ -107,12 +77,12 @@ export class TownWorld {
   private orderLayer = new Container();
   private statusLayer = new Container();
   private debugLayer = new Container();
+  private crewDebugLayer = new Container();
   private loaded = new Map<string, Texture>();
   private framed = new Map<string, Texture>();
-  private members = new Map<string, MemberEntity>();
   private labels = new Map<AuthoredLocationId, Text>();
   private animated: AnimatedSprite[] = [];
-  private model: RunWorldModel | null = null;
+  private crew: ActiveCrewPresentation[] = [];
   private status: TownStatusModel = {
     preparingReview: 0,
     awaitingReview: 0,
@@ -120,7 +90,6 @@ export class TownWorld {
     complete: 0,
   };
   private focusedBuilding: AuthoredLocationId | null = null;
-  private selectedMemberKey: string | null = null;
   private focus = { x: 320, y: 208 };
   private targetFocus = { ...this.focus };
   private zoom: 1 | 2 | 3;
@@ -202,9 +171,12 @@ export class TownWorld {
     this.buildStaticMap();
     this.buildInteractions();
     this.buildAmbientLife();
-    if (this.options.debugMap) this.buildDebugOverlay();
+    if (this.options.debugMap) {
+      this.buildDebugOverlay();
+      this.debugLayer.addChild(this.crewDebugLayer);
+      this.updateCrewDebugOverlay();
+    }
     this.updateStatusMarker();
-    this.updateMembers();
     this.focusTown();
 
     this.app.stage.eventMode = "static";
@@ -236,9 +208,9 @@ export class TownWorld {
     this.mounted = true;
   }
 
-  setModel(model: RunWorldModel | null): void {
-    this.model = model;
-    if (this.mounted) this.updateMembers();
+  setCrew(crew: readonly ActiveCrewPresentation[]): void {
+    this.crew = [...crew];
+    if (this.mounted && this.options.debugMap) this.updateCrewDebugOverlay();
   }
 
   setStatus(status: TownStatusModel): void {
@@ -267,7 +239,6 @@ export class TownWorld {
     const anchor = this.map.cameraAnchors.find((value) => value.id === id);
     if (!anchor) return;
     this.focusedBuilding = anchor.id;
-    this.selectedMemberKey = null;
     this.cameraMode = "location";
     this.zoom = anchor.zoom;
     this.preferredPanelSide = anchor.panelSide;
@@ -280,24 +251,12 @@ export class TownWorld {
     this.refreshHighlights();
   }
 
-  focusMember(memberKey: string): void {
-    this.selectedMemberKey = memberKey;
-    const entity = this.members.get(memberKey);
-    if (!entity) return;
-    this.cameraMode = "member";
-    this.targetFocus = { x: entity.container.x, y: entity.container.y - 10 };
-    this.refreshMemberPresentation(entity);
-  }
-
   focusTown(): void {
     this.cameraMode = "town";
     this.focusedBuilding = null;
-    this.selectedMemberKey = null;
     this.zoom = this.overviewZoom();
     this.targetFocus = this.rectCenter(this.map.functionalTownBounds);
     this.refreshHighlights();
-    for (const entity of this.members.values())
-      this.refreshMemberPresentation(entity);
   }
 
   destroy(): void {
@@ -356,7 +315,6 @@ export class TownWorld {
       this.focus.y += (this.targetFocus.y - this.focus.y) * 0.24;
     } else this.focus = { ...this.targetFocus };
     this.positionCamera();
-    for (const entity of this.members.values()) this.animateMember(entity, now);
     this.animated = this.animated.filter(
       (animated) => !animated.sprite.destroyed,
     );
@@ -601,294 +559,6 @@ export class TownWorld {
     });
   }
 
-  private updateMembers(): void {
-    const incoming = new Set(
-      this.model?.members.map((value) => value.member.member_key) ?? [],
-    );
-    for (const [key, entity] of this.members) {
-      if (!incoming.has(key)) {
-        entity.container.destroy({ children: true });
-        this.members.delete(key);
-      }
-    }
-    if (!this.model) {
-      this.updateOrders();
-      return;
-    }
-    const memberKeys = this.model.members.map(
-      (member) => member.member.member_key,
-    );
-    const homes = assignMemberHomes(
-      this.model.squadKey,
-      memberKeys,
-      this.map.memberHomes,
-    );
-    const assignments = this.model.members
-      .filter((member) => member.activeOccurrenceId)
-      .map((member) => ({
-        occurrenceId: member.activeOccurrenceId as string,
-        memberKey: member.member.member_key,
-      }));
-    const sites = assignWorkSites(assignments, this.map.workstations);
-    for (const member of this.model.members) {
-      const key = member.member.member_key;
-      const home = homes.get(key) ?? this.map.memberHomes[0];
-      if (!home) continue;
-      let entity = this.members.get(key);
-      if (!entity) {
-        entity = this.createMember(member, this.model.squadKey, home);
-        this.members.set(key, entity);
-        this.activity.addChild(entity.container);
-      }
-      const newlyCompleted = member.completedOccurrenceIds.some(
-        (id) => !entity?.previousCompleted.has(id),
-      );
-      if (newlyCompleted) entity.completedUntil = performance.now() + 1400;
-      entity.previousCompleted = new Set(member.completedOccurrenceIds);
-      entity.model = member;
-      entity.home = { x: home.x, y: home.y };
-      const site = member.activeOccurrenceId
-        ? sites.get(member.activeOccurrenceId)
-        : null;
-      entity.target = site
-        ? { x: site.x, y: site.y }
-        : { x: home.x, y: home.y };
-      if (
-        member.visual === "working" ||
-        member.visual === "failed" ||
-        member.visual === "uncertain"
-      )
-        entity.container.position.set(entity.target.x, entity.target.y);
-      this.refreshMemberPresentation(entity);
-    }
-    this.updateOrders();
-  }
-
-  private createMember(
-    model: MemberWorldModel,
-    squadKey: string,
-    home: { x: number; y: number },
-  ): MemberEntity {
-    const identity = memberIdentity(squadKey, model.member.member_key);
-    const hairStyle =
-      hairStyles[identity.hash % hairStyles.length] ?? hairStyles[0];
-    const base = new Sprite();
-    const hair = new Sprite();
-    base.anchor.set(0.5, 1);
-    hair.anchor.set(0.5, 1);
-    const container = new Container();
-    const marker = new Graphics();
-    const glyph = new Graphics();
-    glyph.y = -22;
-    const name = this.worldText(model.member.name, 6, palette.cream);
-    name.anchor.set(0.5);
-    name.y = -36;
-    name.visible = false;
-    const status = this.worldText("idle", 5, palette.paper);
-    status.anchor.set(0.5);
-    status.y = -29;
-    status.visible = false;
-    container.addChild(marker, base, hair, glyph, status, name);
-    container.position.set(home.x, home.y);
-    container.eventMode = "static";
-    container.cursor = "pointer";
-    container.zIndex = Math.round(home.y);
-    const entity: MemberEntity = {
-      container,
-      base,
-      hair,
-      marker,
-      glyph,
-      name,
-      status,
-      model,
-      identity,
-      hairStyle,
-      target: { ...home },
-      home: { ...home },
-      previousCompleted: new Set(model.completedOccurrenceIds),
-      completedUntil: 0,
-      hovered: false,
-    };
-    container.on("pointerover", () => {
-      entity.hovered = true;
-      this.refreshMemberPresentation(entity);
-    });
-    container.on("pointerout", () => {
-      entity.hovered = false;
-      this.refreshMemberPresentation(entity);
-    });
-    container.on("pointertap", () => {
-      if (this.dragDistance >= 5) return;
-      this.focusMember(model.member.member_key);
-      this.events.onMemberSelected(model.member.member_key);
-    });
-    return entity;
-  }
-
-  private actionFor(visual: VisualActivity): SpikeCharacterAction {
-    if (visual === "working") return "doing";
-    if (visual === "moving_to_work") return "walk";
-    return "idle";
-  }
-
-  private animateMember(entity: MemberEntity, now: number): void {
-    const transitional = entity.completedUntil > now;
-    const visual: VisualActivity = transitional
-      ? "completed_transition"
-      : entity.model.visual;
-    const action = this.actionFor(visual);
-    const animation = SunnysideAssets.characters[action];
-    const frame = this.reducedMotion
-      ? 0
-      : (Math.floor(now / 100) + (entity.identity.hash % 17)) %
-        animation.frames;
-    entity.base.texture = this.assetFrame(animation.base, frame);
-    entity.hair.texture = this.assetFrame(
-      animation.hair[entity.hairStyle],
-      frame,
-    );
-    if (
-      !this.reducedMotion &&
-      (visual === "moving_to_work" || visual === "idle")
-    ) {
-      const destination =
-        visual === "idle"
-          ? {
-              x:
-                entity.home.x +
-                Math.round(Math.sin(now / 2600 + entity.identity.hash) * 5),
-              y:
-                entity.home.y +
-                Math.round(Math.cos(now / 3100 + entity.identity.hash) * 3),
-            }
-          : entity.target;
-      const dx = destination.x - entity.container.x;
-      const dy = destination.y - entity.container.y;
-      const distance = Math.hypot(dx, dy);
-      if (distance > 0.5) {
-        const amount = Math.min(distance, visual === "idle" ? 0.18 : 0.55);
-        entity.container.x += (dx / distance) * amount;
-        entity.container.y += (dy / distance) * amount;
-      }
-    }
-    entity.container.position.set(
-      Math.round(entity.container.x),
-      Math.round(entity.container.y),
-    );
-    entity.container.zIndex = Math.round(entity.container.y);
-    if (
-      this.cameraMode === "member" &&
-      this.selectedMemberKey === entity.model.member.member_key
-    )
-      this.targetFocus = { x: entity.container.x, y: entity.container.y - 10 };
-    this.drawStatusGlyph(entity.glyph, visual);
-  }
-
-  private refreshMemberPresentation(entity: MemberEntity): void {
-    const selected = this.selectedMemberKey === entity.model.member.member_key;
-    entity.name.visible =
-      entity.hovered ||
-      selected ||
-      ["failed", "uncertain"].includes(entity.model.visual);
-    entity.status.visible = entity.hovered || selected;
-    entity.status.text = entity.model.visual.replaceAll("_", " ");
-    entity.marker
-      .clear()
-      .ellipse(0, 0, selected ? 17 : 13, selected ? 7 : 5)
-      .fill({
-        color: selected ? palette.cream : palette.ink,
-        alpha: selected ? 0.82 : 0.28,
-      });
-    const size = Math.ceil(36 / this.zoom);
-    entity.container.hitArea = new Rectangle(-size / 2, -size + 5, size, size);
-  }
-
-  private drawStatusGlyph(glyph: Graphics, visual: VisualActivity): void {
-    glyph.clear();
-    if (visual === "idle") return;
-    const color =
-      visual === "working"
-        ? palette.success
-        : visual === "moving_to_work"
-          ? palette.moving
-          : visual === "failed"
-            ? palette.failure
-            : visual === "uncertain"
-              ? palette.uncertain
-              : palette.review;
-    glyph.circle(0, 0, 6).fill(palette.cream).stroke({ color, width: 2 });
-    if (visual === "working")
-      glyph
-        .moveTo(-3, 0)
-        .lineTo(0, 3)
-        .lineTo(4, -3)
-        .stroke({ color, width: 1.5 });
-    else if (visual === "moving_to_work")
-      glyph
-        .moveTo(-3, 0)
-        .lineTo(3, 0)
-        .lineTo(1, -2)
-        .moveTo(3, 0)
-        .lineTo(1, 2)
-        .stroke({ color, width: 1.5 });
-    else if (visual === "failed")
-      glyph
-        .moveTo(-3, -3)
-        .lineTo(3, 3)
-        .moveTo(3, -3)
-        .lineTo(-3, 3)
-        .stroke({ color, width: 1.5 });
-    else if (visual === "uncertain")
-      glyph
-        .moveTo(-2, -2)
-        .lineTo(0, -3)
-        .lineTo(2, -2)
-        .lineTo(0, 0)
-        .lineTo(0, 1)
-        .moveTo(0, 3)
-        .lineTo(0, 3)
-        .stroke({ color, width: 1 });
-  }
-
-  private updateOrders(): void {
-    for (const child of this.orderLayer.removeChildren())
-      child.destroy({ children: true });
-    const workArea = this.map.locations.find(
-      (location) => location.id === "work-area",
-    );
-    if (!workArea) return;
-    for (const [index, marker] of (this.model?.orderMarkers ?? [])
-      .slice(0, 8)
-      .entries()) {
-      const token = new Container();
-      const back = new Graphics()
-        .roundRect(-7, -7, 14, 14, 3)
-        .fill(marker.state === "waiting" ? palette.warning : 0x718b86)
-        .stroke({ color: palette.ink, width: 1 });
-      const glyph = this.worldText(
-        marker.state === "waiting" ? "!" : "·",
-        7,
-        palette.ink,
-      );
-      glyph.anchor.set(0.5);
-      const label = this.worldText(marker.name, 5, palette.cream);
-      label.position.set(10, -4);
-      label.visible = false;
-      token.addChild(back, glyph, label);
-      token.position.set(workArea.x - 54 + index * 17, workArea.y + 42);
-      token.eventMode = "static";
-      token.cursor = "help";
-      token.on("pointerover", () => {
-        label.visible = true;
-      });
-      token.on("pointerout", () => {
-        label.visible = false;
-      });
-      this.orderLayer.addChild(token);
-    }
-  }
-
   private updateStatusMarker(): void {
     for (const child of this.statusLayer.removeChildren())
       child.destroy({ children: true });
@@ -990,9 +660,43 @@ export class TownWorld {
     for (const anchor of this.map.cameraAnchors)
       drawPoint(anchor.x, anchor.y, 0xfacc15, `camera:${anchor.id}`);
     for (const station of this.map.workstations)
-      drawPoint(station.x, station.y, 0xf97316, station.id);
+      drawPoint(
+        station.x,
+        station.y,
+        0xf97316,
+        `legacy-workstation:${station.id}`,
+      );
     for (const home of this.map.memberHomes)
-      drawPoint(home.x, home.y, 0xa855f7, home.id);
+      drawPoint(home.x, home.y, 0xa855f7, `legacy-home:${home.id}`);
+    for (const spawn of this.map.crewNavigation.spawns)
+      drawPoint(spawn.x, spawn.y, 0x14b8a6, `crew-spawn:${spawn.id}`);
+    for (const route of this.map.crewNavigation.routes) {
+      const first = route.points[0];
+      if (!first) continue;
+      const graphic = new Graphics().moveTo(first.x, first.y);
+      for (const point of route.points.slice(1))
+        graphic.lineTo(point.x, point.y);
+      graphic.stroke({ color: 0x2dd4bf, width: 1 });
+      this.debugLayer.addChild(graphic);
+      drawPoint(first.x, first.y, 0x2dd4bf, `crew-route:${route.id}`);
+    }
+    for (const zone of this.map.crewNavigation.activities) {
+      if (zone.shape === "point")
+        drawPoint(zone.x, zone.y, 0xe879f9, `crew:${zone.activity}:${zone.id}`);
+      else {
+        const graphic = new Graphics()
+          .rect(zone.x, zone.y, zone.width, zone.height)
+          .fill({ color: 0xe879f9, alpha: 0.08 })
+          .stroke({ color: 0xe879f9, width: 1 });
+        const text = this.worldText(
+          `crew:${zone.activity}:${zone.id}`,
+          5,
+          0xe879f9,
+        );
+        text.position.set(zone.x + 3, zone.y + 3);
+        this.debugLayer.addChild(graphic, text);
+      }
+    }
     for (const anchor of this.map.statusAnchors)
       drawPoint(anchor.x, anchor.y, 0xef4444, anchor.id);
     for (const zone of this.map.ambientZones) {
@@ -1020,6 +724,27 @@ export class TownWorld {
       text.position.set(site.x + 3, site.y + 3);
       this.debugLayer.addChild(graphic, text);
     }
+  }
+
+  private updateCrewDebugOverlay(): void {
+    for (const child of this.crewDebugLayer.removeChildren())
+      child.destroy({ children: true });
+    const lines = [
+      this.map.crewNavigation.enabled
+        ? `crew navigation enabled · ${this.map.crewNavigation.graph.nodes.length} nodes`
+        : "crew navigation legacy mode · awaiting authored markers",
+      `active crew: ${this.crew.length}`,
+      ...this.crew.map(
+        (member) =>
+          `${member.runId} · ${member.memberName} · ${member.squadName} · ${member.stepName}`,
+      ),
+    ];
+    const text = this.worldText(lines.join("\n"), 5, 0x5eead4);
+    text.position.set(
+      this.map.functionalTownBounds.x + 4,
+      this.map.functionalTownBounds.y + 14,
+    );
+    this.crewDebugLayer.addChild(text);
   }
 
   private worldText(text: string, size: number, color: number): Text {

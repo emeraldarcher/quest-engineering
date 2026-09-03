@@ -45,6 +45,26 @@
     ]
   },
   {
+    "name": "crew_spawn",
+    "color": "#14b8a6",
+    "description": "Point where active crew enter the town. The stable object name identifies the entrance; it is never tied to a Member.",
+    "properties": []
+  },
+  {
+    "name": "crew_route",
+    "color": "#2dd4bf",
+    "description": "Polyline tracing a visibly safe crew walking route. Route vertices connect only when they coincide within the documented tolerance.",
+    "properties": []
+  },
+  {
+    "name": "crew_activity",
+    "color": "#e879f9",
+    "description": "Point or rectangle for presentation-only crew activity. It does not change Runtime or Tactic semantics.",
+    "properties": [
+      { "name": "qeActivity", "type": "string", "value": "general" }
+    ]
+  },
+  {
     "name": "ambient_zone",
     "color": "#06b6d4",
     "description": "Moveable and resizable area for presentation-only ambient activity.",

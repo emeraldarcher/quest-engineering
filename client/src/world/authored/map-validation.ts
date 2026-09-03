@@ -1,7 +1,17 @@
 import {
+  buildCrewRouteGraph,
+  CREW_ROUTE_ACCESS_TOLERANCE,
+  CREW_ROUTE_CONNECTION_TOLERANCE,
+  crewRouteComponents,
+  nearestCrewRouteConnection,
+} from "./crew-navigation";
+import {
   type AuthoredAmbientZone,
   type AuthoredAnimalRoute,
   type AuthoredCameraAnchor,
+  type AuthoredCrewActivity,
+  type AuthoredCrewRoute,
+  type AuthoredCrewSpawn,
   type AuthoredImageTile,
   type AuthoredInteractionRegion,
   type AuthoredLocation,
@@ -13,6 +23,8 @@ import {
   type AuthoredTilePlacement,
   type AuthoredTownMap,
   type AuthoredWorkstation,
+  CREW_ACTIVITY_CATEGORIES,
+  type CrewActivityCategory,
   type PanelSide,
   QUEST_ENGINEERING_MAP_VERSION,
   REQUIRED_LOCATION_IDS,
@@ -50,6 +62,7 @@ const REQUIRED_TILE_LAYERS = [
   "Foreground Canopy",
 ] as const;
 const ALLOWED_QE_PROPERTIES = new Set([
+  "qeActivity",
   "qeGroup",
   "qeLabel",
   "qeLocation",
@@ -62,8 +75,6 @@ const REQUIRED_OBJECT_LAYERS = [
   "Locations",
   "Interaction Regions",
   "Camera Anchors",
-  "Workstations",
-  "Member Homes",
   "Ambient Zones",
   "Animal Routes",
   "Status Anchors",
@@ -511,10 +522,6 @@ export function parseAuthoredTownMap(
     "workstation",
     issues,
   );
-  if (workstations.length < 8)
-    issues.push(
-      `At least 8 authored workstations are required. Undo deleted workstation points or copy them from ${AUTHORING_REFERENCE}.`,
-    );
 
   const memberHomes = typed(
     "Member Homes",
@@ -530,10 +537,131 @@ export function parseAuthoredTownMap(
     "Member home",
     issues,
   );
-  if (memberHomes.length < 12)
+
+  const crewLayerNames = [
+    "Crew Entrances",
+    "Crew Navigation",
+    "Crew Activity Zones",
+  ] as const;
+  const presentCrewLayers = crewLayerNames.filter((name) =>
+    objectLayers.has(name),
+  );
+  const crewEnabled = presentCrewLayers.length > 0;
+  if (crewEnabled && presentCrewLayers.length !== crewLayerNames.length)
     issues.push(
-      `At least 12 authored Member homes are required. Undo deleted home points or copy them from ${AUTHORING_REFERENCE}.`,
+      `Crew navigation authoring is incomplete. Add object layers: ${crewLayerNames
+        .filter((name) => !objectLayers.has(name))
+        .join(", ")}.`,
     );
+
+  const crewSpawns = typed(
+    "Crew Entrances",
+    "crew_spawn",
+  ).map<AuthoredCrewSpawn>((object) => {
+    if (!object.point)
+      issues.push(`crew_spawn '${object.name}' must be a point object`);
+    return { id: object.name, x: object.x, y: object.y };
+  });
+  assertUnique(
+    crewSpawns.map((spawn) => spawn.id),
+    "crew spawn",
+    issues,
+  );
+
+  const crewRoutes = typed(
+    "Crew Navigation",
+    "crew_route",
+  ).map<AuthoredCrewRoute>((object) => {
+    const points = (object.polyline ?? []).map((point) => ({
+      x: object.x + point.x,
+      y: object.y + point.y,
+    }));
+    if (points.length < 2)
+      issues.push(
+        `crew_route '${object.name}' requires a polyline with at least two vertices`,
+      );
+    if (
+      points.some(
+        (point, index) =>
+          index > 0 &&
+          Math.hypot(
+            point.x - (points[index - 1]?.x ?? point.x),
+            point.y - (points[index - 1]?.y ?? point.y),
+          ) <= CREW_ROUTE_CONNECTION_TOLERANCE,
+      )
+    )
+      issues.push(
+        `crew_route '${object.name}' contains a segment at or below the ${CREW_ROUTE_CONNECTION_TOLERANCE}-pixel connection tolerance`,
+      );
+    return { id: object.name, points };
+  });
+  assertUnique(
+    crewRoutes.map((route) => route.id),
+    "crew route",
+    issues,
+  );
+
+  const crewActivities = typed(
+    "Crew Activity Zones",
+    "crew_activity",
+  ).map<AuthoredCrewActivity>((object) => {
+    const activity = propertyString(object, "qeActivity", issues);
+    if (!CREW_ACTIVITY_CATEGORIES.includes(activity as CrewActivityCategory))
+      issues.push(
+        `crew_activity '${object.name}' has unknown qeActivity '${activity}'. Use ${CREW_ACTIVITY_CATEGORIES.join(", ")}.`,
+      );
+    const point = object.point === true;
+    const width = object.width ?? 0;
+    const height = object.height ?? 0;
+    if (!point && (width <= 0 || height <= 0))
+      issues.push(
+        `crew_activity '${object.name}' must be a point or positive rectangle`,
+      );
+    return {
+      id: object.name,
+      activity: activity as CrewActivityCategory,
+      shape: point ? "point" : "rectangle",
+      x: object.x,
+      y: object.y,
+      width: point ? 0 : width,
+      height: point ? 0 : height,
+    };
+  });
+  assertUnique(
+    crewActivities.map((activity) => activity.id),
+    "crew activity",
+    issues,
+  );
+
+  const crewGraph = buildCrewRouteGraph(crewRoutes);
+  if (crewEnabled) {
+    if (crewSpawns.length === 0)
+      issues.push("Crew Entrances requires at least one crew_spawn point.");
+    if (crewRoutes.length === 0)
+      issues.push("Crew Navigation requires at least one crew_route polyline.");
+    if (!crewActivities.some((activity) => activity.activity === "general"))
+      issues.push(
+        "Crew Activity Zones requires at least one general crew_activity fallback.",
+      );
+    if (crewGraph.nodes.length > 0 && crewRouteComponents(crewGraph).length > 1)
+      issues.push(
+        `Crew Navigation routes form disconnected networks. Make route vertices coincide within ${CREW_ROUTE_CONNECTION_TOLERANCE} world pixel.`,
+      );
+    for (const spawn of crewSpawns) {
+      const connection = nearestCrewRouteConnection(spawn, crewGraph);
+      if (!connection || connection.distance > CREW_ROUTE_ACCESS_TOLERANCE)
+        issues.push(
+          `crew_spawn '${spawn.id}' is unreachable; place it within ${CREW_ROUTE_ACCESS_TOLERANCE} world pixels of a crew_route.`,
+        );
+    }
+    for (const activity of crewActivities) {
+      const connection = nearestCrewRouteConnection(activity, crewGraph);
+      if (!connection || connection.distance > CREW_ROUTE_ACCESS_TOLERANCE)
+        issues.push(
+          `crew_activity '${activity.id}' is unreachable; place it within ${CREW_ROUTE_ACCESS_TOLERANCE} world pixels of a crew_route.`,
+        );
+    }
+  }
 
   const ambientZones = typed(
     "Ambient Zones",
@@ -650,12 +778,14 @@ export function parseAuthoredTownMap(
     ...cameraAnchors,
     ...workstations,
     ...memberHomes,
+    ...crewSpawns,
     ...statusAnchors,
   ])
     if (!inBounds(point, bounds))
       issues.push(`authored point '${point.id}' lies outside map bounds`);
   for (const region of [
     ...interactionRegions,
+    ...crewActivities.filter((activity) => activity.shape === "rectangle"),
     ...ambientZones,
     ...reservedSites,
   ])
@@ -675,6 +805,16 @@ export function parseAuthoredTownMap(
       issues.push(
         `animal route '${route.id}' requires at least two in-bounds points`,
       );
+  for (const route of crewRoutes)
+    if (route.points.some((point) => !inBounds(point, bounds)))
+      issues.push(
+        `crew_route '${route.id}' contains a point outside map bounds`,
+      );
+  for (const activity of crewActivities.filter(
+    (value) => value.shape === "point",
+  ))
+    if (!inBounds(activity, bounds))
+      issues.push(`authored point '${activity.id}' lies outside map bounds`);
   if (functionalTownBounds.width <= 0 || functionalTownBounds.height <= 0)
     issues.push("functional-town-bounds must have positive dimensions.");
   else if (!rectInBounds(functionalTownBounds, bounds))
@@ -695,6 +835,13 @@ export function parseAuthoredTownMap(
     cameraAnchors,
     workstations,
     memberHomes,
+    crewNavigation: {
+      enabled: crewEnabled,
+      spawns: crewSpawns,
+      routes: crewRoutes,
+      activities: crewActivities,
+      graph: crewGraph,
+    },
     ambientZones,
     animalRoutes,
     statusAnchors,

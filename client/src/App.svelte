@@ -16,7 +16,7 @@ export let store: AppStore;
 const {
   product: productStore,
   selectedBuilding: selectedBuildingStore,
-  world: worldStore,
+  activeCrew: activeCrewStore,
   loading: loadingStore,
   error: errorStore,
   realtimeStatus: realtimeStatusStore,
@@ -74,7 +74,7 @@ $: showOnboarding = Boolean(
       onboardingScene ||
       ["empty", "recoverable_partial", "conflict"].includes(starterStatus.state)),
 );
-$: world = $worldStore;
+$: activeCrew = $activeCrewStore;
 $: townStatus = {
   preparingReview: product.quests.filter((quest) => quest.lifecycle.state === "preparing_review").length,
   awaitingReview: product.quests.filter((quest) => quest.lifecycle.state === "awaiting_review").length,
@@ -179,7 +179,8 @@ function navigateFromOnboarding(building: BuildingId) {
   }
   selectBuilding(building);
 }
-function selectMember(key: string) {
+async function selectMember(runId: string, key: string) {
+  await store.selectRun(runId);
   selectedMemberKey = key;
   selectBuilding("work-area");
 }
@@ -197,7 +198,7 @@ async function openQuestRun(runId: string) {
 </script>
 
 <main>
-  <TownCanvas model={world} status={townStatus} selectedBuilding={$selectedBuildingStore} selectedMember={selectedMemberKey} onBuilding={selectBuilding} onMember={selectMember} />
+  <TownCanvas activities={activeCrew} status={townStatus} selectedBuilding={$selectedBuildingStore} onBuilding={selectBuilding} onMember={selectMember} />
   <TownHud
     {product}
     realtimeStatus={$realtimeStatusStore}
