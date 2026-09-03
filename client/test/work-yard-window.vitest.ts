@@ -62,6 +62,47 @@ test("replaces the native dropdown with summary-only Run browser cards", () => {
   expect(screen.getAllByText(/of 2 steps/).length).toBeGreaterThan(0);
 });
 
+test("a completed archived Quest remains discoverable through its merged Run", async () => {
+  const value = fixture("work-yard-merged");
+  const runId = value.selectedRunId;
+  const retainedRun = runId ? value.runs[runId] : null;
+  if (!runId || !retainedRun) throw new Error("Missing retained Run fixture");
+  value.runs[runId] = {
+    ...retainedRun,
+    quest: { ...retainedRun.quest, title: "Demo For John" },
+  };
+  value.selectedRunId = null;
+  value.product = {
+    ...value.product,
+    quests: [],
+    runs: value.product.runs.map((summary) => ({
+      ...summary,
+      quest_title: "Demo For John",
+    })),
+  };
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: {
+      store,
+      product: value.product,
+      onClose: vi.fn(),
+    },
+  });
+
+  expect(
+    screen.getByRole("button", { name: /Demo For John.*Merged/ }),
+  ).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { name: "Demo For John" }),
+  ).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Delivery" }));
+  expect(screen.getAllByText("Merged").length).toBeGreaterThan(0);
+});
+
 test("Overview is concise and separates execution, Delivery, Quest, and workspace", () => {
   setup();
 

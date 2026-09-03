@@ -21,4 +21,4 @@ Deterministic local fixtures captured at DPR 1 with `bun run --cwd client screen
 - [AFTER — browse/detail Guild Hall](comparison/AFTER-guild-hall-1440x900.png)
 - [Side-by-side comparison](comparison/before-after-side-by-side.png)
 
-The milestone is intentionally limited to Guild Hall. Forge, Tavern, Quest Board, Work Yard, Journal, runtime UI, and the authored town map retain their existing behavior and styling pending visual approval.
+At capture time, this milestone was intentionally limited to Guild Hall; the other management surfaces, runtime UI, and authored town map remained unchanged.

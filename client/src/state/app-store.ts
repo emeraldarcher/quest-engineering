@@ -70,7 +70,12 @@ export function createAppStore(
   );
   const loading = writable(true);
   const error = writable<ApiError | null>(null);
-  const realtimeStatus = writable<RealtimeStatus>("disconnected");
+  const realtimeStatus = writable<RealtimeStatus>(
+    fixture?.realtimeStatus ?? "disconnected",
+  );
+  const serverReachable = writable<boolean | null>(
+    fixture ? fixture.realtimeStatus !== "disconnected" : null,
+  );
   const bootstrapRunning = writable(false);
   const starterStatus = writable<StarterCrewStatus | null>(
     fixture?.starterStatus ?? null,
@@ -83,7 +88,10 @@ export function createAppStore(
   let productRefetchNeeded = false;
 
   const realtime = new RealtimeClient(socketUrl, {
-    onStatus: (status) => realtimeStatus.set(status),
+    onStatus: (status) => {
+      realtimeStatus.set(status);
+      if (status === "connected") serverReachable.set(true);
+    },
     onJoined: (run) => selectedRun.set(run),
     onInvalidated: (runId) => {
       if (get(selectedRun)?.id === runId) void invalidateRun(runId);
@@ -130,6 +138,7 @@ export function createAppStore(
         api.listRuns(),
         api.getStarterCrewStatus(),
       ]);
+      serverReachable.set(true);
       product.set({
         classes: classCatalog.filter((item) => item.archived_at === null),
         classCatalog,
@@ -145,6 +154,7 @@ export function createAppStore(
       });
       starterStatus.set(loadedStarterStatus);
     } catch (cause) {
+      serverReachable.set(false);
       error.set(toApiError(cause));
     } finally {
       if (!quiet) loading.set(false);
@@ -350,6 +360,7 @@ export function createAppStore(
     loading,
     error,
     realtimeStatus,
+    serverReachable,
     bootstrapRunning,
     starterStatus,
     loadProduct,

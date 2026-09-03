@@ -1,6 +1,6 @@
 # Mini Medieval attribution
 
-Quest Engineering uses artwork by **VEXED** from the following Mini Medieval packs:
+Quest Engineering retains historical/reference artwork by **VEXED** from the following Mini Medieval packs. The current production town does not load these assets:
 
 - **Mini Medieval**, version 2.4.1 — https://v3x3d.itch.io/mini-medieval
 - **Mini Medieval Kingdom Interior**, version 1.2 — https://v3x3d.itch.io/mini-medieval-kingdom-interior
@@ -17,12 +17,12 @@ The packs document their base palette as **fruitpunch24 by Polyphrog**.
 
 ## Changes
 
-The original PNG source sheets retained in this directory are unmodified.
-Quest Engineering selects rectangular frames from those sheets, combines them
-into a new town composition, animates documented frames, and displays them at
-nearest-neighbor integer scales. Status glyphs and application styling are
-original Quest Engineering work informed by the documented palette. If source
-art is later cropped, repacked, recolored, or otherwise modified, this notice
-must be updated to identify those derived files.
+The original PNG source sheets retained in this directory are unmodified. The
+historical v0.14a client selected rectangular frames from those sheets, combined
+them into a town composition, animated documented frames, and displayed them at
+nearest-neighbor integer scales. The retained semantic frame catalog and visual
+checkpoints document that former relationship. If source art is later cropped,
+repacked, recolored, or otherwise modified, this notice must be updated to
+identify those derived files.
 
 License and product-listing provenance verified 2026-08-30.

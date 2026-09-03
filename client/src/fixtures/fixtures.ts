@@ -5,6 +5,7 @@ import type {
   DeliveryProjection,
   Loadout,
   Quest,
+  QuestLifecycleState,
   RunProjection,
   RunStep,
   RunSummary,
@@ -15,6 +16,7 @@ import type {
   TacticPreview,
   Workspace,
 } from "../api/contracts";
+import type { RealtimeStatus } from "../realtime/client";
 import type { ProductState } from "../state/app-store";
 
 export const fixtureNames = [
@@ -29,7 +31,6 @@ export const fixtureNames = [
   "pr-review",
   "merged",
   "delivery-attention",
-  "recent-runs",
   "member-inspector",
   "cleanup-available",
   "projects",
@@ -105,6 +106,16 @@ export const fixtureNames = [
   "war-room-archive",
   "war-room-dirty",
   "war-room-responsive",
+  "town-hud-idle",
+  "town-hud-active",
+  "town-hud-working",
+  "town-hud-attention",
+  "town-hud-reviews",
+  "town-hud-mixed",
+  "town-hud-disconnected",
+  "town-hud-first-quest",
+  "town-hud-preparing-review",
+  "town-hud-responsive",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -116,6 +127,7 @@ export interface ClientFixture {
   starterStatus?: StarterCrewStatus;
   artifactDetails?: Record<string, Record<string, ArtifactDetail>>;
   tacticPreviews?: Record<string, TacticPreview>;
+  realtimeStatus?: RealtimeStatus;
 }
 
 const classDefinition: ClassDefinition = {
@@ -1769,8 +1781,145 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
   };
 }
 
+function hudQuest(
+  index: number,
+  state: QuestLifecycleState,
+  archived = false,
+): Quest {
+  const runId = state === "ready" ? null : "run-hud";
+  const deliveryState =
+    state === "preparing_review"
+      ? "preparing_review"
+      : state === "awaiting_review"
+        ? "awaiting_review"
+        : state === "needs_attention"
+          ? "attention_required"
+          : state === "complete"
+            ? "merged"
+            : null;
+  return {
+    id: `quest-hud-${index}`,
+    title: `Town Quest ${index}`,
+    objective: "Exercise truthful HUD lifecycle presentation.",
+    workspace_id: workspace.id,
+    squad_id: productSquad.id,
+    tactic_source: { type: "definition", tactic_definition_id: tactic.id },
+    completion: {
+      completed_at: state === "complete" ? "2026-08-30T12:30:00Z" : null,
+      completed_by_run_id: state === "complete" ? "run-hud" : null,
+    },
+    lifecycle: {
+      state,
+      label: state.replaceAll("_", " "),
+      current_run_id: runId,
+      primary_action:
+        state === "ready"
+          ? "launch"
+          : state === "awaiting_review"
+            ? "open_pull_request"
+            : state === "needs_attention"
+              ? "retry_publishing"
+              : state === "complete"
+                ? "run_again"
+                : null,
+      ...(deliveryState ? { delivery: delivery(deliveryState) } : {}),
+    },
+    archived_at: archived ? "2026-08-29T12:00:00Z" : null,
+  };
+}
+
+function createTownHudFixture(name: FixtureName): ClientFixture {
+  const states: QuestLifecycleState[] =
+    name === "town-hud-idle"
+      ? ["complete"]
+      : name === "town-hud-active"
+        ? ["ready", "ready", "preparing_review", "complete"]
+        : name === "town-hud-working"
+          ? ["working", "working", "working", "ready"]
+          : name === "town-hud-attention"
+            ? ["working", "needs_attention", "ready"]
+            : name === "town-hud-reviews"
+              ? [
+                  "awaiting_review",
+                  "awaiting_review",
+                  "awaiting_review",
+                  "ready",
+                ]
+              : name === "town-hud-first-quest"
+                ? ["ready"]
+                : name === "town-hud-preparing-review"
+                  ? ["preparing_review", "ready"]
+                  : [
+                      "working",
+                      "working",
+                      "needs_attention",
+                      "awaiting_review",
+                      "awaiting_review",
+                      "preparing_review",
+                    ];
+  const quests = states.map((state, index) => hudQuest(index + 1, state));
+  if (name === "town-hud-idle")
+    quests.push(hudQuest(2, "needs_attention", true));
+  const hasWorkingTown = states.includes("working");
+  const selected = run(
+    "run-hud",
+    hasWorkingTown ? densitySteps().slice(0, 5) : [],
+  );
+  const summary: RunSummary = {
+    id: selected.id,
+    status: selected.status,
+    quest_title: selected.quest.title,
+    launched_at: selected.launched_at,
+    step_counts: selected.step_counts,
+    delivery: selected.delivery,
+  };
+  return {
+    name,
+    product: {
+      classes: [classDefinition, reviewerClass],
+      classCatalog: [classDefinition, reviewerClass],
+      loadouts: [loadout, reviewLoadout],
+      loadoutCatalog: [loadout, reviewLoadout],
+      squads: [productSquad],
+      tactics: [{ ...tactic, body: { type: "sequence", children: [] } }],
+      quests,
+      workspaces: [workspace],
+      workspaceSources: [
+        {
+          candidate_id: "fixture-source",
+          name: "quest-engineering",
+          source_kind: "git_remote",
+          source_fingerprint:
+            "https://github.com/emeraldarcher/quest-engineering",
+          publication_repository_identity: "emeraldarcher/quest-engineering",
+          max_access: "read_write",
+          shell_available: true,
+        },
+      ],
+      executionOptions: [
+        {
+          model: loadout.model,
+          reasoning: ["medium"],
+          tools: loadout.tools,
+          workspaces: [
+            { workspace_id: workspace.id, workspace_access: ["read_write"] },
+          ],
+          available: true,
+        },
+      ],
+      runs: hasWorkingTown ? [summary] : [],
+    },
+    runs: hasWorkingTown ? { [selected.id]: selected } : {},
+    selectedRunId: hasWorkingTown ? selected.id : null,
+    realtimeStatus:
+      name === "town-hud-disconnected" ? "disconnected" : "connected",
+  };
+}
+
 export function createFixture(nameValue: string | null): ClientFixture | null {
   if (!nameValue) return null;
+  if (nameValue.startsWith("town-hud-"))
+    return createTownHudFixture(nameValue as FixtureName);
   if (nameValue.startsWith("starter-"))
     return createStarterFixture(nameValue as FixtureName);
   if (nameValue.startsWith("quest-board-"))
@@ -1835,28 +1984,17 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
       delivery: delivery("awaiting_review"),
     },
   };
-  const historical = Array.from({ length: 5 }, (_, index) => {
-    const value = run(
-      `run-history-${index + 1}`,
-      [],
-      index === 0 ? "merged" : "closed_unmerged",
-    );
-    value.quest = { ...value.quest, title: `Recent Quest ${index + 1}` };
-    return value;
-  });
-  const runs = Object.fromEntries(
-    [selected, ...historical].map((value) => [value.id, value]),
-  );
-  const summaries = (
-    name === "recent-runs" ? [selected, ...historical] : [selected]
-  ).map((value) => ({
-    id: value.id,
-    status: value.status,
-    quest_title: value.quest.title,
-    launched_at: value.launched_at,
-    step_counts: value.step_counts,
-    delivery: value.delivery,
-  }));
+  const runs = { [selected.id]: selected };
+  const summaries = [
+    {
+      id: selected.id,
+      status: selected.status,
+      quest_title: selected.quest.title,
+      launched_at: selected.launched_at,
+      step_counts: selected.step_counts,
+      delivery: selected.delivery,
+    },
+  ];
   const tavernQuests = ["Compiler Cleanup", "Roster UX", "API Polish"].map(
     (title, index): Quest => ({
       ...quest,

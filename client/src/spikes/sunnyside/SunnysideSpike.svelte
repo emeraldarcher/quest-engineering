@@ -76,7 +76,7 @@ const paletteLabel = {
       <span><i></i> Control Plane</span><span><i></i> Worker</span>
     </div>
     <div class="quest"><b>Living Town Overhaul</b><small>Running</small></div>
-    <nav><button>Journal</button><button>Town</button></nav>
+    <nav><button>Town</button></nav>
   </header>
 
   <aside class="run-hud" aria-label="Selected Run summary">

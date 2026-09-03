@@ -24,8 +24,10 @@
 - Version: 1.0
 - SHA-256: `95eca6266c76c029798e85896a1173134cadd915b3fc73170848553b25768259`
 - The two downloads are byte-identical.
-- Not copied or used by Checkpoint A. A documented one-time export is required
-  before final production Member implementation if Sunnyside is approved.
+- Retained as canonical supplemental source but not exported into the current
+  runtime. Current production Members use the Human PNG strips from Asset Pack
+  2.1; a documented Aseprite-compatible export would be required before using
+  this supplemental source.
 
 ## Runtime and authoring subset
 
@@ -36,8 +38,8 @@ Only the following minimum runtime subset was copied from the 2.1 archive:
 - `foliage/`: selected original rounded-tree and pine-tree frames;
 - `buildings/`: four small derived facades assembled from authored `Room1`
   building-layer tile recipes and the original 16px tilesheet;
-- `characters/`: original v0.07 base plus six hair-layer PNG strips for idle,
-  walk, and doing;
+- `characters/`: selected original Asset Pack 2.1 base and six hair-layer PNG
+  strips for idle, walk, and doing;
 - `animals/`: original bird, chicken, and duck strips;
 - `effects/`: original smoke, fire, and glint strips;
 - `props/`: selected original GameMaker composite sprite PNGs for district

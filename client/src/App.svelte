@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onDestroy, onMount, tick } from "svelte";
 import TownCanvas from "./components/TownCanvas.svelte";
+import TownHud from "./components/hud/TownHud.svelte";
 import ProjectsWindow from "./components/projects/ProjectsWindow.svelte";
 import GuildHallWindow from "./components/guild/GuildHallWindow.svelte";
 import ForgeWindow from "./components/forge/ForgeWindow.svelte";
@@ -19,11 +20,11 @@ const {
   loading: loadingStore,
   error: errorStore,
   realtimeStatus: realtimeStatusStore,
+  serverReachable: serverReachableStore,
   starterStatus: starterStatusStore,
 } = store;
 let selectedMemberKey: string | null = null;
 let previousFocus: HTMLElement | null = null;
-let journalOpen = new URLSearchParams(location.search).get("journal") === "1";
 let guildWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let forgeWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let tavernWindow: { requestLeave: (continuation: () => void) => void } | null = null;
@@ -88,10 +89,13 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     if (document.querySelector("dialog[open]")) return;
     if ($selectedBuildingStore) requestCloseWindow();
-    else journalOpen = false;
     return;
   }
-  if ((event.target as HTMLElement)?.matches("input, textarea, select")) return;
+  if (
+    event.target instanceof HTMLElement &&
+    event.target.matches("input, textarea, select")
+  )
+    return;
   const building = buildings.find((item) => item.hotkey === event.key);
   if (building) selectBuilding(building.id);
 }
@@ -179,11 +183,6 @@ function selectMember(key: string) {
   selectedMemberKey = key;
   selectBuilding("work-area");
 }
-async function openJournalRun(id: string) {
-  await store.selectRun(id);
-  journalOpen = false;
-  selectBuilding("work-area");
-}
 function openWarRoomTactic(tacticId: string) {
   sessionStorage.setItem("qe-war-room-selection", tacticId);
   selectBuilding("war-room");
@@ -199,11 +198,13 @@ async function openQuestRun(runId: string) {
 
 <main>
   <TownCanvas model={world} status={townStatus} selectedBuilding={$selectedBuildingStore} selectedMember={selectedMemberKey} onBuilding={selectBuilding} onMember={selectMember} />
-  <header class="topbar"><strong>QUEST ENGINEERING</strong><span class="version">v0.14b · AUTHORED TOWN</span><span class:bad={$realtimeStatusStore !== "connected"}>◆ control plane {$realtimeStatusStore}</span><span class:bad={!product.workspaceSources.length}>◇ {product.workspaceSources.length ? "Repositories available" : "No repositories available"}</span><nav aria-label="Town menu">{#each buildings as building}<button title={`${building.hotkey} · ${building.label}`} on:click={() => selectBuilding(building.id)}><kbd>{building.hotkey}</kbd> {building.label}</button>{/each}<button aria-expanded={journalOpen} on:click={() => journalOpen = !journalOpen}>Journal</button></nav></header>
+  <TownHud
+    {product}
+    realtimeStatus={$realtimeStatusStore}
+    serverReachable={$serverReachableStore}
+  />
   {#if $loadingStore}<div class="notice">Loading Product data…</div>{/if}
   {#if $errorStore && $selectedBuildingStore !== "quest-board"}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}</div>{/if}
-
-  {#if journalOpen}<aside class="journal-drawer" aria-label="Recent Quest and Run journal"><header><h2>Quest Journal</h2><button aria-label="Close journal" on:click={() => journalOpen = false}>×</button></header>{#each product.runs as summary}<button class="journal-entry" on:click={() => openJournalRun(summary.id)}><strong>{summary.quest_title}</strong><small>{summary.status}{summary.delivery ? ` · ${summary.delivery.state.replaceAll("_", " ")}` : ""}</small></button>{:else}<p>No recent Runs.</p>{/each}<details class="art-credits"><summary>Art credits</summary><p><strong>Mini Medieval by VEXED</strong></p><ul><li>Mini Medieval 2.4.1</li><li>Mini Medieval Kingdom Interior 1.2</li><li>Mini Medieval User Interface 1.1</li></ul><p>Licensed CC BY 4.0. Base palette: fruitpunch24 by Polyphrog.</p><code>creativecommons.org/licenses/by/4.0/</code><p class="hint">Artwork is framed, combined, animated, and integer-scaled for Quest Engineering.</p></details></aside>{/if}
 
   {#if showOnboarding && starterStatus}<StarterCrewOnboarding {store} {product} status={starterStatus} scene={onboardingScene} onAddProject={addOnboardingProject} onOpenProjects={() => selectBuilding("gatehouse")} onNavigate={navigateFromOnboarding} onDismiss={() => (onboardingDismissed = true)} onCompleted={() => (starterCompletionVisible = true)} />{/if}
 
@@ -232,27 +233,7 @@ async function openQuestRun(runId: string) {
   main { position: relative; height: 100vh; min-height: 0; overflow: hidden; }
   button { background: #2a2942; border: 2px solid #aea47e; box-shadow: inset 0 0 0 1px #120e23; color: #fff1a9; cursor: pointer; padding: .4rem .65rem; font: inherit; }
   button:hover, button:focus-visible { background: #24505f; outline: 2px solid #6dba79; outline-offset: 1px; }
-  kbd { color: #ebc66d; font: 700 .7rem ui-monospace, monospace; }
-  .topbar { position: relative; z-index: 5; display: flex; gap: .7rem; align-items: center; min-height: 3.2rem; padding: .42rem .7rem; background: linear-gradient(#2a2942f2,#120e23f2); border-bottom: 3px double #aea47e; box-shadow: 0 5px 18px #120e23aa; }
-  .topbar strong { color: #fff1a9; font-family: Georgia, ui-serif, serif; letter-spacing: .11em; text-shadow: 2px 2px #120e23; }
-  .version { color: #dacea4; font-size: .72rem; }
-  nav { display: flex; gap: .3rem; flex-wrap: wrap; margin-left: auto; }
-  nav button { border-width: 1px; font-size: .8rem; }
-  .bad { color: #ffd174; }
   .notice, .error { position: relative; z-index: 7; margin: .7rem; padding: .6rem; background: #27394aee; }
   .error { color: #ffd174; border: 2px solid #a05b58; }
-  .journal-drawer { background: linear-gradient(145deg,#2a2942f2,#120e23f2); border: 4px double #aea47e; box-shadow: 0 10px 28px #120e23cc, inset 0 0 22px #120e2399; }
-  .journal-drawer { position: absolute; z-index: 8; top: 4.15rem; left: .75rem; width: min(22rem, calc(100vw - 1.5rem)); max-height: calc(100vh - 5rem); overflow: auto; padding: .7rem; }
-  .journal-drawer header { display: flex; align-items: center; gap: .5rem; }
-  .journal-drawer header h2 { flex: 1; margin: 0; }
-  .art-credits { margin-top: .7rem; padding: .5rem; border: 1px solid #aea47e; }
-  .art-credits code { display: block; overflow-wrap: anywhere; color: #dacea4; }
-  .journal-entry { display: grid; gap: .15rem; width: 100%; margin-top: .45rem; text-align: left; }
   .window-close { position: absolute; z-index: 9; top: 4.55rem; right: 1.3rem; padding: .1rem .5rem; font-size: 1.2rem; }
-  h2 { color: #f3d783; text-shadow: 1px 2px #111; }
-  .hint, small { color: #a9c8b5; }
-  ul { padding: 0; list-style: none; }
-  li { margin: .35rem 0; }
-  code { color: #b6d6ca; overflow-wrap: anywhere; }
-  @media (max-width: 1000px) { .topbar { align-items: flex-start; flex-wrap: wrap; } nav { margin-left: 0; } .version { display: none; } }
 </style>

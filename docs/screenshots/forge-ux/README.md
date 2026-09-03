@@ -25,4 +25,4 @@ Deterministic local fixtures captured at DPR 1 with `bun run --cwd client screen
 
 Execution-options are used only as authoring presets. Persisted Loadouts remain ordinary Product fields, including valid undiscovered ModelRefs and custom capability IDs.
 
-The milestone is intentionally limited to Forge. Tavern, Quest Board, Work Yard, Journal, runtime UI, and the authored town map retain their existing behavior and styling pending visual approval.
+At capture time, this milestone was intentionally limited to Forge; the other management surfaces, runtime UI, and authored town map remained unchanged.

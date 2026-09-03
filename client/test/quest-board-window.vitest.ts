@@ -368,6 +368,10 @@ test("lifecycle views preserve execution, Delivery, and Quest completion separat
     await screen.findByText("Complete", { selector: ".status-chip" }),
   ).toBeTruthy();
   expect(
+    screen.getByRole("button", { name: /Add login validation.*Complete/ }),
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "View Run" })).toBeTruthy();
+  expect(
     screen.getByText(/merged Delivery proves Quest completion/),
   ).toBeTruthy();
 });

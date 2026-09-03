@@ -41,7 +41,6 @@ const scenes = [
     "16-delivery-attention",
     "fixture=delivery-attention&window=work-area&scale=3&camera=town",
   ],
-  ["17-recent-runs", "fixture=recent-runs&journal=1&scale=3&camera=town"],
 ] as const;
 
 async function capture(

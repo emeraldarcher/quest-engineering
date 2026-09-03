@@ -37,5 +37,6 @@ No Arctic, Desert, or Ocean expansion artwork is used by v0.14a.
 ## Palette provenance
 
 The official product listings and pack documentation identify the base palette
-as **fruitpunch24 by Polyphrog**. Quest Engineering preserves that provenance
-and uses the documented colors as the basis of its client design tokens.
+as **fruitpunch24 by Polyphrog**. The historical v0.14a presentation used those
+documented colors; this record is retained with its reference assets and visual
+checkpoints.
