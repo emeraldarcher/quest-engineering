@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onDestroy, onMount, tick, type Component } from "svelte";
+import { onDestroy, onMount, tick } from "svelte";
 import TownCanvas from "./components/TownCanvas.svelte";
 import ProjectsWindow from "./components/projects/ProjectsWindow.svelte";
 import GuildHallWindow from "./components/guild/GuildHallWindow.svelte";
@@ -15,7 +15,6 @@ export let store: AppStore;
 const {
   product: productStore,
   selectedBuilding: selectedBuildingStore,
-  selectedRun: selectedRunStore,
   world: worldStore,
   loading: loadingStore,
   error: errorStore,
@@ -25,7 +24,6 @@ const {
 let selectedMemberKey: string | null = null;
 let previousFocus: HTMLElement | null = null;
 let journalOpen = new URLSearchParams(location.search).get("journal") === "1";
-let FixtureChooserComponent: Component | null = null;
 let guildWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let forgeWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let tavernWindow: { requestLeave: (continuation: () => void) => void } | null = null;
@@ -39,8 +37,6 @@ const onboardingScene = store.fixture
   : null;
 
 onMount(async () => {
-  if (import.meta.env.DEV)
-    FixtureChooserComponent = (await import("./components/FixtureChooser.svelte")).default;
   window.addEventListener("keydown", handleKeydown);
   window.addEventListener("unhandledrejection", handleUnhandledRejection);
   const params = new URLSearchParams(location.search);
@@ -77,7 +73,6 @@ $: showOnboarding = Boolean(
       onboardingScene ||
       ["empty", "recoverable_partial", "conflict"].includes(starterStatus.state)),
 );
-$: run = $selectedRunStore;
 $: world = $worldStore;
 $: townStatus = {
   preparingReview: product.quests.filter((quest) => quest.lifecycle.state === "preparing_review").length,
@@ -212,8 +207,6 @@ async function openQuestRun(runId: string) {
 
   {#if showOnboarding && starterStatus}<StarterCrewOnboarding {store} {product} status={starterStatus} scene={onboardingScene} onAddProject={addOnboardingProject} onOpenProjects={() => selectBuilding("gatehouse")} onNavigate={navigateFromOnboarding} onDismiss={() => (onboardingDismissed = true)} onCompleted={() => (starterCompletionVisible = true)} />{/if}
 
-  {#if run && $selectedBuildingStore !== "work-area"}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
-
   {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith", "tavern", "quest-board", "war-room", "work-area"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
   {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} onProjectAdded={projectAddedFromOnboarding} startInAddMode={onboardingProjectFlow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
@@ -229,7 +222,6 @@ async function openQuestRun(runId: string) {
   {#if $selectedBuildingStore === "war-room"}<WarRoomWindow bind:this={warRoomWindow} {store} {product} scene={store.fixture ? new URLSearchParams(location.search).get("war-room") : null} onClose={requestCloseWindow} onOpenQuestBoard={() => selectBuilding("quest-board")} />{/if}
 
   {#if $selectedBuildingStore === "work-area"}<WorkYardWindow {store} {product} initialMemberKey={selectedMemberKey} onMember={(key) => (selectedMemberKey = key)} scene={store.fixture ? new URLSearchParams(location.search).get("work-yard") : null} onClose={requestCloseWindow} />{/if}
-  {#if FixtureChooserComponent}<FixtureChooserComponent />{/if}
 </main>
 
 <style>
@@ -249,7 +241,7 @@ async function openQuestRun(runId: string) {
   .bad { color: #ffd174; }
   .notice, .error { position: relative; z-index: 7; margin: .7rem; padding: .6rem; background: #27394aee; }
   .error { color: #ffd174; border: 2px solid #a05b58; }
-  .run-status, .journal-drawer { background: linear-gradient(145deg,#2a2942f2,#120e23f2); border: 4px double #aea47e; box-shadow: 0 10px 28px #120e23cc, inset 0 0 22px #120e2399; }
+  .journal-drawer { background: linear-gradient(145deg,#2a2942f2,#120e23f2); border: 4px double #aea47e; box-shadow: 0 10px 28px #120e23cc, inset 0 0 22px #120e2399; }
   .journal-drawer { position: absolute; z-index: 8; top: 4.15rem; left: .75rem; width: min(22rem, calc(100vw - 1.5rem)); max-height: calc(100vh - 5rem); overflow: auto; padding: .7rem; }
   .journal-drawer header { display: flex; align-items: center; gap: .5rem; }
   .journal-drawer header h2 { flex: 1; margin: 0; }
@@ -261,11 +253,6 @@ async function openQuestRun(runId: string) {
   .hint, small { color: #a9c8b5; }
   ul { padding: 0; list-style: none; }
   li { margin: .35rem 0; }
-  .run-status { position: absolute; z-index: 4; left: .75rem; bottom: .75rem; width: min(19rem, calc(100vw - 1.5rem)); max-height: 42vh; overflow: auto; padding: .65rem; display: grid; gap: .35rem; }
-  .run-status div { display: flex; gap: .4rem; flex-wrap: wrap; font-size: .75rem; }
-  .member-status { text-align: left; }
-  .pill { color: #13242a; background: #d6c684; padding: .12rem .38rem; border: 1px solid #fff0ad; }
   code { color: #b6d6ca; overflow-wrap: anywhere; }
-  @media (max-width: 1000px) { .run-status.window-open { width: 15rem; max-height: 13rem; } .run-status.window-open .member-status { display: none; } .topbar { align-items: flex-start; flex-wrap: wrap; } nav { margin-left: 0; } .version { display: none; } }
-  @media (max-width: 760px) { .run-status { max-height: 35vh; } }
+  @media (max-width: 1000px) { .topbar { align-items: flex-start; flex-wrap: wrap; } nav { margin-left: 0; } .version { display: none; } }
 </style>
