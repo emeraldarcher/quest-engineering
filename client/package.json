@@ -21,6 +21,7 @@
     "screenshots:work-yard-ux": "bun run scripts/capture-work-yard-ux.ts",
     "screenshots:starter-onboarding-ux": "bun run scripts/capture-starter-onboarding-ux.ts",
     "screenshots:quest-board-ux": "bun run scripts/capture-quest-board-ux.ts",
+    "screenshots:war-room-ux": "bun run scripts/capture-war-room-ux.ts",
     "validate:town": "bun run scripts/validate-town.ts",
     "import:sunnyside-assets": "bun run scripts/import-sunnyside-assets.ts",
     "export:sunnyside-human-v1": "bun run scripts/export-sunnyside-human-v1.ts",

@@ -4,6 +4,7 @@ defmodule QuestEngineering.ServerWeb.Api do
   import Phoenix.Controller
 
   alias Ecto.Changeset
+  alias QuestEngineering.Core.CompileError
   alias QuestEngineering.Core.Product.TacticPreview.Error, as: PreviewError
   alias QuestEngineering.Server.Product.StarterCrew
   alias QuestEngineering.Server.ProductApi.Service.Error, as: RequestError
@@ -52,7 +53,7 @@ defmodule QuestEngineering.ServerWeb.Api do
     do: {400, "malformed_request", "The request body is malformed.", [], error.details}
 
   defp error_view(%PreviewError{} = error) do
-    details = Enum.map(error.errors, &detail/1)
+    details = Enum.map(error.errors, &detail(&1, error.step_origins))
     meta = %{stage: Atom.to_string(error.stage), step_origins: origin_meta(error.step_origins)}
 
     if Enum.any?(details, &(&1.code == "archived_tactic_definition")) do
@@ -119,6 +120,50 @@ defmodule QuestEngineering.ServerWeb.Api do
     end)
   end
 
+  defp detail(%CompileError{} = error, origins) do
+    semantic =
+      %{}
+      |> maybe(:artifact_type, error.artifact_type)
+      |> maybe(:consumer_step, semantic_step(error.step, origins))
+      |> maybe(:referenced_step, semantic_step(error.referenced_step, origins))
+      |> maybe(:requested_source, semantic_step(error.referenced_source, origins))
+      |> maybe(:candidate_steps, semantic_steps(error.candidate_sources, origins))
+      |> maybe(:reason, semantic_reason(error.details))
+
+    %{code: to_string(error.type), path: [], details: semantic}
+  end
+
+  defp detail(value, _origins), do: detail(value)
+
+  defp semantic_reason(value) when is_atom(value), do: Atom.to_string(value)
+  defp semantic_reason(value), do: safe(value)
+
+  defp semantic_steps(nil, _origins), do: nil
+
+  defp semantic_steps(values, origins) when is_list(values) do
+    values
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&semantic_step(&1, origins))
+  end
+
+  defp semantic_steps(_values, _origins), do: nil
+
+  defp semantic_step(nil, _origins), do: nil
+
+  defp semantic_step(key, origins) when is_binary(key) do
+    case Map.get(origins, key) do
+      nil ->
+        %{local_key: key, instance_path: []}
+
+      origin ->
+        %{
+          local_key: origin.local_step_key,
+          instance_path: origin.instance_path,
+          definition_key: origin.definition_key
+        }
+    end
+  end
+
   defp detail(%{code: code} = value) do
     %{
       code: to_string(code),
@@ -136,9 +181,9 @@ defmodule QuestEngineering.ServerWeb.Api do
 
   defp origin_meta(origins),
     do:
-      Enum.map(origins, fn {key, value} ->
+      Enum.map(origins, fn {_key, value} ->
         %{
-          semantic_step_key: key,
+          local_step_key: value.local_step_key,
           instance_path: value.instance_path,
           authoring_path: value.body_path
         }

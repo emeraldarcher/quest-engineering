@@ -27,6 +27,7 @@ export type BuildingId =
   | "blacksmith"
   | "tavern"
   | "quest-board"
+  | "war-room"
   | "work-area";
 export interface ProductState {
   classes: ClassDefinition[];

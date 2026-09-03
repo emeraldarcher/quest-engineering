@@ -25,6 +25,7 @@ import {
   type StepState,
   strings,
   type Tactic,
+  type TacticPreview,
   type TacticSource,
   type Workspace,
   type WorkspaceAccess,
@@ -211,6 +212,21 @@ export class ApiClient {
     this.post("/tactics", input, (value) =>
       decodeTactic(asRecord(value, "tactic").tactic),
     );
+  updateTactic = (id: string, input: TacticInput) =>
+    this.patch(`/tactics/${id}`, input, (value) =>
+      decodeTactic(asRecord(value, "tactic").tactic),
+    );
+  archiveTactic = (id: string) =>
+    this.post(`/tactics/${id}/archive`, {}, (value) =>
+      decodeTactic(asRecord(value, "tactic").tactic),
+    );
+  previewTacticDraft = (body: JsonValue, signal?: AbortSignal) =>
+    this.post(
+      "/tactics/preview",
+      { tactic_source: { type: "inline", body } },
+      (value) => decodeTacticPreview(asRecord(value, "preview").preview),
+      signal,
+    );
   createQuest = (input: Required<QuestInput>) =>
     this.post("/quests", input, (value) =>
       decodeQuest(asRecord(value, "quest").quest),
@@ -223,11 +239,16 @@ export class ApiClient {
     this.post(`/quests/${id}/archive`, {}, (value) =>
       decodeQuest(asRecord(value, "quest").quest),
     );
-  previewTacticDefinition = (id: string) =>
+  previewTacticDefinition = (
+    id: string,
+    body?: JsonValue,
+    signal?: AbortSignal,
+  ) =>
     this.post(
       `/tactics/${id}/preview`,
-      {},
-      (value) => asRecord(value, "preview").preview,
+      body === undefined ? {} : { body },
+      (value) => decodeTacticPreview(asRecord(value, "preview").preview),
+      signal,
     );
   previewQuest = (id: string) =>
     this.post(
@@ -262,6 +283,7 @@ export class ApiClient {
     path: string,
     body: unknown,
     decode: (value: unknown) => T,
+    signal?: AbortSignal,
   ): Promise<T> {
     return this.request(
       path,
@@ -269,6 +291,7 @@ export class ApiClient {
         method: "POST",
         body: JSON.stringify(body),
         headers: { "content-type": "application/json" },
+        ...(signal ? { signal } : {}),
       },
       decode,
     );
@@ -396,6 +419,18 @@ function decodeTactic(value: unknown): Tactic {
     description: asString(x.description, "tactic"),
     body: x.body as JsonValue,
     archived_at: nullableString(x.archived_at, "tactic"),
+  };
+}
+function decodeTacticPreview(value: unknown): TacticPreview {
+  const x = asRecord(value, "tactic preview");
+  return {
+    resolved_tactic: x.resolved_tactic as JsonValue,
+    artifact_bindings: asArray(
+      x.artifact_bindings ?? [],
+      "artifact bindings",
+    ) as NonNullable<TacticPreview["artifact_bindings"]>,
+    provenance: (x.provenance ?? null) as JsonValue,
+    step_origins: asArray(x.step_origins ?? [], "step origins") as JsonValue[],
   };
 }
 function decodeSource(value: unknown): TacticSource {

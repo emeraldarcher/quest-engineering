@@ -8,9 +8,11 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
   alias QuestEngineering.Core.Product.ModelRef
   alias QuestEngineering.Core.Product.TacticPreview.Error, as: PreviewError
   alias QuestEngineering.Core.Product.TacticSource
+  alias QuestEngineering.Server.Persistence.ProductTactic
   alias QuestEngineering.Server.Persistence.TacticCodec
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Product.TacticLibrary
+  alias QuestEngineering.Server.Repo
 
   test "persists contextual definitions without requiring standalone root compilation" do
     assert {:ok, child} = TacticLibrary.create(contextual_child_attributes("contextual-child"))
@@ -84,6 +86,38 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
 
     assert cycle.code == :cyclic_tactic_reference
     assert cycle.definition_path == ["b", "a", "b"]
+  end
+
+  test "candidate preview detects new transitive cycles without mutating persisted definitions" do
+    assert {:ok, a} = TacticLibrary.create(simple_attributes("candidate-a"))
+
+    assert {:ok, c} =
+             TacticLibrary.create(%{
+               key: "candidate-c",
+               name: "Candidate C",
+               body: use("back-to-a", a.id)
+             })
+
+    assert {:ok, b} =
+             TacticLibrary.create(%{
+               key: "candidate-b",
+               name: "Candidate B",
+               body: use("to-c", c.id)
+             })
+
+    candidate_body = use("to-b", b.id)
+    before_preview = Repo.get!(ProductTactic, a.id)
+
+    assert {:error, %PreviewError{stage: :resolution, errors: [cycle]}} =
+             TacticLibrary.preview_definition(a.id, %{body: candidate_body})
+
+    assert cycle.code == :cyclic_tactic_reference
+    assert cycle.definition_path == ["candidate-a", "candidate-b", "candidate-c", "candidate-a"]
+    assert {:ok, persisted} = TacticLibrary.get(a.id)
+    after_preview = Repo.get!(ProductTactic, a.id)
+    assert persisted.body == a.body
+    assert after_preview.body == before_preview.body
+    assert after_preview.updated_at == before_preview.updated_at
   end
 
   test "archiving a child preserves definitions and blocks new parent resolution" do

@@ -82,7 +82,7 @@ test("requests archived Class and Loadout catalogs only when asked", async () =>
   ]);
 });
 
-test("Quest Board loads archived reference catalogs and semantic Tactic preview explicitly", async () => {
+test("Quest Board and War Room load archived catalogs and semantic Tactic preview explicitly", async () => {
   const requested: string[] = [];
   globalThis.fetch = mock(async (input: RequestInfo | URL) => {
     const path = String(input);
@@ -114,7 +114,48 @@ test("Quest Board loads archived reference catalogs and semantic Tactic preview 
   ]);
   expect(preview).toEqual({
     resolved_tactic: { type: "step", key: "implement" },
+    artifact_bindings: [],
+    provenance: null,
+    step_origins: [],
   });
+});
+
+test("War Room sends anonymous and persisted-candidate draft previews without persistence", async () => {
+  const requests: Array<{ path: string; body: unknown }> = [];
+  globalThis.fetch = mock(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        path: String(input),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(
+        JSON.stringify({
+          preview: {
+            resolved_tactic: { type: "step", key: "implement" },
+            artifact_bindings: [],
+            provenance: null,
+            step_origins: [],
+          },
+        }),
+      );
+    },
+  ) as unknown as typeof fetch;
+  const api = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+  const body = { type: "step", key: "implement" } as const;
+
+  await api.previewTacticDraft(body);
+  await api.previewTacticDefinition("tactic-1", body);
+
+  expect(requests).toEqual([
+    {
+      path: "http://example.test/api/v1/tactics/preview",
+      body: { tactic_source: { type: "inline", body } },
+    },
+    {
+      path: "http://example.test/api/v1/tactics/tactic-1/preview",
+      body: { body },
+    },
+  ]);
 });
 
 test("maps Product validation envelope into a typed client error", async () => {

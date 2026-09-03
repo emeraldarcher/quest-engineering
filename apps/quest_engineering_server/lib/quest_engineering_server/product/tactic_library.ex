@@ -182,6 +182,15 @@ defmodule QuestEngineering.Server.Product.TacticLibrary do
     end)
   end
 
+  @doc "Previews an unsaved body as a side-effect-free override of one active definition."
+  @spec preview_definition(String.t(), map()) ::
+          {:ok, TacticPreview.Result.t()} | {:error, term()}
+  def preview_definition(id, %{body: body}) when is_binary(id) do
+    with {:ok, current} <- get(id) do
+      preview_definition(%{current | body: body})
+    end
+  end
+
   defp validate_preview_candidate(candidate) do
     case Validation.validate(candidate) do
       {:ok, definition} ->

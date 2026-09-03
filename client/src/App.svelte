@@ -7,6 +7,7 @@ import ForgeWindow from "./components/forge/ForgeWindow.svelte";
 import TavernWindow from "./components/tavern/TavernWindow.svelte";
 import WorkYardWindow from "./components/work-yard/WorkYardWindow.svelte";
 import QuestBoardWindow from "./components/quest-board/QuestBoardWindow.svelte";
+import WarRoomWindow from "./components/war-room/WarRoomWindow.svelte";
 import StarterCrewOnboarding from "./components/onboarding/StarterCrewOnboarding.svelte";
 import type { AppStore, BuildingId } from "./state/app-store";
 
@@ -29,6 +30,7 @@ let guildWindow: { requestLeave: (continuation: () => void) => void } | null = n
 let forgeWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let tavernWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let questWindow: { requestLeave: (continuation: () => void) => void } | null = null;
+let warRoomWindow: { requestLeave: (continuation: () => void) => void } | null = null;
 let onboardingDismissed = false;
 let starterCompletionVisible = false;
 let onboardingProjectFlow = false;
@@ -62,6 +64,7 @@ const buildings: Array<{ id: BuildingId; label: string; hotkey: string }> = [
   { id: "tavern", label: "Tavern", hotkey: "4" },
   { id: "quest-board", label: "Quest Board", hotkey: "5" },
   { id: "work-area", label: "Work Yard", hotkey: "6" },
+  { id: "war-room", label: "War Room", hotkey: "7" },
 ];
 $: product = $productStore;
 $: starterStatus = $starterStatusStore;
@@ -115,6 +118,10 @@ function selectBuilding(id: BuildingId) {
     questWindow.requestLeave(() => commitBuildingSelection(id));
     return;
   }
+  if ($selectedBuildingStore === "war-room" && id !== "war-room" && warRoomWindow) {
+    warRoomWindow.requestLeave(() => commitBuildingSelection(id));
+    return;
+  }
   if ($selectedBuildingStore && $selectedBuildingStore !== id && isWindowDirty() &&
       !confirm("Discard unsaved changes and open another management window?")) return;
   commitBuildingSelection(id);
@@ -143,6 +150,10 @@ function requestCloseWindow() {
   }
   if ($selectedBuildingStore === "quest-board" && questWindow) {
     questWindow.requestLeave(closeWindow);
+    return;
+  }
+  if ($selectedBuildingStore === "war-room" && warRoomWindow) {
+    warRoomWindow.requestLeave(closeWindow);
     return;
   }
   if (isWindowDirty() && !confirm("Discard unsaved changes and close this window?")) return;
@@ -178,6 +189,11 @@ async function openJournalRun(id: string) {
   journalOpen = false;
   selectBuilding("work-area");
 }
+function openWarRoomTactic(tacticId: string) {
+  sessionStorage.setItem("qe-war-room-selection", tacticId);
+  selectBuilding("war-room");
+}
+
 async function openQuestRun(runId: string) {
   await store.selectRun(runId);
   selectedMemberKey = null;
@@ -198,7 +214,7 @@ async function openQuestRun(runId: string) {
 
   {#if run && $selectedBuildingStore !== "work-area"}<aside class="run-status" class:window-open={$selectedBuildingStore !== null}><strong>{run.quest.title}</strong><span class="pill">{run.status}</span><span class:bad={run.execution_environment.state === "attention_required"}>⌂ {run.execution_environment.message}</span><button on:click={() => selectBuilding("work-area")}>Inspect run</button><div>{#each Object.entries(run.step_counts) as [state, count]}<span>{state}: {count}</span>{/each}</div>{#each run.squad.members.slice(0, 4) as item}<button class="member-status" on:click={() => selectMember(item.member_key)}>{item.name} — {world?.members.find((member) => member.member.member_key === item.member_key)?.activeStepName ?? "idle"}</button>{/each}{#if run.squad.members.length > 4}<small>+{run.squad.members.length - 4} more Members visible in town</small>{/if}</aside>{/if}
 
-  {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith", "tavern", "quest-board", "work-area"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
+  {#if $selectedBuildingStore && !["gatehouse", "guild", "blacksmith", "tavern", "quest-board", "war-room", "work-area"].includes($selectedBuildingStore)}<button class="window-close" aria-label="Close management window" on:click={requestCloseWindow}>×</button>{/if}
 
   {#if $selectedBuildingStore === "gatehouse"}<ProjectsWindow {store} {product} onClose={requestCloseWindow} onProjectAdded={projectAddedFromOnboarding} startInAddMode={onboardingProjectFlow} scene={store.fixture ? new URLSearchParams(location.search).get("projects") : null} />{/if}
 
@@ -208,7 +224,9 @@ async function openQuestRun(runId: string) {
 
   {#if $selectedBuildingStore === "tavern"}<TavernWindow bind:this={tavernWindow} {store} {product} scene={store.fixture ? new URLSearchParams(location.search).get("tavern") : null} onClose={closeWindow} />{/if}
 
-  {#if $selectedBuildingStore === "quest-board"}<QuestBoardWindow bind:this={questWindow} {store} {product} scene={store.fixture ? new URLSearchParams(location.search).get("quest-board") : null} onClose={requestCloseWindow} onOpenWorkYard={openQuestRun} onOpenProjects={() => selectBuilding("gatehouse")} onOpenTavern={() => selectBuilding("tavern")} />{/if}
+  {#if $selectedBuildingStore === "quest-board"}<QuestBoardWindow bind:this={questWindow} {store} {product} scene={store.fixture ? new URLSearchParams(location.search).get("quest-board") : null} onClose={requestCloseWindow} onOpenWorkYard={openQuestRun} onOpenProjects={() => selectBuilding("gatehouse")} onOpenTavern={() => selectBuilding("tavern")} onOpenWarRoom={openWarRoomTactic} />{/if}
+
+  {#if $selectedBuildingStore === "war-room"}<WarRoomWindow bind:this={warRoomWindow} {store} {product} scene={store.fixture ? new URLSearchParams(location.search).get("war-room") : null} onClose={requestCloseWindow} onOpenQuestBoard={() => selectBuilding("quest-board")} />{/if}
 
   {#if $selectedBuildingStore === "work-area"}<WorkYardWindow {store} {product} initialMemberKey={selectedMemberKey} onMember={(key) => (selectedMemberKey = key)} scene={store.fixture ? new URLSearchParams(location.search).get("work-yard") : null} onClose={requestCloseWindow} />{/if}
   {#if FixtureChooserComponent}<FixtureChooserComponent />{/if}
@@ -219,7 +237,7 @@ async function openQuestRun(runId: string) {
   :global(*) { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
   :global(body) { margin: 0; overflow: hidden; background: var(--world-background); color: var(--text-primary); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   :global(html[data-capture="dom"]), :global(html[data-capture="dom"] body), :global(html[data-capture="dom"] #app), :global(html[data-capture="dom"] main) { background: transparent !important; }
-  main { min-height: 100vh; position: relative; }
+  main { position: relative; height: 100vh; min-height: 0; overflow: hidden; }
   button { background: #2a2942; border: 2px solid #aea47e; box-shadow: inset 0 0 0 1px #120e23; color: #fff1a9; cursor: pointer; padding: .4rem .65rem; font: inherit; }
   button:hover, button:focus-visible { background: #24505f; outline: 2px solid #6dba79; outline-offset: 1px; }
   kbd { color: #ebc66d; font: 700 .7rem ui-monospace, monospace; }

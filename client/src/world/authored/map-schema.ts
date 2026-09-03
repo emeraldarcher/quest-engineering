@@ -5,6 +5,7 @@ export const REQUIRED_LOCATION_IDS = [
   "blacksmith",
   "tavern",
   "quest-board",
+  "war-room",
   "work-area",
 ] as const;
 export type AuthoredLocationId = (typeof REQUIRED_LOCATION_IDS)[number];
@@ -14,6 +15,7 @@ export const REQUIRED_LOCATION_LABELS: Record<AuthoredLocationId, string> = {
   blacksmith: "Forge",
   tavern: "Tavern",
   "quest-board": "Quest Board",
+  "war-room": "War Room",
   "work-area": "Work Yard",
 };
 export type PanelSide = "left" | "right";

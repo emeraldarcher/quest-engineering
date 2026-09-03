@@ -12,6 +12,7 @@ import type {
   Squad,
   StarterCrewStatus,
   Tactic,
+  TacticPreview,
   Workspace,
 } from "../api/contracts";
 import type { ProductState } from "../state/app-store";
@@ -80,6 +81,30 @@ export const fixtureNames = [
   "quest-board-no-changes",
   "quest-board-history",
   "quest-board-dirty",
+  "war-room-empty",
+  "war-room-detail",
+  "war-room-new",
+  "war-room-step",
+  "war-room-step-advanced",
+  "war-room-sequence",
+  "war-room-parallel",
+  "war-room-until",
+  "war-room-affinity",
+  "war-room-context",
+  "war-room-artifacts",
+  "war-room-use",
+  "war-room-nested-use",
+  "war-room-direct-cycle",
+  "war-room-transitive-cycle",
+  "war-room-contextual",
+  "war-room-invalid",
+  "war-room-ambiguous",
+  "war-room-archived-class",
+  "war-room-archived-use",
+  "war-room-shared",
+  "war-room-archive",
+  "war-room-dirty",
+  "war-room-responsive",
 ] as const;
 export type FixtureName = (typeof fixtureNames)[number];
 
@@ -90,6 +115,7 @@ export interface ClientFixture {
   selectedRunId: string | null;
   starterStatus?: StarterCrewStatus;
   artifactDetails?: Record<string, Record<string, ArtifactDetail>>;
+  tacticPreviews?: Record<string, TacticPreview>;
 }
 
 const classDefinition: ClassDefinition = {
@@ -1413,6 +1439,336 @@ function createStarterFixture(name: FixtureName): ClientFixture {
   };
 }
 
+function createWarRoomFixture(name: FixtureName): ClientFixture {
+  const stepNode = (
+    key: string,
+    role: string,
+    options: { consumes?: string[]; produces?: string[] } = {},
+  ) => ({
+    type: "step",
+    key,
+    name: key
+      .replaceAll("-", " ")
+      .replace(/\b\w/g, (letter) => letter.toLocaleUpperCase()),
+    instruction: `${key.replaceAll("-", " ")} the Quest objective.`,
+    performer: { selector: "class", value: role },
+    context: { selector: "fresh", value: null },
+    consumes: (options.consumes ?? []).map((type) => ({ type, source: null })),
+    produces: (options.produces ?? []).map((type) => ({ type, source: null })),
+  });
+  const implement = stepNode("implement", "builder", {
+    produces: ["change_set"],
+  });
+  const review = {
+    ...stepNode("review", "reviewer", {
+      consumes: ["change_set"],
+      produces: ["verdict"],
+    }),
+    consumes: [{ type: "change_set", source: null }],
+    instruction: "Review the implementation against the Quest objective.",
+  };
+  const implementReview: Tactic = {
+    id: "war-tactic-implement-review",
+    key: "implement-and-review",
+    name: "Implement & Review",
+    description: "A simple implementation and independent review approach.",
+    body: { type: "sequence", children: [implement, review] },
+    archived_at: null,
+  };
+  const planning: Tactic = {
+    id: "war-tactic-plan",
+    key: "plan-and-build",
+    name: "Plan & Build",
+    description: "Plan the work before implementation.",
+    body: {
+      type: "sequence",
+      children: [
+        stepNode("plan", "builder", { produces: ["plan"] }),
+        stepNode("build", "builder", {
+          consumes: ["plan"],
+          produces: ["change_set"],
+        }),
+      ],
+    },
+    archived_at: null,
+  };
+  const parallelTactic: Tactic = {
+    id: "war-tactic-parallel",
+    key: "parallel-build",
+    name: "Parallel Build",
+    description: "Plan, build backend and frontend together, then review.",
+    body: {
+      type: "sequence",
+      children: [
+        stepNode("plan", "builder", { produces: ["plan"] }),
+        {
+          type: "parallel",
+          children: [
+            stepNode("backend", "builder", {
+              consumes: ["plan"],
+              produces: ["backend_change"],
+            }),
+            stepNode("frontend", "builder", {
+              consumes: ["plan"],
+              produces: ["frontend_change"],
+            }),
+          ],
+        },
+        stepNode("review", "reviewer", {
+          consumes: ["backend_change", "frontend_change"],
+          produces: ["verdict"],
+        }),
+      ],
+    },
+    archived_at: null,
+  };
+  const ambiguousTactic: Tactic = {
+    ...parallelTactic,
+    id: "war-tactic-ambiguous",
+    key: "ambiguous-build",
+    name: "Ambiguous Build",
+    description: "Two branches currently produce the same artifact type.",
+    body: {
+      type: "sequence",
+      children: [
+        {
+          type: "parallel",
+          children: [
+            stepNode("backend", "builder", { produces: ["change_set"] }),
+            stepNode("frontend", "builder", { produces: ["change_set"] }),
+          ],
+        },
+        stepNode("review", "reviewer", {
+          consumes: ["change_set"],
+          produces: ["verdict"],
+        }),
+      ],
+    },
+  };
+  const invalidTactic: Tactic = {
+    ...implementReview,
+    id: "war-tactic-invalid-draft",
+    key: "invalid-draft",
+    name: "Incomplete Structure",
+    description: "A deterministic incomplete local draft.",
+    body: { type: "parallel", children: [] },
+  };
+  const remediation: Tactic = {
+    id: "war-tactic-remediation",
+    key: "review-and-repair",
+    name: "Review & Repair",
+    description: "Review and repair with a bounded remediation loop.",
+    body: {
+      type: "sequence",
+      children: [
+        implement,
+        {
+          type: "until",
+          check: review,
+          condition: {
+            artifact: { type: "verdict", source: "review" },
+            field: "status",
+            operator: "equals",
+            value: "accepted",
+          },
+          otherwise: {
+            ...stepNode("repair", "builder", {
+              consumes: ["change_set", "verdict"],
+              produces: ["change_set"],
+            }),
+            performer: { selector: "same_as", value: "implement" },
+            context: { selector: "continue_from", value: "implement" },
+          },
+          max_remediations: 2,
+        },
+      ],
+    },
+    archived_at: null,
+  };
+  const contextual: Tactic = {
+    id: "war-tactic-contextual",
+    key: "implement-from-plan",
+    name: "Implement from Plan",
+    description: "Uses a plan supplied by its surrounding flow.",
+    body: stepNode("implement", "builder", {
+      consumes: ["plan"],
+      produces: ["change_set"],
+    }),
+    archived_at: null,
+  };
+  const composed: Tactic = {
+    id: "war-tactic-composed",
+    key: "composed-delivery",
+    name: "Composed Delivery",
+    description: "Reuses planning and implementation semantics.",
+    body: {
+      type: "sequence",
+      children: [
+        {
+          type: "use",
+          instance_key: "planning",
+          tactic_definition_id: planning.id,
+        },
+        {
+          type: "use",
+          instance_key: "delivery",
+          tactic_definition_id: implementReview.id,
+        },
+      ],
+    },
+    archived_at: null,
+  };
+  const archivedClass: ClassDefinition = {
+    ...reviewerClass,
+    id: "class-archived-auditor",
+    key: "auditor",
+    name: "Auditor",
+    archived_at: "2026-09-03T09:00:00Z",
+  };
+  const archivedChild: Tactic = {
+    ...planning,
+    id: "war-tactic-archived-child",
+    key: "archived-plan",
+    name: "Archived Plan",
+    archived_at: "2026-09-03T09:00:00Z",
+  };
+  const archivedUse: Tactic = {
+    ...composed,
+    id: "war-tactic-archived-use",
+    key: "uses-archived-plan",
+    name: "Uses Archived Plan",
+    body: {
+      type: "use",
+      instance_key: "planning",
+      tactic_definition_id: archivedChild.id,
+    },
+  };
+  const classReference: Tactic = {
+    ...implementReview,
+    id: "war-tactic-archived-class",
+    key: "archived-audit",
+    name: "Archived Audit",
+    body: stepNode("audit", "auditor", { produces: ["verdict"] }),
+  };
+  const selected =
+    name === "war-room-parallel"
+      ? parallelTactic
+      : name === "war-room-ambiguous"
+        ? ambiguousTactic
+        : name === "war-room-invalid"
+          ? invalidTactic
+          : [
+                "war-room-until",
+                "war-room-affinity",
+                "war-room-context",
+              ].includes(name)
+            ? remediation
+            : name === "war-room-contextual"
+              ? contextual
+              : name === "war-room-use" || name === "war-room-nested-use"
+                ? composed
+                : name === "war-room-archived-class"
+                  ? classReference
+                  : name === "war-room-archived-use"
+                    ? archivedUse
+                    : implementReview;
+  const active = [
+    selected,
+    implementReview,
+    planning,
+    parallelTactic,
+    remediation,
+    contextual,
+    composed,
+    archivedUse,
+    classReference,
+  ].filter(
+    (item, index, values) =>
+      !item.archived_at &&
+      values.findIndex((candidate) => candidate.id === item.id) === index,
+  );
+  const sharedQuest: Quest = {
+    id: "war-quest-shared",
+    title: "Ship account validation",
+    objective: "Implement and review account validation.",
+    workspace_id: workspace.id,
+    squad_id: squad.id,
+    tactic_source: {
+      type: "definition",
+      tactic_definition_id: implementReview.id,
+    },
+    completion: { completed_at: null, completed_by_run_id: null },
+    lifecycle: {
+      state: "ready",
+      label: "Ready",
+      current_run_id: null,
+      primary_action: "launch",
+    },
+    archived_at: null,
+  };
+  return {
+    name,
+    product: {
+      classes: [classDefinition, reviewerClass],
+      classCatalog: [classDefinition, reviewerClass, archivedClass],
+      loadouts: [loadout, reviewLoadout],
+      loadoutCatalog: [loadout, reviewLoadout],
+      squads: [squad],
+      tactics: name === "war-room-empty" ? [] : [...active, archivedChild],
+      quests:
+        name === "war-room-shared" || name === "war-room-archive"
+          ? [sharedQuest]
+          : [],
+      workspaces: [workspace],
+      workspaceSources: [],
+      executionOptions: [],
+      runs: [],
+    },
+    runs: {},
+    selectedRunId: null,
+    tacticPreviews:
+      name === "war-room-empty"
+        ? {}
+        : {
+            [selected.id]: {
+              resolved_tactic: selected.body,
+              artifact_bindings:
+                selected.id === implementReview.id
+                  ? [
+                      {
+                        artifact_type: "change_set",
+                        consumer: {
+                          name: "Review",
+                          local_key: "review",
+                          definition: {
+                            key: implementReview.key,
+                            name: implementReview.name,
+                          },
+                          instance_path: [],
+                        },
+                        selection: "inferred",
+                        source: {
+                          kind: "step",
+                          step: {
+                            name: "Implement",
+                            local_key: "implement",
+                            definition: {
+                              key: implementReview.key,
+                              name: implementReview.name,
+                            },
+                            instance_path: [],
+                          },
+                        },
+                      },
+                    ]
+                  : [],
+              provenance: null,
+              step_origins: [],
+            },
+          },
+  };
+}
+
 export function createFixture(nameValue: string | null): ClientFixture | null {
   if (!nameValue) return null;
   if (nameValue.startsWith("starter-"))
@@ -1421,6 +1777,8 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
     return createQuestBoardFixture(nameValue as FixtureName);
   if (nameValue.startsWith("work-yard-"))
     return createWorkYardFixture(nameValue as FixtureName);
+  if (nameValue.startsWith("war-room-"))
+    return createWarRoomFixture(nameValue as FixtureName);
   const name = fixtureNames.includes(nameValue as FixtureName)
     ? (nameValue as FixtureName)
     : "density";

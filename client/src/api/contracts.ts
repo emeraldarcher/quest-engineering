@@ -77,6 +77,34 @@ export interface Tactic {
   body: JsonValue;
   archived_at: string | null;
 }
+export interface SemanticStepIdentity {
+  name: string | null;
+  local_key: string;
+  definition: { key: string; name: string | null } | null;
+  instance_path: Array<{
+    instance_key: string;
+    definition_key: string | null;
+    definition_name: string | null;
+  }>;
+}
+export interface SemanticArtifactBinding {
+  artifact_type: string;
+  consumer: SemanticStepIdentity;
+  selection: "inferred" | "explicit";
+  source:
+    | { kind: "step"; step: SemanticStepIdentity }
+    | {
+        kind: "remediation";
+        initial_step: SemanticStepIdentity | null;
+        remediation_step: SemanticStepIdentity | null;
+      };
+}
+export interface TacticPreview {
+  resolved_tactic: JsonValue;
+  artifact_bindings?: SemanticArtifactBinding[];
+  provenance?: JsonValue;
+  step_origins?: JsonValue[];
+}
 export interface TacticSourceDefinition {
   type: "definition";
   tactic_definition_id: string;
@@ -345,6 +373,14 @@ export function decodeApiError(value: unknown, status?: number): ApiError {
         code: asString(item.code, "error detail"),
         path: asArray(item.path ?? [], "error path") as Array<string | number>,
         details: (item.details ?? {}) as JsonValue,
+        ...(item.instance_path
+          ? { instance_path: strings(item.instance_path, "instance path") }
+          : {}),
+        ...(item.definition_path
+          ? {
+              definition_path: strings(item.definition_path, "definition path"),
+            }
+          : {}),
       };
     },
   );

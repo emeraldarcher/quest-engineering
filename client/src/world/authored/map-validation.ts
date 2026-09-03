@@ -605,11 +605,6 @@ export function parseAuthoredTownMap(
     "reserved site",
     issues,
   );
-  if (!reservedSites.some((site) => site.id === "war-room"))
-    issues.push(
-      `Reserved site 'war-room' is missing from Reserved Sites. Undo the deletion or copy it from ${AUTHORING_REFERENCE}.`,
-    );
-
   const locationIds = new Set(locations.map((location) => location.id));
   for (const reference of [...interactionRegions, ...statusAnchors])
     if (!locationIds.has(reference.locationId))

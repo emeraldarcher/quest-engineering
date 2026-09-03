@@ -2,8 +2,13 @@ defmodule QuestEngineering.Server.ProductApi.View do
   @moduledoc false
 
   import Ecto.Query
+  alias QuestEngineering.Core.ExecutionPlan.UntilOutput
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Tactics.Parallel
+  alias QuestEngineering.Core.Tactics.Sequence
+  alias QuestEngineering.Core.Tactics.Step
+  alias QuestEngineering.Core.Tactics.Until
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.QuestLaunch
@@ -221,11 +226,188 @@ defmodule QuestEngineering.Server.ProductApi.View do
   def preview(preview) do
     %{
       resolved_tactic: TacticCodec.encode(preview.resolved_tactic),
-      execution_plan: plan(preview.execution_plan),
-      provenance: provenance(preview.provenance),
-      step_origins: step_origins(preview.step_origins)
+      artifact_bindings: semantic_artifact_bindings(preview),
+      provenance: provenance(preview.provenance)
     }
   end
+
+  defp semantic_artifact_bindings(preview) do
+    steps = semantic_steps(preview.resolved_tactic)
+
+    fixed =
+      Enum.map(preview.execution_plan.artifact_bindings, fn binding ->
+        %{
+          artifact_type: binding.type,
+          consumer:
+            semantic_step(binding.consumer, steps, preview.step_origins, preview.provenance),
+          source:
+            semantic_artifact_source(
+              binding.producer,
+              binding.type,
+              preview.execution_plan.control_regions,
+              steps,
+              preview.step_origins,
+              preview.provenance
+            ),
+          selection: artifact_selection(binding.consumer, binding.type, steps)
+        }
+      end)
+
+    carried =
+      Enum.flat_map(preview.execution_plan.control_regions, fn region ->
+        Enum.map(region.artifact_bindings, fn binding ->
+          carry = Enum.find(region.artifact_carries, &(&1.type == binding.type))
+
+          %{
+            artifact_type: binding.type,
+            consumer:
+              semantic_step(binding.consumer, steps, preview.step_origins, preview.provenance),
+            source:
+              remediation_source(
+                carry,
+                steps,
+                preview.step_origins,
+                preview.provenance
+              ),
+            selection: artifact_selection(binding.consumer, binding.type, steps)
+          }
+        end)
+      end)
+
+    fixed ++ carried
+  end
+
+  defp semantic_artifact_source(
+         producer,
+         _type,
+         _regions,
+         steps,
+         origins,
+         provenance
+       )
+       when is_binary(producer) do
+    %{kind: "step", step: semantic_step(producer, steps, origins, provenance)}
+  end
+
+  defp semantic_artifact_source(
+         %UntilOutput{kind: :check, producer: producer},
+         type,
+         regions,
+         steps,
+         origins,
+         provenance
+       ) do
+    semantic_artifact_source(producer, type, regions, steps, origins, provenance)
+  end
+
+  defp semantic_artifact_source(
+         %UntilOutput{kind: :carried, region: region_id},
+         type,
+         regions,
+         steps,
+         origins,
+         provenance
+       ) do
+    region = Enum.find(regions, &(&1.id == region_id))
+    carry = region && Enum.find(region.artifact_carries, &(&1.type == type))
+    remediation_source(carry, steps, origins, provenance)
+  end
+
+  defp remediation_source(nil, _steps, _origins, _provenance),
+    do: %{kind: "remediation", initial_step: nil, remediation_step: nil}
+
+  defp remediation_source(carry, steps, origins, provenance) do
+    %{
+      kind: "remediation",
+      initial_step: semantic_producer(carry.initial_producer, steps, origins, provenance),
+      remediation_step: semantic_producer(carry.remediation_producer, steps, origins, provenance)
+    }
+  end
+
+  defp semantic_producer(value, steps, origins, provenance) when is_binary(value),
+    do: semantic_step(value, steps, origins, provenance)
+
+  defp semantic_producer(%UntilOutput{producer: producer}, steps, origins, provenance),
+    do: semantic_producer(producer, steps, origins, provenance)
+
+  defp semantic_producer(_value, _steps, _origins, _provenance), do: nil
+
+  defp artifact_selection(consumer, type, steps) do
+    case Enum.find(steps, &(&1.key == consumer)) do
+      %Step{} = step ->
+        case Enum.find(step.consumes, &(&1.type == type)) do
+          %{source: nil} -> "inferred"
+          %{source: source} when is_binary(source) -> "explicit"
+          _other -> "inferred"
+        end
+
+      _other ->
+        "inferred"
+    end
+  end
+
+  defp semantic_step(key, steps, origins, tactic_provenance) do
+    step = Enum.find(steps, &(&1.key == key))
+    origin = Map.get(origins, key)
+    path = if origin, do: origin.instance_path, else: []
+
+    %{
+      name: step && step.name,
+      local_key: if(origin, do: origin.local_step_key, else: key),
+      definition: definition_identity(path, origin, tactic_provenance),
+      instance_path: instance_path(path, tactic_provenance)
+    }
+  end
+
+  defp definition_identity([], origin, tactic_provenance) do
+    root = tactic_provenance.root
+
+    cond do
+      root.kind == :definition ->
+        %{key: root.definition_key, name: root.definition_name}
+
+      origin && origin.definition_key ->
+        %{key: origin.definition_key, name: nil}
+
+      true ->
+        nil
+    end
+  end
+
+  defp definition_identity(path, _origin, tactic_provenance) do
+    case Enum.find(tactic_provenance.definitions, &(&1.instance_path == path)) do
+      nil -> nil
+      occurrence -> %{key: occurrence.definition_key, name: occurrence.definition_name}
+    end
+  end
+
+  defp instance_path(path, tactic_provenance) do
+    path
+    |> Enum.with_index(1)
+    |> Enum.map(fn {instance_key, length} ->
+      prefix = Enum.take(path, length)
+      occurrence = Enum.find(tactic_provenance.definitions, &(&1.instance_path == prefix))
+
+      %{
+        instance_key: instance_key,
+        definition_key: occurrence && occurrence.definition_key,
+        definition_name: occurrence && occurrence.definition_name
+      }
+    end)
+  end
+
+  defp semantic_steps(%Step{} = step), do: [step]
+
+  defp semantic_steps(%Sequence{children: children}),
+    do: Enum.flat_map(children, &semantic_steps/1)
+
+  defp semantic_steps(%Parallel{children: children}),
+    do: Enum.flat_map(children, &semantic_steps/1)
+
+  defp semantic_steps(%Until{} = until),
+    do: semantic_steps(until.check) ++ semantic_steps(until.otherwise)
+
+  defp semantic_steps(_node), do: []
 
   def quest_preview(snapshot) do
     %{

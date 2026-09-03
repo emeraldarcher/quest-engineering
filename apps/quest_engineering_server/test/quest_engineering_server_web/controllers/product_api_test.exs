@@ -4,6 +4,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
   import Phoenix.ConnTest
   import Plug.Conn
 
+  alias QuestEngineering.Server.Persistence.ProductTactic
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
   alias QuestEngineering.Server.Product.Repository, as: Products
@@ -37,6 +38,208 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
     assert %{"classes" => [%{"id" => ^id, "archived_at" => ^archived_at}]} =
              json_response(listed, 200)
+  end
+
+  test "Tactic preview projects inferred, explicit, and nested semantic artifact sources" do
+    tactics_before = Repo.aggregate(ProductTactic, :count)
+
+    inferred =
+      sequence_body([
+        step_body("implement", produces: ["change_set"]),
+        step_body("review", consumes: [%{type: "change_set", source: nil}])
+      ])
+
+    inferred_preview = preview_inline(inferred, 200)
+    refute Map.has_key?(inferred_preview, "execution_plan")
+
+    assert [binding] = inferred_preview["artifact_bindings"]
+    assert binding["artifact_type"] == "change_set"
+    assert binding["selection"] == "inferred"
+    assert binding["consumer"]["local_key"] == "review"
+    assert binding["source"]["kind"] == "step"
+    assert binding["source"]["step"]["local_key"] == "implement"
+
+    explicit =
+      sequence_body([
+        step_body("implement", produces: ["change_set"]),
+        step_body("review", consumes: [%{type: "change_set", source: "implement"}])
+      ])
+
+    assert [%{"selection" => "explicit"}] =
+             preview_inline(explicit, 200)["artifact_bindings"]
+
+    child =
+      post_json("/api/v1/tactics", %{
+        key: "nested-child-http",
+        name: "Nested Child",
+        body: step_body("implement", produces: ["change_set"])
+      })
+      |> json_response(201)
+      |> get_in(["tactic"])
+
+    nested =
+      sequence_body([
+        %{type: "use", instance_key: "backend", tactic_definition_id: child["id"]},
+        step_body("review", consumes: [%{type: "change_set", source: nil}])
+      ])
+
+    nested_preview = preview_inline(nested, 200)
+    [nested_binding] = nested_preview["artifact_bindings"]
+    producer = nested_binding["source"]["step"]
+    assert producer["local_key"] == "implement"
+
+    assert producer["instance_path"] == [
+             %{
+               "instance_key" => "backend",
+               "definition_key" => "nested-child-http",
+               "definition_name" => "Nested Child"
+             }
+           ]
+
+    encoded = Jason.encode!(nested_preview)
+    refute encoded =~ "execution_plan"
+    refute encoded =~ "control_dependencies"
+    refute encoded =~ "occurrence_id"
+    refute encoded =~ "attempt_id"
+    assert Repo.aggregate(ProductTactic, :count) == tactics_before + 1
+  end
+
+  test "Tactic preview errors retain safe artifact context and contextual saves remain valid" do
+    missing = step_body("review", consumes: [%{type: "plan", source: nil}])
+    missing_error = preview_inline(missing, 422)["error"]
+    assert missing_error["code"] == "preview_failed"
+
+    assert [%{"code" => "missing_artifact", "details" => missing_details}] =
+             missing_error["details"]
+
+    assert missing_details["artifact_type"] == "plan"
+    assert missing_details["consumer_step"]["local_key"] == "review"
+
+    contextual =
+      post_json("/api/v1/tactics", %{
+        key: "contextual-http",
+        name: "Contextual",
+        body: missing
+      })
+
+    assert %{"tactic" => %{"id" => contextual_id}} = json_response(contextual, 201)
+
+    assert %{"error" => %{"details" => [%{"code" => "missing_artifact"}]}} =
+             json_response(post_json("/api/v1/tactics/#{contextual_id}/preview", %{}), 422)
+
+    ambiguous =
+      sequence_body([
+        %{
+          type: "parallel",
+          children: [
+            step_body("backend", produces: ["change_set"]),
+            step_body("frontend", produces: ["change_set"])
+          ]
+        },
+        step_body("review", consumes: [%{type: "change_set", source: nil}])
+      ])
+
+    ambiguous_error = preview_inline(ambiguous, 422)["error"]
+
+    assert [%{"code" => "ambiguous_artifact", "details" => ambiguous_details}] =
+             ambiguous_error["details"]
+
+    assert ambiguous_details["artifact_type"] == "change_set"
+
+    assert Enum.map(ambiguous_details["candidate_steps"], & &1["local_key"]) == [
+             "backend",
+             "frontend"
+           ]
+
+    invalid_source =
+      sequence_body([
+        step_body("implement", produces: ["change_set"]),
+        step_body("review",
+          consumes: [%{type: "change_set", source: "future"}]
+        ),
+        step_body("future", produces: ["change_set"])
+      ])
+
+    invalid_error = preview_inline(invalid_source, 422)["error"]
+
+    assert [%{"code" => "invalid_artifact_source", "details" => invalid_details}] =
+             invalid_error["details"]
+
+    assert invalid_details["artifact_type"] == "change_set"
+    assert invalid_details["consumer_step"]["local_key"] == "review"
+    assert invalid_details["requested_source"]["local_key"] == "future"
+  end
+
+  test "persisted-definition candidate preview detects cycles without mutation" do
+    a =
+      post_json("/api/v1/tactics", %{
+        key: "candidate-a-http",
+        name: "Candidate A",
+        body: step_body("work")
+      })
+      |> json_response(201)
+      |> get_in(["tactic"])
+
+    c =
+      post_json("/api/v1/tactics", %{
+        key: "candidate-c-http",
+        name: "Candidate C",
+        body: %{type: "use", instance_key: "to-a", tactic_definition_id: a["id"]}
+      })
+      |> json_response(201)
+      |> get_in(["tactic"])
+
+    b =
+      post_json("/api/v1/tactics", %{
+        key: "candidate-b-http",
+        name: "Candidate B",
+        body: %{type: "use", instance_key: "to-c", tactic_definition_id: c["id"]}
+      })
+      |> json_response(201)
+      |> get_in(["tactic"])
+
+    direct = %{
+      type: "use",
+      instance_key: "self",
+      tactic_definition_id: a["id"]
+    }
+
+    assert %{
+             "error" => %{
+               "details" => [
+                 %{
+                   "code" => "cyclic_tactic_reference",
+                   "definition_path" => ["candidate-a-http", "candidate-a-http"]
+                 }
+               ]
+             }
+           } =
+             post_json("/api/v1/tactics/#{a["id"]}/preview", %{body: direct})
+             |> json_response(422)
+
+    candidate = %{type: "use", instance_key: "to-b", tactic_definition_id: b["id"]}
+
+    response = post_json("/api/v1/tactics/#{a["id"]}/preview", %{body: candidate})
+
+    assert %{
+             "error" => %{
+               "code" => "preview_failed",
+               "details" => [
+                 %{
+                   "code" => "cyclic_tactic_reference",
+                   "definition_path" => [
+                     "candidate-a-http",
+                     "candidate-b-http",
+                     "candidate-c-http",
+                     "candidate-a-http"
+                   ]
+                 }
+               ]
+             }
+           } = json_response(response, 422)
+
+    persisted = get(build_conn(), "/api/v1/tactics/#{a["id"]}") |> json_response(200)
+    assert persisted["tactic"]["body"] == a["body"]
   end
 
   test "Loadout, Squad, Tactic, and Quest endpoints use Product DTOs and previews are side-effect free" do
@@ -266,6 +469,32 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
     assert created["workspace"]["id"] == workspace_id
     refute Jason.encode!(json_response(response, 200)) =~ "/Users/"
+  end
+
+  defp preview_inline(body, status) do
+    post_json("/api/v1/tactics/preview", %{
+      tactic_source: %{type: "inline", body: body}
+    })
+    |> json_response(status)
+    |> case do
+      %{"preview" => preview} -> preview
+      error -> error
+    end
+  end
+
+  defp sequence_body(children), do: %{type: "sequence", children: children}
+
+  defp step_body(key, options \\ []) do
+    %{
+      type: "step",
+      key: key,
+      name: key |> String.replace("-", " ") |> String.capitalize(),
+      instruction: "Perform #{key}.",
+      performer: %{selector: "class", value: "builder"},
+      context: %{selector: "fresh", value: nil},
+      consumes: Keyword.get(options, :consumes, []),
+      produces: Enum.map(Keyword.get(options, :produces, []), &%{type: &1, source: nil})
+    }
   end
 
   defp post_json(path, body) do

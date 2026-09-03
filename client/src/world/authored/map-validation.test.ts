@@ -129,7 +129,7 @@ test("production authored town satisfies semantic runtime contracts", async () =
   expect(result.workstations.length).toBeGreaterThanOrEqual(8);
   expect(result.memberHomes.length).toBeGreaterThanOrEqual(12);
   expect(result.reservedSites.some((site) => site.id === "war-room")).toBe(
-    true,
+    false,
   );
 
   const viewport = unobscuredViewport(
@@ -211,7 +211,34 @@ test("old-town reference preserves the previous authored pipeline wiring", async
         property.value === true,
     ),
   ).toBe(true);
-  const result = parseAuthoredTownMap(map, resources);
+  const current = await fixture();
+  const adapted = clone(map);
+  for (const layerName of [
+    "Locations",
+    "Interaction Regions",
+    "Camera Anchors",
+  ]) {
+    const sourceLayer = current.map.layers.find(
+      (layer) => layer.name === layerName && layer.type === "objectgroup",
+    );
+    const targetLayer = adapted.layers.find(
+      (layer) => layer.name === layerName && layer.type === "objectgroup",
+    );
+    if (
+      !sourceLayer ||
+      sourceLayer.type !== "objectgroup" ||
+      !targetLayer ||
+      targetLayer.type !== "objectgroup"
+    )
+      throw new Error(`Missing semantic layer '${layerName}'`);
+    const warRoom = sourceLayer.objects.find(
+      (object) =>
+        object.name === "war-room" || object.name === "war-room-interaction",
+    );
+    if (!warRoom) throw new Error(`Missing War Room object in '${layerName}'`);
+    targetLayer.objects.push(clone(warRoom));
+  }
+  const result = parseAuthoredTownMap(adapted, resources);
   expect(
     result.tileLayers.reduce((sum, layer) => sum + layer.tiles.length, 0),
   ).toBe(1152);

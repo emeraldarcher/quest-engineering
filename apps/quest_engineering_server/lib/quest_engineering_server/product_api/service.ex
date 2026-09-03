@@ -94,7 +94,17 @@ defmodule QuestEngineering.Server.ProductApi.Service do
     end
   end
 
-  def preview_tactic_definition(id), do: TacticLibrary.preview_definition(id)
+  def preview_tactic_definition(id, payload \\ %{}) do
+    case Map.fetch(payload, "body") do
+      :error ->
+        TacticLibrary.preview_definition(id)
+
+      {:ok, body} ->
+        with {:ok, decoded} <- tactic_body(body) do
+          TacticLibrary.preview_definition(id, %{body: decoded})
+        end
+    end
+  end
 
   def preview_quest(id), do: Repository.preview_launch_snapshot(id)
 
