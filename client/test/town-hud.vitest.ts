@@ -98,6 +98,18 @@ test("zero metric slots remain present and connectivity changes emphasis truthfu
   expect(screen.queryByText("Reconnecting")).toBeNull();
 });
 
+test("non-archived Projects are discoverable in the island camera navigator", () => {
+  const { value } = appSetup();
+  const navigator = screen.getByLabelText(
+    "Focus Project island",
+  ) as HTMLSelectElement;
+  const options = [...navigator.options].map((option) => option.textContent);
+  for (const project of value.product.workspaces.filter(
+    (workspace) => workspace.archived_at === null,
+  ))
+    expect(options).toContain(project.name);
+});
+
 test("town proxies and all existing building hotkeys retain their navigation path", async () => {
   const { store, rendered } = appSetup();
   const projectsProxy = Array.from(

@@ -29,6 +29,7 @@ defmodule QuestEngineering.Server.Product.Repository do
   alias QuestEngineering.Server.Persistence.ProductSquadMember
   alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.TacticCodec
+  alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Product.TacticGraphLoader
   alias QuestEngineering.Server.Product.TacticLibrary
   alias QuestEngineering.Server.Repo
@@ -339,7 +340,13 @@ defmodule QuestEngineering.Server.Product.Repository do
     end)
   end
 
-  def archive_workspace(id), do: archive(ProductWorkspace, id, :workspace)
+  def archive_workspace(id) do
+    case Repo.transaction(fn -> archive_workspace_and_bindings(id) end) do
+      {:ok, :ok} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+
   def archive_class(id), do: archive(ProductClass, id, :class)
   def archive_loadout(id), do: archive(ProductLoadout, id, :loadout)
   def archive_squad(id), do: archive(ProductSquad, id, :squad)
@@ -641,6 +648,24 @@ defmodule QuestEngineering.Server.Product.Repository do
          details: %{current: current, received: attributes[:key]}
        }
      ]}
+  end
+
+  defp archive_workspace_and_bindings(id) do
+    case archive(ProductWorkspace, id, :workspace) do
+      :ok ->
+        from(binding in WorkerWorkspaceBinding, where: binding.workspace_id == ^id)
+        |> Repo.update_all(
+          set: [
+            status: "unavailable",
+            updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+          ]
+        )
+
+        :ok
+
+      {:error, error} ->
+        Repo.rollback(error)
+    end
   end
 
   defp archive(schema, id, kind) do

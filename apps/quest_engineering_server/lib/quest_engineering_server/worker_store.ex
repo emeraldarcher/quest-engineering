@@ -132,7 +132,15 @@ defmodule QuestEngineering.Server.WorkerStore do
   defp reconcile_workspace_binding(worker_id, generation, binding) do
     result =
       with_current(worker_id, generation, fn worker ->
-        if Repo.get(ProductWorkspace, binding["workspace_id"]) do
+        workspace_id = binding["workspace_id"]
+
+        active_workspace? =
+          Repo.exists?(
+            from workspace in ProductWorkspace,
+              where: workspace.id == ^workspace_id and is_nil(workspace.archived_at)
+          )
+
+        if active_workspace? do
           persist_reconciled_binding(worker, binding)
         else
           reconciliation_outcome(binding, "stale_workspace", "workspace_not_found")
@@ -185,7 +193,12 @@ defmodule QuestEngineering.Server.WorkerStore do
       changeset =
         WorkerWorkspaceBinding.changeset(existing || %WorkerWorkspaceBinding{}, attributes)
 
-      case if(existing, do: Repo.update(changeset), else: Repo.insert(changeset)) do
+      result =
+        if existing,
+          do: Repo.update(changeset, mode: :savepoint),
+          else: Repo.insert(changeset, mode: :savepoint)
+
+      case result do
         {:ok, _row} -> reconciliation_outcome(binding, "accepted")
         {:error, _changeset} -> reconciliation_outcome(binding, "conflict", "constraint_failure")
       end

@@ -69,6 +69,7 @@ $: composition = composer?.compose({
   activeCrew: effectiveActivities,
   expansionProjectIds,
 }) ?? null;
+let cameraProjectId = "";
 let scale = [1, 2, 3].includes(requestedScale)
   ? requestedScale
   : innerWidth <= 960
@@ -76,10 +77,13 @@ let scale = [1, 2, 3].includes(requestedScale)
     : 2;
 
 export function focusProject(projectId: string): boolean {
-  return world?.focusProject(projectId) ?? false;
+  const focused = world?.focusProject(projectId) ?? false;
+  if (focused) cameraProjectId = projectId;
+  return focused;
 }
 
 export function focusHome(): void {
+  cameraProjectId = "";
   world?.focusHome();
 }
 
@@ -128,8 +132,8 @@ onMount(() => {
         requestedProjectFocus === "first"
           ? projectIdentities[0]?.id
           : requestedProjectFocus;
-      if (!projectId || !world?.focusProject(projectId)) world?.focusHome();
-    } else world?.focusHome();
+      if (!projectId || !focusProject(projectId)) focusHome();
+    } else focusHome();
   });
   mutationObserver = new MutationObserver(() => requestAnimationFrame(updatePanelBounds));
   mutationObserver.observe(document.body, { childList: true, subtree: true });
@@ -167,7 +171,23 @@ function setScale(value: number) {
   <div class="town-canvas" bind:this={host} role="img" aria-label="Quest Engineering authored archipelago. Use camera controls or arrow keys to navigate."></div>
   <div class="camera-controls" aria-label="World camera controls">
     {#each [1, 2, 3] as value}<button class:active={scale === value} aria-pressed={scale === value} on:click={() => setScale(value)}>{value}×</button>{/each}
-    <button title="Focus Home Island" on:click={() => world?.focusHome()}>Home</button>
+    <button title="Focus Home Island" on:click={focusHome}>Home</button>
+    {#if projectIdentities.length}
+      <select
+        aria-label="Focus Project island"
+        bind:value={cameraProjectId}
+        on:change={(event) => {
+          const projectId = event.currentTarget.value;
+          if (projectId) focusProject(projectId);
+          else focusHome();
+        }}
+      >
+        <option value="">Project islands ({projectIdentities.length})…</option>
+        {#each projectIdentities as project}
+          <option value={project.id}>{project.name}</option>
+        {/each}
+      </select>
+    {/if}
   </div>
   {#if debugMap && composition}
     <div class="map-diagnostics">World · {composition.regions.length} regions · {composition.projectIslands.values().length} Project islands · loaded {new Date().toLocaleTimeString()}</div>
@@ -187,6 +207,7 @@ function setScale(value: number) {
   .camera-controls { position: absolute; z-index: 5; right: .75rem; bottom: .75rem; display: flex; gap: .25rem; padding: .25rem; background: #314b46dd; border: 1px solid #d6ad6a; }
   .camera-controls button { min-width: 2.2rem; padding: .28rem .4rem; border: 1px solid #91aa8d; background: #405c57; color: #fff2d1; font: 700 .72rem system-ui, sans-serif; }
   .camera-controls button.active { color: #29373a; background: #f3dfb5; }
+  .camera-controls select { max-width: min(16rem, 40vw); padding: .28rem .4rem; border: 1px solid #91aa8d; background: #405c57; color: #fff2d1; font: 700 .72rem system-ui, sans-serif; }
   .map-diagnostics { position: absolute; z-index: 7; left: .75rem; top: 4rem; padding: .35rem .5rem; color: #fff3d4; background: #29373ae8; border: 1px solid #d6ad6a; font: 700 .7rem ui-monospace, monospace; }
   .map-fatal { position: absolute; z-index: 20; inset: 5rem 1rem auto; padding: 1rem; color: #fff3d4; background: #5b3435; border: 2px solid #d6ad6a; }
   .map-fatal pre { white-space: pre-wrap; }

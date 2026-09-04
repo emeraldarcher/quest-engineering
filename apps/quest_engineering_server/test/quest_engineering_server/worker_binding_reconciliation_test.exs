@@ -34,6 +34,68 @@ defmodule QuestEngineering.Server.WorkerBindingReconciliationTest do
     assert workspace_id == workspace.id
   end
 
+  test "duplicate available repository root is a conflict instead of crashing reconciliation" do
+    first = workspace("duplicate-root-first")
+    second = workspace("duplicate-root-second")
+    worker = register("worker-duplicate-root")
+    first_binding = binding_fixture(first.id, "duplicate-root")
+    second_binding = binding_fixture(second.id, "duplicate-root")
+
+    assert {:ok,
+            [
+              %{status: "accepted"},
+              %{status: "conflict", code: "constraint_failure"}
+            ]} =
+             WorkerStore.reconcile_workspace_bindings(
+               worker.id,
+               worker.connection_generation,
+               [first_binding, second_binding]
+             )
+
+    assert %{status: "available"} =
+             Repo.get!(WorkerWorkspaceBinding, first_binding["binding_id"])
+
+    refute Repo.get(WorkerWorkspaceBinding, second_binding["binding_id"])
+    assert {:ok, %{status: "connected"}} = WorkerStore.fetch(worker.id)
+  end
+
+  test "archived Workspace binding becomes stale and its repository root can be rebound" do
+    archived_workspace = workspace("archived-root")
+    replacement_workspace = workspace("replacement-root")
+    worker = register("worker-rebound-root")
+    archived_binding = binding_fixture(archived_workspace.id, "rebound-root")
+    replacement_binding = binding_fixture(replacement_workspace.id, "rebound-root")
+
+    assert {:ok, [%{status: "accepted"}]} =
+             WorkerStore.reconcile_workspace_bindings(
+               worker.id,
+               worker.connection_generation,
+               [archived_binding]
+             )
+
+    assert :ok = Products.archive_workspace(archived_workspace.id)
+
+    assert %{status: "unavailable"} =
+             Repo.get!(WorkerWorkspaceBinding, archived_binding["binding_id"])
+
+    assert {:ok,
+            [
+              %{status: "stale_workspace", code: "workspace_not_found"},
+              %{status: "accepted"}
+            ]} =
+             WorkerStore.reconcile_workspace_bindings(
+               worker.id,
+               worker.connection_generation,
+               [archived_binding, replacement_binding]
+             )
+
+    assert %{status: "unavailable"} =
+             Repo.get!(WorkerWorkspaceBinding, archived_binding["binding_id"])
+
+    assert %{status: "available"} =
+             Repo.get!(WorkerWorkspaceBinding, replacement_binding["binding_id"])
+  end
+
   test "missing Workspace retires only that reconciliation and leaves Worker connected" do
     worker = register("worker-stale")
     stale = binding_fixture(Ecto.UUID.generate())

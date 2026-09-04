@@ -52,7 +52,9 @@ defmodule QuestEngineering.Server.Persistence.WorkerWorkspaceBinding do
     |> foreign_key_constraint(:worker_id)
     |> foreign_key_constraint(:workspace_id)
     |> unique_constraint([:worker_id, :workspace_id])
-    |> unique_constraint([:worker_id, :source_repository_root])
+    |> unique_constraint([:worker_id, :source_repository_root],
+      name: :worker_workspace_bindings_available_root_index
+    )
   end
 end
 
