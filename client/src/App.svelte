@@ -198,7 +198,7 @@ async function openQuestRun(runId: string) {
 </script>
 
 <main>
-  <TownCanvas activities={activeCrew} status={townStatus} selectedBuilding={$selectedBuildingStore} onBuilding={selectBuilding} onMember={selectMember} />
+  <TownCanvas activities={activeCrew} projects={product.workspaces} status={townStatus} selectedBuilding={$selectedBuildingStore} onBuilding={selectBuilding} onMember={selectMember} />
   <TownHud
     {product}
     realtimeStatus={$realtimeStatusStore}

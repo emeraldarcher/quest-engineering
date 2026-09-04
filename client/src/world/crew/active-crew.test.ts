@@ -86,6 +86,7 @@ test("only running occurrences with a named Member become active crew", () => {
   const activities = projectActiveCrewActivities([value]);
   expect(activities).toHaveLength(1);
   expect(activities[0]?.state).toBe("running");
+  expect(activities[0]?.project).toEqual(value.execution_environment.workspace);
   value.steps[3] = { ...(value.steps[3] as RunStep), member: null };
   expect(projectActiveCrewActivities([value])).toEqual([]);
 });

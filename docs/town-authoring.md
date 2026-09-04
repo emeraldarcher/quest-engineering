@@ -70,57 +70,20 @@ ASEPRITE_BIN=/path/to/aseprite bun run --cwd client export:sunnyside-human-v1
 ASEPRITE_BIN=/Applications/Aseprite.app/Contents/MacOS/aseprite bun run --cwd client export:sunnyside-human-v1
 ```
 
-# Adding crew movement to the town
+# Home Island and crew movement
 
-Crew markers describe presentation only. They do not schedule Members, change a
-Tactic, or delay Runtime work. A visible crew Member always comes from a Step
-whose current projection has `state = running` and a named Member.
+`town.tmj` is now the **Home Island**: management space for Projects, Guild Hall,
+Forge, Tavern, Quest Board, Work Yard, and War Room. Do **not** add crew routes,
+crew entrances, activity zones, or expansion sockets to this map. Active
+execution belongs on reusable Project-island templates.
 
-The production map remains valid in legacy compatibility mode until all three
-crew object layers are added. Add the three layers together when you are ready:
+The old town-level crew checklist is superseded. The Home map remains valid in
+legacy compatibility mode, including its optional Member-home and workstation
+metadata; neither controls runtime or visual capacity.
 
-1. In the **Layers** panel, create/select the object layer **Crew Entrances**.
-2. Use **Insert Point**, set the object type to `crew_spawn`, and place it at the
-   existing visual entrance where active crew should enter. Give it a unique,
-   stable name such as `crew-entrance-main`. Add more entrances if desired;
-   there is no fixed count.
-3. Create/select the object layer **Crew Navigation**. Use **Insert Polyline**
-   and draw `crew_route` objects along paths that are visibly safe to walk.
-   Add a vertex at turns and junctions. Route vertices connect only when they
-   coincide within **1 authored world pixel**; lines that merely look nearby do
-   not connect. Give every route a unique stable name.
-4. Create/select the object layer **Crew Activity Zones**. Place a point or draw
-   a rectangle over an existing work scene, set its type to `crew_activity`,
-   and set `qeActivity` to one of:
-   `general`, `crafting`, `research`, `mining`, `woodcutting`, or `digging`.
-5. Add at least one `general` activity destination. It is the truthful fallback
-   for custom or unmatched Steps. Specialized destinations are optional and
-   should exist only where the visible scene supports them.
-6. Ensure every entrance and activity point/rectangle comes within **8 authored
-   world pixels** of the connected route network. Routes themselves must form
-   one connected network.
-7. Save and run:
-
-   ```sh
-   bun run --cwd client validate:town
-   ```
-
-8. Start the development client with `?debugMap=1`. The overlay shows crew
-   entrances, route polylines, activity areas, graph status, and normalized
-   active crew facts. Legacy workstations and Member homes are labeled as
-   legacy metadata.
-
-Do not edit TypeScript coordinates. To add a Mine, first author or identify the
-mine scene, then add a `crew_activity` point/rectangle over it with
-`qeActivity = mining` and connect that area to a `crew_route`.
-
-The object defaults are tracked in
-`client/src/world/maps/object-types.json`. A complete non-production example is
-`client/src/world/maps/reference/crew-authoring-fixture.tmj`.
-
-Members no longer require individual `member_home` points, and old
-`workstation` counts do not set active-crew capacity. Existing markers may stay
-in a legacy map until the human author chooses to remove or repurpose them.
+See [`world-authoring.md`](world-authoring.md) for Project-island local
+coordinates, crew semantics, expansion sockets, validation profiles, and the
+next human Tiled authoring checkpoint.
 
 # Your first five minutes
 
@@ -280,9 +243,10 @@ overlap characters, such as tree crowns, on `Foreground Canopy`.
 | `Camera Anchors` | yellow | location focus points and Town bounds |
 | `Workstations` | orange | legacy work positions; not active-crew capacity |
 | `Member Homes` | purple | legacy metadata; not runtime Member slots |
-| `Crew Entrances` | teal | active-crew spawn points |
-| `Crew Navigation` | teal | connected safe walking polylines |
-| `Crew Activity Zones` | magenta | presentation-only activity points/rectangles |
+| `Crew Entrances` | teal | Project-template crew spawn points; do not add to Home |
+| `Crew Navigation` | teal | Project-template safe routes; do not add to Home |
+| `Crew Activity Zones` | magenta | Project-template activity districts; do not add to Home |
+| `Expansion Sockets` | pink | Project-template attachment points; do not add to Home |
 | `Ambient Zones` | cyan | optional presentation-only areas |
 | `Animal Routes` | light blue | optional presentation-only polylines |
 | `Status Anchors` | red | lifecycle/status glyph positions |
@@ -322,8 +286,8 @@ Older maps may contain ten neutral workstations and twelve generic
 `member-home-01` through `member-home-12` points. They are retained only as
 legacy/reference metadata. They no longer determine whether a Member can be
 shown and do not cap active crew population. Do not add more homes or
-workstations for new Members; author Crew Entrances, Crew Navigation, and Crew
-Activity Zones instead.
+workstations for new Members. Crew Entrances, Crew Navigation, and Crew
+Activity Zones belong in Project-island templates, not `town.tmj`.
 
 ## Optional ambience
 
@@ -438,13 +402,16 @@ These maps have deliberately different roles:
 
 ```text
 town.tmj
-  → your production town; the user-owned blank canvas and the only runtime map
+  → your production Home Island and management-space region
 
 town-reference-v0.14b.tmj
   → old coding-agent Quest Engineering map, useful only for prior runtime wiring
 
 crew-authoring-fixture.tmj
-  → non-production parser/navigation example with connected crew semantics
+  → legacy non-production parser/navigation example with connected crew semantics
+
+project-island-fixture.tmj + project-expansion-fixture.tmj
+  → intentionally plain archipelago composition fixtures, not production designs
 
 sunnyside-construction-reference.tmj
   → curated small construction examples
@@ -484,20 +451,19 @@ Validate before committing:
 bun run --cwd client validate:town
 ```
 
-The validator checks schema version, required Product-location layers, stable
-IDs, companion interaction/camera/status objects, bounds, tileset paths, and
-image files. Legacy workstation/home layers are optional. Once any crew layer
-is added, validation also requires the complete three-layer crew schema, a
-connected route graph, reachable entrances/activity areas, known `qeActivity`
-values, and a general fallback.
+The Home validator checks schema version, required Product-location layers,
+stable IDs, companion interaction/camera/status objects, bounds, tileset paths,
+and image files. Legacy workstation/home layers remain optional. Project and
+expansion templates use separate authored-world validation profiles documented
+in `world-authoring.md`.
 
 # Coordinate rules
 
 - Map/runtime coordinates are unscaled logical pixels.
 - Base tiles are 16×16.
 - Legacy workstations and Member homes are point coordinates only; active crew do not consume them.
-- Crew route vertices use authored world coordinates and connect within 1 pixel.
-- Crew entrances and activity areas connect to their nearest route within 8 pixels.
+- Project-template crew route vertices use region-local coordinates and connect within 1 pixel.
+- Project-template entrances and activities connect to their nearest route within 8 pixels; sockets coincide with a route vertex within 1 pixel.
 - Rectangle coordinates are top-left.
 - Polygon/polyline points are relative to their object origin.
 - Camera anchors are world focal points, never screen coordinates.

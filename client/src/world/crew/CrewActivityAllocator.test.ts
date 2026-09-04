@@ -35,6 +35,14 @@ test("activity rectangles generate practical capacity without a global maximum",
   expect(new Set(claims.map((claim) => claim?.slot.id)).size).toBe(24);
 });
 
+test("district overflow never becomes execution or actor capacity", () => {
+  const allocator = new CrewActivityAllocator(zones);
+  const claims = Array.from({ length: 200 }, (_, index) =>
+    allocator.claim(`overflow-${index}`, "general"),
+  );
+  expect(claims.every(Boolean)).toBe(true);
+});
+
 test("exclusive slots fall back to general and are released", () => {
   const allocator = new CrewActivityAllocator(zones);
   const first = allocator.claim("a", "crafting");

@@ -1109,7 +1109,7 @@
                  "width":0,
                  "x":873,
                  "y":233
-                },
+                }, 
                 {
                  "height":0,
                  "id":51,
@@ -1248,7 +1248,7 @@
                  "width":369,
                  "x":225.666666666667,
                  "y":480
-                },
+                }, 
                 {
                  "height":57.7557755775578,
                  "id":52,
@@ -1464,7 +1464,7 @@
                  "width":1116,
                  "x":161,
                  "y":34
-                },
+                }, 
                 {
                  "height":0,
                  "id":50,
@@ -1476,12 +1476,12 @@
                          "name":"qeLocation",
                          "type":"string",
                          "value":"war-room"
-                        },
+                        }, 
                         {
                          "name":"qePanelSide",
                          "type":"string",
                          "value":"right"
-                        },
+                        }, 
                         {
                          "name":"qeZoom",
                          "type":"int",

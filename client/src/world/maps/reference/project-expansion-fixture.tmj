@@ -1,0 +1,111 @@
+{
+  "type": "map",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "orientation": "orthogonal",
+  "renderorder": "right-down",
+  "width": 6,
+  "height": 8,
+  "tilewidth": 16,
+  "tileheight": 16,
+  "infinite": false,
+  "properties": [
+    { "name": "questEngineeringMapVersion", "type": "int", "value": 1 },
+    { "name": "questEngineeringRegionProfile", "type": "string", "value": "project_expansion" },
+    { "name": "questEngineeringReference", "type": "bool", "value": true }
+  ],
+  "tilesets": [{ "firstgid": 1, "source": "../tilesets/sunnyside-world.tsj" }],
+  "layers": [
+    {
+      "id": 1,
+      "name": "Ground",
+      "type": "tilelayer",
+      "width": 6,
+      "height": 8,
+      "data": [194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194,194],
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": 2,
+      "name": "Paths",
+      "type": "tilelayer",
+      "width": 6,
+      "height": 8,
+      "data": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": 3,
+      "name": "Props Below Members",
+      "type": "tilelayer",
+      "width": 6,
+      "height": 8,
+      "data": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": 4,
+      "name": "Foreground Canopy",
+      "type": "tilelayer",
+      "width": 6,
+      "height": 8,
+      "data": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": 5,
+      "name": "Crew Navigation",
+      "type": "objectgroup",
+      "objects": [{ "id": 1, "name": "fixture-expansion-route", "type": "crew_route", "x": 0, "y": 64, "polyline": [{ "x": 0, "y": 0 }, { "x": 80, "y": 0 }] }],
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": 6,
+      "name": "Crew Activity Zones",
+      "type": "objectgroup",
+      "objects": [{ "id": 2, "name": "fixture-expansion-yard", "type": "crew_activity", "x": 32, "y": 40, "width": 48, "height": 48, "properties": [{ "name": "qeActivity", "type": "string", "value": "general" }] }],
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": 7,
+      "name": "Expansion Sockets",
+      "type": "objectgroup",
+      "objects": [{
+        "id": 3,
+        "name": "fixture-inbound-west",
+        "type": "island_socket",
+        "point": true,
+        "x": 0,
+        "y": 64,
+        "properties": [
+          { "name": "qeSocketRole", "type": "string", "value": "inbound" },
+          { "name": "qeSocketEdge", "type": "string", "value": "fixture-footbridge" },
+          { "name": "qeSocketOrientation", "type": "string", "value": "west" },
+          { "name": "qeSocketCategory", "type": "string", "value": "general" }
+        ]
+      }],
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0
+    }
+  ]
+}

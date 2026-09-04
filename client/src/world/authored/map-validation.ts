@@ -14,6 +14,7 @@ import {
   type AuthoredCrewSpawn,
   type AuthoredImageTile,
   type AuthoredInteractionRegion,
+  type AuthoredIslandSocket,
   type AuthoredLocation,
   type AuthoredLocationId,
   type AuthoredMemberHome,
@@ -23,15 +24,20 @@ import {
   type AuthoredTilePlacement,
   type AuthoredTownMap,
   type AuthoredWorkstation,
+  type AuthoredWorldRegion,
   CREW_ACTIVITY_CATEGORIES,
   type CrewActivityCategory,
+  type IslandSocketOrientation,
+  type IslandSocketRole,
   type PanelSide,
   QUEST_ENGINEERING_MAP_VERSION,
   REQUIRED_LOCATION_IDS,
   REQUIRED_LOCATION_LABELS,
   type TownPoint,
   type TownRect,
+  WORLD_REGION_PROFILES,
   type WorkstationVariant,
+  type WorldRegionProfile,
 } from "./map-schema";
 import type {
   TiledMapJson,
@@ -48,7 +54,7 @@ const FLIPPED_VERTICALLY = 0x40000000;
 const FLIPPED_DIAGONALLY = 0x20000000;
 const GID_MASK = 0x0fffffff;
 
-const REQUIRED_TILE_LAYERS = [
+const HOME_REQUIRED_TILE_LAYERS = [
   "Ground",
   "Ground Detail",
   "Water",
@@ -61,16 +67,26 @@ const REQUIRED_TILE_LAYERS = [
   "Props Below Members",
   "Foreground Canopy",
 ] as const;
+const ISLAND_REQUIRED_TILE_LAYERS = [
+  "Ground",
+  "Paths",
+  "Props Below Members",
+  "Foreground Canopy",
+] as const;
 const ALLOWED_QE_PROPERTIES = new Set([
   "qeActivity",
   "qeGroup",
   "qeLabel",
   "qeLocation",
   "qePanelSide",
+  "qeSocketCategory",
+  "qeSocketEdge",
+  "qeSocketOrientation",
+  "qeSocketRole",
   "qeVariant",
   "qeZoom",
 ]);
-const REQUIRED_OBJECT_LAYERS = [
+const HOME_REQUIRED_OBJECT_LAYERS = [
   "Static Objects Below Members",
   "Locations",
   "Interaction Regions",
@@ -153,6 +169,16 @@ function objectType(object: TiledObject): string {
   return object.class || object.type || "";
 }
 
+function absolutePolylinePoints(object: TiledObject): TownPoint[] {
+  const radians = ((object.rotation ?? 0) * Math.PI) / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  return (object.polyline ?? []).map((point) => ({
+    x: object.x + point.x * cosine - point.y * sine,
+    y: object.y + point.x * sine + point.y * cosine,
+  }));
+}
+
 function assertUnique(values: string[], label: string, issues: string[]): void {
   const seen = new Set<string>();
   for (const value of values) {
@@ -208,18 +234,38 @@ function fnv1a(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-export function parseAuthoredTownMap(
+export function parseAuthoredWorldRegion(
   value: unknown,
   resources: Record<string, TiledTilesetResource>,
   source = "world/maps/town.tmj",
-): AuthoredTownMap {
+  expectedProfile?: WorldRegionProfile,
+): AuthoredWorldRegion {
   const issues: string[] = [];
   const map = parseJsonMap(value, issues);
+  const profileProperty = map.properties?.find(
+    (property) => property.name === "questEngineeringRegionProfile",
+  );
+  const profile = (profileProperty?.value ?? "home") as WorldRegionProfile;
+  if (
+    profileProperty &&
+    (profileProperty.type !== "string" ||
+      typeof profileProperty.value !== "string")
+  )
+    issues.push("questEngineeringRegionProfile must be a string property");
+  if (!WORLD_REGION_PROFILES.includes(profile))
+    issues.push(
+      `questEngineeringRegionProfile must be one of ${WORLD_REGION_PROFILES.join(", ")}`,
+    );
+  if (expectedProfile && profile !== expectedProfile)
+    issues.push(
+      `region profile '${profile}' does not match expected profile '${expectedProfile}'`,
+    );
+  const homeProfile = profile === "home";
   if (map.orientation !== "orthogonal")
     issues.push("map orientation must be orthogonal");
-  if (map.infinite) issues.push("town map must be finite");
+  if (map.infinite) issues.push("authored region map must be finite");
   if (map.tilewidth !== 16 || map.tileheight !== 16)
-    issues.push("town map must use 16x16 logical tiles");
+    issues.push("authored region map must use 16x16 logical tiles");
   if (
     !Number.isInteger(map.width) ||
     !Number.isInteger(map.height) ||
@@ -240,10 +286,15 @@ export function parseAuthoredTownMap(
 
   const layers = Array.isArray(map.layers) ? map.layers : [];
   const layerNames = new Set(layers.map((layer) => layer.name));
-  for (const name of [...REQUIRED_TILE_LAYERS, ...REQUIRED_OBJECT_LAYERS])
+  const requiredLayers = homeProfile
+    ? [...HOME_REQUIRED_TILE_LAYERS, ...HOME_REQUIRED_OBJECT_LAYERS]
+    : [...ISLAND_REQUIRED_TILE_LAYERS];
+  for (const name of requiredLayers)
     if (!layerNames.has(name))
       issues.push(
-        `Required layer '${name}' is missing. Undo the deletion in Tiled or copy the layer from ${AUTHORING_REFERENCE}.`,
+        homeProfile
+          ? `Required layer '${name}' is missing. Undo the deletion in Tiled or copy the layer from ${AUTHORING_REFERENCE}.`
+          : `Required layer '${name}' is missing from ${profile} template '${source}'.`,
       );
 
   const bounds: TownRect = {
@@ -253,7 +304,21 @@ export function parseAuthoredTownMap(
     height: (map.height || 0) * 16,
   };
 
-  const tilesets = (map.tilesets ?? [])
+  const tilesetReferences = map.tilesets ?? [];
+  assertUnique(
+    tilesetReferences.map((reference) => reference.source),
+    "external tileset source",
+    issues,
+  );
+  const seenFirstGids = new Set<number>();
+  for (const reference of tilesetReferences) {
+    if (seenFirstGids.has(reference.firstgid))
+      issues.push(
+        `duplicate external tileset firstgid '${reference.firstgid}'`,
+      );
+    seenFirstGids.add(reference.firstgid);
+  }
+  const tilesets = tilesetReferences
     .map((reference) => {
       const resource = resources[reference.source];
       if (!resource) {
@@ -365,6 +430,18 @@ export function parseAuthoredTownMap(
   const objectLayers = new Map(
     objectLayerValues.map((layer) => [layer.name, layer]),
   );
+  for (const layer of objectLayerValues)
+    for (const object of layer.objects) {
+      const type = objectType(object);
+      if (type === "crew_activity_point")
+        issues.push(
+          `crew_activity_point '${object.name}' on '${layer.name}' is unsupported; move it to 'Crew Activity Zones', use type crew_activity with point shape, and set qeActivity explicitly.`,
+        );
+      else if (type === "crew_route_center")
+        issues.push(
+          `crew_route_center '${object.name}' is not a route junction; make crew_route polyline vertices coincide within ${CREW_ROUTE_CONNECTION_TOLERANCE} world pixel.`,
+        );
+    }
   const objects = (name: string): TiledObject[] =>
     objectLayers.get(name)?.objects ?? [];
   const typed = (name: string, type: string): TiledObject[] =>
@@ -412,11 +489,12 @@ export function parseAuthoredTownMap(
     "location",
     issues,
   );
-  for (const required of REQUIRED_LOCATION_IDS)
-    if (!locations.some((location) => location.id === required))
-      issues.push(
-        `Required location '${required}' is missing from the Locations layer. Undo the deletion in Tiled or copy it from ${AUTHORING_REFERENCE}.`,
-      );
+  if (homeProfile)
+    for (const required of REQUIRED_LOCATION_IDS)
+      if (!locations.some((location) => location.id === required))
+        issues.push(
+          `Required location '${required}' is missing from the Locations layer. Undo the deletion in Tiled or copy it from ${AUTHORING_REFERENCE}.`,
+        );
   for (const location of locations) {
     if (!REQUIRED_LOCATION_IDS.includes(location.id)) {
       issues.push(`unknown semantic location '${location.id}'`);
@@ -480,7 +558,10 @@ export function parseAuthoredTownMap(
   const functionalTownBoundsObjects = overviewObjects.filter(
     (object) => object.name === "functional-town-bounds",
   );
-  if (overviewObjects.length !== 1 || functionalTownBoundsObjects.length !== 1)
+  if (
+    homeProfile &&
+    (overviewObjects.length !== 1 || functionalTownBoundsObjects.length !== 1)
+  )
     issues.push(
       "Camera Anchors must contain exactly one 'functional-town-bounds' overview_bounds object",
     );
@@ -547,11 +628,20 @@ export function parseAuthoredTownMap(
     objectLayers.has(name),
   );
   const crewEnabled = presentCrewLayers.length > 0;
-  if (crewEnabled && presentCrewLayers.length !== crewLayerNames.length)
+  const requiredCrewLayers =
+    profile === "project_island"
+      ? crewLayerNames
+      : profile === "project_expansion"
+        ? (["Crew Navigation", "Crew Activity Zones"] as const)
+        : crewEnabled
+          ? crewLayerNames
+          : [];
+  const missingCrewLayers = requiredCrewLayers.filter(
+    (name) => !objectLayers.has(name),
+  );
+  if (missingCrewLayers.length)
     issues.push(
-      `Crew navigation authoring is incomplete. Add object layers: ${crewLayerNames
-        .filter((name) => !objectLayers.has(name))
-        .join(", ")}.`,
+      `Crew navigation authoring is incomplete for ${profile}. Add object layers: ${missingCrewLayers.join(", ")}.`,
     );
 
   const crewSpawns = typed(
@@ -572,10 +662,7 @@ export function parseAuthoredTownMap(
     "Crew Navigation",
     "crew_route",
   ).map<AuthoredCrewRoute>((object) => {
-    const points = (object.polyline ?? []).map((point) => ({
-      x: object.x + point.x,
-      y: object.y + point.y,
-    }));
+    const points = absolutePolylinePoints(object);
     if (points.length < 2)
       issues.push(
         `crew_route '${object.name}' requires a polyline with at least two vertices`,
@@ -635,11 +722,14 @@ export function parseAuthoredTownMap(
 
   const crewGraph = buildCrewRouteGraph(crewRoutes);
   if (crewEnabled) {
-    if (crewSpawns.length === 0)
+    if (profile === "project_island" && crewSpawns.length === 0)
       issues.push("Crew Entrances requires at least one crew_spawn point.");
     if (crewRoutes.length === 0)
       issues.push("Crew Navigation requires at least one crew_route polyline.");
-    if (!crewActivities.some((activity) => activity.activity === "general"))
+    if (
+      (profile === "project_island" || homeProfile) &&
+      !crewActivities.some((activity) => activity.activity === "general")
+    )
       issues.push(
         "Crew Activity Zones requires at least one general crew_activity fallback.",
       );
@@ -659,6 +749,73 @@ export function parseAuthoredTownMap(
       if (!connection || connection.distance > CREW_ROUTE_ACCESS_TOLERANCE)
         issues.push(
           `crew_activity '${activity.id}' is unreachable; place it within ${CREW_ROUTE_ACCESS_TOLERANCE} world pixels of a crew_route.`,
+        );
+    }
+  }
+
+  const islandSockets = typed(
+    "Expansion Sockets",
+    "island_socket",
+  ).map<AuthoredIslandSocket>((object) => {
+    const role = propertyString(object, "qeSocketRole", issues);
+    const edge = propertyString(object, "qeSocketEdge", issues);
+    const orientation = propertyString(object, "qeSocketOrientation", issues);
+    if (!object.point)
+      issues.push(`island_socket '${object.name}' must be a point object`);
+    if (!["inbound", "outbound"].includes(role))
+      issues.push(
+        `island_socket '${object.name}' qeSocketRole must be inbound or outbound`,
+      );
+    if (!["north", "east", "south", "west"].includes(orientation))
+      issues.push(
+        `island_socket '${object.name}' qeSocketOrientation must be north, east, south, or west`,
+      );
+    return {
+      id: object.name,
+      role: role as IslandSocketRole,
+      edge,
+      orientation: orientation as IslandSocketOrientation,
+      category: propertyOptionalString(object, "qeSocketCategory"),
+      x: object.x,
+      y: object.y,
+    };
+  });
+  assertUnique(
+    islandSockets.map((socket) => socket.id),
+    "island socket",
+    issues,
+  );
+  if (
+    profile === "project_expansion" &&
+    !islandSockets.some((socket) => socket.role === "inbound")
+  )
+    issues.push(
+      "project_expansion requires at least one inbound island_socket in Expansion Sockets.",
+    );
+  for (const socket of islandSockets) {
+    if (!inBounds(socket, bounds))
+      issues.push(`island_socket '${socket.id}' lies outside map bounds`);
+    const edgeDistance =
+      socket.orientation === "north"
+        ? Math.abs(socket.y - bounds.y)
+        : socket.orientation === "east"
+          ? Math.abs(socket.x - (bounds.x + bounds.width))
+          : socket.orientation === "south"
+            ? Math.abs(socket.y - (bounds.y + bounds.height))
+            : Math.abs(socket.x - bounds.x);
+    if (edgeDistance > CREW_ROUTE_CONNECTION_TOLERANCE)
+      issues.push(
+        `island_socket '${socket.id}' must lie on its ${socket.orientation} map edge within ${CREW_ROUTE_CONNECTION_TOLERANCE} world pixel.`,
+      );
+    if (crewGraph.nodes.length) {
+      const routeNodeDistance = Math.min(
+        ...crewGraph.nodes.map((node) =>
+          Math.hypot(node.x - socket.x, node.y - socket.y),
+        ),
+      );
+      if (routeNodeDistance > CREW_ROUTE_CONNECTION_TOLERANCE)
+        issues.push(
+          `island_socket '${socket.id}' must coincide with a crew_route vertex within ${CREW_ROUTE_CONNECTION_TOLERANCE} world pixel so attached route graphs connect.`,
         );
     }
   }
@@ -686,10 +843,7 @@ export function parseAuthoredTownMap(
   ).map<AuthoredAnimalRoute>((object) => ({
     id: object.name,
     variant: propertyString(object, "qeVariant", issues),
-    points: (object.polyline ?? []).map((point) => ({
-      x: object.x + point.x,
-      y: object.y + point.y,
-    })),
+    points: absolutePolylinePoints(object),
   }));
   assertUnique(
     animalRoutes.map((route) => route.id),
@@ -744,32 +898,33 @@ export function parseAuthoredTownMap(
       issues.push(
         `camera anchor '${anchor.id}' references an unknown location`,
       );
-  for (const location of locations) {
-    const matchingRegions = interactionRegions.filter(
-      (region) => region.locationId === location.id,
-    );
-    if (matchingRegions.length === 0)
-      issues.push(`Required interaction region '${location.id}' is missing.`);
-    else if (matchingRegions.length > 1)
-      issues.push(
-        `Location '${location.id}' has multiple interaction regions; exactly one is required.`,
+  if (homeProfile)
+    for (const location of locations) {
+      const matchingRegions = interactionRegions.filter(
+        (region) => region.locationId === location.id,
       );
-    const matchingAnchors = cameraAnchors.filter(
-      (anchor) => anchor.id === location.id,
-    );
-    if (matchingAnchors.length === 0)
-      issues.push(`Required camera anchor '${location.id}' is missing.`);
-    else if (matchingAnchors.length > 1)
-      issues.push(
-        `Location '${location.id}' has multiple camera anchors; exactly one is required.`,
+      if (matchingRegions.length === 0)
+        issues.push(`Required interaction region '${location.id}' is missing.`);
+      else if (matchingRegions.length > 1)
+        issues.push(
+          `Location '${location.id}' has multiple interaction regions; exactly one is required.`,
+        );
+      const matchingAnchors = cameraAnchors.filter(
+        (anchor) => anchor.id === location.id,
       );
-  }
+      if (matchingAnchors.length === 0)
+        issues.push(`Required camera anchor '${location.id}' is missing.`);
+      else if (matchingAnchors.length > 1)
+        issues.push(
+          `Location '${location.id}' has multiple camera anchors; exactly one is required.`,
+        );
+    }
   const questBoardStatusAnchors = statusAnchors.filter(
     (anchor) => anchor.locationId === "quest-board",
   );
-  if (questBoardStatusAnchors.length === 0)
+  if (homeProfile && questBoardStatusAnchors.length === 0)
     issues.push("Required status anchor 'quest-board' is missing.");
-  else if (questBoardStatusAnchors.length > 1)
+  else if (homeProfile && questBoardStatusAnchors.length > 1)
     issues.push(
       "Location 'quest-board' has multiple status anchors; exactly one is required.",
     );
@@ -815,14 +970,18 @@ export function parseAuthoredTownMap(
   ))
     if (!inBounds(activity, bounds))
       issues.push(`authored point '${activity.id}' lies outside map bounds`);
-  if (functionalTownBounds.width <= 0 || functionalTownBounds.height <= 0)
+  if (
+    homeProfile &&
+    (functionalTownBounds.width <= 0 || functionalTownBounds.height <= 0)
+  )
     issues.push("functional-town-bounds must have positive dimensions.");
-  else if (!rectInBounds(functionalTownBounds, bounds))
+  else if (homeProfile && !rectInBounds(functionalTownBounds, bounds))
     issues.push("functional-town-bounds extends outside the authored map.");
 
   if (issues.length) throw new TownMapValidationError(issues);
   return {
     schemaVersion: QUEST_ENGINEERING_MAP_VERSION,
+    profile,
     source,
     hash: fnv1a(JSON.stringify(value)),
     tileSize: 16,
@@ -842,9 +1001,23 @@ export function parseAuthoredTownMap(
       activities: crewActivities,
       graph: crewGraph,
     },
+    islandSockets,
     ambientZones,
     animalRoutes,
     statusAnchors,
     reservedSites,
   };
+}
+
+export function parseAuthoredTownMap(
+  value: unknown,
+  resources: Record<string, TiledTilesetResource>,
+  source = "world/maps/town.tmj",
+): AuthoredTownMap {
+  return parseAuthoredWorldRegion(
+    value,
+    resources,
+    source,
+    "home",
+  ) as AuthoredTownMap;
 }

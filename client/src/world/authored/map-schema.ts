@@ -29,6 +29,16 @@ export const CREW_ACTIVITY_CATEGORIES = [
   "digging",
 ] as const;
 export type CrewActivityCategory = (typeof CREW_ACTIVITY_CATEGORIES)[number];
+export const WORLD_REGION_PROFILES = [
+  "home",
+  "project_island",
+  "project_expansion",
+  "reference",
+] as const;
+export type WorldRegionProfile = (typeof WORLD_REGION_PROFILES)[number];
+export type WorldRegionKind = "home" | "project" | "expansion";
+export type IslandSocketRole = "inbound" | "outbound";
+export type IslandSocketOrientation = "north" | "east" | "south" | "west";
 
 export interface TownPoint {
   x: number;
@@ -145,6 +155,14 @@ export interface AuthoredCrewNavigation {
   graph: CrewRouteGraph;
 }
 
+export interface AuthoredIslandSocket extends TownPoint {
+  id: string;
+  role: IslandSocketRole;
+  edge: string;
+  orientation: IslandSocketOrientation;
+  category: string | null;
+}
+
 export interface AuthoredAmbientZone extends TownRect {
   id: string;
   variant: string;
@@ -167,8 +185,9 @@ export interface AuthoredReservedSite extends TownRect {
   variant: string;
 }
 
-export interface AuthoredTownMap {
+export interface AuthoredWorldRegion {
   schemaVersion: 1;
+  profile: WorldRegionProfile;
   source: string;
   hash: string;
   tileSize: 16;
@@ -184,8 +203,14 @@ export interface AuthoredTownMap {
   /** Legacy markers retained for map compatibility; not Member homes at runtime. */
   memberHomes: AuthoredMemberHome[];
   crewNavigation: AuthoredCrewNavigation;
+  islandSockets: AuthoredIslandSocket[];
   ambientZones: AuthoredAmbientZone[];
   animalRoutes: AuthoredAnimalRoute[];
   statusAnchors: AuthoredStatusAnchor[];
   reservedSites: AuthoredReservedSite[];
+}
+
+/** Home-profile compatibility name retained for existing callers. */
+export interface AuthoredTownMap extends AuthoredWorldRegion {
+  profile: "home";
 }

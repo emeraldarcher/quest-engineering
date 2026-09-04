@@ -41,6 +41,17 @@ test("authored anchor is centered in the unobscured viewport beside a panel", ()
   expect(Number.isInteger(placement.y)).toBe(true);
 });
 
+test("dynamic world bounds support negative region origins", () => {
+  const placement = authoredCameraPosition(
+    { x: -500, y: -300 },
+    { x: 0, y: 0, width: 800, height: 600 },
+    { x: -2_000, y: -1_000, width: 4_000, height: 2_000 },
+    1,
+  );
+  expect(placement.boundedFocus).toEqual({ x: -500, y: -300 });
+  expect(placement).toMatchObject({ x: 900, y: 600 });
+});
+
 test("left-side panels use authored panel-side preference", () => {
   expect(
     unobscuredViewport(

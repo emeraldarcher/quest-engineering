@@ -1,12 +1,19 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
+import type { Workspace } from "../api/contracts";
 import type { BuildingId } from "../state/app-store";
-import { loadBundledTownMap } from "../world/authored/map-loader";
+import { loadBundledWorldTemplates } from "../world/authored/map-loader";
+import { WorldComposer } from "../world/composition/world-composer";
 import type { ActiveCrewActivity } from "../world/crew/active-crew";
+import {
+  crewDemoActivities,
+  type CrewDemoScenario,
+} from "../world/crew/crew-demo";
 import { projectCrewPresentation } from "../world/crew/crew-presentation";
 import { TownWorld, type TownStatusModel } from "../world/town-world";
 
 export let activities: ActiveCrewActivity[] = [];
+export let projects: Workspace[] = [];
 export let status: TownStatusModel = { preparingReview: 0, awaitingReview: 0, attention: 0, complete: 0 };
 export let selectedBuilding: BuildingId | null = null;
 export let onBuilding: (id: BuildingId) => void;
@@ -18,15 +25,63 @@ let resizeObserver: ResizeObserver | null = null;
 let observedPanel: HTMLElement | null = null;
 const query = new URLSearchParams(location.search);
 const requestedScale = Number(query.get("scale"));
-const keepTownFocused = query.get("camera") === "town";
+const keepHomeFocused = query.get("camera") === "town" || query.get("camera") === "home";
+const requestedProjectFocus = query.get("focusProject");
 const debugMap = import.meta.env.DEV && query.get("debugMap") === "1";
-const result = loadBundledTownMap();
-$: crew = projectCrewPresentation(activities);
+const crewDemoScenarios = new Set<CrewDemoScenario>([
+  "none",
+  "entering",
+  "crafting",
+  "research",
+  "mining",
+  "woodcutting",
+  "parallel",
+  "showcase",
+]);
+const requestedCrewDemo = query.get("crewDemo") as CrewDemoScenario | null;
+const demoActivities =
+  import.meta.env.DEV &&
+  requestedCrewDemo &&
+  crewDemoScenarios.has(requestedCrewDemo)
+    ? crewDemoActivities(requestedCrewDemo)
+    : null;
+const crewDemoTimeMs = demoActivities
+  ? Math.max(0, Number(query.get("crewDemoTime") ?? 0))
+  : undefined;
+const projectTemplateSelection =
+  import.meta.env.DEV && query.get("worldTemplate") === "fixture"
+    ? "reference-fixture"
+    : "production";
+const result = loadBundledWorldTemplates(projectTemplateSelection);
+const composer = result.templates ? new WorldComposer(result.templates) : null;
+$: effectiveActivities = demoActivities ?? activities;
+$: crew = projectCrewPresentation(effectiveActivities);
+$: projectIdentities = projects
+  .filter((project) => project.archived_at === null)
+  .map((project) => ({ id: project.id, key: project.key, name: project.name }));
+$: expansionProjectIds = new Set(
+  query.get("worldFixture") === "expansion" && projectIdentities[0]
+    ? [projectIdentities[0].id]
+    : [],
+);
+$: composition = composer?.compose({
+  projects: projectIdentities,
+  activeCrew: effectiveActivities,
+  expansionProjectIds,
+}) ?? null;
 let scale = [1, 2, 3].includes(requestedScale)
   ? requestedScale
   : innerWidth <= 960
     ? 1
     : 2;
+
+export function focusProject(projectId: string): boolean {
+  return world?.focusProject(projectId) ?? false;
+}
+
+export function focusHome(): void {
+  world?.focusHome();
+}
 
 function updatePanelBounds() {
   const panel = document.querySelector<HTMLElement>(".panel");
@@ -47,32 +102,43 @@ function updatePanelBounds() {
 }
 
 onMount(() => {
-  if (query.get("capture") === "dom" || !result.map) return;
+  if (query.get("capture") === "dom" || !composition) return;
   world = new TownWorld(
     host,
     {
       onBuildingSelected: onBuilding,
       onMemberSelected: onMember,
     },
-    result.map,
+    composition,
     scale,
-    { debugMap },
+    {
+      debugMap,
+      ...(crewDemoTimeMs === undefined ? {} : { crewDemoTimeMs }),
+      demoHoverFirst: demoActivities !== null && query.get("crewDemoHover") === "1",
+    },
   );
   void world.mount().then(() => {
     world?.setCrew(crew);
     world?.setStatus(status);
     updatePanelBounds();
-    if (selectedBuilding && !keepTownFocused)
+    if (selectedBuilding && !keepHomeFocused)
       world?.focusBuilding(selectedBuilding);
-    else world?.focusTown();
+    else if (requestedProjectFocus) {
+      const projectId =
+        requestedProjectFocus === "first"
+          ? projectIdentities[0]?.id
+          : requestedProjectFocus;
+      if (!projectId || !world?.focusProject(projectId)) world?.focusHome();
+    } else world?.focusHome();
   });
   mutationObserver = new MutationObserver(() => requestAnimationFrame(updatePanelBounds));
   mutationObserver.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("resize", updatePanelBounds);
 });
+$: if (composition) world?.setComposition(composition);
 $: world?.setCrew(crew);
 $: world?.setStatus(status);
-$: if (selectedBuilding && !keepTownFocused) world?.focusBuilding(selectedBuilding);
+$: if (selectedBuilding && !keepHomeFocused) world?.focusBuilding(selectedBuilding);
 $: if (!selectedBuilding) world?.clearBuildingFocus();
 $: if (world) {
   selectedBuilding;
@@ -94,20 +160,20 @@ function setScale(value: number) {
 
 {#if result.error}
   <div class="map-fatal" role="alert">
-    <strong>Town map could not be loaded.</strong>
+    <strong>World regions could not be loaded.</strong>
     {#if import.meta.env.DEV}<pre>{result.error.message}</pre>{/if}
   </div>
 {:else}
-  <div class="town-canvas" bind:this={host} role="img" aria-label="Quest Engineering authored Sunnyside town. Use camera controls or arrow keys to navigate."></div>
-  <div class="camera-controls" aria-label="Town camera controls">
+  <div class="town-canvas" bind:this={host} role="img" aria-label="Quest Engineering authored archipelago. Use camera controls or arrow keys to navigate."></div>
+  <div class="camera-controls" aria-label="World camera controls">
     {#each [1, 2, 3] as value}<button class:active={scale === value} aria-pressed={scale === value} on:click={() => setScale(value)}>{value}×</button>{/each}
-    <button title="Fit authored functional-town bounds" on:click={() => world?.focusTown()}>Town</button>
+    <button title="Focus Home Island" on:click={() => world?.focusHome()}>Home</button>
   </div>
-  {#if debugMap && result.map}
-    <div class="map-diagnostics">Town map v{result.map.schemaVersion} · {result.map.hash} · loaded {new Date().toLocaleTimeString()}</div>
+  {#if debugMap && composition}
+    <div class="map-diagnostics">World · {composition.regions.length} regions · {composition.projectIslands.values().length} Project islands · loaded {new Date().toLocaleTimeString()}</div>
   {/if}
-  <div class="world-proxies" aria-label="Town locations">
-    {#each result.map?.locations ?? [] as location}
+  <div class="world-proxies" aria-label="Home Island locations">
+    {#each composition?.home.template.authored.locations ?? [] as location}
       <button on:focus={() => world?.focusBuilding(location.id as BuildingId)} on:click={() => onBuilding(location.id as BuildingId)}>{location.label}</button>
     {/each}
     {#each crew as member}

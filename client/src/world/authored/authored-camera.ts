@@ -46,14 +46,14 @@ export function authoredCameraPosition(
   const halfHeight = viewport.height / (2 * zoom);
   const x =
     halfWidth * 2 >= world.width
-      ? world.width / 2
+      ? world.x + world.width / 2
       : Math.max(
           world.x + halfWidth,
           Math.min(world.x + world.width - halfWidth, focus.x),
         );
   const y =
     halfHeight * 2 >= world.height
-      ? world.height / 2
+      ? world.y + world.height / 2
       : Math.max(
           world.y + halfHeight,
           Math.min(world.y + world.height - halfHeight, focus.y),

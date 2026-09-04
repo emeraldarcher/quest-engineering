@@ -65,6 +65,17 @@
     ]
   },
   {
+    "name": "island_socket",
+    "color": "#fb7185",
+    "description": "Authored attachment point between a Project-island base and an expansion. Matching edge/category and opposite orientation compose by transform.",
+    "properties": [
+      { "name": "qeSocketRole", "type": "string", "value": "outbound" },
+      { "name": "qeSocketEdge", "type": "string", "value": "footbridge" },
+      { "name": "qeSocketOrientation", "type": "string", "value": "east" },
+      { "name": "qeSocketCategory", "type": "string", "value": "general" }
+    ]
+  },
+  {
     "name": "ambient_zone",
     "color": "#06b6d4",
     "description": "Moveable and resizable area for presentation-only ambient activity.",

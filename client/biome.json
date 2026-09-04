@@ -6,6 +6,7 @@
       "!dist",
       "!src-tauri/target",
       "!src-tauri/gen/schemas",
+      "!src/assets/sunnyside/generated",
       "!src/**/*.svelte"
     ]
   },

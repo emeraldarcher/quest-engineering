@@ -15,16 +15,30 @@ import {
   fitAuthoredBounds,
   unobscuredViewport,
 } from "./authored/authored-camera";
+import { crewRouteComponents } from "./authored/crew-navigation";
 import type {
   AuthoredImageTile,
   AuthoredInteractionRegion,
   AuthoredLocationId,
   AuthoredTilePlacement,
-  AuthoredTownMap,
+  AuthoredWorldRegion,
   PanelSide,
   TownRect,
 } from "./authored/map-schema";
+import {
+  type ProjectIslandInstance,
+  projectIslandFocusTarget,
+  type WorldComposition,
+} from "./composition/world-composer";
+import type { WorldRegionInstance } from "./composition/world-region";
+import { ActiveCrewSystem, type CrewActor } from "./crew/ActiveCrewSystem";
 import type { ActiveCrewPresentation } from "./crew/crew-presentation";
+import { allHumanV1RuntimeUrls, humanV1LayerUrl } from "./crew/human-v1-assets";
+import {
+  humanAnimationFrameAt,
+  humanHairRoleForFrame,
+} from "./crew/human-v1-runtime";
+import { regionIsVisible } from "./rendering/region-culling";
 import {
   allRuntimeAssets,
   type SunnysideAsset,
@@ -45,44 +59,60 @@ export interface TownStatusModel {
 
 export interface TownWorldOptions {
   debugMap?: boolean;
+  /** Development capture aid: advance once, then freeze CrewActor time. */
+  crewDemoTimeMs?: number;
+  demoHoverFirst?: boolean;
 }
 
 interface AnimatedSprite {
   sprite: Sprite;
   asset: SunnysideAsset;
   phase: number;
+  regionInstanceId: string;
   route?: Array<{ x: number; y: number }>;
+}
+
+interface RenderedRegion {
+  instance: WorldRegionInstance;
+  root: Container;
+  activity: Container;
+}
+
+interface CrewActorView {
+  root: Container;
+  body: Container;
+  layers: Sprite[];
+  tooltip: Text;
+  regionInstanceId: string;
 }
 
 const palette = {
   ink: 0x29373a,
   cream: 0xfff3d4,
-  paper: 0xf3dfb5,
   success: 0x4d9468,
-  moving: 0x4e8ca0,
   warning: 0xd99a45,
   failure: 0xc35458,
-  uncertain: 0x845d99,
   review: 0xd98545,
 };
 
 export class TownWorld {
   private app = new Application();
   private scene = new Container();
-  private staticWorld = new Container();
-  private activity = new Container();
-  private foreground = new Container();
-  private overlays = new Container();
-  private interactionLayer = new Container();
-  private orderLayer = new Container();
-  private statusLayer = new Container();
-  private debugLayer = new Container();
+  private regionLayer = new Container();
+  private globalDebugLayer = new Container();
   private crewDebugLayer = new Container();
+  private renderedRegions = new Map<string, RenderedRegion>();
+  private statusLayer: Container | null = null;
   private loaded = new Map<string, Texture>();
   private framed = new Map<string, Texture>();
   private labels = new Map<AuthoredLocationId, Text>();
   private animated: AnimatedSprite[] = [];
   private crew: ActiveCrewPresentation[] = [];
+  private crewSystem: ActiveCrewSystem;
+  private crewViews = new Map<string, CrewActorView>();
+  private lastTickAt = performance.now();
+  private nextCrewDebugUpdate = 0;
+  private crewDemoApplied = false;
   private status: TownStatusModel = {
     preparingReview: 0,
     awaitingReview: 0,
@@ -90,10 +120,11 @@ export class TownWorld {
     complete: 0,
   };
   private focusedBuilding: AuthoredLocationId | null = null;
+  private focusedProjectId: string | null = null;
   private focus = { x: 320, y: 208 };
   private targetFocus = { ...this.focus };
   private zoom: 1 | 2 | 3;
-  private cameraMode: "town" | "location" | "member" | "manual" = "town";
+  private cameraMode: "home" | "location" | "project" | "manual" = "home";
   private preferredPanelSide: PanelSide = "right";
   private panelBounds: TownRect | null = null;
   private dragging: { x: number; y: number } | null = null;
@@ -105,16 +136,18 @@ export class TownWorld {
   private initialized = false;
   private destroyed = false;
   private mounted = false;
+  private regionSignature = "";
 
   constructor(
     private readonly host: HTMLElement,
     private readonly events: TownWorldEvents,
-    private readonly map: AuthoredTownMap,
+    private composition: WorldComposition,
     initialZoom = 2,
     private readonly options: TownWorldOptions = {},
   ) {
+    this.crewSystem = new ActiveCrewSystem(composition);
     this.zoom = this.normalizeZoom(initialZoom);
-    this.focus = this.rectCenter(map.functionalTownBounds);
+    this.focus = this.rectCenter(this.homeMap().functionalTownBounds);
     this.targetFocus = { ...this.focus };
   }
 
@@ -139,11 +172,14 @@ export class TownWorld {
     }
     this.host.appendChild(this.app.canvas);
     const urls = new Set([
-      ...this.map.tileLayers.flatMap((layer) =>
-        layer.tiles.map((tile) => tile.image.url),
-      ),
-      ...this.map.staticObjects.map((object) => object.image.url),
+      ...this.composition.templates.flatMap((template) => [
+        ...template.authored.tileLayers.flatMap((layer) =>
+          layer.tiles.map((tile) => tile.image.url),
+        ),
+        ...template.authored.staticObjects.map((object) => object.image.url),
+      ]),
       ...allRuntimeAssets().map((asset) => asset.url),
+      ...allHumanV1RuntimeUrls(),
     ]);
     await Promise.all(
       [...urls].map(async (url) => {
@@ -154,30 +190,12 @@ export class TownWorld {
     );
     if (this.destroyed) return;
 
-    this.scene.addChild(
-      this.staticWorld,
-      this.activity,
-      this.foreground,
-      this.overlays,
-      this.debugLayer,
-    );
-    this.activity.sortableChildren = true;
-    this.overlays.addChild(
-      this.orderLayer,
-      this.statusLayer,
-      this.interactionLayer,
-    );
+    this.scene.addChild(this.regionLayer, this.globalDebugLayer);
+    this.globalDebugLayer.addChild(this.crewDebugLayer);
     this.app.stage.addChild(this.scene);
-    this.buildStaticMap();
-    this.buildInteractions();
-    this.buildAmbientLife();
-    if (this.options.debugMap) {
-      this.buildDebugOverlay();
-      this.debugLayer.addChild(this.crewDebugLayer);
-      this.updateCrewDebugOverlay();
-    }
+    this.rebuildRegions();
     this.updateStatusMarker();
-    this.focusTown();
+    this.focusHome();
 
     this.app.stage.eventMode = "static";
     this.app.stage.hitArea = this.app.screen;
@@ -208,9 +226,36 @@ export class TownWorld {
     this.mounted = true;
   }
 
+  setComposition(composition: WorldComposition): void {
+    const signature = composition.regions
+      .map(
+        (region) =>
+          `${region.instanceId}:${region.templateId}:${region.worldOrigin.x}:${region.worldOrigin.y}`,
+      )
+      .join("|");
+    this.composition = composition;
+    this.crewSystem.setComposition(composition);
+    this.crewSystem.reconcile(this.crew);
+    if (this.cameraMode === "project" && this.focusedProjectId) {
+      const target = projectIslandFocusTarget(
+        composition,
+        this.focusedProjectId,
+      );
+      if (target) this.targetFocus = target.center;
+      else this.focusHome();
+    }
+    if (!this.mounted) return;
+    if (signature !== this.regionSignature) this.rebuildRegions();
+    else if (this.options.debugMap) this.updateCrewDebugOverlay();
+  }
+
   setCrew(crew: readonly ActiveCrewPresentation[]): void {
     this.crew = [...crew];
-    if (this.mounted && this.options.debugMap) this.updateCrewDebugOverlay();
+    this.crewSystem.reconcile(this.crew);
+    this.applyCrewDemoTime();
+    if (!this.mounted) return;
+    this.syncCrewViews();
+    if (this.options.debugMap) this.updateCrewDebugOverlay();
   }
 
   setStatus(status: TownStatusModel): void {
@@ -231,19 +276,38 @@ export class TownWorld {
 
   setPanelBounds(bounds: TownRect | null): void {
     this.panelBounds = bounds;
-    if (this.mounted && this.cameraMode === "town")
+    if (this.mounted && this.cameraMode === "home")
       this.zoom = this.overviewZoom();
   }
 
   focusBuilding(id: BuildingId): void {
-    const anchor = this.map.cameraAnchors.find((value) => value.id === id);
+    const anchor = this.homeMap().cameraAnchors.find(
+      (value) => value.id === id,
+    );
     if (!anchor) return;
     this.focusedBuilding = anchor.id;
+    this.focusedProjectId = null;
     this.cameraMode = "location";
     this.zoom = anchor.zoom;
     this.preferredPanelSide = anchor.panelSide;
-    this.targetFocus = { x: anchor.x, y: anchor.y };
+    this.targetFocus = {
+      x: anchor.x + this.composition.home.worldOrigin.x,
+      y: anchor.y + this.composition.home.worldOrigin.y,
+    };
     this.refreshHighlights();
+  }
+
+  focusProject(projectId: string): boolean {
+    const target = projectIslandFocusTarget(this.composition, projectId);
+    if (!target) return false;
+    this.focusedBuilding = null;
+    this.focusedProjectId = projectId;
+    this.cameraMode = "project";
+    this.preferredPanelSide = "right";
+    this.zoom = fitAuthoredBounds(target.island.bounds, this.viewport());
+    this.targetFocus = target.center;
+    this.refreshHighlights();
+    return true;
   }
 
   clearBuildingFocus(): void {
@@ -251,12 +315,22 @@ export class TownWorld {
     this.refreshHighlights();
   }
 
-  focusTown(): void {
-    this.cameraMode = "town";
+  focusHome(): void {
+    this.cameraMode = "home";
     this.focusedBuilding = null;
+    this.focusedProjectId = null;
     this.zoom = this.overviewZoom();
-    this.targetFocus = this.rectCenter(this.map.functionalTownBounds);
+    const bounds = this.homeMap().functionalTownBounds;
+    this.targetFocus = {
+      x: bounds.x + bounds.width / 2 + this.composition.home.worldOrigin.x,
+      y: bounds.y + bounds.height / 2 + this.composition.home.worldOrigin.y,
+    };
     this.refreshHighlights();
+  }
+
+  /** Compatibility alias for existing controls. */
+  focusTown(): void {
+    this.focusHome();
   }
 
   destroy(): void {
@@ -268,6 +342,10 @@ export class TownWorld {
       this.app.ticker.remove(this.tick);
       this.app.destroy(true, { children: true });
     }
+  }
+
+  private homeMap(): AuthoredWorldRegion {
+    return this.composition.home.template.authored;
   }
 
   private normalizeZoom(value: number): 1 | 2 | 3 {
@@ -293,7 +371,7 @@ export class TownWorld {
     if (event.key === "+" || event.key === "=")
       this.zoom = this.normalizeZoom(this.zoom + 1);
     else if (event.key === "-") this.zoom = this.normalizeZoom(this.zoom - 1);
-    else if (event.key === "0") this.focusTown();
+    else if (event.key === "0") this.focusHome();
     else if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a")
       this.targetFocus.x -= amount;
     else if (event.key === "ArrowRight" || event.key.toLowerCase() === "d")
@@ -309,16 +387,26 @@ export class TownWorld {
 
   private tick = () => {
     const now = performance.now();
+    const elapsed = Math.min(100, Math.max(0, now - this.lastTickAt));
+    this.lastTickAt = now;
     this.app.stage.hitArea = this.app.screen;
     if (!this.reducedMotion) {
       this.focus.x += (this.targetFocus.x - this.focus.x) * 0.24;
       this.focus.y += (this.targetFocus.y - this.focus.y) * 0.24;
     } else this.focus = { ...this.targetFocus };
     this.positionCamera();
-    this.animated = this.animated.filter(
-      (animated) => !animated.sprite.destroyed,
-    );
+    this.updateRegionCulling();
+    if (this.options.crewDemoTimeMs === undefined)
+      this.crewSystem.update(elapsed);
+    this.updateCrewViews();
+    if (this.options.debugMap && now >= this.nextCrewDebugUpdate) {
+      this.nextCrewDebugUpdate = now + 250;
+      this.updateCrewDebugOverlay();
+    }
+    this.animated = this.animated.filter((value) => !value.sprite.destroyed);
     for (const animated of this.animated) {
+      if (!this.renderedRegions.get(animated.regionInstanceId)?.root.visible)
+        continue;
       const frames = animated.asset.frames ?? 1;
       const frame = this.reducedMotion
         ? 0
@@ -355,14 +443,17 @@ export class TownWorld {
   }
 
   private overviewZoom(): 1 | 2 | 3 {
-    return fitAuthoredBounds(this.map.functionalTownBounds, this.viewport());
+    return fitAuthoredBounds(
+      this.homeMap().functionalTownBounds,
+      this.viewport(),
+    );
   }
 
   private positionCamera(): void {
     const placement = authoredCameraPosition(
       this.focus,
       this.viewport(),
-      this.map.bounds,
+      this.composition.worldBounds,
       this.zoom,
     );
     this.scene.scale.set(this.zoom);
@@ -371,23 +462,83 @@ export class TownWorld {
       label.visible = id === this.focusedBuilding;
   }
 
+  private updateRegionCulling(): void {
+    const viewport = this.viewport();
+    const worldViewport = {
+      x: (viewport.x - this.scene.x) / this.zoom,
+      y: (viewport.y - this.scene.y) / this.zoom,
+      width: viewport.width / this.zoom,
+      height: viewport.height / this.zoom,
+    };
+    for (const rendered of this.renderedRegions.values())
+      rendered.root.visible = regionIsVisible(
+        rendered.instance.worldBounds,
+        worldViewport,
+      );
+  }
+
   private rectCenter(rect: TownRect): { x: number; y: number } {
     return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
   }
 
-  private buildStaticMap(): void {
-    for (const layer of this.map.tileLayers) {
+  private rebuildRegions(): void {
+    for (const child of this.regionLayer.removeChildren())
+      child.destroy({ children: true });
+    this.renderedRegions.clear();
+    this.crewViews.clear();
+    this.labels.clear();
+    this.animated = [];
+    this.statusLayer = null;
+    this.regionSignature = this.composition.regions
+      .map(
+        (region) =>
+          `${region.instanceId}:${region.templateId}:${region.worldOrigin.x}:${region.worldOrigin.y}`,
+      )
+      .join("|");
+    for (const instance of this.composition.regions) this.buildRegion(instance);
+    this.syncCrewViews();
+    this.updateStatusMarker();
+    if (this.options.debugMap) this.updateCrewDebugOverlay();
+  }
+
+  private buildRegion(instance: WorldRegionInstance): void {
+    const map = instance.template.authored;
+    const root = new Container();
+    root.label = instance.instanceId;
+    root.position.set(instance.worldOrigin.x, instance.worldOrigin.y);
+    const staticWorld = new Container();
+    const activity = new Container();
+    const foreground = new Container();
+    const overlays = new Container();
+    const debug = new Container();
+    activity.sortableChildren = true;
+    root.addChild(staticWorld, activity, foreground, overlays, debug);
+    this.regionLayer.addChild(root);
+    this.renderedRegions.set(instance.instanceId, { instance, root, activity });
+
+    for (const layer of map.tileLayers) {
       const container = new Container();
       container.label = layer.name;
       for (const tile of layer.tiles) container.addChild(this.mapSprite(tile));
-      if (layer.foreground) this.foreground.addChild(container);
-      else this.staticWorld.addChild(container);
+      if (layer.foreground) foreground.addChild(container);
+      else staticWorld.addChild(container);
     }
     const objects = new Container();
     objects.label = "Static Objects Below Members";
-    for (const object of [...this.map.staticObjects].sort((a, b) => a.y - b.y))
+    for (const object of [...map.staticObjects].sort((a, b) => a.y - b.y))
       objects.addChild(this.mapSprite(object));
-    this.staticWorld.addChild(objects);
+    staticWorld.addChild(objects);
+
+    if (instance.kind === "home") {
+      const orderLayer = new Container();
+      const statusLayer = new Container();
+      const interactionLayer = new Container();
+      overlays.addChild(orderLayer, statusLayer, interactionLayer);
+      this.statusLayer = statusLayer;
+      this.buildInteractions(map, overlays, interactionLayer);
+    }
+    this.buildAmbientLife(instance, activity);
+    if (this.options.debugMap) this.buildDebugOverlay(instance, debug);
   }
 
   private mapTexture(image: AuthoredImageTile): Texture {
@@ -426,20 +577,27 @@ export class TownWorld {
     return sprite;
   }
 
-  private buildInteractions(): void {
-    for (const location of this.map.locations) {
+  private buildInteractions(
+    map: AuthoredWorldRegion,
+    overlays: Container,
+    interactionLayer: Container,
+  ): void {
+    for (const location of map.locations) {
       const label = this.worldText(location.label, 6, palette.cream);
       label.anchor.set(0.5, 0);
       label.position.set(location.x, location.y + 4);
       label.visible = false;
       this.labels.set(location.id, label);
-      this.overlays.addChild(label);
+      overlays.addChild(label);
     }
-    for (const region of this.map.interactionRegions)
-      this.buildInteraction(region);
+    for (const region of map.interactionRegions)
+      this.buildInteraction(region, interactionLayer);
   }
 
-  private buildInteraction(region: AuthoredInteractionRegion): void {
+  private buildInteraction(
+    region: AuthoredInteractionRegion,
+    interactionLayer: Container,
+  ): void {
     const root = new Container();
     root.position.set(region.x, region.y);
     root.eventMode = "static";
@@ -450,9 +608,10 @@ export class TownWorld {
       hit.poly(values).fill({ color: palette.cream, alpha: 0.001 });
       root.hitArea = new Polygon(values);
     } else {
-      hit
-        .rect(0, 0, region.width, region.height)
-        .fill({ color: palette.cream, alpha: 0.001 });
+      hit.rect(0, 0, region.width, region.height).fill({
+        color: palette.cream,
+        alpha: 0.001,
+      });
       root.hitArea = new Rectangle(0, 0, region.width, region.height);
     }
     root.addChild(hit);
@@ -469,10 +628,10 @@ export class TownWorld {
       this.focusBuilding(region.locationId as BuildingId);
       this.events.onBuildingSelected(region.locationId as BuildingId);
     });
-    this.interactionLayer.addChild(root);
+    interactionLayer.addChild(root);
   }
 
-  private drawRegion(
+  private drawInteractionRegion(
     graphics: Graphics,
     region: AuthoredInteractionRegion,
     color: number,
@@ -495,11 +654,15 @@ export class TownWorld {
       label.visible = id === this.focusedBuilding;
   }
 
-  private buildAmbientLife(): void {
+  private buildAmbientLife(
+    instance: WorldRegionInstance,
+    activity: Container,
+  ): void {
+    const map = instance.template.authored;
     const routes = new Map(
-      this.map.animalRoutes.map((route) => [route.variant, route]),
+      map.animalRoutes.map((route) => [route.variant, route]),
     );
-    for (const [index, zone] of this.map.ambientZones.entries()) {
+    for (const [index, zone] of map.ambientZones.entries()) {
       const asset =
         zone.variant === "duck"
           ? SunnysideAssets.animals.duck
@@ -511,7 +674,15 @@ export class TownWorld {
         x: zone.x + zone.width / 2,
         y: zone.y + zone.height / 2,
       };
-      this.addAnimated(asset, point.x, point.y, index * 3, route?.points);
+      this.addAnimated(
+        instance.instanceId,
+        activity,
+        asset,
+        point.x,
+        point.y,
+        index * 3,
+        route?.points,
+      );
     }
   }
 
@@ -540,6 +711,8 @@ export class TownWorld {
   }
 
   private addAnimated(
+    regionInstanceId: string,
+    activityLayer: Container,
     asset: SunnysideAsset,
     x: number,
     y: number,
@@ -550,19 +723,166 @@ export class TownWorld {
     sprite.anchor.set(asset.anchor[0], asset.anchor[1]);
     sprite.position.set(x, y);
     sprite.zIndex = Math.round(y);
-    this.activity.addChild(sprite);
+    activityLayer.addChild(sprite);
     this.animated.push({
       sprite,
       asset,
       phase,
+      regionInstanceId,
       ...(route ? { route } : {}),
     });
   }
 
+  private humanFrameTexture(role: string, actor: CrewActor): Texture {
+    const frame = humanAnimationFrameAt(
+      actor.animation,
+      actor.animationElapsedMs,
+    );
+    const resolvedRole = role.startsWith("hair-")
+      ? humanHairRoleForFrame(role, frame.index)
+      : role;
+    const url = humanV1LayerUrl(resolvedRole);
+    const key = `human-v1:${url}:${frame.index}`;
+    const cached = this.framed.get(key);
+    if (cached) return cached;
+    const source = this.loaded.get(url) ?? Texture.EMPTY;
+    const texture = new Texture({
+      source: source.source,
+      frame: new Rectangle(
+        frame.rect.x,
+        frame.rect.y,
+        frame.rect.w,
+        frame.rect.h,
+      ),
+    });
+    this.framed.set(key, texture);
+    return texture;
+  }
+
+  private syncCrewViews(): void {
+    const actors = this.crewSystem.actors();
+    const active = new Set(actors.map((actor) => actor.actorId));
+    for (const [actorId, view] of this.crewViews) {
+      if (active.has(actorId)) continue;
+      view.root.destroy({ children: true });
+      this.crewViews.delete(actorId);
+    }
+    for (const actor of actors) {
+      const rendered = this.renderedRegions.get(actor.islandRegionId);
+      if (!rendered) continue;
+      const existing = this.crewViews.get(actor.actorId);
+      if (existing?.regionInstanceId === actor.islandRegionId) continue;
+      existing?.root.destroy({ children: true });
+      const view = this.buildCrewActorView(actor);
+      rendered.activity.addChild(view.root);
+      this.crewViews.set(actor.actorId, view);
+    }
+    this.updateCrewViews();
+  }
+
+  private buildCrewActorView(actor: CrewActor): CrewActorView {
+    const root = new Container();
+    root.label = `active-crew:${actor.actorId}`;
+    root.eventMode = "static";
+    root.cursor = "pointer";
+    root.hitArea = new Rectangle(-12, -38, 24, 40);
+
+    const accent = new Graphics()
+      .ellipse(0, -1, 8, 3)
+      .fill({ color: actor.activity.squadAccentColor, alpha: 0.18 })
+      .stroke({ color: actor.activity.squadAccentColor, width: 1, alpha: 0.9 });
+    const body = new Container();
+    const roles = [
+      "tools-rear",
+      "base",
+      actor.appearance.hairRole,
+      "tools-front",
+    ];
+    const layers = roles.map((role) => {
+      const sprite = new Sprite(this.humanFrameTexture(role, actor));
+      sprite.anchor.set(0.5, 1);
+      return sprite;
+    });
+    body.addChild(...layers);
+
+    const tooltip = this.worldText(
+      `${actor.activity.memberName}\n${actor.activity.className} · ${actor.activity.squadName}\n${actor.activity.questTitle}\n${actor.activity.stepName}`,
+      5,
+      palette.cream,
+    );
+    tooltip.anchor.set(0.5, 1);
+    tooltip.position.set(0, -42);
+    tooltip.visible =
+      this.options.demoHoverFirst === true && this.crewViews.size === 0;
+    root.addChild(accent, body, tooltip);
+    root.on("pointerover", () => {
+      tooltip.visible = true;
+    });
+    root.on("pointerout", () => {
+      tooltip.visible = false;
+    });
+    root.on("pointertap", () => {
+      if (this.dragDistance >= 5) return;
+      this.events.onMemberSelected(
+        actor.activity.runId,
+        actor.activity.memberKey,
+      );
+    });
+    return {
+      root,
+      body,
+      layers,
+      tooltip,
+      regionInstanceId: actor.islandRegionId,
+    };
+  }
+
+  private applyCrewDemoTime(): void {
+    if (
+      this.crewDemoApplied ||
+      this.options.crewDemoTimeMs === undefined ||
+      this.crewSystem.actors().length === 0
+    )
+      return;
+    let remaining = this.options.crewDemoTimeMs;
+    while (remaining > 0) {
+      const elapsed = Math.min(16, remaining);
+      this.crewSystem.update(elapsed);
+      remaining -= elapsed;
+    }
+    this.crewDemoApplied = true;
+  }
+
+  private updateCrewViews(): void {
+    for (const actor of this.crewSystem.actors()) {
+      const view = this.crewViews.get(actor.actorId);
+      const rendered = this.renderedRegions.get(actor.islandRegionId);
+      if (!view || !rendered || !rendered.root.visible) continue;
+      const position = this.crewSystem.renderPosition(actor);
+      view.root.position.set(
+        Math.round(position.x - rendered.instance.worldOrigin.x),
+        Math.round(position.y - rendered.instance.worldOrigin.y),
+      );
+      view.root.zIndex = Math.round(view.root.y);
+      view.body.scale.x = actor.mirrorX ? -1 : 1;
+      const roles = [
+        "tools-rear",
+        "base",
+        actor.appearance.hairRole,
+        "tools-front",
+      ];
+      for (const [index, sprite] of view.layers.entries()) {
+        const role = roles[index];
+        if (role) sprite.texture = this.humanFrameTexture(role, actor);
+      }
+    }
+  }
+
   private updateStatusMarker(): void {
+    if (!this.statusLayer) return;
     for (const child of this.statusLayer.removeChildren())
       child.destroy({ children: true });
-    const anchor = this.map.statusAnchors.find(
+    const anchor = this.homeMap().statusAnchors.find(
       (value) => value.locationId === "quest-board",
     );
     if (!anchor) return;
@@ -621,21 +941,33 @@ export class TownWorld {
         sprite: glint,
         asset: SunnysideAssets.effects.glint,
         phase: 0,
+        regionInstanceId: this.composition.home.instanceId,
       });
     }
     marker.position.set(anchor.x, anchor.y);
     this.statusLayer.addChild(marker);
   }
 
-  private buildDebugOverlay(): void {
-    const townBounds = this.map.functionalTownBounds;
+  private buildDebugOverlay(
+    instance: WorldRegionInstance,
+    debugLayer: Container,
+  ): void {
+    const map = instance.template.authored;
+    const bounds = map.bounds;
     const boundsGraphic = new Graphics()
-      .rect(townBounds.x, townBounds.y, townBounds.width, townBounds.height)
+      .rect(bounds.x, bounds.y, bounds.width, bounds.height)
       .fill({ color: 0xfacc15, alpha: 0.025 })
       .stroke({ color: 0xfacc15, width: 1 });
-    const boundsLabel = this.worldText("functional-town-bounds", 5, 0xfacc15);
-    boundsLabel.position.set(townBounds.x + 3, townBounds.y + 3);
-    this.debugLayer.addChild(boundsGraphic, boundsLabel);
+    const project = instance.project
+      ? ` · Project ${instance.project.key} (${instance.project.id})`
+      : "";
+    const boundsLabel = this.worldText(
+      `${instance.kind}:${instance.instanceId} · ${instance.templateId}${project}\nsource ${map.source}\nlocal ${bounds.x},${bounds.y} · world origin ${instance.worldOrigin.x},${instance.worldOrigin.y}\nworld bounds ${instance.worldBounds.x},${instance.worldBounds.y},${instance.worldBounds.width},${instance.worldBounds.height}`,
+      5,
+      0xfacc15,
+    );
+    boundsLabel.position.set(bounds.x + 3, bounds.y + 3);
+    debugLayer.addChild(boundsGraphic, boundsLabel);
 
     const drawPoint = (x: number, y: number, color: number, label: string) => {
       const graphic = new Graphics()
@@ -646,41 +978,41 @@ export class TownWorld {
         .stroke({ color, width: 1 });
       const text = this.worldText(label, 5, color);
       text.position.set(x + 5, y - 4);
-      this.debugLayer.addChild(graphic, text);
+      debugLayer.addChild(graphic, text);
     };
 
-    for (const location of this.map.locations)
+    for (const location of map.locations)
       drawPoint(location.x, location.y, 0x3b82f6, `location:${location.id}`);
-    for (const region of this.map.interactionRegions) {
+    for (const region of map.interactionRegions) {
       const graphics = new Graphics();
       graphics.position.set(region.x, region.y);
-      this.drawRegion(graphics, region, 0x22c55e, 0.08);
-      this.debugLayer.addChild(graphics);
+      this.drawInteractionRegion(graphics, region, 0x22c55e, 0.08);
+      debugLayer.addChild(graphics);
     }
-    for (const anchor of this.map.cameraAnchors)
+    for (const anchor of map.cameraAnchors)
       drawPoint(anchor.x, anchor.y, 0xfacc15, `camera:${anchor.id}`);
-    for (const station of this.map.workstations)
+    for (const station of map.workstations)
       drawPoint(
         station.x,
         station.y,
         0xf97316,
         `legacy-workstation:${station.id}`,
       );
-    for (const home of this.map.memberHomes)
+    for (const home of map.memberHomes)
       drawPoint(home.x, home.y, 0xa855f7, `legacy-home:${home.id}`);
-    for (const spawn of this.map.crewNavigation.spawns)
+    for (const spawn of map.crewNavigation.spawns)
       drawPoint(spawn.x, spawn.y, 0x14b8a6, `crew-spawn:${spawn.id}`);
-    for (const route of this.map.crewNavigation.routes) {
+    for (const route of map.crewNavigation.routes) {
       const first = route.points[0];
       if (!first) continue;
       const graphic = new Graphics().moveTo(first.x, first.y);
       for (const point of route.points.slice(1))
         graphic.lineTo(point.x, point.y);
       graphic.stroke({ color: 0x2dd4bf, width: 1 });
-      this.debugLayer.addChild(graphic);
+      debugLayer.addChild(graphic);
       drawPoint(first.x, first.y, 0x2dd4bf, `crew-route:${route.id}`);
     }
-    for (const zone of this.map.crewNavigation.activities) {
+    for (const zone of map.crewNavigation.activities) {
       if (zone.shape === "point")
         drawPoint(zone.x, zone.y, 0xe879f9, `crew:${zone.activity}:${zone.id}`);
       else {
@@ -694,57 +1026,122 @@ export class TownWorld {
           0xe879f9,
         );
         text.position.set(zone.x + 3, zone.y + 3);
-        this.debugLayer.addChild(graphic, text);
+        debugLayer.addChild(graphic, text);
       }
     }
-    for (const anchor of this.map.statusAnchors)
+    for (const socket of map.islandSockets)
+      drawPoint(
+        socket.x,
+        socket.y,
+        0xfb7185,
+        `socket:${socket.id}:${socket.role}:${socket.edge}:${socket.orientation}${socket.category ? `:${socket.category}` : ""}`,
+      );
+    for (const anchor of map.statusAnchors)
       drawPoint(anchor.x, anchor.y, 0xef4444, anchor.id);
-    for (const zone of this.map.ambientZones) {
+    for (const zone of map.ambientZones) {
       const graphic = new Graphics()
         .rect(zone.x, zone.y, zone.width, zone.height)
         .fill({ color: 0x06b6d4, alpha: 0.08 })
         .stroke({ color: 0x06b6d4, width: 1 });
-      this.debugLayer.addChild(graphic);
+      debugLayer.addChild(graphic);
     }
-    for (const route of this.map.animalRoutes) {
+    for (const route of map.animalRoutes) {
       const first = route.points[0];
       if (!first) continue;
       const graphic = new Graphics().moveTo(first.x, first.y);
       for (const point of route.points.slice(1))
         graphic.lineTo(point.x, point.y);
       graphic.stroke({ color: 0x38bdf8, width: 1 });
-      this.debugLayer.addChild(graphic);
+      debugLayer.addChild(graphic);
     }
-    for (const site of this.map.reservedSites) {
+    for (const site of map.reservedSites) {
       const graphic = new Graphics()
         .rect(site.x, site.y, site.width, site.height)
         .fill({ color: 0x9ca3af, alpha: 0.08 })
         .stroke({ color: 0x9ca3af, width: 1 });
       const text = this.worldText(`reserved:${site.id}`, 5, 0x9ca3af);
       text.position.set(site.x + 3, site.y + 3);
-      this.debugLayer.addChild(graphic, text);
+      debugLayer.addChild(graphic, text);
     }
   }
 
   private updateCrewDebugOverlay(): void {
     for (const child of this.crewDebugLayer.removeChildren())
       child.destroy({ children: true });
+    for (const island of this.composition.projectIslands.values())
+      this.buildProjectDebug(island);
+    const home = this.composition.home.worldBounds;
+    const summary = this.worldText(
+      `archipelago · ${this.composition.regions.length} regions · ${this.composition.projectIslands.values().length} Project islands · ${this.crew.length} active crew`,
+      5,
+      0x5eead4,
+    );
+    summary.position.set(home.x + 4, home.y + 14);
+    this.crewDebugLayer.addChild(summary);
+  }
+
+  private buildProjectDebug(island: ProjectIslandInstance): void {
+    const graph = island.crewNavigation.graph;
+    const districts = island.crewNavigation.activities.filter(
+      (activity) => activity.shape === "rectangle",
+    );
+    const anchors = island.crewNavigation.activities.filter(
+      (activity) => activity.shape === "point",
+    );
+    const categories = (values: typeof districts) =>
+      [...new Set(values.map((activity) => activity.activity))]
+        .sort()
+        .map(
+          (category) =>
+            `${category}:${values.filter((activity) => activity.activity === category).length}`,
+        )
+        .join(", ");
     const lines = [
-      this.map.crewNavigation.enabled
-        ? `crew navigation enabled · ${this.map.crewNavigation.graph.nodes.length} nodes`
-        : "crew navigation legacy mode · awaiting authored markers",
-      `active crew: ${this.crew.length}`,
-      ...this.crew.map(
-        (member) =>
-          `${member.runId} · ${member.memberName} · ${member.squadName} · ${member.stepName}`,
-      ),
+      `Project island ${island.project.key}`,
+      `${island.regionIds.length} regions · expansions: ${island.attachments.map((attachment) => attachment.instance.instanceId).join(", ") || "none"}`,
+      `spawns:${island.crewNavigation.spawns.length} · routes ${graph.nodes.length}n/${graph.edges.length}e/${crewRouteComponents(graph).length}c`,
+      `districts:${districts.length} ${categories(districts)}`,
+      `exact anchors:${anchors.length} ${categories(anchors)}`,
+      `sockets:${island.regionIds.reduce((count, regionId) => count + (this.renderedRegions.get(regionId)?.instance.template.authored.islandSockets.length ?? 0), 0)}`,
+      `${island.activeActorCount} actors · Runs: ${island.activeRunIds.join(", ") || "none"}`,
     ];
     const text = this.worldText(lines.join("\n"), 5, 0x5eead4);
-    text.position.set(
-      this.map.functionalTownBounds.x + 4,
-      this.map.functionalTownBounds.y + 14,
-    );
+    text.position.set(island.bounds.x + 4, island.bounds.y + 24);
     this.crewDebugLayer.addChild(text);
+    const actors = this.crewSystem
+      .actors()
+      .filter((actor) => actor.projectId === island.project.id);
+    for (const [index, actor] of actors.entries()) {
+      const path = actor.path;
+      const first = path[0];
+      if (first) {
+        const route = new Graphics().moveTo(first.x, first.y);
+        for (const point of path.slice(1)) route.lineTo(point.x, point.y);
+        route.stroke({ color: actor.activity.squadAccentColor, width: 0.75 });
+        route
+          .circle(actor.destination.x, actor.destination.y, 2)
+          .stroke({ color: 0xffffff, width: 1 });
+        this.crewDebugLayer.addChild(route);
+      }
+      const position = this.crewSystem.renderPosition(actor);
+      const dot = new Graphics()
+        .circle(position.x, position.y, 2)
+        .fill(actor.activity.squadAccentColor);
+      const claim =
+        actor.claim.slot.kind === "exact-anchor"
+          ? `exact:${actor.claim.slot.zoneId}`
+          : `district:${actor.claim.slot.zoneId}`;
+      const actorText = this.worldText(
+        `${actor.activity.memberName} · ${actor.activity.projectKey}\nActor ${actor.actorId}\nRun ${actor.activity.runId} · Member ${actor.activity.memberKey}\n${actor.state} · ${actor.activityCategory} · ${claim}\nlane ${actor.laneOffset} · target ${actor.destination.x.toFixed(1)},${actor.destination.y.toFixed(1)}\npath ${actor.pathIndex}/${actor.path.length} · #${actor.activity.squadAccentColor.toString(16).padStart(6, "0")} · ${actor.animationTag}${actor.mirrorX ? " mirrored" : ""}`,
+        4,
+        actor.activity.squadAccentColor,
+      );
+      actorText.position.set(
+        island.bounds.x + 4,
+        island.bounds.y + 58 + index * 34,
+      );
+      this.crewDebugLayer.addChild(dot, actorText);
+    }
   }
 
   private worldText(text: string, size: number, color: number): Text {

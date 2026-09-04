@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -18,7 +18,33 @@ const outputRoot = resolve(
 const STANDARD_MACOS_EXECUTABLES = [
   "/Applications/Aseprite.app/Contents/MacOS/aseprite",
   `${process.env.HOME ?? ""}/Applications/Aseprite.app/Contents/MacOS/aseprite`,
+  `${process.env.HOME ?? ""}/Library/Application Support/Steam/steamapps/common/Aseprite/Aseprite.app/Contents/MacOS/aseprite`,
 ];
+
+async function steamAsepriteExecutables(): Promise<string[]> {
+  const home = process.env.HOME ?? "";
+  const steam = `${home}/Library/Application Support/Steam`;
+  const metadata = [
+    `${steam}/steamapps/libraryfolders.vdf`,
+    `${steam}/config/libraryfolders.vdf`,
+  ];
+  const roots = new Set<string>([steam]);
+  for (const file of metadata) {
+    try {
+      const contents = await readFile(file, "utf8");
+      for (const match of contents.matchAll(/"path"\s+"([^"]+)"/g)) {
+        const path = match[1]?.replaceAll("\\\\", "\\");
+        if (path) roots.add(path);
+      }
+    } catch {
+      // Steam and additional libraries are optional discovery sources.
+    }
+  }
+  return [...roots].map(
+    (root) =>
+      `${root}/steamapps/common/Aseprite/Aseprite.app/Contents/MacOS/aseprite`,
+  );
+}
 
 async function available(command: string): Promise<boolean> {
   if (command.includes("/") && !existsSync(command)) return false;
@@ -35,6 +61,7 @@ export async function findAsepriteCli(): Promise<string | null> {
   if (configured) return (await available(configured)) ? configured : null;
   for (const candidate of [
     ...STANDARD_MACOS_EXECUTABLES,
+    ...(await steamAsepriteExecutables()),
     "aseprite",
     "libresprite",
   ])
@@ -92,10 +119,54 @@ interface AsepriteLayer {
   opacity?: number;
   blendMode?: string;
 }
+
+interface SourceInspection {
+  layers: Array<{ name: string; visible: boolean; frames: number[] }>;
+  tagRepeats: number[];
+}
 interface AsepriteData {
   frames?: AsepriteFrame[];
-  meta?: { frameTags?: AsepriteTag[]; layers?: AsepriteLayer[] };
+  meta?: {
+    version?: string;
+    size?: { w: number; h: number };
+    frameTags?: AsepriteTag[];
+    layers?: AsepriteLayer[];
+  };
 }
+
+const SHEET_COLUMNS = 16;
+function parseSourceInspection(output: string): SourceInspection {
+  const inspection: SourceInspection = { layers: [], tagRepeats: [] };
+  for (const line of output.split("\n")) {
+    const [kind, indexValue, nameOrRepeats, visible, frames = ""] = line
+      .trim()
+      .split("\t");
+    const index = Number(indexValue);
+    if (kind === "QE_LAYER" && Number.isInteger(index))
+      inspection.layers[index] = {
+        name: nameOrRepeats ?? "",
+        visible: visible === "true",
+        frames: frames
+          ? frames.split(",").map(Number).filter(Number.isInteger)
+          : [],
+      };
+    else if (kind === "QE_TAG" && Number.isInteger(index))
+      inspection.tagRepeats[index] = Number(nameOrRepeats);
+  }
+  return inspection;
+}
+
+const layerRoles: Record<string, string> = {
+  base: "base",
+  "tools rear": "tools-rear",
+  tools: "tools-front",
+  "bowl hair": "hair-bowl",
+  "short hair": "hair-short",
+  "mop hair": "hair-mop",
+  "spikey hair": "hair-spikey",
+  "curly hair": "hair-curly",
+  "long hair": "hair-long",
+};
 
 export async function exportSunnysideHumanV1(): Promise<boolean> {
   if (!existsSync(source))
@@ -117,25 +188,56 @@ export async function exportSunnysideHumanV1(): Promise<boolean> {
     return false;
   }
 
+  await rm(outputRoot, { recursive: true, force: true });
   await mkdir(resolve(outputRoot, "layers"), { recursive: true });
+  await mkdir(resolve(outputRoot, "runtime-layers"), { recursive: true });
   const scratchRoot = resolve(clientRoot, "../.pi/tmp");
   await mkdir(scratchRoot, { recursive: true });
   const sheet = resolve(outputRoot, "human-v1.0-composite.png");
   const rawData = resolve(scratchRoot, "human-v1.0-aseprite-export.json");
-  await execFileAsync(cli, [
+  const inspectionScript = resolve(scratchRoot, "inspect-human-v1.lua");
+  await writeFile(
+    inspectionScript,
+    [
+      "for i, layer in ipairs(app.activeSprite.layers) do",
+      "  local frames = {}",
+      "  for _, cel in ipairs(layer.cels) do table.insert(frames, tostring(cel.frame.frameNumber - 1)) end",
+      '  print("QE_LAYER\\t" .. tostring(i - 1) .. "\\t" .. layer.name .. "\\t" .. tostring(layer.isVisible) .. "\\t" .. table.concat(frames, ","))',
+      "end",
+      "for i, tag in ipairs(app.activeSprite.tags) do",
+      '  print("QE_TAG\\t" .. tostring(i - 1) .. "\\t" .. tostring(tag.repeats))',
+      "end",
+    ].join("\n"),
+  );
+  const inspected = await execFileAsync(cli, [
     "-b",
     source,
+    "--script",
+    inspectionScript,
+  ]);
+  const sourceInspection = parseSourceInspection(inspected.stdout);
+  const metadataSheet = resolve(scratchRoot, "human-v1.0-all-layers.png");
+  const sheetArguments = [
+    "--sheet-type",
+    "rows",
+    "--sheet-columns",
+    String(SHEET_COLUMNS),
+  ];
+  await execFileAsync(cli, [
+    "-b",
+    "--all-layers",
     "--list-tags",
     "--list-layers",
+    source,
     "--sheet",
-    sheet,
-    "--sheet-type",
-    "horizontal",
+    metadataSheet,
+    ...sheetArguments,
     "--data",
     rawData,
     "--format",
     "json-array",
   ]);
+  await execFileAsync(cli, ["-b", source, "--sheet", sheet, ...sheetArguments]);
   const data = JSON.parse(await readFile(rawData, "utf8")) as AsepriteData;
   if (!data.frames?.length || !data.meta?.frameTags?.length)
     throw new Error("Aseprite export did not produce frame/tag metadata");
@@ -147,20 +249,26 @@ export async function exportSunnysideHumanV1(): Promise<boolean> {
     );
   const layerExports = [];
   for (const [index, layer] of layers.entries()) {
-    const file = `${safeFileName(layer.name, index)}.png`;
+    const normalizedName = layer.name.toLocaleLowerCase();
+    const role = layerRoles[normalizedName] ?? null;
+    const file = role
+      ? `runtime-layers/${role}.png`
+      : `layers/${safeFileName(layer.name, index)}.png`;
     await execFileAsync(cli, [
       "-b",
-      source,
       "--layer",
       layer.name,
+      source,
       "--sheet",
-      resolve(outputRoot, "layers", file),
-      "--sheet-type",
-      "horizontal",
+      resolve(outputRoot, file),
+      ...sheetArguments,
     ]);
     layerExports.push({
       name: layer.name,
-      file: `layers/${file}`,
+      file,
+      role,
+      frameIndices: sourceInspection.layers[index]?.frames ?? [],
+      sourceVisible: sourceInspection.layers[index]?.visible ?? false,
       group: layer.group ?? null,
       opacity: layer.opacity ?? 255,
       blendMode: layer.blendMode ?? "normal",
@@ -181,23 +289,53 @@ export async function exportSunnysideHumanV1(): Promise<boolean> {
     }
     return forward;
   };
+  const animations = data.meta.frameTags.map((tag, index) => ({
+    id: `${tag.name}:${index + 1}`,
+    tag: tag.name,
+    direction: animationDirection(tag.name),
+    from: tag.from,
+    to: tag.to,
+    playback: tag.direction,
+    loop: (sourceInspection.tagRepeats[index] ?? 0) !== 1,
+    frames: orderedFrames(tag),
+  }));
+  const directionalFamilies = Object.fromEntries(
+    ["idle", "walk", "run"].map((family) => {
+      const tagged = (suffix: string) =>
+        animations.find((animation) => animation.tag === `${family}-${suffix}`)
+          ?.id ?? null;
+      return [
+        family,
+        {
+          south: { animationId: tagged("s"), mirrorX: false },
+          southeast: { animationId: tagged("se"), mirrorX: false },
+          southwest: { animationId: tagged("se"), mirrorX: true },
+          northeast: { animationId: tagged("ne"), mirrorX: false },
+          northwest: { animationId: tagged("ne"), mirrorX: true },
+          north: { animationId: tagged("n"), mirrorX: false },
+        },
+      ];
+    }),
+  );
   const runtime = {
-    formatVersion: 1,
-    source: "source/human-v1.0/human-v1.0.aseprite",
-    composite: "human-v1.0-composite.png",
+    formatVersion: 2,
+    sourceProvenance:
+      "client/src/assets/sunnyside/source/human-v1.0/human-v1.0.aseprite",
+    asepriteVersion: data.meta.version ?? "unknown",
+    canvas: { width: 96, height: 64, grid: 16 },
+    sheet: {
+      file: "human-v1.0-composite.png",
+      width: data.meta.size?.w ?? 0,
+      height: data.meta.size?.h ?? 0,
+      columns: SHEET_COLUMNS,
+    },
     frames: data.frames.map((frame, index) => ({
       index,
       rect: frame.frame,
       durationMs: frame.duration,
     })),
-    animations: data.meta.frameTags.map((tag) => ({
-      tag: tag.name,
-      direction: animationDirection(tag.name),
-      from: tag.from,
-      to: tag.to,
-      playback: tag.direction,
-      frames: orderedFrames(tag),
-    })),
+    animations,
+    directionalFamilies,
     layers: layerExports,
   };
   await writeFile(
@@ -207,8 +345,8 @@ export async function exportSunnysideHumanV1(): Promise<boolean> {
   await writeFile(
     resolve(outputRoot, "README.md"),
     "# Generated Human v1.0 export\n\n" +
-      "Generated deterministically from `source/human-v1.0/human-v1.0.aseprite`. " +
-      "`human-v1.0.runtime.json` preserves source tags, directions, frame order, durations, and compositing-layer files for Pixi; runtime never parses Aseprite files.\n",
+      "Generated deterministically from `client/src/assets/sunnyside/source/human-v1.0/human-v1.0.aseprite`. " +
+      "`human-v1.0.runtime.json` preserves source tags, legitimate directional mirroring, frame order, durations, and compositing-layer files for Pixi; runtime never parses Aseprite files.\n",
   );
   console.log(
     `Exported ${runtime.frames.length} frames, ${runtime.animations.length} tags, and ${runtime.layers.length} layers with ${cli}.`,

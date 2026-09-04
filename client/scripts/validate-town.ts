@@ -46,7 +46,7 @@ try {
       `${result.memberHomes.length} legacy Member homes`,
       result.crewNavigation.enabled
         ? `${result.crewNavigation.spawns.length} crew entrances · ${result.crewNavigation.routes.length} crew routes · ${result.crewNavigation.activities.length} crew activity areas`
-        : "legacy map compatibility mode (crew navigation not authored)",
+        : "Home profile (crew navigation intentionally not authored)",
       `${result.ambientZones.length} ambient zones`,
       `${result.reservedSites.length} reserved sites`,
     ].join(" · "),

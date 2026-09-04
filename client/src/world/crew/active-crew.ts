@@ -9,6 +9,7 @@ export interface ActiveCrewActivity {
   actorId: string;
   runId: string;
   quest: RunProjection["quest"];
+  project: RunProjection["execution_environment"]["workspace"];
   squad: Pick<RunProjection["squad"], "id" | "key" | "name">;
   member: SnapshotMember;
   occurrenceId: string;
@@ -34,6 +35,7 @@ export function projectActiveCrewActivities(
         actorId: `${run.id}\0${run.squad.id}\0${step.member.member_key}`,
         runId: run.id,
         quest: { ...run.quest },
+        project: { ...run.execution_environment.workspace },
         squad: { id: run.squad.id, key: run.squad.key, name: run.squad.name },
         member: step.member,
         occurrenceId: step.occurrence_id,
