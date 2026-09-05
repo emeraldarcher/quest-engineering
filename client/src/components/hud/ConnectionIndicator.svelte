@@ -28,8 +28,8 @@ $: accessibleLabel = updatesDelayed
 </span>
 
 <style>
-.connection { display:flex; align-items:center; gap:.38rem; padding-left:.8rem; color:#f5d8a2; font-size:.75rem; font-weight:780; white-space:nowrap; }
-.connection-dot { width:.48rem; height:.48rem; background:#d19a52; border:1px solid #f5ddb2; border-radius:50%; box-shadow:0 0 0 2px #241813; }
+.connection { display:flex; align-items:center; gap:.45rem; padding-left:.8rem; color:#f5d8a2; font-size:.9rem; font-weight:780; white-space:nowrap; }
+.connection-dot { width:.6rem; height:.6rem; background:#d19a52; border:1px solid #f5ddb2; border-radius:50%; box-shadow:0 0 0 2px #241813; }
 .connection.healthy { color:#d4ead1; }
 .healthy .connection-dot { background:#78b477; }
 .connection.updates-delayed .connection-dot { border-color:#e7c77f; }
