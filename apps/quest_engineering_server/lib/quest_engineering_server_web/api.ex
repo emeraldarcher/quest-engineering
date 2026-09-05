@@ -78,6 +78,16 @@ defmodule QuestEngineering.ServerWeb.Api do
   defp error_view(:not_found),
     do: {404, "not_found", "The requested resource was not found.", [], %{}}
 
+  defp error_view(%{code: :execution_not_uncertain, details: details}),
+    do:
+      {409, "execution_not_uncertain", "The selected Step is no longer uncertain.", [],
+       safe(details)}
+
+  defp error_view(%{code: :invalid_execution_recovery, details: details}),
+    do:
+      {400, "malformed_request", "The execution recovery request is malformed.", [],
+       safe(details)}
+
   defp error_view(code)
        when code in [
               :delivery_not_retryable,

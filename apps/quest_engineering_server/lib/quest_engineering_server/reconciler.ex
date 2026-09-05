@@ -99,6 +99,22 @@ defmodule QuestEngineering.Server.Reconciler do
            details: %{persisted_worker_id: other_worker}
          }}
 
+      {:ok,
+       %{
+         action: action,
+         state: :failed,
+         failure: %{"code" => code}
+       }}
+      when item.state == :uncertain and
+             code in ["operator_retry_requested", "operator_marked_failed"] ->
+        with :ok <- validate_identity(action, item, worker_id) do
+          {:ok,
+           %{
+             action_id: item.action_id,
+             resolution: if(code == "operator_retry_requested", do: "retry", else: "mark_failed")
+           }}
+        end
+
       {:ok, %{action: action}} ->
         with :ok <- validate_identity(action, item, worker_id) do
           apply_observed(worker_id, generation, item)

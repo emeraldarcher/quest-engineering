@@ -54,6 +54,10 @@ let search = "";
 let cleanupDialog: HTMLDialogElement;
 let cleanupCancel: HTMLButtonElement;
 let cleanupTrigger: HTMLButtonElement;
+let recoveryDialog: HTMLDialogElement;
+let recoveryCancel: HTMLButtonElement;
+let recoveryTrigger: HTMLButtonElement;
+let recoveryAction: "retry" | "mark_failed" | null = null;
 
 $: run = $selectedRunStore;
 $: normalizedSearch = search.trim().toLocaleLowerCase();
@@ -78,6 +82,7 @@ $: workspace = run
 $: questStatus = run ? questPresentation(run, quest) : null;
 $: resultArtifact = run?.artifacts.find((item) => item.type === "verdict") ?? null;
 $: resultText = resultArtifact ? artifactPreview(resultArtifact) : null;
+$: uncertainStep = run?.steps.find((step) => step.recovery !== null) ?? null;
 $: if (run?.id !== activeRunId) {
   activeRunId = run?.id ?? null;
   selectedArtifactId = null;
@@ -148,6 +153,37 @@ async function selectArtifact(summary: ArtifactSummary) {
   ) {
     selectedArtifact = detail;
     artifactLoading = false;
+  }
+}
+
+function requestExecutionRecovery(action: "retry" | "mark_failed", event: MouseEvent) {
+  if (!run || !uncertainStep || busy) return;
+  recoveryAction = action;
+  recoveryTrigger = event.currentTarget as HTMLButtonElement;
+  recoveryDialog.showModal();
+  void tick().then(() => recoveryCancel?.focus());
+}
+
+function closeExecutionRecovery() {
+  recoveryDialog?.close();
+  recoveryAction = null;
+  recoveryTrigger?.focus();
+}
+
+async function confirmExecutionRecovery() {
+  if (!run || !uncertainStep || !recoveryAction) return;
+  const runId = run.id;
+  const occurrenceId = uncertainStep.occurrence_id;
+  const action = recoveryAction;
+  recoveryDialog.close();
+  recoveryAction = null;
+  busy = true;
+  try {
+    if (action === "retry") await store.retryExecution(runId, occurrenceId);
+    else await store.markExecutionFailed(runId, occurrenceId);
+  } finally {
+    busy = false;
+    recoveryTrigger?.focus();
   }
 }
 
@@ -325,7 +361,13 @@ function shortRevision(value: string | null): string {
                 {@const diagnostic = diagnosticPresentation(run.issues[0])}
                 <article class="attention-card" role="status">
                   <span class="attention-icon" aria-hidden="true">!</span>
-                  <div><span class="eyebrow">Execution · {execution.label}</span><h3>{diagnostic.title}</h3><p>{diagnostic.description}</p></div>
+                  <div><span class="eyebrow">Execution · {execution.label}</span><h3>{diagnostic.title}</h3><p>{uncertainStep?.recovery?.message ?? diagnostic.description}</p></div>
+                  {#if uncertainStep}
+                    <div class="recovery-actions">
+                      {#if uncertainStep.recovery?.can_retry}<button class="primary" disabled={busy} on:click={(event) => requestExecutionRecovery("retry", event)}>Retry Step</button>{/if}
+                      {#if uncertainStep.recovery?.can_mark_failed}<button class="destructive" disabled={busy} on:click={(event) => requestExecutionRecovery("mark_failed", event)}>Mark Run Failed</button>{/if}
+                    </div>
+                  {/if}
                 </article>
               {/if}
 
@@ -472,6 +514,15 @@ function shortRevision(value: string | null): string {
     </section>
   </div>
 
+  <dialog bind:this={recoveryDialog} aria-labelledby="recovery-title" on:cancel|preventDefault={closeExecutionRecovery}>
+    <div class="dialog-card">
+      <span class="dialog-icon" aria-hidden="true">!</span>
+      <h2 id="recovery-title">{recoveryAction === "retry" ? "Retry this uncertain Step?" : "Mark this Run as failed?"}</h2>
+      <p>{recoveryAction === "retry" ? "The previous outcome cannot be proven. Retrying creates a new attempt and may repeat external effects or incur another model invocation." : "This permanently ends the Run without retrying the uncertain Step. Completed artifacts and the retained workspace remain available."}</p>
+      <div class="action-row"><button bind:this={recoveryCancel} class="secondary" on:click={closeExecutionRecovery}>Go Back</button><button class={recoveryAction === "retry" ? "primary" : "destructive"} disabled={busy} on:click={confirmExecutionRecovery}>{recoveryAction === "retry" ? "Retry Step" : "Mark Run Failed"}</button></div>
+    </div>
+  </dialog>
+
   <dialog bind:this={cleanupDialog} aria-labelledby="cleanup-title" on:cancel|preventDefault={closeCleanupConfirmation}>
     <div class="dialog-card">
       <span class="dialog-icon" aria-hidden="true">!</span>
@@ -517,6 +568,7 @@ function shortRevision(value: string | null): string {
   .attention-card h3, .diagnostic-card h3 { font-size: 1.05rem; }
   .attention-card p, .diagnostic-card p { margin: .2rem 0 0; color: #6c5149; font-size: .85rem; line-height: 1.4; }
   .attention-icon { display: grid; width: 2rem; height: 2rem; place-items: center; color: white; background: var(--app-coral); border-radius: 50%; font-weight: 900; }
+  .recovery-actions { display: grid; gap: .4rem; min-width: 8.5rem; }
   .overview-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(15rem, .75fr); gap: 1rem; }
   .overview-section { min-width: 0; padding: .95rem; background: #fff9e9; border: 1px solid #d8bd91; border-radius: 10px; }
   .overview-section > h3 { margin-bottom: .65rem; }

@@ -331,18 +331,19 @@ defmodule QuestEngineering.Core.Runtime.Action do
 end
 
 defmodule QuestEngineering.Core.Runtime.Event do
-  @moduledoc "External fact submitted to the pure runtime."
+  @moduledoc "External fact or explicit operator decision submitted to the pure runtime."
 
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @enforce_keys [:type, :occurrence_id, :attempt_id, :outputs]
-  defstruct [:type, :occurrence_id, :attempt_id, :outputs]
+  @enforce_keys [:type, :occurrence_id, :attempt_id]
+  defstruct [:type, :occurrence_id, :attempt_id, outputs: %{}, failure: nil]
 
   @type t :: %__MODULE__{
-          type: :step_completed,
+          type: :step_completed | :step_retry_requested | :step_failed,
           occurrence_id: String.t(),
           attempt_id: String.t(),
-          outputs: %{optional(String.t()) => ArtifactInstance.value()}
+          outputs: %{optional(String.t()) => ArtifactInstance.value()},
+          failure: map() | nil
         }
 end
 
@@ -377,13 +378,23 @@ defmodule QuestEngineering.Core.Runtime.Failure do
   @moduledoc "A valid runtime event's structured terminal failure result."
 
   @enforce_keys [:type]
-  defstruct [:type, :region_id, :region_occurrence_id, :remediations, :details]
+  defstruct [
+    :type,
+    :region_id,
+    :region_occurrence_id,
+    :occurrence_id,
+    :attempt_id,
+    :remediations,
+    :details
+  ]
 
   @type t :: %__MODULE__{
-          type: :until_exhausted,
-          region_id: String.t(),
-          region_occurrence_id: String.t(),
-          remediations: non_neg_integer(),
+          type: :until_exhausted | :step_failed,
+          region_id: String.t() | nil,
+          region_occurrence_id: String.t() | nil,
+          occurrence_id: String.t() | nil,
+          attempt_id: String.t() | nil,
+          remediations: non_neg_integer() | nil,
           details: term()
         }
 end

@@ -255,6 +255,10 @@ export class QuestEngineeringWorker {
       }
       return;
     }
+    if (message.type === "resolve_uncertain_dispatch") {
+      await this.resolveUncertainDispatch(message);
+      return;
+    }
     if (message.type === "execute_action") {
       const action = decodeExecuteAction(message, this.config.workerId);
       assertExecutionSupported(action, this.capabilities);
@@ -294,6 +298,15 @@ export class QuestEngineeringWorker {
           if (dispatch.state === "completed")
             this.registry.acknowledgeServerCompletion(
               dispatch.action.action_id,
+            );
+        }
+        const resolutions = Array.isArray(response.dispatch_resolutions)
+          ? response.dispatch_resolutions
+          : [];
+        for (const resolution of resolutions) {
+          if (resolution && typeof resolution === "object")
+            await this.resolveUncertainDispatch(
+              resolution as Record<string, unknown>,
             );
         }
       }
@@ -587,6 +600,34 @@ export class QuestEngineeringWorker {
     });
   }
 
+  private async resolveUncertainDispatch(
+    message: Record<string, unknown>,
+  ): Promise<void> {
+    const actionId = String(message.action_id ?? "");
+    const resolution = String(message.resolution ?? "");
+    if (!actionId || !["retry", "mark_failed"].includes(resolution))
+      throw new Error("Invalid uncertain-dispatch resolution command.");
+
+    const current = this.registry.get(actionId);
+    if (current.state === "failed") return;
+    if (current.state !== "uncertain")
+      throw new Error(
+        `Cannot resolve ${actionId} from local state ${current.state}.`,
+      );
+
+    const failed = this.registry.fail(
+      actionId,
+      {
+        reason:
+          resolution === "retry"
+            ? "operator_retry_requested"
+            : "operator_marked_failed",
+      },
+      false,
+    );
+    await this.report(dispatchPayload(failed, "failed"), "step_failed");
+  }
+
   private async sendAcceptedOrState(dispatch: DispatchRecord): Promise<void> {
     if (dispatch.state === "accepted") {
       await this.channel.sendProtocol(
@@ -617,7 +658,7 @@ export class QuestEngineeringWorker {
 
   private async report(
     dispatch: ReconcileDispatch,
-    type: "step_completed" | "step_failed" | "dispatch_state",
+    type: DispatchReportType,
   ): Promise<boolean> {
     if (!this.channel.isRegistered()) return false;
     try {
@@ -640,21 +681,11 @@ export class QuestEngineeringWorker {
           });
         }
       }
-      const message: Record<string, unknown> = {
+      const message = dispatchReportMessage(
+        this.config.workerId,
+        dispatch,
         type,
-        protocol_version: WORKER_PROTOCOL_VERSION,
-        worker_id: this.config.workerId,
-        action_id: dispatch.action_id,
-        occurrence_id: dispatch.occurrence_id,
-        attempt_id: dispatch.attempt_id,
-        ...(type === "dispatch_state" ? { state: dispatch.state } : {}),
-        ...(type === "step_completed"
-          ? { outputs: dispatch.outputs ?? {} }
-          : {}),
-        ...(type === "step_failed"
-          ? { failure: dispatch.failure ?? { reason: "execution_failed" } }
-          : {}),
-      };
+      );
       const response = await this.channel.sendProtocol(message);
       return (
         type !== "step_completed" || response.result === "completion_applied"
@@ -793,6 +824,43 @@ function identityMessage(
     attempt_id: dispatch.action.attempt_id,
   };
 }
+type DispatchReportType = "step_completed" | "step_failed" | "dispatch_state";
+
+export function dispatchReportMessage(
+  workerId: string,
+  dispatch: ReconcileDispatch,
+  type: DispatchReportType,
+): Record<string, unknown> {
+  const reportsState = type === "dispatch_state";
+  const reportsCompletion =
+    type === "step_completed" ||
+    (reportsState && dispatch.state === "completed");
+  const reportsFailure =
+    type === "step_failed" ||
+    (reportsState &&
+      (dispatch.state === "failed" || dispatch.state === "uncertain"));
+  return {
+    type,
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: workerId,
+    action_id: dispatch.action_id,
+    occurrence_id: dispatch.occurrence_id,
+    attempt_id: dispatch.attempt_id,
+    ...(reportsState ? { state: dispatch.state } : {}),
+    ...(reportsCompletion ? { outputs: dispatch.outputs ?? {} } : {}),
+    ...(reportsFailure
+      ? {
+          failure: dispatch.failure ?? {
+            reason:
+              dispatch.state === "uncertain"
+                ? "execution_uncertain"
+                : "execution_failed",
+          },
+        }
+      : {}),
+  };
+}
+
 function dispatchPayload(
   dispatch: DispatchRecord,
   state: "running" | "completed" | "failed" | "uncertain",

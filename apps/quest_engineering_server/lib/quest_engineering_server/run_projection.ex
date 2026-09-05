@@ -67,7 +67,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
   defp build(launch, snapshot, run, revision) do
     {actions, scheduled, dispatches} = execution_data(run.id)
-    action_by_occurrence = Map.new(actions, fn action -> {action.occurrence_id, action} end)
+    action_by_attempt = Map.new(actions, fn action -> {action.attempt_id, action} end)
     scheduled_by_action = Map.new(scheduled, &{&1.action_id, &1})
     dispatch_by_action = Map.new(dispatches, &{&1.action_id, &1})
     plan_by_key = Map.new(run.plan.steps, &{&1.key, &1})
@@ -75,7 +75,7 @@ defmodule QuestEngineering.Server.RunProjection do
     steps =
       Enum.map(run.occurrence_order, fn id ->
         occurrence = Map.fetch!(run.occurrences, id)
-        action = Map.get(action_by_occurrence, id)
+        action = Map.get(action_by_attempt, occurrence.current_attempt_id)
         scheduled_execution = action && Map.get(scheduled_by_action, action.id)
         dispatch = action && Map.get(dispatch_by_action, action.id)
         step(occurrence, action, scheduled_execution, dispatch, run, snapshot, plan_by_key)
@@ -228,7 +228,18 @@ defmodule QuestEngineering.Server.RunProjection do
       context: context(action, plan_step, run),
       inputs: artifact_refs(occurrence.input_artifact_ids),
       outputs: artifact_refs(occurrence.output_artifact_ids),
-      issue: issue(state)
+      issue: issue(state, dispatch),
+      recovery:
+        if(state == "uncertain",
+          do: %{
+            can_retry: true,
+            can_mark_failed: true,
+            message:
+              get_in(dispatch && dispatch.failure, ["message"]) ||
+                "The Worker could not prove whether this attempt completed."
+          },
+          else: nil
+        )
     }
   end
 
@@ -324,13 +335,18 @@ defmodule QuestEngineering.Server.RunProjection do
   defp artifact_preview(value) when is_list(value), do: %{kind: "json_summary", summary: "array"}
   defp artifact_preview(value) when is_map(value), do: %{kind: "json_summary", summary: "object"}
 
-  defp issue("failed"),
+  defp issue("failed", _dispatch),
     do: %{code: "execution_failed", message: "Execution reported a terminal failure."}
 
-  defp issue("uncertain"),
-    do: %{code: "execution_uncertain", message: "Execution state is being reconciled."}
+  defp issue("uncertain", dispatch),
+    do: %{
+      code: "execution_uncertain",
+      message:
+        get_in(dispatch && dispatch.failure, ["message"]) ||
+          "The Worker could not prove whether this attempt completed."
+    }
 
-  defp issue(_), do: nil
+  defp issue(_, _dispatch), do: nil
 
   defp run_state(:failed, _states), do: "failed"
   defp run_state(:completed, _states), do: "completed"

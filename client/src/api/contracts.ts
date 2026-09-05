@@ -250,6 +250,11 @@ export interface RunStep {
   inputs: ArtifactRef[];
   outputs: ArtifactRef[];
   issue: { code: string; message: string } | null;
+  recovery?: {
+    can_retry: boolean;
+    can_mark_failed: boolean;
+    message: string;
+  } | null;
 }
 export interface ArtifactSummary {
   id: string;

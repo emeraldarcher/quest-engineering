@@ -86,27 +86,63 @@ defmodule QuestEngineering.Server.DispatchStore do
 
   def mark_failed(worker_id, generation, action_id, failure) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
-      if dispatch.state == "completed" do
-        Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
-      else
-        updated =
-          Repo.update!(
-            Changeset.change(dispatch,
-              state: "failed",
-              acknowledged_at: dispatch.acknowledged_at || now(),
-              terminal_at: dispatch.terminal_at || now(),
-              failure: failure,
-              last_connection_generation: generation
-            )
-          )
+      cond do
+        dispatch.state == "completed" ->
+          Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
 
-        # v0.8b deliberately releases scheduling resources for a known-terminal
-        # physical failure while Core Runtime remains dispatched; Core has no
-        # execution-failure event and this milestone adds no retry semantics.
-        mark_scheduled_terminal!(action_id, "failed", failure)
-        updated
+        dispatch.state == "failed" ->
+          dispatch
+
+        true ->
+          updated =
+            Repo.update!(
+              Changeset.change(dispatch,
+                state: "failed",
+                acknowledged_at: dispatch.acknowledged_at || now(),
+                terminal_at: dispatch.terminal_at || now(),
+                failure: failure,
+                last_connection_generation: generation
+              )
+            )
+
+          mark_scheduled_terminal!(action_id, "failed", failure)
+          updated
       end
     end)
+  end
+
+  @doc "Terminalizes an uncertain dispatch after an explicit operator decision."
+  def resolve_uncertain(action_id, failure) when is_map(failure) do
+    case Repo.get_by(WorkerDispatch, action_id: action_id) do
+      nil ->
+        {:error, error(:dispatch_not_found, nil, action_id)}
+
+      _known_dispatch ->
+        transact(fn ->
+          dispatch = lock_dispatch!(action_id)
+
+          if dispatch.state != "uncertain" do
+            Repo.rollback(
+              error(:dispatch_not_uncertain, dispatch.worker_id, action_id, %{
+                state: dispatch.state
+              })
+            )
+          end
+
+          updated =
+            Repo.update!(
+              Changeset.change(dispatch,
+                state: "failed",
+                terminal_at: dispatch.terminal_at || now(),
+                failure: failure
+              )
+            )
+
+          mark_scheduled_terminal!(action_id, "failed", failure)
+          update_active_dispatches!(dispatch.worker_id)
+          dispatch_record(updated)
+        end)
+    end
   end
 
   def mark_uncertain(worker_id, generation, action_id, failure) do
@@ -264,6 +300,7 @@ defmodule QuestEngineering.Server.DispatchStore do
       claim_token: dispatch.claim_token,
       claim_expires_at: dispatch.claim_expires_at,
       payload_hash: dispatch.payload_hash,
+      failure: dispatch.failure,
       last_connection_generation: dispatch.last_connection_generation
     }
   end

@@ -122,6 +122,7 @@ export class DispatchRegistry {
 
         let lineageId: string | null = null;
         if (action.execution.context.mode === "fresh") {
+          this.retireResolvedFreshLineage(action);
           lineageId = crypto.randomUUID();
           const controlPath = this.lineageControlPath(lineageId);
           const configurationJson = physicalConfiguration(action);
@@ -480,6 +481,35 @@ export class DispatchRegistry {
 
   private lineageControlPath(lineageId: string): string {
     return join(this.dataRoot, "lineages", lineageId, "result-control.json");
+  }
+
+  private retireResolvedFreshLineage(action: ExecuteAction): void {
+    const logicalLineageId = action.execution.context.logical_lineage_id;
+    const existing = this.db
+      .query("SELECT * FROM provider_lineages WHERE logical_lineage_id=?")
+      .get(logicalLineageId) as LineageRow | null;
+    if (!existing) return;
+
+    const previous = this.db
+      .query(
+        "SELECT * FROM dispatches WHERE occurrence_id=? ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(action.occurrence_id) as DispatchRow | null;
+    if (
+      existing.active_action_id ||
+      !previous ||
+      previous.state !== "failed" ||
+      previous.lineage_id !== existing.lineage_id
+    )
+      throw new Error(
+        `Logical lineage ${logicalLineageId} is not available for a fresh retry.`,
+      );
+
+    this.db
+      .query(
+        "UPDATE provider_lineages SET logical_lineage_id=?,updated_at=? WHERE lineage_id=?",
+      )
+      .run(`retired:${existing.lineage_id}`, now(), existing.lineage_id);
   }
 
   private row(actionId: string): DispatchRow | null {

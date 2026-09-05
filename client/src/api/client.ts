@@ -149,6 +149,18 @@ export class ApiClient {
       (value) => decodeRun(asRecord(value, "run").run),
       signal,
     );
+  retryExecution = (runId: string, occurrenceId: string) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/execution/retry`,
+      { occurrence_id: occurrenceId },
+      (value) => decodeRun(asRecord(value, "run").run),
+    );
+  markExecutionFailed = (runId: string, occurrenceId: string) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/execution/mark-failed`,
+      { occurrence_id: occurrenceId },
+      (value) => decodeRun(asRecord(value, "run").run),
+    );
   retryDelivery = (runId: string) =>
     this.post(
       `/runs/${encodeURIComponent(runId)}/delivery/retry`,
@@ -829,6 +841,20 @@ function decodeRunStep(value: unknown) {
             return {
               code: asString(issue.code, "issue"),
               message: asString(issue.message, "issue"),
+            };
+          })(),
+    recovery:
+      x.recovery == null
+        ? null
+        : (() => {
+            const recovery = asRecord(x.recovery, "execution recovery");
+            return {
+              can_retry: asBoolean(recovery.can_retry, "execution recovery"),
+              can_mark_failed: asBoolean(
+                recovery.can_mark_failed,
+                "execution recovery",
+              ),
+              message: asString(recovery.message, "execution recovery"),
             };
           })(),
   };

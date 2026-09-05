@@ -122,6 +122,33 @@ describe("durable dispatch registry", () => {
     registry.close();
   });
 
+  test("a resolved fresh retry rotates physical lineage ownership", async () => {
+    const { root, database } = await fixture();
+    const registry = new DispatchRegistry(database, root);
+    const first = registry.accept(action()).dispatch;
+    const firstLineageId = first.lineageId as string;
+    registry.occupy(firstLineageId, first.action.action_id);
+    registry.fail(first.action.action_id, { reason: "unknown" }, true);
+
+    const retry = action({ action_id: "action-2", attempt_id: "attempt-2" });
+    retry.execution.context.logical_lineage_id =
+      first.action.execution.context.logical_lineage_id;
+    expect(() => registry.accept(retry)).toThrow(
+      "not available for a fresh retry",
+    );
+
+    registry.fail(first.action.action_id, { reason: "operator_retry" });
+    const second = registry.accept(retry).dispatch;
+    expect(second.lineageId).not.toBe(firstLineageId);
+    expect(
+      registry.getLineage(second.lineageId as string).logicalLineageId,
+    ).toBe(first.action.execution.context.logical_lineage_id);
+    expect(registry.getLineage(firstLineageId).logicalLineageId).toBe(
+      `retired:${firstLineageId}`,
+    );
+    registry.close();
+  });
+
   test("local completion clears physical occupancy before server acknowledgement", async () => {
     const { root, database } = await fixture();
     const registry = new DispatchRegistry(database, root);

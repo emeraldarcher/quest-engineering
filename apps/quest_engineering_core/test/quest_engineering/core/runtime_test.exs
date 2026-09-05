@@ -77,6 +77,72 @@ defmodule QuestEngineering.Core.RuntimeTest do
     end
   end
 
+  describe "explicit uncertain-attempt resolution" do
+    test "retry creates a new attempt for the same occurrence and preserves inputs" do
+      plan =
+        compile!(
+          sequence([
+            work("implement", produces: ["change_set"]),
+            work("review", consumes: ["change_set"], produces: ["verdict"])
+          ])
+        )
+
+      {:ok, run, [implement]} = Runtime.start(plan)
+
+      {:ok, run, [review_1]} =
+        complete(run, implement, %{"change_set" => %{"revision" => 1}})
+
+      assert {:ok, run, [review_2]} =
+               Runtime.transition(run, Runtime.retry_requested(review_1))
+
+      assert review_2.occurrence_id == review_1.occurrence_id
+      assert review_2.attempt_id == review_1.occurrence_id <> "/attempt/2"
+      assert review_2.id == review_2.attempt_id <> "/action/execute-step"
+      assert review_2.inputs == review_1.inputs
+
+      review = Map.fetch!(run.occurrences, review_1.occurrence_id)
+
+      assert Enum.map(review.attempts, &{&1.number, &1.status}) == [
+               {1, :failed},
+               {2, :dispatched}
+             ]
+
+      assert review.current_attempt_id == review_2.attempt_id
+
+      assert {:error, %Error{type: :invalid_attempt}} =
+               Runtime.transition(run, Runtime.completed(review_1, %{"verdict" => "stale"}))
+
+      assert {:ok, completed, []} =
+               Runtime.transition(run, Runtime.completed(review_2, %{"verdict" => "approved"}))
+
+      assert completed.status == :completed
+    end
+
+    test "mark failed terminalizes the occurrence and Run" do
+      plan = compile!(work("review"))
+      {:ok, run, [review]} = Runtime.start(plan)
+
+      assert {:ok, failed, []} =
+               Runtime.transition(
+                 run,
+                 Runtime.failed(review, %{"reason" => "operator_cancelled"})
+               )
+
+      assert failed.status == :failed
+      assert Map.fetch!(failed.occurrences, review.occurrence_id).status == :failed
+
+      assert [%ExecutionAttempt{number: 1, status: :failed}] =
+               Map.fetch!(failed.occurrences, review.occurrence_id).attempts
+
+      assert failed.failure == %Failure{
+               type: :step_failed,
+               occurrence_id: review.occurrence_id,
+               attempt_id: review.attempt_id,
+               details: %{"reason" => "operator_cancelled"}
+             }
+    end
+  end
+
   describe "Until execution" do
     test "runs the full repair pressure test and preserves runtime identities and semantics" do
       plan = compile!(pressure_tactic(publish: true))

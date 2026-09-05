@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -217,6 +218,58 @@ test("Delivery actions use authoritative eligibility", async () => {
     screen.getByRole("button", { name: "Clean Up Workspace" }),
   ).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Retry Publishing" })).toBeNull();
+});
+
+test("uncertain execution offers confirmed retry and mark-failed recovery", async () => {
+  const value = fixture("work-yard-overview");
+  const run = requiredRun(value);
+  const uncertain = run.steps[0];
+  if (!uncertain) throw new Error("Expected Step fixture");
+  run.status = "uncertain";
+  run.delivery = null;
+  run.issues = [
+    { code: "execution_uncertain", message: "Execution outcome is unknown." },
+  ];
+  uncertain.state = "uncertain";
+  uncertain.issue = run.issues[0] ?? null;
+  uncertain.recovery = {
+    can_retry: true,
+    can_mark_failed: true,
+    message: "Pi settled without a structured Step result.",
+  };
+
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  const retry = vi.spyOn(store, "retryExecution").mockResolvedValue(undefined);
+  const markFailed = vi
+    .spyOn(store, "markExecutionFailed")
+    .mockResolvedValue(undefined);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(
+    screen.getByText("Pi settled without a structured Step result."),
+  ).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Retry Step" }));
+  let dialog = screen.getByRole("dialog");
+  expect(dialog.textContent).toContain("may repeat external effects");
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Retry Step" }),
+  );
+  expect(retry).toHaveBeenCalledWith(run.id, uncertain.occurrence_id);
+
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Mark Run Failed" }),
+  );
+  dialog = screen.getByRole("dialog");
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Mark Run Failed" }),
+  );
+  expect(markFailed).toHaveBeenCalledWith(run.id, uncertain.occurrence_id);
 });
 
 test("closed-unmerged cleanup requires explicit acknowledgment", async () => {

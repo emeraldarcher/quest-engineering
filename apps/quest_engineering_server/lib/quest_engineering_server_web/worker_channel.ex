@@ -3,11 +3,8 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
 
   use Phoenix.Channel
 
-  alias QuestEngineering.Server.DeliveryCoordinator
-  alias QuestEngineering.Server.Dispatcher
   alias QuestEngineering.Server.RunWorkspaceProvisioner
   alias QuestEngineering.Server.RunWorkspaceStore
-  alias QuestEngineering.Server.Scheduler
   alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerMessageHandler
   alias QuestEngineering.Server.WorkerProtocol
@@ -74,9 +71,6 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
   @impl true
   def handle_info(:after_worker_join, socket) do
     RunWorkspaceProvisioner.redeliver(socket.assigns.worker_id)
-    _ = Dispatcher.redeliver(socket.assigns.worker_id, socket.assigns.connection_generation)
-    Scheduler.wake_all()
-    DeliveryCoordinator.wake_all()
     send(self(), :request_reconciliation)
     {:noreply, socket}
   end

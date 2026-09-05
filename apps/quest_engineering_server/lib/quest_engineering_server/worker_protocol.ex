@@ -195,6 +195,17 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     |> put_in(["delivery", "remote_name"], delivery.remote_name)
   end
 
+  def resolve_uncertain_dispatch(worker_id, action_id, resolution)
+      when resolution in [:retry, :mark_failed] do
+    %{
+      "type" => "resolve_uncertain_dispatch",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "action_id" => action_id,
+      "resolution" => Atom.to_string(resolution)
+    }
+  end
+
   def execute_action(worker_id, %ResolvedExecution{} = execution) do
     %{
       "type" => "execute_action",

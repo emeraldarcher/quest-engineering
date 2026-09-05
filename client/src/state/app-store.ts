@@ -359,6 +359,18 @@ export function createAppStore(
     return command(() => api.getArtifact(runId, artifactId));
   }
 
+  async function retryExecution(runId: string, occurrenceId: string) {
+    const result = await command(() => api.retryExecution(runId, occurrenceId));
+    if (result) await invalidateRun(runId);
+  }
+
+  async function markExecutionFailed(runId: string, occurrenceId: string) {
+    const result = await command(() =>
+      api.markExecutionFailed(runId, occurrenceId),
+    );
+    if (result) await invalidateRun(runId);
+  }
+
   async function retryPublishing(runId: string) {
     const result = await command(() => api.retryDelivery(runId));
     if (result) await invalidateRun(runId);
@@ -412,6 +424,8 @@ export function createAppStore(
     command,
     reportError,
     loadArtifact,
+    retryExecution,
+    markExecutionFailed,
     retryPublishing,
     cleanupWorktree,
     selectRun,

@@ -114,7 +114,8 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   @closed_atoms ~w(
     active carried check checking class completed continue_from current definition dispatched equals
     execute_step exhausted failed fresh high inline low medium none otherwise pending read_only
-    read_write remediating root running same_as step_completed until_exhausted
+    read_write remediating root running same_as step_completed step_failed step_retry_requested
+    until_exhausted
   )a
   @closed_atoms_by_name Map.new(@closed_atoms, &{Atom.to_string(&1), &1})
 

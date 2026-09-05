@@ -4,6 +4,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DeliveryCoordinator
   alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.Dispatcher
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.ProductChangeNotifier
   alias QuestEngineering.Server.Reconciler
@@ -161,6 +162,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   def handle(worker_id, generation, %{type: :reconcile_state, dispatches: dispatches}) do
     case Reconciler.reconcile(worker_id, generation, dispatches) do
       {:ok, reconciliation} ->
+        _ = Dispatcher.redeliver(worker_id, generation)
         Scheduler.wake_all()
         Enum.each(Reconciler.run_ids_for_worker(worker_id), &RunChangeNotifier.notify/1)
 
@@ -170,7 +172,9 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
            "protocol_version" => WorkerProtocol.version(),
            "result" => "reconciled",
            "observed_count" => length(reconciliation.observed),
-           "anomaly_count" => length(reconciliation.anomalies)
+           "anomaly_count" => length(reconciliation.anomalies),
+           "dispatch_resolutions" =>
+             Enum.filter(reconciliation.observed, &Map.has_key?(&1, :resolution))
          }}
 
       {:error, error} ->

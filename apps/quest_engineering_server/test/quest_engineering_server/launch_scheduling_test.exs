@@ -11,6 +11,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
@@ -514,6 +515,73 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     run = Repo.get!(RuntimeRun, launched.run_id)
     Repo.update!(Ecto.Changeset.change(run, status: "failed"))
     assert {:ok, _new_run} = LaunchQuest.launch(fixture.quest.id)
+  end
+
+  test "operator retry terminalizes uncertainty and schedules a new attempt", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-retry-uncertain", context.workspace_root)
+    assert {:ok, dispatch_1} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _uncertain} =
+             DispatchStore.mark_uncertain(
+               worker.id,
+               worker.connection_generation,
+               dispatch_1.action_id,
+               %{"reason" => "physical outcome unknown"}
+             )
+
+    occurrence_id = dispatch_1.execution.identity.occurrence_id
+    assert {:ok, recovery} = ExecutionRecovery.retry(launched.run_id, occurrence_id)
+    assert recovery.resolution == :retry
+    assert recovery.transition.revision == 1
+
+    assert Repo.get!(ScheduledActionExecution, dispatch_1.action_id).state == "failed"
+
+    old_dispatch =
+      Repo.get_by!(QuestEngineering.Server.Persistence.WorkerDispatch,
+        action_id: dispatch_1.action_id
+      )
+
+    assert old_dispatch.state == "failed"
+    assert old_dispatch.failure["code"] == "operator_retry_requested"
+
+    assert {:ok, %{run: run}} = RuntimeStore.fetch_run(launched.run_id)
+    occurrence = Map.fetch!(run.occurrences, occurrence_id)
+    assert occurrence.current_attempt_id == occurrence_id <> "/attempt/2"
+
+    assert Enum.map(occurrence.attempts, &{&1.number, &1.status}) == [
+             {1, :failed},
+             {2, :dispatched}
+           ]
+
+    assert {:ok, dispatch_2} = SchedulingStore.schedule_next(launched.run_id)
+    assert dispatch_2.action_id == occurrence_id <> "/attempt/2/action/execute-step"
+  end
+
+  test "operator mark-failed terminalizes the Run and retains its workspace", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-fail-uncertain", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _uncertain} =
+             DispatchStore.mark_uncertain(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id,
+               %{"reason" => "physical outcome unknown"}
+             )
+
+    occurrence_id = dispatch.execution.identity.occurrence_id
+    assert {:ok, recovery} = ExecutionRecovery.mark_failed(launched.run_id, occurrence_id)
+    assert recovery.resolution == :mark_failed
+    assert recovery.transition.run.status == :failed
+
+    assert Repo.get!(RunWorkspaceAssignment, launched.run_id).state == "retained"
+
+    assert {:error, %ExecutionRecovery.Error{code: :execution_not_uncertain}} =
+             ExecutionRecovery.mark_failed(launched.run_id, occurrence_id)
   end
 
   test "uncertain execution retains Member, context, and Worker occupancy", context do

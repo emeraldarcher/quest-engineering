@@ -3,6 +3,7 @@ defmodule QuestEngineering.ServerWeb.RunController do
 
   alias QuestEngineering.Server.DeliveryCoordinator
   alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Product.Repository
   alias QuestEngineering.Server.Repo
@@ -42,6 +43,36 @@ defmodule QuestEngineering.ServerWeb.RunController do
     end
   end
 
+  def retry_execution(conn, %{"id" => run_id, "occurrence_id" => occurrence_id})
+      when is_binary(occurrence_id) do
+    case ExecutionRecovery.retry(run_id, occurrence_id) do
+      {:ok, _recovery} -> render_run(conn, run_id)
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def retry_execution(conn, _params),
+    do:
+      Api.render_error(conn, %ExecutionRecovery.Error{
+        code: :invalid_execution_recovery,
+        details: %{field: "occurrence_id"}
+      })
+
+  def mark_execution_failed(conn, %{"id" => run_id, "occurrence_id" => occurrence_id})
+      when is_binary(occurrence_id) do
+    case ExecutionRecovery.mark_failed(run_id, occurrence_id) do
+      {:ok, _recovery} -> render_run(conn, run_id)
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def mark_execution_failed(conn, _params),
+    do:
+      Api.render_error(conn, %ExecutionRecovery.Error{
+        code: :invalid_execution_recovery,
+        details: %{field: "occurrence_id"}
+      })
+
   def retry_delivery(conn, %{"id" => run_id}) do
     case DeliveryStore.retry(run_id) do
       {:ok, delivery} ->
@@ -78,6 +109,13 @@ defmodule QuestEngineering.ServerWeb.RunController do
   def artifact(conn, %{"run_id" => run_id, "artifact_id" => artifact_id}) do
     case RunProjection.artifact(run_id, artifact_id) do
       {:ok, artifact} -> json(conn, %{artifact: artifact})
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  defp render_run(conn, run_id) do
+    case RunProjection.get(run_id) do
+      {:ok, run} -> json(conn, %{run: run})
       {:error, error} -> Api.render_error(conn, error)
     end
   end

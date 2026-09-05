@@ -404,26 +404,35 @@ defmodule QuestEngineering.Server.SchedulingStore do
   end
 
   defp insert_member_binding!(action, member, now) do
-    insert!(
+    insert_once!(
       OccurrenceMemberBinding.changeset(%{
         run_id: action.run_id,
         occurrence_id: action.occurrence_id,
         member_key: member.key,
         bound_at: now
-      })
+      }),
+      [:run_id, :occurrence_id]
     )
   end
 
   defp insert_context_binding!(action, context, now) do
-    insert!(
+    insert_once!(
       OccurrenceContextBinding.changeset(%{
         run_id: action.run_id,
         occurrence_id: action.occurrence_id,
         logical_lineage_id: context.logical_lineage_id,
         source_occurrence_id: context.source_occurrence_id,
         bound_at: now
-      })
+      }),
+      [:run_id, :occurrence_id]
     )
+  end
+
+  defp insert_once!(changeset, conflict_target) do
+    case Repo.insert(changeset, on_conflict: :nothing, conflict_target: conflict_target) do
+      {:ok, value} -> value
+      {:error, invalid} -> Repo.rollback(changeset_error(invalid))
+    end
   end
 
   defp insert!(changeset) do

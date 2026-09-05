@@ -8,8 +8,9 @@ defmodule QuestEngineering.Core.Runtime do
   A semantic step exists once in the plan. A `StepOccurrence` records one
   control-flow occurrence of that definition, while its `ExecutionAttempt`
   records one concrete try. Re-entering an `Until` check creates a new
-  occurrence; it never rewinds an old occurrence. The runtime dispatches one
-  attempt per occurrence and deliberately contains no retry policy.
+  occurrence; it never rewinds an old occurrence. Ordinary execution dispatches
+  one attempt per occurrence; an explicit operator event may retry an uncertain
+  attempt or terminate it as failed.
   """
 
   alias QuestEngineering.Core.ExecutionPlan
@@ -109,6 +110,21 @@ defmodule QuestEngineering.Core.Runtime do
     end
   end
 
+  def transition(%Run{} = run, %Event{type: :step_retry_requested} = event) do
+    with {:ok, occurrence} <- fetch_completable_occurrence(run, event),
+         {:ok, step} <- fetch_step(run.plan, occurrence.semantic_step_key),
+         :ok <- validate_attempt(occurrence, event, run.id) do
+      retry_occurrence(run, occurrence, step)
+    end
+  end
+
+  def transition(%Run{} = run, %Event{type: :step_failed} = event) do
+    with {:ok, occurrence} <- fetch_completable_occurrence(run, event),
+         :ok <- validate_attempt(occurrence, event, run.id) do
+      fail_occurrence(run, occurrence, event)
+    end
+  end
+
   def transition(%Run{} = run, event) do
     {:error, %Error{type: :invalid_event, run_id: run.id, details: %{event: event}}}
   end
@@ -125,6 +141,25 @@ defmodule QuestEngineering.Core.Runtime do
       occurrence_id: action.occurrence_id,
       attempt_id: action.attempt_id,
       outputs: outputs
+    }
+  end
+
+  @doc "Builds an explicit operator retry event for one uncertain attempt."
+  def retry_requested(%Action{type: :execute_step} = action) do
+    %Event{
+      type: :step_retry_requested,
+      occurrence_id: action.occurrence_id,
+      attempt_id: action.attempt_id
+    }
+  end
+
+  @doc "Builds an explicit operator failure event for one uncertain attempt."
+  def failed(%Action{type: :execute_step} = action, failure) when is_map(failure) do
+    %Event{
+      type: :step_failed,
+      occurrence_id: action.occurrence_id,
+      attempt_id: action.attempt_id,
+      failure: failure
     }
   end
 
@@ -826,6 +861,75 @@ defmodule QuestEngineering.Core.Runtime do
   end
 
   defp condition_true?(_value, _binding), do: false
+
+  defp retry_occurrence(run, occurrence, step) do
+    attempt_number = Enum.max([0 | Enum.map(occurrence.attempts, & &1.number)]) + 1
+    attempt_id = occurrence.id <> "/attempt/#{attempt_number}"
+    attempt = %ExecutionAttempt{id: attempt_id, number: attempt_number, status: :dispatched}
+
+    attempts =
+      Enum.map(occurrence.attempts, fn
+        %ExecutionAttempt{id: id} = current when id == occurrence.current_attempt_id ->
+          %{current | status: :failed}
+
+        previous ->
+          previous
+      end) ++ [attempt]
+
+    occurrence = %{
+      occurrence
+      | status: :dispatched,
+        current_attempt_id: attempt_id,
+        attempts: attempts
+    }
+
+    scope = Map.fetch!(run.scopes, occurrence.scope_id)
+
+    inputs =
+      Map.new(occurrence.input_artifact_ids, fn {type, artifact_id} ->
+        {type, Map.fetch!(run.artifacts, artifact_id)}
+      end)
+
+    action = %Action{
+      id: attempt_id <> "/action/execute-step",
+      type: :execute_step,
+      run_id: run.id,
+      occurrence_id: occurrence.id,
+      attempt_id: attempt_id,
+      semantic_step_key: step.key,
+      instruction: step.instruction,
+      performer_requirement: step.performer,
+      performer_affinity_occurrence_id: resolve_performer_affinity(step, scope),
+      context_requirement: step.context,
+      context_lineage_occurrence_id: resolve_context_lineage(step, scope),
+      inputs: inputs,
+      declared_outputs: step.produces
+    }
+
+    {:ok, put_occurrence(run, occurrence), [action]}
+  end
+
+  defp fail_occurrence(run, occurrence, event) do
+    attempts =
+      Enum.map(occurrence.attempts, fn
+        %ExecutionAttempt{id: id} = current when id == occurrence.current_attempt_id ->
+          %{current | status: :failed}
+
+        previous ->
+          previous
+      end)
+
+    occurrence = %{occurrence | status: :failed, attempts: attempts}
+
+    failure = %Failure{
+      type: :step_failed,
+      occurrence_id: occurrence.id,
+      attempt_id: event.attempt_id,
+      details: event.failure || %{}
+    }
+
+    {:ok, %{put_occurrence(run, occurrence) | status: :failed, failure: failure}, []}
+  end
 
   defp complete_occurrence(run, occurrence, step, outputs) do
     {run, output_artifact_ids} =
