@@ -60,7 +60,6 @@ $: activeTooltip = `${activeLabel} that ${counts.activeQuests === 1 ? "is" : "ar
   </div>
 
   <div class="hud-health">
-    <span class="shortcut-hint" title="Town shortcuts: keys 1–7 open buildings.">Keys 1–7</span>
     <ConnectionIndicator status={realtimeStatus} {serverReachable} />
   </div>
 </header>
@@ -73,8 +72,6 @@ $: activeTooltip = `${activeLabel} that ${counts.activeQuests === 1 ? "is" : "ar
 .identity strong { color:#fff0bd; font:800 .92rem Georgia,serif; letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; text-shadow:1px 2px #2a1c18; }
 .hud-metrics { display:flex; align-items:center; justify-content:center; min-width:0; }
 .hud-health { display:flex; align-items:center; justify-content:flex-end; min-width:0; padding-left:.6rem; border-left:1px solid #b988574d; }
-.shortcut-hint { color:#e4cfaa; font-size:.68rem; font-weight:650; letter-spacing:.035em; white-space:nowrap; }
-@media(max-width:1100px){.shortcut-hint{display:none}}
 @media(max-width:760px){.town-hud{grid-template-columns:auto minmax(0,1fr) auto;padding-inline:.45rem}.identity{padding-right:.35rem}.identity strong{font-size:.78rem;letter-spacing:.065em}.crest{width:1.7rem;height:1.7rem}.crest img{width:1.2rem}.hud-health{padding-left:.25rem}}
 @media(max-width:520px){.identity strong{max-width:6.5rem;white-space:normal;line-height:1}.town-hud{min-height:3.1rem}}
 </style>

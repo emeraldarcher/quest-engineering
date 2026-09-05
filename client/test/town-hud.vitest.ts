@@ -48,6 +48,7 @@ test("the HUD is passive status rather than building navigation", () => {
   const hud = screen.getByLabelText("Quest Engineering town status");
 
   expect(within(hud).queryAllByRole("button")).toHaveLength(0);
+  expect(within(hud).queryByText(/Keys 1\s*[–-]\s*7/i)).toBeNull();
   for (const label of [
     "Projects",
     "Guild Hall",
