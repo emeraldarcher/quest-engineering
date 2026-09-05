@@ -33,6 +33,18 @@ const requestedWorldDemoProjects = import.meta.env.DEV
   ? Math.max(0, Math.min(50, Number(query.get("worldDemoProjects") ?? 0)))
   : 0;
 const debugMap = import.meta.env.DEV && query.get("debugMap") === "1";
+const facingSheet = import.meta.env.DEV && query.get("facingSheet") === "1";
+const facingSheetDirection = facingSheet
+  ? query.get("facingDirection") ?? undefined
+  : undefined;
+const groundingAnimation = import.meta.env.DEV
+  ? query.get("groundingAnimation") ?? undefined
+  : undefined;
+const groundingElapsedMs = groundingAnimation
+  ? Math.max(0, Number(query.get("groundingElapsed") ?? 0))
+  : undefined;
+const groundingLegacyAnchor =
+  import.meta.env.DEV && query.get("groundingLegacy") === "1";
 const crewDemoScenarios = new Set<CrewDemoScenario>([
   "none",
   "entering",
@@ -42,9 +54,19 @@ const crewDemoScenarios = new Set<CrewDemoScenario>([
   "woodcutting",
   "parallel",
   "short",
+  "short-500",
+  "short-1500",
+  "short-5000",
+  "long-running",
+  "real-short-crafting",
+  "same-member-relocation",
   "sequential",
   "parallel-tail",
   "facing-fixture",
+  "research-facing",
+  "crafting-facing",
+  "woodcutting-facing",
+  "mining-facing",
   "showcase",
 ]);
 const requestedCrewDemo = query.get("crewDemo") as CrewDemoScenario | null;
@@ -57,6 +79,10 @@ const demoActivities =
 const crewDemoTimeMs = demoActivities
   ? Math.max(0, Number(query.get("crewDemoTime") ?? 0))
   : undefined;
+const crewDemoMinimumWorkMs =
+  import.meta.env.DEV && query.has("crewDemoMinimumWork")
+    ? Math.max(0, Number(query.get("crewDemoMinimumWork")))
+    : undefined;
 const demoTransitions =
   demoActivities && requestedCrewDemo
     ? crewDemoTransitions(requestedCrewDemo).map((transition) => ({
@@ -141,7 +167,13 @@ onMount(() => {
     scale,
     {
       debugMap,
+      facingSheet,
+      ...(facingSheetDirection === undefined ? {} : { facingSheetDirection }),
+      ...(groundingAnimation === undefined ? {} : { groundingAnimation }),
+      ...(groundingElapsedMs === undefined ? {} : { groundingElapsedMs }),
+      groundingLegacyAnchor,
       ...(crewDemoTimeMs === undefined ? {} : { crewDemoTimeMs }),
+      ...(crewDemoMinimumWorkMs === undefined ? {} : { crewDemoMinimumWorkMs }),
       ...(demoTransitions.length ? { crewDemoTransitions: demoTransitions } : {}),
       demoHoverFirst: demoActivities !== null && query.get("crewDemoHover") === "1",
     },

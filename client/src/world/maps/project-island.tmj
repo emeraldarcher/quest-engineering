@@ -607,6 +607,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"research"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -626,6 +631,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"research"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -645,6 +655,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"research"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -664,6 +679,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"research"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -683,6 +703,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"crafting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -702,6 +727,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"crafting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -721,6 +751,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"crafting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -740,6 +775,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"crafting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"south"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -759,6 +799,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"woodcutting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"north"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -778,6 +823,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"woodcutting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"west"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -797,6 +847,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"woodcutting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"north"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -816,6 +871,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"woodcutting"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"east"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -835,6 +895,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"mining"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"east"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -854,6 +919,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"mining"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"north"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -873,6 +943,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"mining"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"east"
                         }],
                  "rotation":0,
                  "type":"crew_activity",
@@ -892,6 +967,11 @@
                          "name":"qeActivity",
                          "type":"string",
                          "value":"mining"
+                        },
+                        {
+                         "name":"qeFacing",
+                         "type":"string",
+                         "value":"east"
                         }],
                  "rotation":0,
                  "type":"crew_activity",

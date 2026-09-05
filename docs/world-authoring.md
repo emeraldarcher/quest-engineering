@@ -70,7 +70,13 @@ Validate the production template with:
 bun run --cwd client validate:project-island
 ```
 
-All coordinates below are local to the reusable Project template.
+All coordinates below are local to the reusable Project template. Every
+`crew_spawn`, `crew_route` vertex, exact `crew_activity` point, and generated
+district position denotes the actor's **foot/ground contact point**. It never
+denotes sprite center, frame bottom, head position, or a separate logical
+marker. The CrewActor root, shadow center, route position, activity arrival,
+and depth-sort Y all use that same point; Human frame artwork extends upward
+from it.
 
 1. Add object layer **Crew Entrances**.
 2. Add one or more uniquely named point objects of type `crew_spawn` at a
@@ -188,18 +194,43 @@ route, and then plays an exported Human v1 work action at a temporary claim.
 Exact points are exclusive; rectangles generate comfortably spaced positions,
 and general district overflow remains presentation-only.
 
-When semantic work ends, Product/HUD activity becomes inactive immediately.
-The actor may remain briefly as a presentation-only tail: working actors wrap
-up, then route to the nearest authored spawn; actors still entering cancel the
-work destination and depart. Minimum visible/work and bounded departure timing
-live together in `crew-presentation-timing.ts`. Consecutive work for the same
-Run+Member reuses the existing actor. Presentation never delays execution.
+The actor's route position is its canonical world ground point. The root,
+neutral shadow, restrained Squad-color rim, activity arrival, and depth-sort Y
+all use it directly. Human v1 frames are fixed 96×64 source cells whose base
+layer has a stable last opaque row at y=38. Runtime metadata therefore anchors
+the foot/contact point at source `(48, 39)`. The former generic bottom-center
+anchor `(0.5, 1)` placed that contact point 25 pixels above the root; no
+animation-specific offsets are applied. All base, hair, and tool layers share
+the same parent transform and calibrated frame anchor.
 
-Movement facing is derived from the current route vector. Exact `qeFacing`
-overrides work facing; otherwise the final approach is retained, with south as
-the deterministic last fallback. The Human work tags are non-directional, so
-west-facing actions use legitimate horizontal mirroring while north/south retain
-the authored conceptual facing without fabricated strips.
+When semantic work ends, Product/HUD activity becomes inactive immediately.
+A spawned actor nevertheless completes its committed presentation sequence:
+travel to the selected activity, perform a readable work beat, briefly idle,
+then walk a bounded route segment toward the nearest authored spawn. This is a
+visual reenactment, not active execution. The path-aware tail budget includes
+remaining travel, remaining minimum work, wrap-up, and a distance-derived exit
+allowance, clamped to 14 seconds. A long exit is communicated for 0.9–1.8
+seconds rather than requiring the full route.
+
+Presentation values live in `crew-presentation-timing.ts`: 36 world pixels per
+second, 3 seconds minimum work, 400ms wrap-up, and the bounded departure above.
+The previous 22px/s made ordinary island travel tedious; 36px/s remains readable
+at integer zoom while allowing short work to reach its destination sooner.
+After correcting foot anchoring, grounded comparisons at 2.0s, 2.5s, 3.0s, and
+3.5s selected 3.0s as the shortest beat that remains unmistakably readable in
+the real short-Quest choreography.
+Consecutive work for the same Run+Member cancels the tail and reuses the actor
+at its current position. Presentation never delays execution.
+
+Movement facing is derived only from actual non-zero Pixi route motion, where
+positive y means south. Effectively zero movement preserves facing. Horizontal
+roads retain the previous upper/lower diagonal until vertical slope exceeds a
+hysteresis threshold, preventing NE/SE flips and preserving northward or
+southward continuity. Exact `qeFacing` overrides work facing; otherwise the
+final approach is retained, with south as the deterministic last fallback. The
+Human work tags are non-directional and their source art visibly faces
+screen-east, so west-facing actions mirror the shared base/hair/tool parent
+composite without fabricated strips.
 
 Activity interpretation is centralized in
 `client/src/world/crew/crew-activity-policy.ts`. Project comes from the Run's
@@ -212,11 +243,13 @@ Development-only deterministic review states use `crewDemo` and
 
 ```text
 ?crewDemo=entering&crewDemoTime=1000&focusProject=crew-demo-a
-?crewDemo=parallel&crewDemoTime=12000&focusProject=crew-demo-a
-?crewDemo=showcase&crewDemoTime=12000&focusProject=crew-demo-b
+?crewDemo=short-500&crewDemoTime=8000&focusProject=crew-demo-a
+?crewDemo=parallel-tail&crewDemoTime=7200&focusProject=crew-demo-a
+?worldDemoProjects=1&facingSheet=1&focusProject=archipelago-demo-0
 ```
 
-Run `bun run --cwd client screenshots:crew-polish-ux` with the Vite server
-available to regenerate the dense placement, ocean, directional movement, and
-short-task lifecycle sequences. These demo facts never replace authoritative
-activity outside explicit development queries.
+Run `bun run --cwd client screenshots:crew-choreography-ux` with the Vite
+server available to regenerate eight-direction facing, exact work-facing,
+500ms/1.5s/5s/long timelines, handoff, continuation, and final-removal
+checkpoints. These demo facts never replace authoritative activity outside
+explicit development queries.

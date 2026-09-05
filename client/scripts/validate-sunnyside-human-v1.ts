@@ -12,6 +12,7 @@ interface Runtime {
   formatVersion: number;
   sourceProvenance: string;
   canvas: { width: number; height: number; grid: number };
+  footAnchor: { x: number; y: number; basis: string };
   sheet: { file: string; width: number; height: number; columns: number };
   frames: Array<{
     index: number;
@@ -50,11 +51,22 @@ async function pngDimensions(
 }
 
 const data = JSON.parse(await readFile(metadataPath, "utf8")) as Runtime;
-assert(data.formatVersion === 2, "Human v1 runtime format must be version 2");
+assert(data.formatVersion === 3, "Human v1 runtime format must be version 3");
 assert(data.frames.length > 0, "Human v1 export has no frames");
 assert(data.animations.length > 0, "Human v1 export has no tags");
 assert(data.layers.length > 0, "Human v1 export has no layers");
 assert(data.canvas.grid === 16, "Human v1 source grid must remain 16px");
+assert(
+  data.footAnchor.x === 48 && data.footAnchor.y === 39,
+  "Human v1 foot anchor must remain at the calibrated base-layer baseline",
+);
+assert(
+  data.footAnchor.x >= 0 &&
+    data.footAnchor.x <= data.canvas.width &&
+    data.footAnchor.y >= 0 &&
+    data.footAnchor.y <= data.canvas.height,
+  "Human v1 foot anchor lies outside the source canvas",
+);
 assert(
   !/Downloads|Library\/Application Support\/Steam/i.test(JSON.stringify(data)),
   "Generated metadata contains a machine-local Downloads or Steam path",

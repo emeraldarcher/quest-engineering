@@ -13,6 +13,7 @@ import {
 import type { WorldRegionInstance } from "../composition/world-region";
 import { ActiveCrewSystem } from "./ActiveCrewSystem";
 import type { ActiveCrewPresentation } from "./crew-presentation";
+import { CREW_PRESENTATION_TIMING } from "./crew-presentation-timing";
 
 function navigation(projectId: string, origin = 0): AuthoredCrewNavigation {
   const routes = [
@@ -154,6 +155,16 @@ function settle(system: ActiveCrewSystem): void {
   for (let index = 0; index < 800; index += 1) system.update(16);
 }
 
+function advanceUntil(
+  system: ActiveCrewSystem,
+  predicate: () => boolean,
+  maximumFrames = 1_000,
+): void {
+  for (let frame = 0; frame < maximumFrames && !predicate(); frame += 1)
+    system.update(16);
+  expect(predicate()).toBe(true);
+}
+
 test("active-only reconciliation handles 0, 1, 2, 12, and 24 actors without capacity loss", () => {
   for (const count of [0, 1, 2, 12, 24]) {
     const system = new ActiveCrewSystem(world());
@@ -254,19 +265,26 @@ test("Parallel actors reconcile independently", () => {
   expect(preserved?.state).toBe("working");
 });
 
-test("a very short semantic Step becomes a bounded presentation-only departure", () => {
+test("a very short semantic Step completes its committed visual work sequence", () => {
   const system = new ActiveCrewSystem(world());
   const active = member(1);
   system.reconcile([active]);
-  for (let frame = 0; frame < 38; frame += 1) system.update(16);
+  for (let frame = 0; frame < 31; frame += 1) system.update(16);
   system.reconcile([]);
   const tail = system.actor(active.actorId);
   expect(tail?.authoritativeRunning).toBe(false);
-  expect(tail?.state).toBe("departing");
-  for (let frame = 0; frame < 50; frame += 1) system.update(16);
-  expect(system.actor(active.actorId)).toBe(tail);
-  for (let frame = 0; frame < 140; frame += 1) system.update(16);
-  expect(system.actor(active.actorId)).toBeNull();
+  expect(tail?.state).toBe("walking_to_activity");
+  expect(
+    (tail?.visualDeadlineAtMs ?? 0) - (tail?.presentationAgeMs ?? 0),
+  ).toBeGreaterThan(2_600);
+  expect(system.actors().filter((actor) => actor.authoritativeRunning)).toEqual(
+    [],
+  );
+  advanceUntil(system, () => tail?.state === "wrapping_up");
+  expect(tail?.animationTag).toBe("mining");
+  expect(tail?.position).toEqual(tail?.destination);
+  advanceUntil(system, () => tail?.state === "departing");
+  advanceUntil(system, () => system.actor(active.actorId) === null);
 });
 
 test("arrival receives a minimum readable work beat before departure", () => {
@@ -280,8 +298,12 @@ test("arrival receives a minimum readable work beat before departure", () => {
   expect(wrapping?.state).toBe("wrapping_up");
   if (!wrapping) throw new Error("Missing wrapping actor");
   expect(system.minimumWorkRemaining(wrapping)).toBeGreaterThan(0);
-  for (let frame = 0; frame < 35; frame += 1) system.update(16);
-  expect(system.actor(active.actorId)?.state).toBe("departing");
+  for (let frame = 0; frame < 100; frame += 1) system.update(16);
+  expect(system.actor(active.actorId)?.state).toBe("wrapping_up");
+  advanceUntil(
+    system,
+    () => system.actor(active.actorId)?.state === "departing",
+  );
 });
 
 test("long active work receives no artificial completion or departure", () => {
@@ -298,10 +320,14 @@ test("a consecutive occurrence reuses a departing same-Run Member actor", () => 
   const system = new ActiveCrewSystem(world());
   const active = member(1);
   system.reconcile([active]);
-  system.update(500);
+  settle(system);
   system.reconcile([]);
+  advanceUntil(
+    system,
+    () => system.actor(active.actorId)?.state === "departing",
+  );
   const actor = system.actor(active.actorId);
-  expect(actor?.state).toBe("departing");
+  const departurePosition = actor?.position;
   system.reconcile([
     member(1, {
       activityId: "run-a\0repair",
@@ -314,6 +340,27 @@ test("a consecutive occurrence reuses a departing same-Run Member actor", () => 
   expect(system.actor(active.actorId)).toBe(actor);
   expect(actor?.authoritativeRunning).toBe(true);
   expect(actor?.state).toBe("relocating");
+  expect(actor?.position).toEqual(departurePosition);
+});
+
+test("same-location continuation cancels wrapping without dock respawn", () => {
+  const system = new ActiveCrewSystem(world());
+  const active = member(1);
+  system.reconcile([active]);
+  settle(system);
+  system.reconcile([]);
+  const actor = system.actor(active.actorId);
+  expect(actor?.state).toBe("wrapping_up");
+  const position = actor?.position;
+  system.reconcile([
+    member(1, {
+      activityId: "run-a\0mine-again",
+      occurrenceId: "mine-again",
+    }),
+  ]);
+  expect(system.actor(active.actorId)).toBe(actor);
+  expect(actor).toMatchObject({ authoritativeRunning: true, state: "working" });
+  expect(actor?.position).toEqual(position);
 });
 
 test("authored exact-anchor facing overrides deterministic approach fallback", () => {
@@ -380,16 +427,65 @@ test("repeated realtime reconciliation does not leak presentation actors", () =>
     system.reconcile(active);
     system.update(16);
     system.reconcile([]);
-    for (let frame = 0; frame < 180; frame += 1) system.update(16);
+    for (let frame = 0; frame < 1_000; frame += 1) system.update(16);
   }
   expect(system.actors()).toHaveLength(0);
 });
 
-test("shared roads receive small deterministic lateral lane offsets", () => {
+test("a junction does not preselect the next segment before motion begins", () => {
+  const system = new ActiveCrewSystem(world(), {
+    ...CREW_PRESENTATION_TIMING,
+    walkSpeed: 10,
+  });
+  const active = member(1);
+  system.reconcile([active]);
+  const actor = system.actor(active.actorId);
+  if (!actor) throw new Error("Missing actor");
+  actor.position = { x: 0, y: 0 };
+  actor.destination = { x: 1, y: -10 };
+  actor.path = [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 1, y: -10 },
+  ];
+  actor.pathIndex = 1;
+  actor.facing = "south";
+  system.update(100);
+  expect(actor.movementDelta).toEqual({ x: 1, y: 0 });
+  expect(String(actor.facing)).toBe("southeast");
+  system.update(100);
+  expect(actor.movementDelta.y).toBeLessThan(0);
+  expect(String(actor.facing)).toBe("north");
+});
+
+test("long departure paths end after a meaningful bounded route segment", () => {
   const system = new ActiveCrewSystem(world());
-  system.reconcile([member(1), member(2)]);
+  const active = member(1);
+  system.reconcile([active]);
+  settle(system);
+  system.reconcile([]);
+  advanceUntil(
+    system,
+    () => system.actor(active.actorId)?.state === "departing",
+  );
+  const actor = system.actor(active.actorId);
+  if (!actor) throw new Error("Missing departing actor");
+  expect(actor.departureBudgetMs).toBe(
+    CREW_PRESENTATION_TIMING.maximumDepartureMs,
+  );
+  advanceUntil(system, () => system.actor(active.actorId) === null);
+  expect(actor.position.x).toBeGreaterThan(0);
+  expect(actor.position.x).toBeLessThan(80);
+});
+
+test("route position is the canonical rendered ground point", () => {
+  const system = new ActiveCrewSystem(world());
+  system.reconcile([member(1)]);
   system.update(16);
-  const actors = system.actors();
-  expect(actors[0]?.laneOffset).not.toBe(actors[1]?.laneOffset);
-  expect(actors.every((actor) => Math.abs(actor.laneOffset) <= 1.5)).toBe(true);
+  const actor = system.actors()[0];
+  if (!actor) throw new Error("Missing actor");
+  expect(system.renderPosition(actor)).toEqual(actor.position);
+  advanceUntil(system, () => actor.state === "working");
+  expect(system.renderPosition(actor)).toEqual(actor.destination);
+  expect(actor.position).toEqual(actor.destination);
 });

@@ -135,6 +135,8 @@ interface AsepriteData {
 }
 
 const SHEET_COLUMNS = 16;
+/** Calibrated from every runtime base-layer frame: opaque baseline is y=38. */
+const HUMAN_V1_FOOT_ANCHOR = { x: 48, y: 39 } as const;
 function parseSourceInspection(output: string): SourceInspection {
   const inspection: SourceInspection = { layers: [], tagRepeats: [] };
   for (const line of output.split("\n")) {
@@ -318,11 +320,15 @@ export async function exportSunnysideHumanV1(): Promise<boolean> {
     }),
   );
   const runtime = {
-    formatVersion: 2,
+    formatVersion: 3,
     sourceProvenance:
       "client/src/assets/sunnyside/source/human-v1.0/human-v1.0.aseprite",
     asepriteVersion: data.meta.version ?? "unknown",
     canvas: { width: 96, height: 64, grid: 16 },
+    footAnchor: {
+      ...HUMAN_V1_FOOT_ANCHOR,
+      basis: "one pixel below the shared base-layer opaque baseline",
+    },
     sheet: {
       file: "human-v1.0-composite.png",
       width: data.meta.size?.w ?? 0,
@@ -346,7 +352,7 @@ export async function exportSunnysideHumanV1(): Promise<boolean> {
     resolve(outputRoot, "README.md"),
     "# Generated Human v1.0 export\n\n" +
       "Generated deterministically from `client/src/assets/sunnyside/source/human-v1.0/human-v1.0.aseprite`. " +
-      "`human-v1.0.runtime.json` preserves source tags, legitimate directional mirroring, frame order, durations, and compositing-layer files for Pixi; runtime never parses Aseprite files.\n",
+      "`human-v1.0.runtime.json` preserves source tags, legitimate directional mirroring, frame order, durations, the calibrated foot anchor, and compositing-layer files for Pixi; runtime never parses Aseprite files.\n",
   );
   console.log(
     `Exported ${runtime.frames.length} frames, ${runtime.animations.length} tags, and ${runtime.layers.length} layers with ${cli}.`,

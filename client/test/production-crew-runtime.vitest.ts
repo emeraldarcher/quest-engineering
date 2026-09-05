@@ -46,6 +46,34 @@ function productionWorld() {
 }
 
 describe("production Project-island CrewActor runtime", () => {
+  test("production exact anchors carry the approved work-facing metadata", () => {
+    const island =
+      productionWorld().projectIslands.findProjectIsland("project-a");
+    const facing = Object.fromEntries(
+      (island?.crewNavigation.activities ?? [])
+        .filter((activity) => activity.shape === "point")
+        .map((activity) => [activity.id.split(":").at(-1), activity.facing]),
+    );
+    expect(facing).toMatchObject({
+      "research-position-1": "south",
+      "research-position-2": "south",
+      "research-position-3": "south",
+      "research-position-4": "south",
+      "crafting-position-1": "south",
+      "crafting-position-2": "south",
+      "crafting-position-3": "south",
+      "crafting-position-4": "south",
+      "woodcutting-position-1": "east",
+      "woodcutting-position-2": "north",
+      "woodcutting-position-3": "west",
+      "woodcutting-position-4": "north",
+      "mining-position-1": "east",
+      "mining-position-2": "east",
+      "mining-position-3": "north",
+      "mining-position-4": "east",
+    });
+  });
+
   test("24 active actors exceed exact anchors without disappearing or leaving safe route paths", () => {
     const active = Array.from({ length: 24 }, (_, index) => member(index));
     const system = new ActiveCrewSystem(productionWorld());
@@ -65,6 +93,31 @@ describe("production Project-island CrewActor runtime", () => {
           actor.destination.x === actor.claim?.slot.x,
       ),
     ).toBe(true);
+  });
+
+  test("a 500ms production crafting Step completes travel, work, wrap, and bounded departure", () => {
+    const crafting = member(40);
+    crafting.classKey = "builder";
+    crafting.className = "Builder";
+    crafting.stepName = "Implement a short fix";
+    crafting.activityCategory = "crafting";
+    crafting.workAnimationTag = "hamering";
+    const system = new ActiveCrewSystem(productionWorld());
+    system.reconcile([crafting]);
+    for (let elapsed = 0; elapsed < 500; elapsed += 16) system.update(16);
+    system.reconcile([]);
+    const actor = system.actor(crafting.actorId);
+    expect(actor?.authoritativeRunning).toBe(false);
+    expect(actor?.state).toBe("walking_to_activity");
+    const states = new Set(actor ? [actor.state] : []);
+    for (let elapsed = 500; elapsed < 15_000; elapsed += 16) {
+      system.update(16);
+      const state = system.actor(crafting.actorId)?.state;
+      if (state) states.add(state);
+    }
+    expect(states).toContain("wrapping_up");
+    expect(states).toContain("departing");
+    expect(system.actor(crafting.actorId)).toBeNull();
   });
 
   test("same-Project Runs share one local graph while another Project uses its own translated graph", () => {

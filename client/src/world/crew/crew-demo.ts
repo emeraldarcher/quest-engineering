@@ -9,9 +9,19 @@ export type CrewDemoScenario =
   | "woodcutting"
   | "parallel"
   | "short"
+  | "short-500"
+  | "short-1500"
+  | "short-5000"
+  | "long-running"
+  | "real-short-crafting"
+  | "same-member-relocation"
   | "sequential"
   | "parallel-tail"
   | "facing-fixture"
+  | "research-facing"
+  | "crafting-facing"
+  | "woodcutting-facing"
+  | "mining-facing"
   | "showcase";
 
 const projects = {
@@ -133,6 +143,42 @@ const examples = [
   }),
 ];
 
+function activityGroup(
+  base: ActiveCrewActivity,
+  prefix: string,
+): ActiveCrewActivity[] {
+  return Array.from({ length: 4 }, (_, index) => ({
+    ...base,
+    activityId: `${base.runId}\0${prefix}-${index + 1}`,
+    actorId: `${base.runId}\0${base.squad.key}\0${prefix}-${index + 1}`,
+    occurrenceId: `${prefix}-${index + 1}`,
+    member: {
+      ...base.member,
+      member_key: `${prefix}-${index + 1}`,
+      name: `${base.member.name} ${index + 1}`,
+    },
+  }));
+}
+
+const facingGroups = {
+  research: activityGroup(examples[1] as ActiveCrewActivity, "research"),
+  crafting: activityGroup(examples[0] as ActiveCrewActivity, "crafting"),
+  woodcutting: activityGroup(examples[3] as ActiveCrewActivity, "woodcutting"),
+  mining: activityGroup(examples[2] as ActiveCrewActivity, "mining"),
+};
+
+const rowanReview = activity({
+  index: 7,
+  runId: "demo-run-a",
+  project: projects.first,
+  squadKey: "engineering-pair",
+  squadName: "Engineering Pair",
+  memberName: "Rowan",
+  classKey: "builder",
+  className: "Builder",
+  stepName: "Review completed implementation",
+});
+
 export interface CrewDemoTransition {
   atMs: number;
   activities: ActiveCrewActivity[];
@@ -141,7 +187,15 @@ export interface CrewDemoTransition {
 export function crewDemoTransitions(
   scenario: CrewDemoScenario,
 ): CrewDemoTransition[] {
-  if (scenario === "short") return [{ atMs: 600, activities: [] }];
+  if (scenario === "short" || scenario === "short-500")
+    return [{ atMs: 500, activities: [] }];
+  if (scenario === "short-1500") return [{ atMs: 1_500, activities: [] }];
+  if (scenario === "short-5000") return [{ atMs: 5_000, activities: [] }];
+  if (scenario === "long-running") return [{ atMs: 30_000, activities: [] }];
+  if (scenario === "real-short-crafting")
+    return [{ atMs: 500, activities: [] }];
+  if (scenario === "same-member-relocation")
+    return [{ atMs: 7_000, activities: [rowanReview] }];
   if (scenario === "sequential")
     return [{ atMs: 7_000, activities: [examples[1] as ActiveCrewActivity] }];
   if (scenario === "parallel-tail")
@@ -157,11 +211,21 @@ export function crewDemoActivities(
     scenario === "entering" ||
     scenario === "crafting" ||
     scenario === "short" ||
+    scenario === "short-500" ||
+    scenario === "short-1500" ||
+    scenario === "short-5000" ||
+    scenario === "long-running" ||
+    scenario === "real-short-crafting" ||
+    scenario === "same-member-relocation" ||
     scenario === "sequential"
   )
     return [examples[0] as ActiveCrewActivity];
   if (scenario === "research" || scenario === "facing-fixture")
     return [examples[1] as ActiveCrewActivity];
+  if (scenario === "research-facing") return facingGroups.research;
+  if (scenario === "crafting-facing") return facingGroups.crafting;
+  if (scenario === "woodcutting-facing") return facingGroups.woodcutting;
+  if (scenario === "mining-facing") return facingGroups.mining;
   if (scenario === "mining") return [examples[2] as ActiveCrewActivity];
   if (scenario === "woodcutting") return [examples[3] as ActiveCrewActivity];
   if (scenario === "parallel" || scenario === "parallel-tail")

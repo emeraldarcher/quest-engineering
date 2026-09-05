@@ -25,6 +25,8 @@
     "screenshots:town-hud-ux": "bun run scripts/capture-town-hud-ux.ts",
     "screenshots:crew-checkpoint-c": "bun run scripts/capture-crew-checkpoint-c.ts",
     "screenshots:crew-polish-ux": "bun run scripts/capture-crew-polish-ux.ts",
+    "screenshots:crew-choreography-ux": "bun run scripts/capture-crew-choreography-ux.ts",
+    "screenshots:crew-grounding-ux": "bun run scripts/capture-crew-grounding-ux.ts",
     "validate:town": "bun run scripts/validate-town.ts",
     "validate:project-island": "bun run scripts/validate-project-island.ts",
     "import:sunnyside-assets": "bun run scripts/import-sunnyside-assets.ts",

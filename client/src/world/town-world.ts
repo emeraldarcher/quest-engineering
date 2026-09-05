@@ -34,11 +34,25 @@ import {
 } from "./composition/world-composer";
 import type { WorldRegionInstance } from "./composition/world-region";
 import { ActiveCrewSystem, type CrewActor } from "./crew/ActiveCrewSystem";
+import { crewCompositeScaleX, crewWalkingVisual } from "./crew/crew-facing";
+import {
+  CREW_BODY_LOCAL_POSITION,
+  CREW_HIT_AREA,
+  CREW_SHADOW_LOCAL_POSITION,
+  crewGroundDepthY,
+} from "./crew/crew-grounding";
 import type { ActiveCrewPresentation } from "./crew/crew-presentation";
+import { CREW_PRESENTATION_TIMING } from "./crew/crew-presentation-timing";
 import { allHumanV1RuntimeUrls, humanV1LayerUrl } from "./crew/human-v1-assets";
 import {
+  type HumanV1Animation,
   humanAnimationFrameAt,
+  humanAppearance,
+  humanDirectionalAnimationForDirection,
+  humanFrameGrounding,
   humanHairRoleForFrame,
+  humanRenderedFootLocal,
+  humanWorkAnimation,
 } from "./crew/human-v1-runtime";
 import {
   oceanPresentation,
@@ -69,11 +83,17 @@ export interface TownWorldOptions {
   debugMap?: boolean;
   /** Development capture aid: advance once, then freeze CrewActor time. */
   crewDemoTimeMs?: number;
+  crewDemoMinimumWorkMs?: number;
   crewDemoTransitions?: ReadonlyArray<{
     atMs: number;
     crew: ActiveCrewPresentation[];
   }>;
   demoHoverFirst?: boolean;
+  facingSheet?: boolean;
+  facingSheetDirection?: string;
+  groundingAnimation?: string;
+  groundingElapsedMs?: number;
+  groundingLegacyAnchor?: boolean;
 }
 
 interface AnimatedSprite {
@@ -114,6 +134,8 @@ export class TownWorld {
   private regionLayer = new Container();
   private globalDebugLayer = new Container();
   private crewDebugLayer = new Container();
+  private facingSheetLayer = new Container();
+  private groundingCalibrationLayer = new Container();
   private renderedRegions = new Map<string, RenderedRegion>();
   private statusLayer: Container | null = null;
   private loaded = new Map<string, Texture>();
@@ -158,7 +180,11 @@ export class TownWorld {
     initialZoom = 2,
     private readonly options: TownWorldOptions = {},
   ) {
-    this.crewSystem = new ActiveCrewSystem(composition);
+    this.crewSystem = new ActiveCrewSystem(composition, {
+      ...CREW_PRESENTATION_TIMING,
+      minimumWorkMs:
+        options.crewDemoMinimumWorkMs ?? CREW_PRESENTATION_TIMING.minimumWorkMs,
+    });
     this.zoom = this.normalizeZoom(initialZoom);
     this.focus = this.rectCenter(this.homeMap().functionalTownBounds);
     this.targetFocus = { ...this.focus };
@@ -211,9 +237,15 @@ export class TownWorld {
       this.regionLayer,
       this.globalDebugLayer,
     );
-    this.globalDebugLayer.addChild(this.crewDebugLayer);
+    this.globalDebugLayer.addChild(
+      this.facingSheetLayer,
+      this.groundingCalibrationLayer,
+      this.crewDebugLayer,
+    );
     this.app.stage.addChild(this.scene);
     this.rebuildRegions();
+    if (this.options.facingSheet) this.buildFacingSheet();
+    if (this.options.groundingAnimation) this.buildGroundingCalibration();
     this.updateStatusMarker();
     this.focusHome();
 
@@ -267,11 +299,16 @@ export class TownWorld {
       this.focusHome();
     }
     if (!this.mounted) return;
-    if (signature !== this.regionSignature) this.rebuildRegions();
-    else if (this.options.debugMap) this.updateCrewDebugOverlay();
+    if (signature !== this.regionSignature) {
+      this.rebuildRegions();
+      if (this.options.facingSheet) this.buildFacingSheet();
+      if (this.options.groundingAnimation) this.buildGroundingCalibration();
+    } else if (this.options.debugMap) this.updateCrewDebugOverlay();
   }
 
   setCrew(crew: readonly ActiveCrewPresentation[]): void {
+    if (this.crewDemoApplied && this.options.crewDemoTimeMs !== undefined)
+      return;
     this.crew = [...crew];
     this.crewSystem.reconcile(this.crew);
     this.applyCrewDemoTime();
@@ -793,12 +830,23 @@ export class TownWorld {
   }
 
   private humanFrameTexture(role: string, actor: CrewActor): Texture {
-    const frame = humanAnimationFrameAt(
+    return this.humanAnimationTexture(
+      role,
       actor.animation,
       actor.animationElapsedMs,
+      actor.appearance.hairRole,
     );
+  }
+
+  private humanAnimationTexture(
+    role: string,
+    animation: HumanV1Animation,
+    elapsedMs: number,
+    hairRole: string,
+  ): Texture {
+    const frame = humanAnimationFrameAt(animation, elapsedMs);
     const resolvedRole = role.startsWith("hair-")
-      ? humanHairRoleForFrame(role, frame.index)
+      ? humanHairRoleForFrame(hairRole, frame.index)
       : role;
     const url = humanV1LayerUrl(resolvedRole);
     const key = `human-v1:${url}:${frame.index}`;
@@ -816,6 +864,153 @@ export class TownWorld {
     });
     this.framed.set(key, texture);
     return texture;
+  }
+
+  private buildFacingSheet(): void {
+    for (const child of this.facingSheetLayer.removeChildren())
+      child.destroy({ children: true });
+    const island = this.composition.projectIslands.values()[0];
+    if (!island) return;
+    const cases = [
+      ["north", { x: 0, y: -1 }, "south"],
+      ["northeast", { x: 1, y: -1 }, "south"],
+      ["east", { x: 1, y: 0 }, "north"],
+      ["southeast", { x: 1, y: 1 }, "north"],
+      ["south", { x: 0, y: 1 }, "north"],
+      ["southwest", { x: -1, y: 1 }, "north"],
+      ["west", { x: -1, y: 0 }, "south"],
+      ["northwest", { x: -1, y: -1 }, "south"],
+    ] as const;
+    const selected = this.options.facingSheetDirection;
+    const displayed = selected
+      ? cases.filter(([label]) => label === selected)
+      : cases;
+    const appearance = { hairRole: "hair-bowl" };
+    for (const [index, [label, vector, previous]] of displayed.entries()) {
+      const visual = crewWalkingVisual(vector, previous);
+      const root = new Container();
+      const x = selected
+        ? island.bounds.x + island.bounds.width / 2
+        : island.bounds.x + 46 + (index % 4) * 86;
+      const y = selected
+        ? island.bounds.y + island.bounds.height / 2
+        : island.bounds.y + 114 + Math.floor(index / 4) * 100;
+      root.position.set(x, y);
+      const body = new Container();
+      body.scale.set(selected ? 3 : 2);
+      body.scale.x *= crewCompositeScaleX(visual.mirrorX);
+      const roles = ["tools-rear", "base", appearance.hairRole, "tools-front"];
+      const frame = humanAnimationFrameAt(visual.animation, 100);
+      const grounding = humanFrameGrounding(frame);
+      for (const role of roles) {
+        const sprite = new Sprite(
+          this.humanAnimationTexture(
+            role,
+            visual.animation,
+            100,
+            appearance.hairRole,
+          ),
+        );
+        sprite.anchor.set(grounding.anchor.x, grounding.anchor.y);
+        body.addChild(sprite);
+      }
+      const arrow = new Graphics()
+        .moveTo(0, 4)
+        .lineTo(vector.x * 20, 4 + vector.y * 20)
+        .stroke({ color: 0xff3b30, width: 2 });
+      const tipX = vector.x * 20;
+      const tipY = 4 + vector.y * 20;
+      arrow.circle(tipX, tipY, 2.5).fill(0xff3b30);
+      const text = this.worldText(
+        `${label}\n${visual.animation.tag}${visual.mirrorX ? " · mirrored" : ""}\nv ${vector.x},${vector.y}`,
+        5,
+        0xffffff,
+      );
+      text.anchor.set(0.5, 0);
+      text.position.set(0, 10);
+      root.addChild(arrow, body, text);
+      this.facingSheetLayer.addChild(root);
+    }
+  }
+
+  private buildGroundingCalibration(): void {
+    for (const child of this.groundingCalibrationLayer.removeChildren())
+      child.destroy({ children: true });
+    const island = this.composition.projectIslands.values()[0];
+    if (!island) return;
+    const name = this.options.groundingAnimation ?? "idle";
+    const directional = {
+      idle: ["idle", "south"],
+      "walk-n": ["walk", "north"],
+      "walk-s": ["walk", "south"],
+      "walk-ne": ["walk", "northeast"],
+      "walk-se": ["walk", "southeast"],
+    } as const;
+    const direction = directional[name as keyof typeof directional];
+    const animation = direction
+      ? humanDirectionalAnimationForDirection(direction[0], direction[1])
+          .animation
+      : humanWorkAnimation(name);
+    const elapsed = this.options.groundingElapsedMs ?? 0;
+    const frame = humanAnimationFrameAt(animation, elapsed);
+    const grounding = humanFrameGrounding(frame);
+    const calibrationAnchor = this.options.groundingLegacyAnchor
+      ? { x: 0.5, y: 1 }
+      : grounding.anchor;
+    const appearance = humanAppearance(
+      "ground-calibration",
+      "ground-calibration",
+    );
+    const point = {
+      x: island.bounds.x + island.bounds.width / 2,
+      y: island.bounds.y + island.bounds.height * 0.68,
+    };
+    const root = new Container();
+    root.position.set(point.x, point.y);
+    const marker = new Graphics()
+      .circle(0, 0, 3)
+      .stroke({ color: 0x39ff88, width: 1 })
+      .moveTo(-12, 0)
+      .lineTo(12, 0)
+      .moveTo(0, -12)
+      .lineTo(0, 12)
+      .stroke({ color: 0xff3b30, width: 1 });
+    const shadow = new Graphics()
+      .ellipse(0, 0, 7, 2.5)
+      .fill({ color: 0x172329, alpha: 0.32 })
+      .ellipse(0, 0, 8, 3)
+      .stroke({ color: 0x5eead4, width: 0.75 });
+    const body = new Container();
+    const roles = ["tools-rear", "base", appearance.hairRole, "tools-front"];
+    for (const role of roles) {
+      const sprite = new Sprite(
+        this.humanAnimationTexture(
+          role,
+          animation,
+          elapsed,
+          appearance.hairRole,
+        ),
+      );
+      sprite.anchor.set(calibrationAnchor.x, calibrationAnchor.y);
+      body.addChild(sprite);
+    }
+    const frameBox = new Graphics()
+      .rect(
+        -calibrationAnchor.x * frame.rect.w,
+        -calibrationAnchor.y * frame.rect.h,
+        frame.rect.w,
+        frame.rect.h,
+      )
+      .stroke({ color: 0xffffff, width: 0.5, alpha: 0.65 });
+    const text = this.worldText(
+      `${name} · frame ${frame.index}\nground ${point.x.toFixed(1)},${point.y.toFixed(1)} · foot offset ${this.options.groundingLegacyAnchor ? "0,-25" : "0,0"}\nanchor ${calibrationAnchor.x.toFixed(4)},${calibrationAnchor.y.toFixed(4)}`,
+      5,
+      0xffffff,
+    );
+    text.anchor.set(0.5, 0);
+    text.position.set(0, 14);
+    root.addChild(shadow, marker, frameBox, body, text);
+    this.groundingCalibrationLayer.addChild(root);
   }
 
   private syncCrewViews(): void {
@@ -844,28 +1039,50 @@ export class TownWorld {
     root.label = `active-crew:${actor.actorId}`;
     root.eventMode = "static";
     root.cursor = "pointer";
-    root.hitArea = new Rectangle(-12, -38, 24, 40);
+    root.hitArea = new Rectangle(
+      CREW_HIT_AREA.x,
+      CREW_HIT_AREA.y,
+      CREW_HIT_AREA.width,
+      CREW_HIT_AREA.height,
+    );
 
+    const shadow = new Graphics()
+      .ellipse(
+        CREW_SHADOW_LOCAL_POSITION.x,
+        CREW_SHADOW_LOCAL_POSITION.y,
+        7,
+        2.5,
+      )
+      .fill({ color: 0x172329, alpha: 0.32 });
     const accent = new Graphics()
-      .ellipse(0, -1, 8, 3)
-      .fill({ color: actor.activity.squadAccentColor, alpha: 0.18 })
-      .stroke({ color: actor.activity.squadAccentColor, width: 1, alpha: 0.9 });
+      .ellipse(CREW_SHADOW_LOCAL_POSITION.x, CREW_SHADOW_LOCAL_POSITION.y, 8, 3)
+      .stroke({
+        color: actor.activity.squadAccentColor,
+        width: 0.75,
+        alpha: 0.75,
+      });
     const body = new Container();
+    body.position.set(CREW_BODY_LOCAL_POSITION.x, CREW_BODY_LOCAL_POSITION.y);
     const roles = [
       "tools-rear",
       "base",
       actor.appearance.hairRole,
       "tools-front",
     ];
+    const frame = humanAnimationFrameAt(
+      actor.animation,
+      actor.animationElapsedMs,
+    );
+    const grounding = humanFrameGrounding(frame);
     const layers = roles.map((role) => {
       const sprite = new Sprite(this.humanFrameTexture(role, actor));
-      sprite.anchor.set(0.5, 1);
+      sprite.anchor.set(grounding.anchor.x, grounding.anchor.y);
       return sprite;
     });
     body.addChild(...layers);
 
     const tooltip = this.worldText(
-      `${actor.activity.memberName}\n${actor.activity.className} · ${actor.activity.squadName}\n${actor.activity.questTitle}\n${actor.activity.stepName}`,
+      this.crewTooltipText(actor),
       5,
       palette.cream,
     );
@@ -873,7 +1090,7 @@ export class TownWorld {
     tooltip.position.set(0, -42);
     tooltip.visible =
       this.options.demoHoverFirst === true && this.crewViews.size === 0;
-    root.addChild(accent, body, tooltip);
+    root.addChild(shadow, accent, body, tooltip);
     root.on("pointerover", () => {
       tooltip.visible = true;
     });
@@ -936,8 +1153,9 @@ export class TownWorld {
         Math.round(position.x - rendered.instance.worldOrigin.x),
         Math.round(position.y - rendered.instance.worldOrigin.y),
       );
-      view.root.zIndex = Math.round(view.root.y);
-      view.body.scale.x = actor.mirrorX ? -1 : 1;
+      view.root.zIndex = crewGroundDepthY(position);
+      view.body.scale.x = crewCompositeScaleX(actor.mirrorX);
+      view.tooltip.text = this.crewTooltipText(actor);
       const roles = [
         "tools-rear",
         "base",
@@ -949,6 +1167,15 @@ export class TownWorld {
         if (role) sprite.texture = this.humanFrameTexture(role, actor);
       }
     }
+  }
+
+  private crewTooltipText(actor: CrewActor): string {
+    const status = actor.authoritativeRunning
+      ? "Working"
+      : actor.state === "departing"
+        ? "Finished · leaving"
+        : "Finished · wrapping up";
+    return `${actor.activity.memberName}\n${actor.activity.className} · ${actor.activity.squadName}\n${status}\n${actor.activity.questTitle}\n${actor.activity.stepName}`;
   }
 
   private updateStatusMarker(): void {
@@ -1209,9 +1436,75 @@ export class TownWorld {
         this.crewDebugLayer.addChild(route);
       }
       const position = this.crewSystem.renderPosition(actor);
+      const view = this.crewViews.get(actor.actorId);
+      const bodyScale =
+        view?.body.scale.x ?? crewCompositeScaleX(actor.mirrorX);
+      const frame = humanAnimationFrameAt(
+        actor.animation,
+        actor.animationElapsedMs,
+      );
+      const grounding = humanFrameGrounding(frame);
+      const baseSprite = view?.layers[1];
+      const footLocal = humanRenderedFootLocal(frame, {
+        body: {
+          x: view?.body.position.x ?? 0,
+          y: view?.body.position.y ?? 0,
+        },
+        sprite: {
+          x: baseSprite?.position.x ?? 0,
+          y: baseSprite?.position.y ?? 0,
+        },
+        anchor: {
+          x: baseSprite?.anchor.x ?? grounding.anchor.x,
+          y: baseSprite?.anchor.y ?? grounding.anchor.y,
+        },
+        scale: {
+          x: bodyScale * (baseSprite?.scale.x ?? 1),
+          y: (view?.body.scale.y ?? 1) * (baseSprite?.scale.y ?? 1),
+        },
+      });
+      const renderedFoot = {
+        x: position.x + footLocal.x,
+        y: position.y + footLocal.y,
+      };
+      const groundingError = Math.hypot(footLocal.x, footLocal.y);
       const dot = new Graphics()
         .circle(position.x, position.y, 2)
         .fill(actor.activity.squadAccentColor);
+      const velocityLength = Math.hypot(
+        actor.movementDelta.x,
+        actor.movementDelta.y,
+      );
+      dot
+        .moveTo(position.x - 5, position.y)
+        .lineTo(position.x + 5, position.y)
+        .moveTo(position.x, position.y - 5)
+        .lineTo(position.x, position.y + 5)
+        .moveTo(position.x, position.y)
+        .lineTo(renderedFoot.x, renderedFoot.y)
+        .stroke({
+          color: groundingError <= 0.01 ? 0x39ff88 : 0xff3b30,
+          width: 1,
+        });
+      const frameLeft = position.x - frame.rect.w / 2;
+      const frameTop = position.y - grounding.anchor.y * frame.rect.h;
+      dot
+        .rect(frameLeft, frameTop, frame.rect.w, frame.rect.h)
+        .stroke({ color: 0xffffff, width: 0.5, alpha: 0.55 })
+        .rect(position.x - 24, position.y - 40, 48, 42)
+        .stroke({ color: 0xfacc15, width: 0.75, alpha: 0.8 });
+      if (velocityLength > 0) {
+        const ux = actor.movementDelta.x / velocityLength;
+        const uy = actor.movementDelta.y / velocityLength;
+        const tip = { x: position.x + ux * 12, y: position.y + uy * 12 };
+        dot
+          .moveTo(position.x, position.y)
+          .lineTo(tip.x, tip.y)
+          .lineTo(tip.x - ux * 4 + uy * 3, tip.y - uy * 4 - ux * 3)
+          .moveTo(tip.x, tip.y)
+          .lineTo(tip.x - ux * 4 - uy * 3, tip.y - uy * 4 + ux * 3)
+          .stroke({ color: 0xff4d4d, width: 1.5 });
+      }
       const claim = actor.claim
         ? actor.claim.slot.kind === "exact-anchor"
           ? `exact:${actor.claim.slot.zoneId}`
@@ -1220,14 +1513,34 @@ export class TownWorld {
       const departure = actor.departureTarget
         ? `${actor.departureTarget.x.toFixed(1)},${actor.departureTarget.y.toFixed(1)}`
         : "none";
+      const roles = [
+        "tools-rear",
+        "base",
+        actor.appearance.hairRole,
+        "tools-front",
+      ];
+      const layerScales = roles
+        .map(
+          (role, layerIndex) =>
+            `${role}:${(bodyScale * (view?.layers[layerIndex]?.scale.x ?? 1)).toFixed(0)}`,
+        )
+        .join(" ");
+      const angle =
+        actor.movementAngleDegrees === null
+          ? "none"
+          : `${actor.movementAngleDegrees.toFixed(1)}°`;
+      const deadline =
+        actor.visualDeadlineAtMs === null
+          ? "none"
+          : `${Math.max(0, actor.visualDeadlineAtMs - actor.presentationAgeMs).toFixed(0)}ms`;
       const actorText = this.worldText(
-        `${actor.activity.memberName} · ${actor.activity.projectKey}\nActor ${actor.actorId}\nRun ${actor.activity.runId} · Member ${actor.activity.memberKey}\nauthoritativeRunning:${actor.authoritativeRunning} · presentationState:${actor.state}\n${actor.activityCategory} · ${claim} · facing:${actor.facing}\nworkFacing:${actor.workFacingSource} · animation:${actor.animationTag}${actor.mirrorX ? " mirrored" : ""}\nlane ${actor.laneOffset} · target ${actor.destination.x.toFixed(1)},${actor.destination.y.toFixed(1)} · departure:${departure}\npath ${actor.pathIndex}/${actor.path.length} · age:${Math.round(actor.presentationAgeMs)}ms · min-work:${Math.round(this.crewSystem.minimumWorkRemaining(actor))}ms · #${actor.activity.squadAccentColor.toString(16).padStart(6, "0")}`,
+        `${actor.activity.memberName} · ${actor.activity.projectKey}\nActor ${actor.actorId}\nRun ${actor.activity.runId} · Member ${actor.activity.memberKey}\nauthoritativeRunning:${actor.authoritativeRunning} · presentationState:${actor.state}\n${actor.activityCategory} · ${claim} · facing:${actor.facing}\nground:${position.x.toFixed(2)},${position.y.toFixed(2)} · route:${actor.position.x.toFixed(2)},${actor.position.y.toFixed(2)}\nrenderedFoot:${renderedFoot.x.toFixed(2)},${renderedFoot.y.toFixed(2)} · error:${groundingError.toFixed(3)}\nvelocity:${actor.movementDelta.x.toFixed(2)},${actor.movementDelta.y.toFixed(2)} · angle:${angle}\nsourceTag:${actor.animationTag} · frame:${frame.index} · mirrored:${actor.mirrorX}\nbodyLocal:${view?.body.position.x ?? 0},${view?.body.position.y ?? 0} · bodyScaleX:${bodyScale}\nspriteLocal:${baseSprite?.position.x ?? 0},${baseSprite?.position.y ?? 0} · anchor:${(baseSprite?.anchor.x ?? grounding.anchor.x).toFixed(4)},${(baseSprite?.anchor.y ?? grounding.anchor.y).toFixed(4)} · pivot:${baseSprite?.pivot.x ?? 0},${baseSprite?.pivot.y ?? 0}\nframeOrigin:${grounding.localTopLeft.x},${grounding.localTopLeft.y} · frame:${frame.rect.w}x${frame.rect.h}\nlayerScaleX ${layerScales}\nworkFacing:${actor.workFacingSource} · tailDeadline:${deadline}\ntarget ${actor.destination.x.toFixed(1)},${actor.destination.y.toFixed(1)} · departure:${departure}\npath ${actor.pathIndex}/${actor.path.length} · zGroundY:${position.y.toFixed(1)} · age:${Math.round(actor.presentationAgeMs)}ms · min-work:${Math.round(this.crewSystem.minimumWorkRemaining(actor))}ms · #${actor.activity.squadAccentColor.toString(16).padStart(6, "0")}`,
         4,
         actor.activity.squadAccentColor,
       );
       actorText.position.set(
         island.bounds.x + 4,
-        island.bounds.y + 68 + index * 46,
+        island.bounds.y + 68 + index * 64,
       );
       this.crewDebugLayer.addChild(dot, actorText);
     }

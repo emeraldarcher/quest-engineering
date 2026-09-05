@@ -34,6 +34,7 @@ interface HumanV1Layer {
 interface HumanV1Metadata {
   formatVersion: number;
   canvas: { width: number; height: number; grid: number };
+  footAnchor: { x: number; y: number; basis: string };
   sheet: { file: string; width: number; height: number; columns: number };
   frames: HumanV1Frame[];
   animations: HumanV1Animation[];
@@ -48,6 +49,47 @@ interface HumanV1Metadata {
 }
 
 export const HumanV1 = metadataJson as HumanV1Metadata;
+
+export interface HumanFrameGrounding {
+  anchor: { x: number; y: number };
+  localTopLeft: { x: number; y: number };
+  renderedFoot: { x: number; y: number };
+}
+
+/** All full-canvas Human frames share this source-calibrated foot point. */
+export function humanFrameGrounding(frame: HumanV1Frame): HumanFrameGrounding {
+  const foot = HumanV1.footAnchor;
+  return {
+    anchor: { x: foot.x / frame.rect.w, y: foot.y / frame.rect.h },
+    localTopLeft: { x: -foot.x, y: -foot.y },
+    renderedFoot: { x: 0, y: 0 },
+  };
+}
+
+export function humanRenderedFootLocal(
+  frame: HumanV1Frame,
+  input: {
+    body?: { x: number; y: number };
+    sprite?: { x: number; y: number };
+    anchor?: { x: number; y: number };
+    scale?: { x: number; y: number };
+  } = {},
+): { x: number; y: number } {
+  const body = input.body ?? { x: 0, y: 0 };
+  const sprite = input.sprite ?? { x: 0, y: 0 };
+  const anchor = input.anchor ?? humanFrameGrounding(frame).anchor;
+  const scale = input.scale ?? { x: 1, y: 1 };
+  return {
+    x:
+      body.x +
+      sprite.x +
+      (HumanV1.footAnchor.x - anchor.x * frame.rect.w) * scale.x,
+    y:
+      body.y +
+      sprite.y +
+      (HumanV1.footAnchor.y - anchor.y * frame.rect.h) * scale.y,
+  };
+}
 
 export const HUMAN_HAIR_ROLES = HumanV1.layers
   .filter((layer) => layer.role?.startsWith("hair-"))
