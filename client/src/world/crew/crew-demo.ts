@@ -8,6 +8,10 @@ export type CrewDemoScenario =
   | "mining"
   | "woodcutting"
   | "parallel"
+  | "short"
+  | "sequential"
+  | "parallel-tail"
+  | "facing-fixture"
   | "showcase";
 
 const projects = {
@@ -129,15 +133,38 @@ const examples = [
   }),
 ];
 
+export interface CrewDemoTransition {
+  atMs: number;
+  activities: ActiveCrewActivity[];
+}
+
+export function crewDemoTransitions(
+  scenario: CrewDemoScenario,
+): CrewDemoTransition[] {
+  if (scenario === "short") return [{ atMs: 600, activities: [] }];
+  if (scenario === "sequential")
+    return [{ atMs: 7_000, activities: [examples[1] as ActiveCrewActivity] }];
+  if (scenario === "parallel-tail")
+    return [{ atMs: 7_000, activities: examples.slice(1, 4) }];
+  return [];
+}
+
 export function crewDemoActivities(
   scenario: CrewDemoScenario,
 ): ActiveCrewActivity[] {
   if (scenario === "none") return [];
-  if (scenario === "entering" || scenario === "crafting")
+  if (
+    scenario === "entering" ||
+    scenario === "crafting" ||
+    scenario === "short" ||
+    scenario === "sequential"
+  )
     return [examples[0] as ActiveCrewActivity];
-  if (scenario === "research") return [examples[1] as ActiveCrewActivity];
+  if (scenario === "research" || scenario === "facing-fixture")
+    return [examples[1] as ActiveCrewActivity];
   if (scenario === "mining") return [examples[2] as ActiveCrewActivity];
   if (scenario === "woodcutting") return [examples[3] as ActiveCrewActivity];
-  if (scenario === "parallel") return examples.slice(0, 4);
+  if (scenario === "parallel" || scenario === "parallel-tail")
+    return examples.slice(0, 4);
   return [...examples];
 }

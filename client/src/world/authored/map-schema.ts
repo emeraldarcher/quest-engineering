@@ -29,6 +29,8 @@ export const CREW_ACTIVITY_CATEGORIES = [
   "digging",
 ] as const;
 export type CrewActivityCategory = (typeof CREW_ACTIVITY_CATEGORIES)[number];
+export const CREW_FACINGS = ["north", "south", "east", "west"] as const;
+export type CrewFacing = (typeof CREW_FACINGS)[number];
 export const WORLD_REGION_PROFILES = [
   "home",
   "project_island",
@@ -128,6 +130,8 @@ export interface AuthoredCrewActivity extends TownRect {
   id: string;
   activity: CrewActivityCategory;
   shape: "point" | "rectangle";
+  /** Optional presentation-only facing for exact point interactions. */
+  facing: CrewFacing | null;
 }
 
 export interface CrewRouteNode extends TownPoint {

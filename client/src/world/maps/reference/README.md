@@ -12,7 +12,8 @@ runtime never uses them as production Project art.
   it shares the reference-only object collection.
 - `project-island-fixture.tmj` and `project-expansion-fixture.tmj` prove
   region-local rendering, crew semantics, deterministic instancing, sockets,
-  and route composition. They are not production island designs.
+  route composition, and an explicit `qeFacing` exact-anchor example. They are
+  not production island designs.
 - `sunnyside-example-world.tmj` is the full artist-authored Sunnyside World v2.1
   GameMaker `Room1` import. Regenerate it with `bun run --cwd client
   import:sunnyside-example`; its tile mapping is recorded beside it.

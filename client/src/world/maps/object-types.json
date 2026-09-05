@@ -61,7 +61,8 @@
     "color": "#e879f9",
     "description": "Point or rectangle for presentation-only crew activity. It does not change Runtime or Tactic semantics.",
     "properties": [
-      { "name": "qeActivity", "type": "string", "value": "general" }
+      { "name": "qeActivity", "type": "string", "value": "general" },
+      { "name": "qeFacing", "type": "string", "value": "" }
     ]
   },
   {

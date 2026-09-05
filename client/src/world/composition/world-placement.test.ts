@@ -1,8 +1,70 @@
 import { expect, test } from "bun:test";
-import { placeProjects, spiralGridPoint } from "./world-placement";
+import {
+  DENSE_PRIMARY_SLOTS,
+  placementGrid,
+  placeProjects,
+  spiralGridPoint,
+} from "./world-placement";
 
-const grid = { cellWidth: 1_696, cellHeight: 1_056 };
+const home = { x: 0, y: 0, width: 1_440, height: 800 };
+const projectBounds = { x: 0, y: 0, width: 352, height: 288 };
+const grid = placementGrid(home, projectBounds);
 const project = (id: string) => ({ id, key: id, name: id });
+
+function bounds(origin: { x: number; y: number }) {
+  return {
+    ...origin,
+    width: projectBounds.width,
+    height: projectBounds.height,
+  };
+}
+
+function overlaps(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
+function hasClearance(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  const horizontal = Math.max(a.x - (b.x + b.width), b.x - (a.x + a.width), 0);
+  const vertical = Math.max(a.y - (b.y + b.height), b.y - (a.y + a.height), 0);
+  return horizontal >= grid.clearance || vertical >= grid.clearance;
+}
+
+function assertNoOverlaps(origins: Array<{ x: number; y: number }>) {
+  const values = origins.map(bounds);
+  expect(values.some((value) => overlaps(value, home))).toBe(false);
+  expect(values.every((value) => hasClearance(value, home))).toBe(true);
+  let separated = true;
+  for (const [index, value] of values.entries())
+    for (const other of values.slice(index + 1))
+      if (overlaps(value, other) || !hasClearance(value, other)) {
+        separated = false;
+        break;
+      }
+  expect(separated).toBe(true);
+}
+
+function homeDistance(origin: { x: number; y: number }): number {
+  const homeCenter = { x: home.width / 2, y: home.height / 2 };
+  const projectCenter = {
+    x: origin.x + projectBounds.width / 2,
+    y: origin.y + projectBounds.height / 2,
+  };
+  return Math.hypot(
+    projectCenter.x - homeCenter.x,
+    projectCenter.y - homeCenter.y,
+  );
+}
 
 test("spiral slots are unique and reserve the Home slot", () => {
   const points = Array.from({ length: 500 }, (_, index) =>
@@ -14,31 +76,75 @@ test("spiral slots are unique and reserve the Home slot", () => {
   expect(points.some((point) => point.x === 0 && point.y === 0)).toBe(false);
 });
 
+test("Home-only and early Project counts form a dense non-overlapping archipelago", () => {
+  expect(placeProjects([], grid)).toEqual([]);
+  for (const count of [1, 4, 10, 50]) {
+    const placements = placeProjects(
+      Array.from({ length: count }, (_, index) =>
+        project(`dense-${String(index).padStart(2, "0")}`),
+      ),
+      grid,
+    );
+    expect(placements).toHaveLength(count);
+    assertNoOverlaps(placements.map((value) => value.origin));
+    if (count === 1)
+      expect(
+        homeDistance(placements[0]?.origin ?? { x: 0, y: 0 }),
+      ).toBeLessThan(1_500);
+    if (count === 4)
+      expect(
+        Math.max(...placements.map((value) => value.slot)),
+      ).toBeLessThanOrEqual(DENSE_PRIMARY_SLOTS);
+    if (count === 10) {
+      expect(
+        Math.max(...placements.map((value) => value.slot)),
+      ).toBeLessThanOrEqual(DENSE_PRIMARY_SLOTS * 2);
+      expect(
+        Math.max(...placements.map((value) => homeDistance(value.origin))),
+      ).toBeLessThan(3_000);
+    }
+  }
+});
+
 test("stable Project identity placement ignores registration order", () => {
   const values = [project("alpha"), project("bravo"), project("charlie")];
-  const forward = placeProjects(values, grid);
-  const reverse = placeProjects([...values].reverse(), grid);
-  expect(reverse).toEqual(forward);
+  expect(placeProjects([...values].reverse(), grid)).toEqual(
+    placeProjects(values, grid),
+  );
 });
 
 test("an unrelated non-colliding Project does not reshuffle existing islands", () => {
-  const values = [project("alpha"), project("bravo"), project("charlie")];
+  const values = [project("alpha"), project("bravo")];
   const before = placeProjects(values, grid);
-  const after = placeProjects([...values, project("unrelated")], grid);
-  expect(after.filter((value) => value.project.id !== "unrelated")).toEqual(
+  const candidate = Array.from({ length: 100 }, (_, index) =>
+    project(`unrelated-${index}`),
+  ).find((value) => {
+    const after = placeProjects([...values, value], grid);
+    return after
+      .filter((placement) => placement.project.id !== value.id)
+      .every(
+        (placement, index) =>
+          JSON.stringify(placement) === JSON.stringify(before[index]),
+      );
+  });
+  expect(candidate).toBeDefined();
+  const after = placeProjects(
+    [...values, candidate as ReturnType<typeof project>],
+    grid,
+  );
+  expect(after.filter((value) => value.project.id !== candidate?.id)).toEqual(
     before,
   );
 });
 
-test("more than the former finite capacity receives unique non-overlapping placements", () => {
+test("more than the former finite capacity remains unique, unbounded, and fast", () => {
   const values = Array.from({ length: 700 }, (_, index) =>
     project(`scale-${String(index).padStart(4, "0")}`),
   );
   const originalProductData = structuredClone(values);
   const started = performance.now();
   const placements = placeProjects(values, grid);
-  const elapsed = performance.now() - started;
-  expect(elapsed).toBeLessThan(1_000);
+  expect(performance.now() - started).toBeLessThan(1_000);
   expect(placements).toHaveLength(values.length);
   expect(new Set(placements.map((value) => value.slot)).size).toBe(
     values.length,
@@ -47,35 +153,9 @@ test("more than the former finite capacity receives unique non-overlapping place
     new Set(placements.map((value) => `${value.origin.x}:${value.origin.y}`))
       .size,
   ).toBe(values.length);
-  expect(
-    placements.some((value) => value.origin.x === 0 && value.origin.y === 0),
-  ).toBe(false);
-
-  const islandBounds = placements.map((value) => ({
-    x: value.origin.x,
-    y: value.origin.y,
-    width: 256,
-    height: 192,
-  }));
-  const home = { x: 0, y: 0, width: 1_440, height: 800 };
-  const overlaps = (
-    a: (typeof islandBounds)[number],
-    b: (typeof islandBounds)[number],
-  ) =>
-    a.x < b.x + b.width &&
-    a.x + a.width > b.x &&
-    a.y < b.y + b.height &&
-    a.y + a.height > b.y;
-  expect(islandBounds.some((bounds) => overlaps(bounds, home))).toBe(false);
-  let projectOverlap = false;
-  for (const [index, bounds] of islandBounds.entries()) {
-    if (
-      islandBounds.slice(index + 1).some((other) => overlaps(bounds, other))
-    ) {
-      projectOverlap = true;
-      break;
-    }
-  }
-  expect(projectOverlap).toBe(false);
+  assertNoOverlaps(placements.map((value) => value.origin));
+  expect(Math.max(...placements.map((value) => value.slot))).toBeGreaterThan(
+    624,
+  );
   expect(values).toEqual(originalProductData);
 });

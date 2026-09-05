@@ -8,6 +8,7 @@ import type { ActiveCrewActivity } from "../world/crew/active-crew";
 import {
   crewDemoActivities,
   type CrewDemoScenario,
+  crewDemoTransitions,
 } from "../world/crew/crew-demo";
 import { projectCrewPresentation } from "../world/crew/crew-presentation";
 import { TownWorld, type TownStatusModel } from "../world/town-world";
@@ -27,6 +28,10 @@ const query = new URLSearchParams(location.search);
 const requestedScale = Number(query.get("scale"));
 const keepHomeFocused = query.get("camera") === "town" || query.get("camera") === "home";
 const requestedProjectFocus = query.get("focusProject");
+const requestedWorldFocus = import.meta.env.DEV && query.get("focusWorld") === "1";
+const requestedWorldDemoProjects = import.meta.env.DEV
+  ? Math.max(0, Math.min(50, Number(query.get("worldDemoProjects") ?? 0)))
+  : 0;
 const debugMap = import.meta.env.DEV && query.get("debugMap") === "1";
 const crewDemoScenarios = new Set<CrewDemoScenario>([
   "none",
@@ -36,6 +41,10 @@ const crewDemoScenarios = new Set<CrewDemoScenario>([
   "mining",
   "woodcutting",
   "parallel",
+  "short",
+  "sequential",
+  "parallel-tail",
+  "facing-fixture",
   "showcase",
 ]);
 const requestedCrewDemo = query.get("crewDemo") as CrewDemoScenario | null;
@@ -48,6 +57,13 @@ const demoActivities =
 const crewDemoTimeMs = demoActivities
   ? Math.max(0, Number(query.get("crewDemoTime") ?? 0))
   : undefined;
+const demoTransitions =
+  demoActivities && requestedCrewDemo
+    ? crewDemoTransitions(requestedCrewDemo).map((transition) => ({
+        atMs: transition.atMs,
+        crew: projectCrewPresentation(transition.activities),
+      }))
+    : [];
 const projectTemplateSelection =
   import.meta.env.DEV && query.get("worldTemplate") === "fixture"
     ? "reference-fixture"
@@ -56,9 +72,17 @@ const result = loadBundledWorldTemplates(projectTemplateSelection);
 const composer = result.templates ? new WorldComposer(result.templates) : null;
 $: effectiveActivities = demoActivities ?? activities;
 $: crew = projectCrewPresentation(effectiveActivities);
-$: projectIdentities = projects
-  .filter((project) => project.archived_at === null)
-  .map((project) => ({ id: project.id, key: project.key, name: project.name }));
+$: projectIdentities = requestedWorldDemoProjects
+  ? Array.from({ length: requestedWorldDemoProjects }, (_, index) => ({
+      id: `archipelago-demo-${index}`,
+      key: `project-${index * 17 + 3}`,
+      name: `Project ${index + 1}`,
+    }))
+  : demoActivities
+    ? []
+    : projects
+        .filter((project) => project.archived_at === null)
+        .map((project) => ({ id: project.id, key: project.key, name: project.name }));
 $: expansionProjectIds = new Set(
   query.get("worldFixture") === "expansion" && projectIdentities[0]
     ? [projectIdentities[0].id]
@@ -118,6 +142,7 @@ onMount(() => {
     {
       debugMap,
       ...(crewDemoTimeMs === undefined ? {} : { crewDemoTimeMs }),
+      ...(demoTransitions.length ? { crewDemoTransitions: demoTransitions } : {}),
       demoHoverFirst: demoActivities !== null && query.get("crewDemoHover") === "1",
     },
   );
@@ -127,6 +152,7 @@ onMount(() => {
     updatePanelBounds();
     if (selectedBuilding && !keepHomeFocused)
       world?.focusBuilding(selectedBuilding);
+    else if (requestedWorldFocus) world?.focusWorld();
     else if (requestedProjectFocus) {
       const projectId =
         requestedProjectFocus === "first"

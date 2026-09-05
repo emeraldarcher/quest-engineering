@@ -8,6 +8,7 @@ import {
   Sprite,
   Text,
   Texture,
+  TilingSprite,
 } from "pixi.js";
 import type { BuildingId } from "../state/app-store";
 import {
@@ -38,6 +39,12 @@ import {
   humanAnimationFrameAt,
   humanHairRoleForFrame,
 } from "./crew/human-v1-runtime";
+import {
+  oceanPresentation,
+  SUNNYSIDE_OCEAN_TILE_LOCAL_ID,
+  SUNNYSIDE_OCEAN_TILE_SIZE,
+  WORLD_PRESENTATION_LAYER_ORDER,
+} from "./rendering/ocean-background";
 import { regionIsVisible } from "./rendering/region-culling";
 import {
   allRuntimeAssets,
@@ -61,6 +68,10 @@ export interface TownWorldOptions {
   debugMap?: boolean;
   /** Development capture aid: advance once, then freeze CrewActor time. */
   crewDemoTimeMs?: number;
+  crewDemoTransitions?: ReadonlyArray<{
+    atMs: number;
+    crew: ActiveCrewPresentation[];
+  }>;
   demoHoverFirst?: boolean;
 }
 
@@ -98,6 +109,7 @@ const palette = {
 export class TownWorld {
   private app = new Application();
   private scene = new Container();
+  private oceanLayer = new Container();
   private regionLayer = new Container();
   private globalDebugLayer = new Container();
   private crewDebugLayer = new Container();
@@ -158,7 +170,7 @@ export class TownWorld {
     );
     await this.app.init({
       resizeTo: this.host,
-      background: "#cfe7bd",
+      background: "#168fc4",
       antialias: false,
       autoDensity: true,
       preference: "webgl",
@@ -190,7 +202,14 @@ export class TownWorld {
     );
     if (this.destroyed) return;
 
-    this.scene.addChild(this.regionLayer, this.globalDebugLayer);
+    this.oceanLayer.label = WORLD_PRESENTATION_LAYER_ORDER[0];
+    this.regionLayer.label = WORLD_PRESENTATION_LAYER_ORDER[1];
+    this.globalDebugLayer.label = WORLD_PRESENTATION_LAYER_ORDER[2];
+    this.scene.addChild(
+      this.oceanLayer,
+      this.regionLayer,
+      this.globalDebugLayer,
+    );
     this.globalDebugLayer.addChild(this.crewDebugLayer);
     this.app.stage.addChild(this.scene);
     this.rebuildRegions();
@@ -310,6 +329,15 @@ export class TownWorld {
     return true;
   }
 
+  focusWorld(): void {
+    this.cameraMode = "manual";
+    this.focusedBuilding = null;
+    this.focusedProjectId = null;
+    this.zoom = 1;
+    this.targetFocus = this.rectCenter(this.composition.worldBounds);
+    this.refreshHighlights();
+  }
+
   clearBuildingFocus(): void {
     this.focusedBuilding = null;
     this.refreshHighlights();
@@ -398,7 +426,7 @@ export class TownWorld {
     this.updateRegionCulling();
     if (this.options.crewDemoTimeMs === undefined)
       this.crewSystem.update(elapsed);
-    this.updateCrewViews();
+    this.syncCrewViews();
     if (this.options.debugMap && now >= this.nextCrewDebugUpdate) {
       this.nextCrewDebugUpdate = now + 250;
       this.updateCrewDebugOverlay();
@@ -484,6 +512,7 @@ export class TownWorld {
   private rebuildRegions(): void {
     for (const child of this.regionLayer.removeChildren())
       child.destroy({ children: true });
+    this.buildOceanBackground();
     this.renderedRegions.clear();
     this.crewViews.clear();
     this.labels.clear();
@@ -499,6 +528,36 @@ export class TownWorld {
     this.syncCrewViews();
     this.updateStatusMarker();
     if (this.options.debugMap) this.updateCrewDebugOverlay();
+  }
+
+  private buildOceanBackground(): void {
+    for (const child of this.oceanLayer.removeChildren()) child.destroy();
+    const ocean = oceanPresentation(this.composition.worldBounds);
+    const source = this.loaded.get(SunnysideAssets.terrain.world.url);
+    if (!source) return;
+    const localId = SUNNYSIDE_OCEAN_TILE_LOCAL_ID;
+    const textureKey = `world-ocean:${localId}`;
+    let texture = this.framed.get(textureKey);
+    if (!texture) {
+      texture = new Texture({
+        source: source.source,
+        frame: new Rectangle(
+          (localId % 64) * SUNNYSIDE_OCEAN_TILE_SIZE,
+          Math.floor(localId / 64) * SUNNYSIDE_OCEAN_TILE_SIZE,
+          SUNNYSIDE_OCEAN_TILE_SIZE,
+          SUNNYSIDE_OCEAN_TILE_SIZE,
+        ),
+      });
+      this.framed.set(textureKey, texture);
+    }
+    const sprite = new TilingSprite({
+      texture,
+      width: ocean.bounds.width,
+      height: ocean.bounds.height,
+    });
+    sprite.label = "sunnyside-repeating-ocean";
+    sprite.position.set(ocean.bounds.x, ocean.bounds.y);
+    this.oceanLayer.addChild(sprite);
   }
 
   private buildRegion(instance: WorldRegionInstance): void {
@@ -844,12 +903,26 @@ export class TownWorld {
       this.crewSystem.actors().length === 0
     )
       return;
-    let remaining = this.options.crewDemoTimeMs;
-    while (remaining > 0) {
-      const elapsed = Math.min(16, remaining);
-      this.crewSystem.update(elapsed);
-      remaining -= elapsed;
+    const targetTime = this.options.crewDemoTimeMs;
+    let cursor = 0;
+    const advance = (duration: number) => {
+      let remaining = duration;
+      while (remaining > 0) {
+        const elapsed = Math.min(16, remaining);
+        this.crewSystem.update(elapsed);
+        remaining -= elapsed;
+      }
+    };
+    for (const transition of [...(this.options.crewDemoTransitions ?? [])].sort(
+      (a, b) => a.atMs - b.atMs,
+    )) {
+      if (transition.atMs > targetTime) break;
+      advance(Math.max(0, transition.atMs - cursor));
+      cursor = transition.atMs;
+      this.crew = [...transition.crew];
+      this.crewSystem.reconcile(this.crew);
     }
+    advance(Math.max(0, targetTime - cursor));
     this.crewDemoApplied = true;
   }
 
@@ -1014,7 +1087,12 @@ export class TownWorld {
     }
     for (const zone of map.crewNavigation.activities) {
       if (zone.shape === "point")
-        drawPoint(zone.x, zone.y, 0xe879f9, `crew:${zone.activity}:${zone.id}`);
+        drawPoint(
+          zone.x,
+          zone.y,
+          0xe879f9,
+          `crew:${zone.activity}:${zone.id}:facing=${zone.facing ?? "fallback"}`,
+        );
       else {
         const graphic = new Graphics()
           .rect(zone.x, zone.y, zone.width, zone.height)
@@ -1071,8 +1149,9 @@ export class TownWorld {
     for (const island of this.composition.projectIslands.values())
       this.buildProjectDebug(island);
     const home = this.composition.home.worldBounds;
+    const ocean = oceanPresentation(this.composition.worldBounds);
     const summary = this.worldText(
-      `archipelago · ${this.composition.regions.length} regions · ${this.composition.projectIslands.values().length} Project islands · ${this.crew.length} active crew`,
+      `archipelago · ${this.composition.regions.length} regions · ${this.composition.projectIslands.values().length} Project islands · ${this.crew.length} authoritative active crew\nocean ${ocean.bounds.x},${ocean.bounds.y},${ocean.bounds.width},${ocean.bounds.height} · ${ocean.tileSize}px repeat · ${ocean.displayObjects} TilingSprite/${ocean.textureInstances} texture · ${ocean.estimatedVisibleTiles} virtual tiles`,
       5,
       0x5eead4,
     );
@@ -1096,8 +1175,14 @@ export class TownWorld {
             `${category}:${values.filter((activity) => activity.activity === category).length}`,
         )
         .join(", ");
+    const homeCenter = this.rectCenter(this.composition.home.worldBounds);
+    const islandCenter = this.rectCenter(island.bounds);
+    const homeDistance = Math.round(
+      Math.hypot(islandCenter.x - homeCenter.x, islandCenter.y - homeCenter.y),
+    );
     const lines = [
-      `Project island ${island.project.key}`,
+      `Project island ${island.project.key} · slot ${island.placementSlot} · Home distance ${homeDistance}`,
+      `footprint ${island.bounds.width}x${island.bounds.height}`,
       `${island.regionIds.length} regions · expansions: ${island.attachments.map((attachment) => attachment.instance.instanceId).join(", ") || "none"}`,
       `spawns:${island.crewNavigation.spawns.length} · routes ${graph.nodes.length}n/${graph.edges.length}e/${crewRouteComponents(graph).length}c`,
       `districts:${districts.length} ${categories(districts)}`,
@@ -1127,18 +1212,22 @@ export class TownWorld {
       const dot = new Graphics()
         .circle(position.x, position.y, 2)
         .fill(actor.activity.squadAccentColor);
-      const claim =
-        actor.claim.slot.kind === "exact-anchor"
+      const claim = actor.claim
+        ? actor.claim.slot.kind === "exact-anchor"
           ? `exact:${actor.claim.slot.zoneId}`
-          : `district:${actor.claim.slot.zoneId}`;
+          : `district:${actor.claim.slot.zoneId}`
+        : "claim:none";
+      const departure = actor.departureTarget
+        ? `${actor.departureTarget.x.toFixed(1)},${actor.departureTarget.y.toFixed(1)}`
+        : "none";
       const actorText = this.worldText(
-        `${actor.activity.memberName} · ${actor.activity.projectKey}\nActor ${actor.actorId}\nRun ${actor.activity.runId} · Member ${actor.activity.memberKey}\n${actor.state} · ${actor.activityCategory} · ${claim}\nlane ${actor.laneOffset} · target ${actor.destination.x.toFixed(1)},${actor.destination.y.toFixed(1)}\npath ${actor.pathIndex}/${actor.path.length} · #${actor.activity.squadAccentColor.toString(16).padStart(6, "0")} · ${actor.animationTag}${actor.mirrorX ? " mirrored" : ""}`,
+        `${actor.activity.memberName} · ${actor.activity.projectKey}\nActor ${actor.actorId}\nRun ${actor.activity.runId} · Member ${actor.activity.memberKey}\nauthoritativeRunning:${actor.authoritativeRunning} · presentationState:${actor.state}\n${actor.activityCategory} · ${claim} · facing:${actor.facing}\nworkFacing:${actor.workFacingSource} · animation:${actor.animationTag}${actor.mirrorX ? " mirrored" : ""}\nlane ${actor.laneOffset} · target ${actor.destination.x.toFixed(1)},${actor.destination.y.toFixed(1)} · departure:${departure}\npath ${actor.pathIndex}/${actor.path.length} · age:${Math.round(actor.presentationAgeMs)}ms · min-work:${Math.round(this.crewSystem.minimumWorkRemaining(actor))}ms · #${actor.activity.squadAccentColor.toString(16).padStart(6, "0")}`,
         4,
         actor.activity.squadAccentColor,
       );
       actorText.position.set(
         island.bounds.x + 4,
-        island.bounds.y + 58 + index * 34,
+        island.bounds.y + 68 + index * 46,
       );
       this.crewDebugLayer.addChild(dot, actorText);
     }

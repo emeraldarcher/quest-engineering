@@ -53,16 +53,16 @@ describe("production Project-island CrewActor runtime", () => {
     const actors = system.actors();
     expect(actors).toHaveLength(24);
     const exact = actors.filter(
-      (actor) => actor.claim.slot.kind === "exact-anchor",
+      (actor) => actor.claim?.slot.kind === "exact-anchor",
     );
     expect(exact).toHaveLength(4);
-    expect(new Set(exact.map((actor) => actor.claim.slot.id)).size).toBe(4);
+    expect(new Set(exact.map((actor) => actor.claim?.slot.id)).size).toBe(4);
     expect(
       actors.every(
         (actor) =>
           actor.path.length >= 2 &&
           actor.path[0]?.x !== undefined &&
-          actor.destination.x === actor.claim.slot.x,
+          actor.destination.x === actor.claim?.slot.x,
       ),
     ).toBe(true);
   });

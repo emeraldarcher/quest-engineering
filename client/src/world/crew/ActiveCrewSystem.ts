@@ -9,29 +9,43 @@ import {
   type CrewActivityClaim,
 } from "./CrewActivityAllocator";
 import { findCrewPath } from "./CrewNavigation";
+import {
+  type CrewWorkFacingSource,
+  crewFacingMirrorsWork,
+  crewIdleVisual,
+  crewWalkingVisual,
+  crewWorkFacing,
+} from "./crew-facing";
 import type { ActiveCrewPresentation } from "./crew-presentation";
+import {
+  CREW_PRESENTATION_TIMING,
+  CREW_WALK_SPEED,
+} from "./crew-presentation-timing";
 import {
   type HumanAppearance,
   type HumanV1Animation,
+  type HumanVisualDirection,
   humanAppearance,
-  humanDirectionalAnimation,
   humanWorkAnimation,
 } from "./human-v1-runtime";
 
 export type CrewActorPresentationState =
-  | "spawn"
+  | "entering"
   | "walking_to_activity"
   | "relocating"
-  | "working";
+  | "working"
+  | "wrapping_up"
+  | "departing";
 
 export interface CrewActor {
   actorId: string;
   activity: ActiveCrewPresentation;
   projectId: string;
   islandRegionId: string;
+  authoritativeRunning: boolean;
   state: CrewActorPresentationState;
   activityCategory: CrewActivityCategory;
-  claim: CrewActivityClaim;
+  claim: CrewActivityClaim | null;
   position: TownPoint;
   destination: TownPoint;
   path: TownPoint[];
@@ -41,7 +55,14 @@ export interface CrewActor {
   animation: HumanV1Animation;
   animationTag: string;
   mirrorX: boolean;
+  facing: HumanVisualDirection;
+  workFacingSource: CrewWorkFacingSource;
   animationElapsedMs: number;
+  presentationAgeMs: number;
+  workElapsedMs: number;
+  wrapElapsedMs: number;
+  inactiveElapsedMs: number;
+  departureTarget: TownPoint | null;
 }
 
 interface IslandAllocator {
@@ -49,7 +70,6 @@ interface IslandAllocator {
   allocator: CrewActivityAllocator;
 }
 
-const WALK_SPEED = 22;
 const LANE_OFFSETS = [-1.5, -0.5, 0.5, 1.5] as const;
 
 function distance(a: TownPoint, b: TownPoint): number {
@@ -63,7 +83,7 @@ function navigationSignature(island: ProjectIslandInstance): string {
     ),
     ...island.crewNavigation.activities.map(
       (value) =>
-        `${value.id}:${value.activity}:${value.x}:${value.y}:${value.width}:${value.height}`,
+        `${value.id}:${value.activity}:${value.x}:${value.y}:${value.width}:${value.height}:${value.facing ?? ""}`,
     ),
     ...island.crewNavigation.graph.edges.map((value) => value.id),
   ].join("|");
@@ -90,75 +110,80 @@ export class ActiveCrewSystem {
 
   reconcile(active: readonly ActiveCrewPresentation[]): void {
     const desired = new Map(active.map((value) => [value.actorId, value]));
-    for (const actorId of this.actorsById.keys()) {
-      if (desired.has(actorId)) continue;
-      this.release(actorId);
+    for (const actor of this.actorsById.values()) {
+      if (desired.has(actor.actorId) || !actor.authoritativeRunning) continue;
+      this.beginPresentationTail(actor);
     }
     for (const activity of [...desired.values()].sort((a, b) =>
       a.actorId.localeCompare(b.actorId),
     )) {
       const existing = this.actorsById.get(activity.actorId);
-      if (!existing) this.spawn(activity);
-      else if (
+      if (!existing) {
+        this.spawn(activity);
+        continue;
+      }
+      const changed =
         existing.activity.activityId !== activity.activityId ||
         existing.activityCategory !== activity.activityCategory ||
-        existing.projectId !== activity.projectId
-      )
-        this.relocate(existing, activity);
+        existing.projectId !== activity.projectId;
+      const wasRunning = existing.authoritativeRunning;
+      existing.authoritativeRunning = true;
+      existing.inactiveElapsedMs = 0;
+      if (changed || !wasRunning) this.relocate(existing, activity);
       else existing.activity = activity;
     }
-    for (const island of this.composition.projectIslands.values()) {
-      const activeIds = new Set(
-        active
-          .filter((value) => value.projectId === island.project.id)
-          .map((value) => value.actorId),
-      );
-      this.allocatorFor(island).reconcile(activeIds);
-    }
+    const claimed = new Set(
+      this.actors()
+        .filter((actor) => actor.claim)
+        .map((actor) => actor.actorId),
+    );
+    for (const island of this.composition.projectIslands.values())
+      this.allocatorFor(island).reconcile(claimed);
   }
 
   update(elapsedMs: number): void {
-    const seconds = Math.min(0.1, Math.max(0, elapsedMs / 1000));
-    for (const actor of this.actorsById.values()) {
-      actor.animationElapsedMs += elapsedMs;
-      if (actor.state === "spawn") actor.state = "walking_to_activity";
-      if (actor.state === "working") continue;
-      let remaining = WALK_SPEED * seconds;
-      while (remaining > 0 && actor.pathIndex < actor.path.length) {
-        const target = actor.path[actor.pathIndex] as TownPoint;
-        const length = distance(actor.position, target);
-        if (length <= remaining || length < 0.001) {
-          actor.position = { ...target };
-          actor.pathIndex += 1;
-          remaining -= length;
-          continue;
-        }
-        const amount = remaining / length;
-        const movement = {
-          x: (target.x - actor.position.x) * amount,
-          y: (target.y - actor.position.y) * amount,
-        };
-        actor.position = {
-          x: actor.position.x + movement.x,
-          y: actor.position.y + movement.y,
-        };
-        this.setWalkingAnimation(actor, movement);
-        remaining = 0;
+    const milliseconds = Math.min(100, Math.max(0, elapsedMs));
+    const seconds = milliseconds / 1000;
+    for (const actor of [...this.actorsById.values()]) {
+      actor.animationElapsedMs += milliseconds;
+      actor.presentationAgeMs += milliseconds;
+      if (!actor.authoritativeRunning) actor.inactiveElapsedMs += milliseconds;
+
+      if (actor.state === "entering") actor.state = "walking_to_activity";
+      if (
+        actor.state === "walking_to_activity" ||
+        actor.state === "relocating"
+      ) {
+        if (this.advancePath(actor, CREW_WALK_SPEED * seconds))
+          this.beginWorking(actor);
+        continue;
       }
-      if (actor.pathIndex >= actor.path.length) {
-        actor.position = { ...actor.destination };
-        actor.state = "working";
-        this.setAnimation(
-          actor,
-          humanWorkAnimation(actor.activity.workAnimationTag),
-          false,
-        );
-      } else {
-        const target = actor.path[actor.pathIndex] as TownPoint;
-        this.setWalkingAnimation(actor, {
-          x: target.x - actor.position.x,
-          y: target.y - actor.position.y,
-        });
+      if (actor.state === "working") {
+        actor.workElapsedMs += milliseconds;
+        continue;
+      }
+      if (actor.state === "wrapping_up") {
+        if (actor.workElapsedMs < CREW_PRESENTATION_TIMING.minimumWorkMs) {
+          actor.workElapsedMs += milliseconds;
+        } else {
+          actor.wrapElapsedMs += milliseconds;
+          this.setIdleAnimation(actor);
+          if (actor.wrapElapsedMs >= CREW_PRESENTATION_TIMING.wrapUpMs)
+            this.beginDeparture(actor);
+        }
+        continue;
+      }
+      if (actor.state === "departing") {
+        const arrived = this.advancePath(actor, CREW_WALK_SPEED * seconds);
+        if (arrived) this.setIdleAnimation(actor);
+        if (
+          actor.inactiveElapsedMs >=
+            CREW_PRESENTATION_TIMING.maximumDepartureMs ||
+          (arrived &&
+            actor.presentationAgeMs >=
+              CREW_PRESENTATION_TIMING.minimumVisibleMs)
+        )
+          this.remove(actor.actorId);
       }
     }
   }
@@ -173,9 +198,17 @@ export class ActiveCrewSystem {
     return this.actorsById.get(actorId) ?? null;
   }
 
+  minimumWorkRemaining(actor: CrewActor): number {
+    return Math.max(
+      0,
+      CREW_PRESENTATION_TIMING.minimumWorkMs - actor.workElapsedMs,
+    );
+  }
+
   renderPosition(actor: CrewActor): TownPoint {
     if (
       actor.state === "working" ||
+      actor.state === "wrapping_up" ||
       actor.pathIndex <= 0 ||
       actor.pathIndex >= actor.path.length - 1
     )
@@ -209,13 +242,14 @@ export class ActiveCrewSystem {
       start: position,
       destination: claim.slot,
     }) ?? [position];
-    const walking = humanDirectionalAnimation("walk", this.initialVector(path));
+    const walking = crewWalkingVisual(this.initialVector(path));
     this.actorsById.set(activity.actorId, {
       actorId: activity.actorId,
       activity,
       projectId: activity.projectId,
       islandRegionId: this.regionForClaim(island, claim),
-      state: "spawn",
+      authoritativeRunning: true,
+      state: "entering",
       activityCategory: activity.activityCategory,
       claim,
       position,
@@ -230,18 +264,24 @@ export class ActiveCrewSystem {
       animation: walking.animation,
       animationTag: walking.animation.tag,
       mirrorX: walking.mirrorX,
+      facing: walking.facing,
+      workFacingSource: "default",
       animationElapsedMs: 0,
+      presentationAgeMs: 0,
+      workElapsedMs: 0,
+      wrapElapsedMs: 0,
+      inactiveElapsedMs: 0,
+      departureTarget: null,
     });
   }
 
   private relocate(actor: CrewActor, activity: ActiveCrewPresentation): void {
-    const oldProject = actor.projectId;
-    this.allocators.get(oldProject)?.allocator.release(actor.actorId);
+    this.releaseClaim(actor);
     const island = this.composition.projectIslands.findProjectIsland(
       activity.projectId,
     );
     if (!island) {
-      this.actorsById.delete(actor.actorId);
+      this.remove(actor.actorId);
       return;
     }
     const claim = this.allocatorFor(island).claim(
@@ -250,7 +290,7 @@ export class ActiveCrewSystem {
       activity.runId,
     );
     if (!claim) {
-      this.actorsById.delete(actor.actorId);
+      this.remove(actor.actorId);
       return;
     }
     const path = findCrewPath(island.crewNavigation.graph, {
@@ -260,14 +300,109 @@ export class ActiveCrewSystem {
     actor.activity = activity;
     actor.projectId = activity.projectId;
     actor.islandRegionId = this.regionForClaim(island, claim);
+    actor.authoritativeRunning = true;
     actor.activityCategory = activity.activityCategory;
     actor.claim = claim;
     actor.destination = { x: claim.slot.x, y: claim.slot.y };
     actor.path = path ?? [actor.position];
     actor.pathIndex = Math.min(1, actor.path.length);
     actor.state = "relocating";
-    actor.animationElapsedMs = 0;
+    actor.workElapsedMs = 0;
+    actor.wrapElapsedMs = 0;
+    actor.inactiveElapsedMs = 0;
+    actor.departureTarget = null;
     this.setWalkingAnimation(actor, this.initialVector(actor.path));
+  }
+
+  private beginWorking(actor: CrewActor): void {
+    actor.position = { ...actor.destination };
+    actor.state = "working";
+    actor.workElapsedMs = 0;
+    const workFacing = crewWorkFacing(
+      actor.claim?.slot.facing ?? null,
+      actor.facing,
+    );
+    actor.facing = workFacing.facing;
+    actor.workFacingSource = workFacing.source;
+    this.setAnimation(
+      actor,
+      humanWorkAnimation(actor.activity.workAnimationTag),
+      crewFacingMirrorsWork(actor.facing),
+    );
+  }
+
+  private beginPresentationTail(actor: CrewActor): void {
+    actor.authoritativeRunning = false;
+    actor.inactiveElapsedMs = 0;
+    actor.wrapElapsedMs = 0;
+    if (actor.state === "working") {
+      actor.state = "wrapping_up";
+      return;
+    }
+    if (actor.state === "wrapping_up" || actor.state === "departing") return;
+    this.beginDeparture(actor);
+  }
+
+  private beginDeparture(actor: CrewActor): void {
+    const island = this.composition.projectIslands.findProjectIsland(
+      actor.projectId,
+    );
+    this.releaseClaim(actor);
+    const spawn = island
+      ? [...island.crewNavigation.spawns].sort(
+          (a, b) =>
+            distance(actor.position, a) - distance(actor.position, b) ||
+            a.id.localeCompare(b.id),
+        )[0]
+      : null;
+    actor.state = "departing";
+    actor.departureTarget = spawn ? { x: spawn.x, y: spawn.y } : null;
+    actor.destination = actor.departureTarget ?? { ...actor.position };
+    actor.path =
+      spawn && island
+        ? (findCrewPath(island.crewNavigation.graph, {
+            start: actor.position,
+            destination: spawn,
+          }) ?? [actor.position])
+        : [actor.position];
+    actor.pathIndex = Math.min(1, actor.path.length);
+    this.setWalkingAnimation(actor, this.initialVector(actor.path));
+  }
+
+  private advancePath(actor: CrewActor, distanceBudget: number): boolean {
+    let remaining = distanceBudget;
+    while (remaining > 0 && actor.pathIndex < actor.path.length) {
+      const target = actor.path[actor.pathIndex] as TownPoint;
+      const vector = {
+        x: target.x - actor.position.x,
+        y: target.y - actor.position.y,
+      };
+      const length = Math.hypot(vector.x, vector.y);
+      if (length <= remaining || length < 0.001) {
+        this.setWalkingAnimation(actor, vector);
+        actor.position = { ...target };
+        actor.pathIndex += 1;
+        remaining -= length;
+        continue;
+      }
+      this.setWalkingAnimation(actor, vector);
+      const amount = remaining / length;
+      actor.position = {
+        x: actor.position.x + vector.x * amount,
+        y: actor.position.y + vector.y * amount,
+      };
+      remaining = 0;
+    }
+    if (actor.pathIndex >= actor.path.length) {
+      actor.position = { ...actor.destination };
+      return true;
+    }
+    const target = actor.path[actor.pathIndex] as TownPoint;
+    this.setWalkingAnimation(actor, {
+      x: target.x - actor.position.x,
+      y: target.y - actor.position.y,
+    });
+    return false;
   }
 
   private regionForClaim(
@@ -294,10 +429,16 @@ export class ActiveCrewSystem {
     return allocator;
   }
 
-  private release(actorId: string): void {
+  private releaseClaim(actor: CrewActor): void {
+    if (!actor.claim) return;
+    this.allocators.get(actor.projectId)?.allocator.release(actor.actorId);
+    actor.claim = null;
+  }
+
+  private remove(actorId: string): void {
     const actor = this.actorsById.get(actorId);
     if (!actor) return;
-    this.allocators.get(actor.projectId)?.allocator.release(actorId);
+    this.releaseClaim(actor);
     this.actorsById.delete(actorId);
   }
 
@@ -308,7 +449,13 @@ export class ActiveCrewSystem {
   }
 
   private setWalkingAnimation(actor: CrewActor, vector: TownPoint): void {
-    const visual = humanDirectionalAnimation("walk", vector);
+    const visual = crewWalkingVisual(vector, actor.facing);
+    actor.facing = visual.facing;
+    this.setAnimation(actor, visual.animation, visual.mirrorX);
+  }
+
+  private setIdleAnimation(actor: CrewActor): void {
+    const visual = crewIdleVisual(actor.facing);
     this.setAnimation(actor, visual.animation, visual.mirrorX);
   }
 

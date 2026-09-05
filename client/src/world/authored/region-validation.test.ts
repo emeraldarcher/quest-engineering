@@ -59,6 +59,11 @@ test("Project-island profile requires and parses local crew semantics", async ()
       (zone) => zone.activity === "general",
     ),
   ).toBe(true);
+  expect(
+    region.crewNavigation.activities.find(
+      (activity) => activity.id === "fixture-research-anchor",
+    )?.facing,
+  ).toBe("east");
   expect(region.islandSockets[0]).toMatchObject({
     role: "outbound",
     edge: "fixture-footbridge",
@@ -83,6 +88,72 @@ test("Project-island validation rejects a missing general district", async () =>
   expect(
     issues(map, resources, mapPath, "project_island").some((issue) =>
       issue.includes("general crew_activity fallback"),
+    ),
+  ).toBe(true);
+});
+
+test("optional qeFacing is parsed only for exact activity anchors", async () => {
+  const { map, resources, mapPath } = await fixture(
+    "project-island-fixture.tmj",
+  );
+  const layer = map.layers.find(
+    (value) => value.name === "Crew Activity Zones",
+  );
+  if (!layer || layer.type !== "objectgroup")
+    throw new Error("Missing fixture layer");
+  const point = layer.objects.find((object) => object.point === true);
+  if (!point) throw new Error("Missing exact fixture anchor");
+  point.properties = [
+    ...(point.properties ?? []).filter(
+      (property) => property.name !== "qeFacing",
+    ),
+    { name: "qeFacing", type: "string", value: "west" },
+  ];
+  const region = parseAuthoredWorldRegion(
+    map,
+    resources,
+    mapPath,
+    "project_island",
+  );
+  expect(
+    region.crewNavigation.activities.find(
+      (activity) => activity.id === point.name,
+    )?.facing,
+  ).toBe("west");
+
+  const rectangle = layer.objects.find((object) => !object.point);
+  if (!rectangle) throw new Error("Missing fixture district");
+  rectangle.properties = [
+    ...(rectangle.properties ?? []),
+    { name: "qeFacing", type: "string", value: "north" },
+  ];
+  expect(
+    issues(map, resources, mapPath, "project_island").some((issue) =>
+      issue.includes("valid only on point-shaped exact anchors"),
+    ),
+  ).toBe(true);
+});
+
+test("invalid qeFacing receives an actionable diagnostic", async () => {
+  const { map, resources, mapPath } = await fixture(
+    "project-island-fixture.tmj",
+  );
+  const layer = map.layers.find(
+    (value) => value.name === "Crew Activity Zones",
+  );
+  if (!layer || layer.type !== "objectgroup")
+    throw new Error("Missing fixture layer");
+  const point = layer.objects.find((object) => object.point === true);
+  if (!point) throw new Error("Missing exact fixture anchor");
+  point.properties = [
+    ...(point.properties ?? []).filter(
+      (property) => property.name !== "qeFacing",
+    ),
+    { name: "qeFacing", type: "string", value: "sideways" },
+  ];
+  expect(
+    issues(map, resources, mapPath, "project_island").some((issue) =>
+      issue.includes("qeFacing must be north, south, east, or west"),
     ),
   ).toBe(true);
 });

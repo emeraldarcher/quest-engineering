@@ -72,6 +72,7 @@ test("rectangle activity areas connect when a route segment crosses the zone", (
       id: "work",
       activity: "general",
       shape: "rectangle",
+      facing: null,
       x: 18,
       y: 8,
       width: 4,

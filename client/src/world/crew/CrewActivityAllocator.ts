@@ -5,6 +5,7 @@ import {
 import type {
   AuthoredCrewActivity,
   CrewActivityCategory,
+  CrewFacing,
   CrewRouteGraph,
   TownPoint,
 } from "../authored/map-schema";
@@ -15,6 +16,7 @@ export interface CrewActivitySlot extends TownPoint {
   zoneId: string;
   activity: CrewActivityCategory;
   kind: "exact-anchor" | "district";
+  facing: CrewFacing | null;
 }
 
 export interface CrewActivityClaim {
@@ -37,6 +39,7 @@ export function activitySlots(
         zoneId: zone.id,
         activity: zone.activity,
         kind: "exact-anchor",
+        facing: zone.facing,
         x: zone.x,
         y: zone.y,
       },
@@ -50,6 +53,7 @@ export function activitySlots(
     zoneId: zone.id,
     activity: zone.activity,
     kind: "district" as const,
+    facing: null,
     x: zone.x + xStep * ((index % columns) + 0.5),
     y: zone.y + yStep * (Math.floor(index / columns) + 0.5),
   }));
@@ -80,6 +84,7 @@ export class CrewActivityAllocator {
               zoneId: zone.id,
               activity: zone.activity,
               kind: "district" as const,
+              facing: null,
               ...connection.point,
             },
           ]

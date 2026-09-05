@@ -26,7 +26,9 @@ import {
   type AuthoredWorkstation,
   type AuthoredWorldRegion,
   CREW_ACTIVITY_CATEGORIES,
+  CREW_FACINGS,
   type CrewActivityCategory,
+  type CrewFacing,
   type IslandSocketOrientation,
   type IslandSocketRole,
   type PanelSide,
@@ -75,6 +77,7 @@ const ISLAND_REQUIRED_TILE_LAYERS = [
 ] as const;
 const ALLOWED_QE_PROPERTIES = new Set([
   "qeActivity",
+  "qeFacing",
   "qeGroup",
   "qeLabel",
   "qeLocation",
@@ -698,6 +701,15 @@ export function parseAuthoredWorldRegion(
         `crew_activity '${object.name}' has unknown qeActivity '${activity}'. Use ${CREW_ACTIVITY_CATEGORIES.join(", ")}.`,
       );
     const point = object.point === true;
+    const facing = propertyOptionalString(object, "qeFacing");
+    if (facing && !CREW_FACINGS.includes(facing as CrewFacing))
+      issues.push(
+        `crew_activity '${object.name}' qeFacing must be north, south, east, or west`,
+      );
+    if (facing && !point)
+      issues.push(
+        `crew_activity '${object.name}' qeFacing is valid only on point-shaped exact anchors`,
+      );
     const width = object.width ?? 0;
     const height = object.height ?? 0;
     if (!point && (width <= 0 || height <= 0))
@@ -708,6 +720,7 @@ export function parseAuthoredWorldRegion(
       id: object.name,
       activity: activity as CrewActivityCategory,
       shape: point ? "point" : "rectangle",
+      facing: point && facing ? (facing as CrewFacing) : null,
       x: object.x,
       y: object.y,
       width: point ? 0 : width,

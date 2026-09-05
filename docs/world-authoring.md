@@ -82,8 +82,11 @@ All coordinates below are local to the reusable Project template.
 6. Add uniquely named point or rectangle `crew_activity` objects with
    `qeActivity` equal to `general`, `crafting`, `research`, `mining`,
    `woodcutting`, or `digging`.
-7. Provide at least one large `general` district.
-8. Keep entrances and activity geometry within **8 local pixels** of the route
+7. Exact point-shaped activities may optionally set `qeFacing` to `north`,
+   `south`, `east`, or `west`. It is authoritative presentation metadata while
+   working. Do not set it on rectangle districts.
+8. Provide at least one large `general` district.
+9. Keep entrances and activity geometry within **8 local pixels** of the route
    graph.
 
 A rectangle is a shared district. Runtime derives ephemeral positions from its
@@ -132,14 +135,17 @@ procedural generation.
 ## Deterministic placement and visual demand
 
 Project identity comes from the stable Product Workspace ID/key. Its hash
-chooses a first-band bucket in a sparse square spiral around reserved Home slot
-zero. Projects sharing a bucket advance through that bucket's lazily generated,
-unbounded sequence of later spiral bands after stable identity sorting. There
-is no finite island-slot pool or Product-visible layout maximum. Registration
-order and Quest/Run order have no effect; adding a Project from another bucket
-moves no existing island. Grid cell dimensions derive from authored Home and
-maximum composed Project bounds plus a 256-pixel gutter. No coordinates are
-persisted.
+chooses one of eight nearby first-ring slots around reserved Home slot zero.
+Deterministic probing fills free positions in the current square-spiral ring
+before expanding into another lazy, unbounded ring. Registration and Quest/Run
+order have no effect; only a colliding probe chain can affect a later identity.
+There is no finite island-slot pool or Product-visible layout maximum.
+
+Placement uses actual composed Project bounds. The gap between footprints is a
+64-pixel ocean gutter plus 48 pixels of future expansion reserve on each side
+(160 pixels total). First-ring centers sit immediately beyond Home by that
+clearance; later rings add one Project footprint plus the same clearance, not a
+Home-sized sparse grid cell. No coordinates are persisted.
 
 Comfortable visual capacity is measured from exact points plus rectangle-derived
 positions. It may later inform expansion presentation only. The architecture
@@ -159,8 +165,11 @@ Project islands and invoke the same focus API; no minimap is implemented yet.
 Use `?debugMap=1&focusProject=first` to inspect the production region
 bounds/kind/template, Project identity, local/world origins, sockets, route
 graphs, activity counts, expansions, active actors, and active Runs. Each actor
-reports presentation state, category, route, lane offset, target, exact/district
-claim, Squad accent, and Human v1 animation tag. Add
+reports authoritative-running separately from presentation state, facing and
+its source, animation, route, lane offset, target/departure target, claim,
+presentation age, minimum-work remainder, and Squad accent. World diagnostics
+include placement slot, Home-relative distance, footprint, and the repeating
+ocean bounds/tile statistics. Add
 `&worldFixture=expansion` only together with `&worldTemplate=fixture` to inspect
 the plain reference expansion. The reference expansion is never registered in
 the normal production world.
@@ -171,8 +180,20 @@ Only authoritative bound running Steps create CrewActors. A new actor appears
 at its Project island `crew_spawn`, follows that island's shortest authored
 route, and then plays an exported Human v1 work action at a temporary claim.
 Exact points are exclusive; rectangles generate comfortably spaced positions,
-and general district overflow remains presentation-only. Ending authoritative
-work immediately releases the claim and removes the actor.
+and general district overflow remains presentation-only.
+
+When semantic work ends, Product/HUD activity becomes inactive immediately.
+The actor may remain briefly as a presentation-only tail: working actors wrap
+up, then route to the nearest authored spawn; actors still entering cancel the
+work destination and depart. Minimum visible/work and bounded departure timing
+live together in `crew-presentation-timing.ts`. Consecutive work for the same
+Run+Member reuses the existing actor. Presentation never delays execution.
+
+Movement facing is derived from the current route vector. Exact `qeFacing`
+overrides work facing; otherwise the final approach is retained, with south as
+the deterministic last fallback. The Human work tags are non-directional, so
+west-facing actions use legitimate horizontal mirroring while north/south retain
+the authored conceptual facing without fabricated strips.
 
 Activity interpretation is centralized in
 `client/src/world/crew/crew-activity-policy.ts`. Project comes from the Run's
@@ -189,6 +210,7 @@ Development-only deterministic review states use `crewDemo` and
 ?crewDemo=showcase&crewDemoTime=12000&focusProject=crew-demo-b
 ```
 
-Run `bun run --cwd client screenshots:crew-checkpoint-c` with the Vite server
-available to regenerate the Checkpoint C visual sequence. These demo facts
-never replace authoritative activity outside explicit development queries.
+Run `bun run --cwd client screenshots:crew-polish-ux` with the Vite server
+available to regenerate the dense placement, ocean, directional movement, and
+short-task lifecycle sequences. These demo facts never replace authoritative
+activity outside explicit development queries.

@@ -30,6 +30,7 @@ export interface RunWorkGroup {
 export interface ProjectIslandInstance {
   project: RegionProjectIdentity;
   baseRegionId: string;
+  placementSlot: number;
   regionIds: string[];
   bounds: TownRect;
   crewNavigation: AuthoredCrewNavigation;
@@ -214,6 +215,7 @@ export class WorldComposer {
       islands.push({
         project: placement.project,
         baseRegionId: base.instanceId,
+        placementSlot: placement.slot,
         regionIds: islandRegions.map((region) => region.instanceId),
         bounds: unionWorldBounds(
           islandRegions.map((region) => region.worldBounds),

@@ -125,15 +125,14 @@ export function closestHumanDirection(vector: {
   })[0];
 }
 
-export function humanDirectionalAnimation(
+export function humanDirectionalAnimationForDirection(
   family: "idle" | "walk" | "run",
-  vector: { x: number; y: number },
+  direction: HumanVisualDirection,
 ): {
   animation: HumanV1Animation;
   direction: HumanVisualDirection;
   mirrorX: boolean;
 } {
-  const direction = closestHumanDirection(vector);
   const visual = HumanV1.directionalFamilies[family]?.[direction];
   if (!visual?.animationId)
     throw new Error(
@@ -144,6 +143,16 @@ export function humanDirectionalAnimation(
     direction,
     mirrorX: visual.mirrorX,
   };
+}
+
+export function humanDirectionalAnimation(
+  family: "idle" | "walk" | "run",
+  vector: { x: number; y: number },
+) {
+  return humanDirectionalAnimationForDirection(
+    family,
+    closestHumanDirection(vector),
+  );
 }
 
 export function humanAnimationFrameAt(
