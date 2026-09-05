@@ -60,6 +60,9 @@ defmodule QuestEngineering.Server.SchedulingStore do
       {:ok, {:waiting, waits}} ->
         {:waiting, waits}
 
+      {:error, %Error{temporary: true} = wait} ->
+        {:waiting, [wait]}
+
       {:error, %Error{} = error} ->
         {:error, error}
 
@@ -125,7 +128,15 @@ defmodule QuestEngineering.Server.SchedulingStore do
              }
            ),
          {:ok, worker, slot} <- select_worker(execution, assignment, action, context) do
-      {:ok, %{member: member, context: context, execution: execution, worker: worker, slot: slot}}
+      {:ok,
+       %{
+         squad_id: snapshot.squad.id,
+         member: member,
+         context: context,
+         execution: execution,
+         worker: worker,
+         slot: slot
+       }}
     end
   end
 
@@ -137,7 +148,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
        ) do
     case existing_member_binding(action) do
       %OccurrenceMemberBinding{} = binding -> member_by_key(snapshot, action, binding.member_key)
-      nil -> first_available_class_member(snapshot, action.run_id, class_key)
+      nil -> first_available_class_member(snapshot, action, class_key)
     end
   end
 
@@ -183,12 +194,19 @@ defmodule QuestEngineering.Server.SchedulingStore do
         occurrence_id: action.occurrence_id
       )
 
-  defp first_available_class_member(snapshot, run_id, class_key) do
+  defp first_available_class_member(snapshot, action, class_key) do
     members = Enum.filter(snapshot.squad.members, &(&1.class.key == class_key))
 
-    case Enum.find(members, &(not member_occupied?(run_id, &1.key))) do
-      nil -> {:waiting, waiting(:waiting_for_member, %{run_id: run_id}, %{class_key: class_key})}
-      member -> {:ok, member}
+    case Enum.find(members, &(not member_occupied?(snapshot.squad.id, &1.key))) do
+      nil ->
+        {:waiting,
+         waiting(:waiting_for_member, action, %{
+           squad_id: snapshot.squad.id,
+           class_key: class_key
+         })}
+
+      member ->
+        {:ok, member}
     end
   end
 
@@ -199,19 +217,23 @@ defmodule QuestEngineering.Server.SchedulingStore do
          invariant(:binding_snapshot_mismatch, %{action_id: action.id, member_key: member_key})}
 
       member ->
-        if member_occupied?(action.run_id, member_key) do
-          {:waiting, waiting(:waiting_for_member, action, %{member_key: member_key})}
+        if member_occupied?(snapshot.squad.id, member_key) do
+          {:waiting,
+           waiting(:waiting_for_member, action, %{
+             squad_id: snapshot.squad.id,
+             member_key: member_key
+           })}
         else
           {:ok, member}
         end
     end
   end
 
-  defp member_occupied?(run_id, member_key) do
+  defp member_occupied?(squad_id, member_key) do
     Repo.exists?(
       from scheduled in ScheduledActionExecution,
         where:
-          scheduled.run_id == ^run_id and scheduled.member_key == ^member_key and
+          scheduled.squad_id == ^squad_id and scheduled.member_key == ^member_key and
             scheduled.state == "active"
     )
   end
@@ -358,11 +380,12 @@ defmodule QuestEngineering.Server.SchedulingStore do
     encoded_execution = ResolvedExecutionCodec.encode(resolved.execution)
 
     scheduled =
-      insert!(
+      insert_scheduled!(
         ScheduledActionExecution.changeset(%{
           action_id: action.id,
           run_id: action.run_id,
           occurrence_id: action.occurrence_id,
+          squad_id: resolved.squad_id,
           member_key: resolved.member.key,
           logical_lineage_id: resolved.context.logical_lineage_id,
           worker_id: resolved.worker.id,
@@ -370,7 +393,10 @@ defmodule QuestEngineering.Server.SchedulingStore do
           resolved_execution_version: ResolvedExecutionCodec.version(),
           resolved_execution: encoded_execution,
           bound_at: now
-        })
+        }),
+        action,
+        resolved.squad_id,
+        resolved.member.key
       )
 
     lease_ms = Keyword.get(options, :lease_ms, @default_lease_ms)
@@ -435,11 +461,37 @@ defmodule QuestEngineering.Server.SchedulingStore do
     end
   end
 
+  defp insert_scheduled!(changeset, action, squad_id, member_key) do
+    case Repo.insert(changeset) do
+      {:ok, row} ->
+        row
+
+      {:error, changeset} ->
+        if constraint_error?(changeset, :scheduled_action_executions_active_member_index) do
+          Repo.rollback(
+            waiting(:waiting_for_member, action, %{
+              squad_id: squad_id,
+              member_key: member_key
+            })
+          )
+        else
+          Repo.rollback(changeset_error(changeset))
+        end
+    end
+  end
+
   defp insert!(changeset) do
     case Repo.insert(changeset) do
       {:ok, row} -> row
       {:error, changeset} -> Repo.rollback(changeset_error(changeset))
     end
+  end
+
+  defp constraint_error?(changeset, name) do
+    Enum.any?(changeset.errors, fn {_field, {_message, options}} ->
+      options[:constraint] == :unique and
+        to_string(options[:constraint_name]) == to_string(name)
+    end)
   end
 
   defp lock_run!(run_id) do

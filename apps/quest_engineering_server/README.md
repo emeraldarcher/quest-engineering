@@ -42,7 +42,7 @@ One transaction acquires all of:
 - immutable `ResolvedExecution`;
 - Worker dispatch routing.
 
-If any temporary resource is unavailable, that candidate writes nothing. Partial unique indexes enforce one active `(run_id, member_key)`, one active `(run_id, logical_lineage_id)`, and one nonterminal `(worker_id, worker_slot)`.
+If any temporary resource is unavailable, that candidate writes nothing. Partial unique indexes enforce one active logical Member `(squad_id, member_key)` across all Runs, one active `(run_id, logical_lineage_id)`, and one nonterminal `(worker_id, worker_slot)`. The frozen launch snapshot supplies `squad_id`; mutable current Squad membership is not consulted during acquisition.
 
 `class(key)` selects by launch-snapshot roster order. `same_as` resolves only through the exact source occurrence binding. Logical `continue_from` similarly resolves only through the exact source occurrence context binding. Pi continuation is additionally routed to the Worker owning the source physical lineage.
 

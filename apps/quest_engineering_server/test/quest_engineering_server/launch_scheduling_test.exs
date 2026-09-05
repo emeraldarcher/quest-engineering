@@ -22,6 +22,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.Persistence.RuntimeRun
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
+  alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Product.TacticLibrary
   alias QuestEngineering.Server.Repo
@@ -33,18 +34,25 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   setup do
     owner = Sandbox.start_owner!(Repo, shared: true)
     root = Path.expand(".pi/tmp/v08b-workspace-#{System.unique_integer([:positive])}")
+    second_root = Path.expand(".pi/tmp/v08b-workspace-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, ".git"))
+    File.mkdir_p!(Path.join(second_root, ".git"))
     previous = Application.get_env(:quest_engineering_server, :workspaces)
-    Application.put_env(:quest_engineering_server, :workspaces, %{"workspace:test" => root})
+
+    Application.put_env(:quest_engineering_server, :workspaces, %{
+      "workspace:test" => root,
+      "workspace:second" => second_root
+    })
 
     on_exit(fn ->
       File.rm_rf!(root)
+      File.rm_rf!(second_root)
       Application.put_env(:quest_engineering_server, :workspaces, previous || %{})
 
       Sandbox.stop_owner(owner)
     end)
 
-    %{workspace_root: root}
+    %{workspace_root: root, second_workspace_root: second_root}
   end
 
   test "launch atomically persists one immutable snapshot, Run, and ordered Actions" do
@@ -197,6 +205,236 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert second.execution.performer.member_key == "alice"
   end
 
+  test "the frozen logical Member is globally occupied across racing Runs and released",
+       context do
+    fixture = product_fixture()
+    {:ok, second_quest} = create_quest(fixture, title: "same-member-racer")
+    assert {:ok, first_launch} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, second_launch} = LaunchQuest.launch(second_quest.id)
+    worker = register_worker("worker-global-member", context.workspace_root, max_concurrency: 2)
+
+    results =
+      [first_launch.run_id, second_launch.run_id]
+      |> Enum.map(&Task.async(fn -> SchedulingStore.schedule_next(&1) end))
+      |> Task.await_many(5_000)
+
+    assert Enum.count(results, &match?({:ok, _dispatch}, &1)) == 1
+    assert Enum.count(results, &match?({:waiting, waits} when is_list(waits), &1)) == 1
+
+    assert Enum.any?(results, fn
+             {:waiting, waits} -> Enum.any?(waits, &(&1.code == :waiting_for_member))
+             _ -> false
+           end)
+
+    [{winner_run_id, {:ok, winner}}, {waiting_run_id, {:waiting, _waits}}] =
+      [first_launch.run_id, second_launch.run_id]
+      |> Enum.zip(results)
+      |> Enum.sort_by(fn {_run_id, result} -> if match?({:ok, _}, result), do: 0, else: 1 end)
+
+    assert winner.run_id == winner_run_id
+    assert Repo.get!(ScheduledActionExecution, winner.action_id).squad_id == fixture.squad.id
+
+    assert {:ok, _failed} =
+             DispatchStore.mark_failed(
+               worker.id,
+               worker.connection_generation,
+               winner.action_id,
+               %{"code" => "release_global_member"}
+             )
+
+    assert {:ok, released} = SchedulingStore.schedule_next(waiting_run_id)
+    assert released.execution.performer.member_key == "alice"
+  end
+
+  test "builder release allows another Run's builder beside the first Run's reviewer", context do
+    tactic =
+      sequence([
+        step("implement",
+          name: "Implement",
+          performer: class("builder"),
+          instruction: "Implement."
+        ),
+        step("review", name: "Review", performer: class("reviewer"), instruction: "Review.")
+      ])
+
+    fixture = product_fixture(tactic: tactic)
+    {:ok, second_quest} = create_quest(fixture, title: "second-sequence", tactic: tactic)
+    assert {:ok, first_launch} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, second_launch} = LaunchQuest.launch(second_quest.id)
+    worker = register_worker("worker-member-handoff", context.workspace_root, max_concurrency: 2)
+
+    assert {:ok, first_builder} = SchedulingStore.schedule_next(first_launch.run_id)
+    assert {:waiting, waits} = SchedulingStore.schedule_next(second_launch.run_id)
+    assert Enum.any?(waits, &(&1.code == :waiting_for_member))
+    complete(worker, first_builder)
+
+    assert {:ok, first_reviewer} = SchedulingStore.schedule_next(first_launch.run_id)
+    assert {:ok, second_builder} = SchedulingStore.schedule_next(second_launch.run_id)
+
+    assert MapSet.new([first_reviewer.worker_slot, second_builder.worker_slot]) ==
+             MapSet.new([0, 1])
+
+    assert first_reviewer.execution.performer.member_key == "bob"
+    assert second_builder.execution.performer.member_key == "alice"
+    assert mark_running(worker, first_reviewer).state == :running
+    assert mark_running(worker, second_builder).state == :running
+
+    active_members =
+      Repo.all(
+        from execution in ScheduledActionExecution,
+          where: execution.state == "active",
+          select: {execution.squad_id, execution.member_key}
+      )
+
+    assert MapSet.new(active_members) ==
+             MapSet.new([{fixture.squad.id, "alice"}, {fixture.squad.id, "bob"}])
+  end
+
+  test "different Squads execute concurrently on one Project", context do
+    fixture = product_fixture()
+    {:ok, other_squad} = create_squad(fixture)
+    {:ok, other_quest} = create_quest(fixture, title: "other-squad", squad_id: other_squad.id)
+    assert {:ok, first_launch} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, second_launch} = LaunchQuest.launch(other_quest.id)
+    register_worker("worker-two-squads", context.workspace_root, max_concurrency: 2)
+
+    assert {:ok, first} = SchedulingStore.schedule_next(first_launch.run_id)
+    assert {:ok, second} = SchedulingStore.schedule_next(second_launch.run_id)
+    assert MapSet.new([first.worker_slot, second.worker_slot]) == MapSet.new([0, 1])
+
+    assert MapSet.new([
+             Repo.get!(ScheduledActionExecution, first.action_id).squad_id,
+             Repo.get!(ScheduledActionExecution, second.action_id).squad_id
+           ]) == MapSet.new([fixture.squad.id, other_squad.id])
+  end
+
+  test "different Squads and Projects execute concurrently", context do
+    fixture = product_fixture()
+    {:ok, other_squad} = create_squad(fixture, "other-project-squad")
+
+    {:ok, other_workspace} =
+      Products.create_workspace(%{
+        key: unique("other-project"),
+        name: "workspace:second",
+        source_kind: :local_git,
+        source_fingerprint: nil
+      })
+
+    {:ok, other_quest} =
+      create_quest(fixture,
+        title: "other-project",
+        squad_id: other_squad.id,
+        workspace_id: other_workspace.id
+      )
+
+    assert {:ok, first_launch} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, second_launch} = LaunchQuest.launch(other_quest.id)
+
+    register_worker("worker-two-projects", context.workspace_root,
+      max_concurrency: 2,
+      workspace_roots: [
+        {"workspace:test", context.workspace_root},
+        {"workspace:second", context.second_workspace_root}
+      ]
+    )
+
+    assert {:ok, first} = SchedulingStore.schedule_next(first_launch.run_id)
+    assert {:ok, second} = SchedulingStore.schedule_next(second_launch.run_id)
+    assert MapSet.new([first.worker_slot, second.worker_slot]) == MapSet.new([0, 1])
+
+    assert first.execution.logical_workspace.workspace_id !=
+             second.execution.logical_workspace.workspace_id
+  end
+
+  test "a busy first candidate does not block a later free Member in either order", context do
+    fixture = product_fixture()
+    worker = register_worker("worker-head-of-line", context.workspace_root, max_concurrency: 3)
+    assert {:ok, blocker_launch} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, blocker} = SchedulingStore.schedule_next(blocker_launch.run_id)
+    assert blocker.execution.performer.member_key == "alice"
+
+    for {name, children} <- [
+          {"blocked-first",
+           [
+             step("builder", name: "Builder", performer: class("builder"), instruction: "Build."),
+             step("reviewer",
+               name: "Reviewer",
+               performer: class("reviewer"),
+               instruction: "Review."
+             )
+           ]},
+          {"free-first",
+           [
+             step("reviewer",
+               name: "Reviewer",
+               performer: class("reviewer"),
+               instruction: "Review."
+             ),
+             step("builder", name: "Builder", performer: class("builder"), instruction: "Build.")
+           ]}
+        ] do
+      {:ok, quest} = create_quest(fixture, title: name, tactic: parallel(children))
+      assert {:ok, launch} = LaunchQuest.launch(quest.id)
+      assert {:ok, scheduled} = SchedulingStore.schedule_next(launch.run_id)
+      assert scheduled.execution.performer.member_key == "bob"
+
+      assert {:ok, _failed} =
+               DispatchStore.mark_failed(
+                 worker.id,
+                 worker.connection_generation,
+                 scheduled.action_id,
+                 %{"code" => "release_reviewer_between_orderings"}
+               )
+    end
+  end
+
+  test "uncertain global Member occupancy survives Worker re-registration", context do
+    fixture = product_fixture()
+    {:ok, second_quest} = create_quest(fixture, title: "uncertain-waiter")
+    assert {:ok, first_launch} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, second_launch} = LaunchQuest.launch(second_quest.id)
+    worker = register_worker("worker-member-recovery", context.workspace_root, max_concurrency: 2)
+    assert {:ok, first} = SchedulingStore.schedule_next(first_launch.run_id)
+
+    assert {:ok, %{state: :uncertain}} =
+             DispatchStore.mark_uncertain(
+               worker.id,
+               worker.connection_generation,
+               first.action_id,
+               %{"reason" => "outcome unknown"}
+             )
+
+    binding = Repo.get_by!(WorkerWorkspaceBinding, worker_id: worker.id)
+
+    restarted =
+      register_worker("worker-member-recovery", context.workspace_root, max_concurrency: 2)
+
+    assert restarted.connection_generation == worker.connection_generation + 1
+
+    assert {:ok, [%{status: "accepted"}]} =
+             WorkerStore.reconcile_workspace_bindings(
+               worker.id,
+               restarted.connection_generation,
+               [
+                 %{
+                   "binding_id" => binding.binding_id,
+                   "workspace_id" => binding.workspace_id,
+                   "authorized_root_key" => binding.authorized_root_key,
+                   "source_repository_root" => binding.source_repository_root,
+                   "source_fingerprint" => binding.source_fingerprint,
+                   "publication_remote_name" => binding.publication_remote_name,
+                   "publication_repository_identity" => binding.publication_repository_identity,
+                   "max_access" => binding.max_access,
+                   "allow_unconfined_shell" => binding.allow_unconfined_shell
+                 }
+               ]
+             )
+
+    assert {:waiting, waits} = SchedulingStore.schedule_next(second_launch.run_id)
+    assert Enum.any?(waits, &(&1.code == :waiting_for_member))
+    assert Repo.get!(ScheduledActionExecution, first.action_id).state == "active"
+  end
+
   test "Member affinity and continued logical context remain independent", context do
     tactic =
       sequence([
@@ -283,17 +521,12 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert Repo.aggregate(ScheduledActionExecution, :count) == 1
   end
 
-  test "concurrent schedulers cannot partially acquire the last Worker slot", context do
+  test "concurrent unrelated Members cannot partially acquire the last Worker slot", context do
     first_fixture = product_fixture()
+    assert {:ok, second_squad} = create_squad(first_fixture, "last-slot-squad")
 
     assert {:ok, second_quest} =
-             Products.create_quest(%{
-               title: "Second concurrent Quest",
-               objective: "Compete for the final Worker slot.",
-               workspace_id: first_fixture.quest.workspace_id,
-               squad_id: first_fixture.quest.squad_id,
-               tactic_source: first_fixture.quest.tactic_source
-             })
+             create_quest(first_fixture, title: "last-slot", squad_id: second_squad.id)
 
     assert {:ok, first_launch} = LaunchQuest.launch(first_fixture.quest.id)
     assert {:ok, second_launch} = LaunchQuest.launch(second_quest.id)
@@ -604,6 +837,57 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert persisted_worker.active_dispatches == 1
   end
 
+  defp create_quest(fixture, options) do
+    tactic = Keyword.get(options, :tactic, fixture.quest.tactic_source.body)
+
+    Products.create_quest(%{
+      title: unique(Keyword.get(options, :title, "concurrency-quest")),
+      objective: "Exercise durable concurrency resources.",
+      workspace_id: Keyword.get(options, :workspace_id, fixture.quest.workspace_id),
+      squad_id: Keyword.get(options, :squad_id, fixture.squad.id),
+      tactic_source: %Inline{body: tactic}
+    })
+  end
+
+  defp create_squad(fixture, prefix \\ "concurrency-squad") do
+    Products.create_squad(%{
+      key: unique(prefix),
+      name: "Independent Squad",
+      members: [
+        %{
+          key: "builder",
+          name: "Builder",
+          class_id: fixture.builder.id,
+          loadout_id: fixture.loadout.id
+        },
+        %{
+          key: "reviewer",
+          name: "Reviewer",
+          class_id: fixture.reviewer.id,
+          loadout_id: fixture.reviewer_loadout.id
+        }
+      ]
+    })
+  end
+
+  defp mark_running(worker, dispatch) do
+    assert {:ok, _dispatched} =
+             DispatchStore.mark_dispatched(
+               dispatch.action_id,
+               dispatch.claim_token,
+               worker.connection_generation
+             )
+
+    assert {:ok, running} =
+             DispatchStore.mark_running(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    running
+  end
+
   defp sibling_quests(quest, count) do
     Enum.map(1..count, fn index ->
       {:ok, sibling} =
@@ -678,7 +962,14 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
         tactic_source: %Inline{body: tactic}
       })
 
-    %{quest: quest, builder: builder, loadout: first_loadout}
+    %{
+      quest: quest,
+      squad: squad,
+      builder: builder,
+      reviewer: reviewer,
+      loadout: first_loadout,
+      reviewer_loadout: second_loadout
+    }
   end
 
   defp create_class(key, instructions) do
@@ -724,6 +1015,8 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     tools =
       Keyword.get(options, :tools, ["workspace.filesystem", "workspace.search", "terminal.shell"])
 
+    workspace_roots = Keyword.get(options, :workspace_roots, [{"workspace:test", root}])
+
     capabilities = %{
       "os" => "test",
       "arch" => "test",
@@ -735,9 +1028,10 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
           "models" => [%{"provider" => "fake", "model" => "test"}],
           "reasoning" => ["low", "medium", "high"],
           "tools" => tools,
-          "workspaces" => [
-            %{"ref" => "workspace:test", "root" => root, "max_access" => "read_write"}
-          ]
+          "workspaces" =>
+            Enum.map(workspace_roots, fn {ref, workspace_root} ->
+              %{"ref" => ref, "root" => workspace_root, "max_access" => "read_write"}
+            end)
         }
       ]
     }

@@ -129,7 +129,7 @@ function member(
 ): ActiveCrewPresentation {
   const projectId = overrides.projectId ?? "project-a";
   return {
-    actorId: `run-a\0squad-a\0member-${index}`,
+    actorId: `squad-a\0member-${index}`,
     activityId: `run-a\0occurrence-${index}`,
     runId: "run-a",
     occurrenceId: `occurrence-${index}`,
@@ -230,7 +230,7 @@ test("sequential Implement to Review replaces Builder with Reviewer at the dock"
   settle(system);
   expect(system.actor(builder.actorId)?.animationTag).toBe("hamering");
   const reviewer = member(2, {
-    actorId: "run-a\0squad-a\0reviewer",
+    actorId: "squad-a\0reviewer",
     memberKey: "reviewer",
     memberName: "Reviewer",
     classKey: "reviewer",
@@ -246,21 +246,44 @@ test("sequential Implement to Review replaces Builder with Reviewer at the dock"
   expect(system.actor(reviewer.actorId)?.position).toEqual({ x: 0, y: 0 });
 });
 
-test("Parallel actors reconcile independently", () => {
+test("different Members from concurrent Runs reconcile and update independently", () => {
   const system = new ActiveCrewSystem(world());
-  const first = member(1);
-  const second = member(2, {
-    actorId: "run-a\0squad-a\0reviewer",
+  const builder = member(1, {
+    actorId: "squad-a\0builder",
+    runId: "run-b",
+    memberKey: "builder",
+    activityCategory: "crafting",
+    workAnimationTag: "hamering",
+  });
+  const reviewer = member(2, {
+    actorId: "squad-a\0reviewer",
+    runId: "run-a",
     memberKey: "reviewer",
     activityCategory: "research",
     workAnimationTag: "doing",
   });
-  system.reconcile([first, second]);
+  system.reconcile([reviewer, builder]);
   settle(system);
-  const preserved = system.actor(second.actorId);
-  system.reconcile([second]);
-  expect(system.actor(first.actorId)?.authoritativeRunning).toBe(false);
-  expect(system.actor(second.actorId)).toBe(preserved);
+  expect(system.actor(builder.actorId)).toMatchObject({
+    authoritativeRunning: true,
+    state: "working",
+    activityCategory: "crafting",
+  });
+  expect(system.actor(builder.actorId)?.claim?.slot.id).not.toBe(
+    system.actor(reviewer.actorId)?.claim?.slot.id,
+  );
+  const preserved = system.actor(reviewer.actorId);
+  expect(preserved).toMatchObject({
+    authoritativeRunning: true,
+    state: "working",
+    activityCategory: "research",
+  });
+  system.reconcile([reviewer]);
+  expect(system.actor(builder.actorId)).toMatchObject({
+    authoritativeRunning: false,
+    state: "wrapping_up",
+  });
+  expect(system.actor(reviewer.actorId)).toBe(preserved);
   expect(preserved?.authoritativeRunning).toBe(true);
   expect(preserved?.state).toBe("working");
 });
@@ -316,7 +339,7 @@ test("long active work receives no artificial completion or departure", () => {
   expect(system.actor(active.actorId)?.state).toBe("working");
 });
 
-test("a consecutive occurrence reuses a departing same-Run Member actor", () => {
+test("new cross-Run work reuses a departing logical Member actor", () => {
   const system = new ActiveCrewSystem(world());
   const active = member(1);
   system.reconcile([active]);
@@ -330,9 +353,11 @@ test("a consecutive occurrence reuses a departing same-Run Member actor", () => 
   const departurePosition = actor?.position;
   system.reconcile([
     member(1, {
-      activityId: "run-a\0repair",
-      occurrenceId: "repair",
-      stepName: "Repair",
+      activityId: "run-b\0implement",
+      runId: "run-b",
+      occurrenceId: "implement",
+      questTitle: "Quest B",
+      stepName: "Implement",
       activityCategory: "crafting",
       workAnimationTag: "hamering",
     }),
@@ -375,7 +400,7 @@ test("authored exact-anchor facing overrides deterministic approach fallback", (
   });
 
   const crafter = member(2, {
-    actorId: "run-b\0squad-a\0crafter",
+    actorId: "squad-a\0crafter",
     runId: "run-b",
     activityCategory: "crafting",
     workAnimationTag: "hamering",
@@ -406,7 +431,7 @@ test("LaunchSnapshot Project identity isolates route graphs across islands", () 
   system.reconcile([
     member(1, { projectId: "project-a", runId: "run-same" }),
     member(2, {
-      actorId: "run-b\0squad-b\0member-2",
+      actorId: "squad-b\0member-2",
       projectId: "project-b",
       runId: "run-b",
     }),

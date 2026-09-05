@@ -25,14 +25,26 @@ export function isActiveCrewStep(
   return step.state === "running" && step.member !== null;
 }
 
+export class ActiveCrewInvariantError extends Error {
+  constructor(
+    readonly squadId: string,
+    readonly memberKey: string,
+  ) {
+    super(
+      `Logical Member ${squadId}/${memberKey} has more than one authoritative running activity.`,
+    );
+    this.name = "ActiveCrewInvariantError";
+  }
+}
+
 export function projectActiveCrewActivities(
   runs: readonly RunProjection[],
 ): ActiveCrewActivity[] {
-  return runs
+  const activities = runs
     .flatMap((run) =>
       run.steps.filter(isActiveCrewStep).map((step) => ({
         activityId: `${run.id}\0${step.occurrence_id}`,
-        actorId: `${run.id}\0${run.squad.id}\0${step.member.member_key}`,
+        actorId: `${run.squad.id}\0${step.member.member_key}`,
         runId: run.id,
         quest: { ...run.quest },
         project: { ...run.execution_environment.workspace },
@@ -46,4 +58,15 @@ export function projectActiveCrewActivities(
       })),
     )
     .sort((a, b) => a.activityId.localeCompare(b.activityId));
+  const occupied = new Set<string>();
+  for (const activity of activities) {
+    const logicalMemberId = `${activity.squad.id}\0${activity.member.member_key}`;
+    if (occupied.has(logicalMemberId))
+      throw new ActiveCrewInvariantError(
+        activity.squad.id,
+        activity.member.member_key,
+      );
+    occupied.add(logicalMemberId);
+  }
+  return activities;
 }

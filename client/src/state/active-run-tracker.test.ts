@@ -127,6 +127,8 @@ test("tracks zero, one, and multiple nonterminal Runs without historical details
   await settle();
   expect(calls).toEqual(["a", "b"]);
   expect(watches).toEqual(["a", "b"]);
+  expect(tracker.trackedRunIds()).toEqual(["a", "b"]);
+  expect(latest.sort()).toEqual(["a", "b"]);
 });
 
 test("a subscribed Run adds crew only when its occurrence becomes running", async () => {

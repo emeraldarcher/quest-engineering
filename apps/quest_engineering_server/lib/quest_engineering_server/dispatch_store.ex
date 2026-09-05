@@ -118,31 +118,33 @@ defmodule QuestEngineering.Server.DispatchStore do
         {:error, error(:dispatch_not_found, nil, action_id)}
 
       _known_dispatch ->
-        transact(fn ->
-          dispatch = lock_dispatch!(action_id)
-
-          if dispatch.state != "uncertain" do
-            Repo.rollback(
-              error(:dispatch_not_uncertain, dispatch.worker_id, action_id, %{
-                state: dispatch.state
-              })
-            )
-          end
-
-          updated =
-            Repo.update!(
-              Changeset.change(dispatch,
-                state: "failed",
-                terminal_at: dispatch.terminal_at || now(),
-                failure: failure
-              )
-            )
-
-          mark_scheduled_terminal!(action_id, "failed", failure)
-          update_active_dispatches!(dispatch.worker_id)
-          dispatch_record(updated)
-        end)
+        transact(fn -> resolve_uncertain_locked(action_id, failure) end)
     end
+  end
+
+  defp resolve_uncertain_locked(action_id, failure) do
+    dispatch = lock_dispatch!(action_id)
+
+    if dispatch.state != "uncertain" do
+      Repo.rollback(
+        error(:dispatch_not_uncertain, dispatch.worker_id, action_id, %{
+          state: dispatch.state
+        })
+      )
+    end
+
+    updated =
+      Repo.update!(
+        Changeset.change(dispatch,
+          state: "failed",
+          terminal_at: dispatch.terminal_at || now(),
+          failure: failure
+        )
+      )
+
+    mark_scheduled_terminal!(action_id, "failed", failure)
+    update_active_dispatches!(dispatch.worker_id)
+    dispatch_record(updated)
   end
 
   def mark_uncertain(worker_id, generation, action_id, failure) do

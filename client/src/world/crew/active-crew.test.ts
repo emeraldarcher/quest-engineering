@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import type { RunProjection, RunStep, StepState } from "../../api/contracts";
-import { projectActiveCrewActivities } from "./active-crew";
+import {
+  ActiveCrewInvariantError,
+  projectActiveCrewActivities,
+} from "./active-crew";
 
 function run(id: string, squadId: string, states: StepState[]): RunProjection {
   const member = {
@@ -101,6 +104,37 @@ test("multiple Runs project independently without display-name collisions", () =
   expect(activities.every((activity) => activity.member.name === "Alex")).toBe(
     true,
   );
+});
+
+test("different Members in one Squad project concurrently with logical actor identities", () => {
+  const reviewerRun = run("run-a", "engineering-pair", ["running"]);
+  const builderRun = run("run-b", "engineering-pair", ["running"]);
+  const builder = builderRun.steps[0]?.member;
+  if (!builder) throw new Error("Missing fixture Member");
+  builderRun.steps[0] = {
+    ...(builderRun.steps[0] as RunStep),
+    member: { ...builder, member_key: "builder", name: "Builder" },
+  };
+  reviewerRun.steps[0] = {
+    ...(reviewerRun.steps[0] as RunStep),
+    member: { ...builder, member_key: "reviewer", name: "Reviewer" },
+  };
+
+  const activities = projectActiveCrewActivities([reviewerRun, builderRun]);
+  expect(activities).toHaveLength(2);
+  expect(activities.map((activity) => activity.actorId).sort()).toEqual([
+    "engineering-pair\0builder",
+    "engineering-pair\0reviewer",
+  ]);
+});
+
+test("duplicate authoritative work for one logical Member is an invariant failure", () => {
+  expect(() =>
+    projectActiveCrewActivities([
+      run("run-a", "engineering-pair", ["running"]),
+      run("run-b", "engineering-pair", ["running"]),
+    ]),
+  ).toThrow(ActiveCrewInvariantError);
 });
 
 test("zero running occurrences means zero active crew", () => {

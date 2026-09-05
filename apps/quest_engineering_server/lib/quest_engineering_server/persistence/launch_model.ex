@@ -84,6 +84,7 @@ defmodule QuestEngineering.Server.Persistence.ScheduledActionExecution do
   schema "scheduled_action_executions" do
     field :run_id, :string
     field :occurrence_id, :string
+    field :squad_id, Ecto.UUID
     field :member_key, :string
     field :logical_lineage_id, Ecto.UUID
     field :worker_id, :string
@@ -101,6 +102,7 @@ defmodule QuestEngineering.Server.Persistence.ScheduledActionExecution do
       :action_id,
       :run_id,
       :occurrence_id,
+      :squad_id,
       :member_key,
       :logical_lineage_id,
       :worker_id,
@@ -115,6 +117,7 @@ defmodule QuestEngineering.Server.Persistence.ScheduledActionExecution do
       :action_id,
       :run_id,
       :occurrence_id,
+      :squad_id,
       :member_key,
       :logical_lineage_id,
       :worker_id,
@@ -127,6 +130,7 @@ defmodule QuestEngineering.Server.Persistence.ScheduledActionExecution do
     |> validate_number(:resolved_execution_version, greater_than: 0)
     |> foreign_key_constraint(:action_id)
     |> foreign_key_constraint(:run_id)
+    |> foreign_key_constraint(:squad_id)
     |> foreign_key_constraint(:worker_id)
     |> foreign_key_constraint(:occurrence_id,
       name: :scheduled_action_executions_member_binding_fkey
@@ -134,7 +138,7 @@ defmodule QuestEngineering.Server.Persistence.ScheduledActionExecution do
     |> foreign_key_constraint(:occurrence_id,
       name: :scheduled_action_executions_context_binding_fkey
     )
-    |> unique_constraint([:run_id, :member_key],
+    |> unique_constraint([:squad_id, :member_key],
       name: :scheduled_action_executions_active_member_index
     )
     |> unique_constraint([:run_id, :logical_lineage_id],

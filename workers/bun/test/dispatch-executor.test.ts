@@ -29,6 +29,42 @@ async function fixture() {
   return { root, database: join(root, "state.sqlite") };
 }
 
+test("independent dispatches enter provider execution concurrently", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const provider = new BlockingProvider(registry);
+  const executor = new DispatchExecutor(registry, provider, async () => false);
+  const first = executor.accept(action()).dispatch;
+  const second = executor.accept(
+    action({
+      action_id: "action-2",
+      run_id: "run-2",
+      occurrence_id: "occurrence-2",
+      attempt_id: "attempt-2",
+    }),
+  ).dispatch;
+
+  const firstOperation = executor.start(first.action.action_id);
+  const secondOperation = executor.start(second.action.action_id);
+  for (let attempt = 0; attempt < 100 && provider.running < 2; attempt += 1)
+    await Bun.sleep(1);
+
+  expect(provider.starts).toBe(2);
+  expect(provider.running).toBe(2);
+  expect(registry.get(first.action.action_id).state).toBe("running");
+  expect(registry.get(second.action.action_id).state).toBe("running");
+  expect(
+    [first, second].map(
+      (dispatch) =>
+        registry.getLineage(dispatch.lineageId as string).activeActionId,
+    ),
+  ).toEqual([first.action.action_id, second.action.action_id]);
+
+  provider.releaseAll();
+  await Promise.all([firstOperation, secondOperation]);
+  registry.close();
+});
+
 test("acceptance and completion are durable before external side effects and reporting", async () => {
   const { root, database } = await fixture();
   const registry = new DispatchRegistry(database, root);
@@ -127,6 +163,27 @@ class InspectingProvider implements AgentProvider {
   }
   disconnect() {}
 }
+
+class BlockingProvider extends InspectingProvider {
+  running = 0;
+  private releases: Array<() => void> = [];
+
+  override async submitAndCollect(
+    _dispatch: DispatchRecord,
+    _execution: ProviderPreparedExecution,
+    onRunning: () => void,
+  ): Promise<Record<string, JsonValue>> {
+    onRunning();
+    this.running += 1;
+    await new Promise<void>((resolve) => this.releases.push(resolve));
+    return { change_set: { version: 1 } };
+  }
+
+  releaseAll(): void {
+    for (const release of this.releases.splice(0)) release();
+  }
+}
+
 function prepared(lineage: ProviderLineage): ProviderPreparedExecution {
   const agent: HostedAgent = {
     name: lineage.lineageId,

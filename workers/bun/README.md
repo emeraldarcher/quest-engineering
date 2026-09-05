@@ -25,6 +25,8 @@ QE_HERDR_SESSION=quest-engineering-worker
 
 Bindings created through control-plane discovery are stored in `workspace-bindings.json`. Physical Run mappings and Git provenance are stored with SQLite `synchronous=FULL` in `run-worktrees.sqlite`.
 
+`QE_MAX_CONCURRENCY` is the number of simultaneous execution slots advertised by this long-lived host; it defaults conservatively to `1`. Set `QE_MAX_CONCURRENCY=2` explicitly on a development/staging Worker to allow two otherwise-eligible Actions to execute at once. Worker slots are independent of Product Member occupancy: with an Engineering Pair, Run A's reviewer and Run B's builder may use two slots concurrently, while the same `{squad_id, member_key}` builder may not execute for both Runs at once.
+
 ## Long-lived host and binding recovery
 
 A Worker is a long-lived execution host, not a process created per Run. A Workspace binding is the durable mapping between a logical Product Project owned by PostgreSQL and a physical repository reachable by that Worker. A Run is isolated execution provisioned on the Worker using that mapping.
