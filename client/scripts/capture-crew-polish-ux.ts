@@ -8,9 +8,9 @@ const outputRoot = "docs/screenshots/crew-polish-ux";
 const captures = [
   [
     "01-home-one-project-ocean",
-    "worldDemoProjects=1&focusWorld=1&scale=1",
-    1_920,
-    1_200,
+    "worldDemoProjects=1&camera=home&scale=1",
+    1_440,
+    900,
   ],
   [
     "02-home-four-projects",

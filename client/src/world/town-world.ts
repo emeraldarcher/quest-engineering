@@ -27,6 +27,7 @@ import type {
   TownRect,
 } from "./authored/map-schema";
 import {
+  homeArchipelagoOverviewBounds,
   type ProjectIslandInstance,
   projectIslandFocusTarget,
   type WorldComposition,
@@ -262,6 +263,8 @@ export class TownWorld {
       );
       if (target) this.targetFocus = target.center;
       else this.focusHome();
+    } else if (this.cameraMode === "home" && this.initialized) {
+      this.focusHome();
     }
     if (!this.mounted) return;
     if (signature !== this.regionSignature) this.rebuildRegions();
@@ -348,11 +351,8 @@ export class TownWorld {
     this.focusedBuilding = null;
     this.focusedProjectId = null;
     this.zoom = this.overviewZoom();
-    const bounds = this.homeMap().functionalTownBounds;
-    this.targetFocus = {
-      x: bounds.x + bounds.width / 2 + this.composition.home.worldOrigin.x,
-      y: bounds.y + bounds.height / 2 + this.composition.home.worldOrigin.y,
-    };
+    const bounds = homeArchipelagoOverviewBounds(this.composition);
+    this.targetFocus = this.rectCenter(bounds);
     this.refreshHighlights();
   }
 
@@ -472,7 +472,7 @@ export class TownWorld {
 
   private overviewZoom(): 1 | 2 | 3 {
     return fitAuthoredBounds(
-      this.homeMap().functionalTownBounds,
+      homeArchipelagoOverviewBounds(this.composition),
       this.viewport(),
     );
   }

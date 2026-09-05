@@ -11,6 +11,7 @@ import {
   instantiateWorldRegion,
   padWorldBounds,
   type RegionProjectIdentity,
+  translateRect,
   unionWorldBounds,
   type WorldRegionInstance,
   type WorldRegionTemplate,
@@ -70,6 +71,21 @@ export interface WorldComposition {
 export interface ProjectIslandFocusTarget {
   island: ProjectIslandInstance;
   center: { x: number; y: number };
+}
+
+/** Home management space plus nearby first-ring islands for discovery. */
+export function homeArchipelagoOverviewBounds(
+  composition: WorldComposition,
+): TownRect {
+  const home = translateRect(
+    composition.home.template.authored.functionalTownBounds,
+    composition.home.worldOrigin,
+  );
+  const nearby = composition.projectIslands
+    .values()
+    .filter((island) => island.placementSlot <= 8)
+    .map((island) => island.bounds);
+  return unionWorldBounds([home, ...nearby]);
 }
 
 export function projectIslandFocusTarget(

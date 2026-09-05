@@ -11,7 +11,11 @@ import type { TiledMapJson } from "../authored/tiled-types";
 import type { ActiveCrewActivity } from "../crew/active-crew";
 import { findCrewPath } from "../crew/CrewNavigation";
 import { regionIsVisible } from "../rendering/region-culling";
-import { WorldComposer, type WorldComposerTemplates } from "./world-composer";
+import {
+  homeArchipelagoOverviewBounds,
+  WorldComposer,
+  type WorldComposerTemplates,
+} from "./world-composer";
 import type {
   RegionProjectIdentity,
   WorldRegionTemplate,
@@ -139,11 +143,22 @@ test("one, three, and ten Projects receive deterministic non-overlapping islands
     const input = projects(count);
     const world = composer.compose({ projects: input, activeCrew: [] });
     const islands = world.projectIslands.values();
+    const protectedHome = world.home.worldBounds;
     expect(islands).toHaveLength(count);
     for (const [index, island] of islands.entries()) {
-      expect(overlaps(island.bounds, world.home.worldBounds)).toBe(false);
+      expect(overlaps(island.bounds, protectedHome)).toBe(false);
       for (const other of islands.slice(index + 1))
         expect(overlaps(island.bounds, other.bounds)).toBe(false);
+    }
+    if (count === 1) {
+      expect(
+        overlaps(islands[0]?.bounds ?? protectedHome, world.home.worldBounds),
+      ).toBe(false);
+      const overview = homeArchipelagoOverviewBounds(world);
+      expect(overlaps(overview, protectedHome)).toBe(true);
+      expect(overlaps(overview, islands[0]?.bounds ?? protectedHome)).toBe(
+        true,
+      );
     }
     const reordered = composer.compose({
       projects: [...input].reverse(),

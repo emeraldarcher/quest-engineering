@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 import {
   DENSE_PRIMARY_SLOTS,
   placementGrid,
+  placementOrigin,
   placeProjects,
   spiralGridPoint,
 } from "./world-placement";
 
 const home = { x: 0, y: 0, width: 1_440, height: 800 };
+const functionalHome = { x: 161, y: 34, width: 1_116, height: 648 };
 const projectBounds = { x: 0, y: 0, width: 352, height: 288 };
 const grid = placementGrid(home, projectBounds);
 const project = (id: string) => ({ id, key: id, name: id });
@@ -43,7 +45,6 @@ function hasClearance(
 function assertNoOverlaps(origins: Array<{ x: number; y: number }>) {
   const values = origins.map(bounds);
   expect(values.some((value) => overlaps(value, home))).toBe(false);
-  expect(values.every((value) => hasClearance(value, home))).toBe(true);
   let separated = true;
   for (const [index, value] of values.entries())
     for (const other of values.slice(index + 1))
@@ -55,7 +56,10 @@ function assertNoOverlaps(origins: Array<{ x: number; y: number }>) {
 }
 
 function homeDistance(origin: { x: number; y: number }): number {
-  const homeCenter = { x: home.width / 2, y: home.height / 2 };
+  const homeCenter = {
+    x: home.x + home.width / 2,
+    y: home.y + home.height / 2,
+  };
   const projectCenter = {
     x: origin.x + projectBounds.width / 2,
     y: origin.y + projectBounds.height / 2,
@@ -87,10 +91,11 @@ test("Home-only and early Project counts form a dense non-overlapping archipelag
     );
     expect(placements).toHaveLength(count);
     assertNoOverlaps(placements.map((value) => value.origin));
-    if (count === 1)
-      expect(
-        homeDistance(placements[0]?.origin ?? { x: 0, y: 0 }),
-      ).toBeLessThan(1_500);
+    if (count === 1) {
+      const first = placements[0]?.origin ?? { x: 0, y: 0 };
+      expect(homeDistance(first)).toBeLessThan(1_100);
+      expect(overlaps(bounds(first), home)).toBe(false);
+    }
     if (count === 4)
       expect(
         Math.max(...placements.map((value) => value.slot)),
@@ -103,6 +108,49 @@ test("Home-only and early Project counts form a dense non-overlapping archipelag
         Math.max(...placements.map((value) => homeDistance(value.origin))),
       ).toBeLessThan(3_000);
     }
+  }
+});
+
+test("every first-ring island is discoverable in a one-Project Home overview", () => {
+  for (let slot = 1; slot <= DENSE_PRIMARY_SLOTS; slot += 1) {
+    const island = bounds(placementOrigin(spiralGridPoint(slot), grid));
+    const overview = {
+      x: Math.min(functionalHome.x, island.x),
+      y: Math.min(functionalHome.y, island.y),
+      width:
+        Math.max(
+          functionalHome.x + functionalHome.width,
+          island.x + island.width,
+        ) - Math.min(functionalHome.x, island.x),
+      height:
+        Math.max(
+          functionalHome.y + functionalHome.height,
+          island.y + island.height,
+        ) - Math.min(functionalHome.y, island.y),
+    };
+    const focus = {
+      x: overview.x + overview.width / 2,
+      y: overview.y + overview.height / 2,
+    };
+    const visible = {
+      x: focus.x - 720,
+      y: focus.y - 424,
+      width: 1_440,
+      height: 848,
+    };
+    const visibleWidth = Math.max(
+      0,
+      Math.min(island.x + island.width, visible.x + visible.width) -
+        Math.max(island.x, visible.x),
+    );
+    const visibleHeight = Math.max(
+      0,
+      Math.min(island.y + island.height, visible.y + visible.height) -
+        Math.max(island.y, visible.y),
+    );
+    expect(
+      (visibleWidth * visibleHeight) / (island.width * island.height),
+    ).toBeGreaterThan(0.6);
   }
 });
 

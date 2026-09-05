@@ -141,11 +141,15 @@ before expanding into another lazy, unbounded ring. Registration and Quest/Run
 order have no effect; only a colliding probe chain can affect a later identity.
 There is no finite island-slot pool or Product-visible layout maximum.
 
-Placement uses actual composed Project bounds. The gap between footprints is a
-64-pixel ocean gutter plus 48 pixels of future expansion reserve on each side
-(160 pixels total). First-ring centers sit immediately beyond Home by that
-clearance; later rings add one Project footprint plus the same clearance, not a
-Home-sized sparse grid cell. No coordinates are persisted.
+Placement uses actual composed Project bounds, including a composed expansion
+when that template is registered. The first ring hugs the full authored Home
+map boundary without overlapping it. Its eight slots are paired along the top,
+right, bottom, and left edges, rather than occupying distant diagonal cells, so
+early islands appear in the initial Home view. The map's existing outer water
+remains useful visual separation and does not need to be removed. Project
+footprints retain a 64-pixel ocean gutter from each other. Later rings add one
+Project footprint plus that gutter, not a Home-sized sparse grid cell. No
+coordinates are persisted.
 
 Comfortable visual capacity is measured from exact points plus rectangle-derived
 positions. It may later inform expansion presentation only. The architecture
@@ -157,10 +161,12 @@ with short-lived worker-count changes.
 ## Camera and debugging
 
 World bounds are the padded union of instantiated region bounds; Home-only mode
-retains the original Home bounds exactly. Normal integer zoom, panel-aware Home
-building focus, keyboard/pointer panning, `focusHome()`, and
-`focusProject(projectId)` operate in world space. A future overview can list
-Project islands and invoke the same focus API; no minimap is implemented yet.
+retains the original Home bounds exactly. The initial Home overview and
+`focusHome()` frame the authored functional town together with occupied
+first-ring islands, making the first Project discoverable without using the
+selector. Normal integer zoom, panel-aware Home building focus,
+keyboard/pointer panning, `focusProject(projectId)`, and the Project-island
+selector operate in world space. No minimap is implemented.
 
 Use `?debugMap=1&focusProject=first` to inspect the production region
 bounds/kind/template, Project identity, local/world origins, sockets, route
