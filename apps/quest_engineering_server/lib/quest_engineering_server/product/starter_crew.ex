@@ -23,6 +23,7 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   @tactic_key "implement-and-review"
   @coding_tools ~w(workspace.filesystem workspace.search terminal.shell)
   @review_tools ~w(workspace.filesystem workspace.search)
+  @max_review_remediations 3
 
   defmodule Error do
     @moduledoc false
@@ -227,8 +228,13 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
 
   defp ensure_tactic(snapshot) do
     case Map.get(snapshot.tactics, @tactic_key) do
-      nil -> TacticLibrary.create(tactic_attributes())
-      row -> TacticLibrary.get(row.id)
+      nil ->
+        TacticLibrary.create(tactic_attributes())
+
+      row ->
+        if legacy_tactic_row?(row),
+          do: TacticLibrary.update(row.id, tactic_attributes()),
+          else: TacticLibrary.get(row.id)
     end
   end
 
@@ -318,19 +324,39 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
       end)
 
     exact_count = Enum.count(assessments, fn {_identity, state} -> state == :exact_match end)
+    legacy_count = Enum.count(assessments, fn {_identity, state} -> state == :legacy_match end)
     missing_count = Enum.count(assessments, fn {_identity, state} -> state == :missing end)
 
     state =
-      cond do
-        conflict -> :conflict
-        missing_count == 0 -> :complete
-        snapshot.unrelated_active? -> :manual_configuration
-        exact_count > 0 -> :recoverable_partial
-        true -> :empty
-      end
+      classification_state(
+        conflict,
+        missing_count,
+        exact_count,
+        legacy_count,
+        snapshot.unrelated_active?
+      )
 
     %{state: state, conflict: conflict, assessments: Map.new(assessments)}
   end
+
+  defp classification_state(conflict, _missing, _exact, _legacy, _unrelated)
+       when not is_nil(conflict),
+       do: :conflict
+
+  defp classification_state(_conflict, 0 = _missing, _exact, 0 = _legacy, _unrelated),
+    do: :complete
+
+  defp classification_state(_conflict, 0 = _missing, _exact, _legacy, _unrelated),
+    do: :recoverable_partial
+
+  defp classification_state(_conflict, _missing, _exact, _legacy, true = _unrelated),
+    do: :manual_configuration
+
+  defp classification_state(_conflict, _missing, exact, legacy, _unrelated)
+       when exact + legacy > 0,
+       do: :recoverable_partial
+
+  defp classification_state(_conflict, _missing, _exact, _legacy, _unrelated), do: :empty
 
   defp assess_row(type, key, rows, matches?) do
     identity = {type, key}
@@ -376,18 +402,35 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   end
 
   defp assess_tactic(snapshot) do
-    assess_row(:tactic, @tactic_key, snapshot.tactics, fn row ->
-      body_matches =
-        case TacticCodec.decode(row.body) do
-          {:ok, body} -> body == canonical_tactic()
-          {:error, _error} -> false
-        end
+    identity = {:tactic, @tactic_key}
 
-      row.name == "Implement & Review" &&
-        row.description == "A small sequential implementation and independent review tactic." &&
-        body_matches
-    end)
+    case Map.get(snapshot.tactics, @tactic_key) do
+      nil ->
+        {identity, :missing}
+
+      %{archived_at: archived_at} when not is_nil(archived_at) ->
+        {identity, {:conflict, identity}}
+
+      row ->
+        cond do
+          tactic_row_matches?(row, tactic_attributes()) -> {identity, :exact_match}
+          legacy_tactic_row?(row) -> {identity, :legacy_match}
+          true -> {identity, {:conflict, identity}}
+        end
+    end
   end
+
+  defp tactic_row_matches?(row, attributes) do
+    body_matches =
+      case TacticCodec.decode(row.body) do
+        {:ok, body} -> body == attributes.body
+        {:error, _error} -> false
+      end
+
+    row.name == attributes.name && row.description == attributes.description && body_matches
+  end
+
+  defp legacy_tactic_row?(row), do: tactic_row_matches?(row, legacy_tactic_attributes())
 
   defp intrinsic_loadout_matches?(key, row, snapshot) do
     if static_loadout_matches?(key, row) do
@@ -530,11 +573,57 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
     do: %{
       key: @tactic_key,
       name: "Implement & Review",
-      description: "A small sequential implementation and independent review tactic.",
+      description:
+        "Implements, reviews, and performs up to three repairs until review acceptance.",
       body: canonical_tactic()
     }
 
+  defp legacy_tactic_attributes,
+    do: %{
+      key: @tactic_key,
+      name: "Implement & Review",
+      description: "A small sequential implementation and independent review tactic.",
+      body: legacy_tactic()
+    }
+
   defp canonical_tactic do
+    sequence([
+      step("implement",
+        name: "Implement",
+        instruction: "Implement the Quest objective.",
+        performer: class("builder"),
+        context: fresh(),
+        consumes: [],
+        produces: [artifact("change_set")]
+      ),
+      until(
+        check:
+          step("review",
+            name: "Review",
+            instruction:
+              "Review the current implementation against the Quest objective. Produce a structured verdict with status \"accepted\" only when the implementation is ready, otherwise status \"rejected\", and include structured findings when useful.",
+            performer: class("reviewer"),
+            context: fresh(),
+            consumes: [artifact("change_set")],
+            produces: [artifact("verdict")]
+          ),
+        condition: equals(field(artifact("verdict", from: "review"), "status"), "accepted"),
+        otherwise:
+          step("repair",
+            name: "Repair",
+            instruction:
+              "Repair the current implementation by addressing the rejected review verdict and produce an updated change set.",
+            performer: same_as("implement"),
+            context: continue_from("implement"),
+            consumes: [artifact("change_set"), artifact("verdict")],
+            produces: [artifact("change_set")]
+          ),
+        max_remediations: @max_review_remediations
+      )
+    ])
+  end
+
+  defp legacy_tactic do
     sequence([
       step("implement",
         name: "Implement",

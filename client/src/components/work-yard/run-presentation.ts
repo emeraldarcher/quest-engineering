@@ -168,6 +168,16 @@ const diagnosticCopy: Record<string, { title: string; description: string }> = {
     description:
       "The assigned Worker does not support this Delivery operation.",
   },
+  acceptance_not_satisfied: {
+    title: "Review was not accepted",
+    description:
+      "Delivery is blocked until the latest completed semantic Review explicitly accepts the implementation.",
+  },
+  review_exhausted: {
+    title: "Review remediation was exhausted",
+    description:
+      "The implementation was not accepted within the configured remediation limit, so Delivery did not start.",
+  },
   github_cli_timeout: {
     title: "GitHub didn't respond in time",
     description: "Publishing can be retried after GitHub becomes available.",
@@ -314,10 +324,67 @@ export function stepDisplayName(steps: RunStep[], index: number): string {
   const step = steps[index];
   if (!step) return "Step";
   const name = step.name ?? humanize(step.semantic_step_key);
-  const pass = steps
-    .slice(0, index + 1)
-    .filter((item) => item.semantic_step_key === step.semantic_step_key).length;
-  return pass > 1 ? `${name} · ${ordinal(pass)} pass` : name;
+  if (step.remediation_cycle !== null && step.phase === "check")
+    return `${name} ${step.remediation_cycle + 1}`;
+  if (step.remediation_cycle !== null && step.phase === "otherwise")
+    return `${name} ${step.remediation_cycle}`;
+
+  const matching = steps.filter(
+    (item) => item.semantic_step_key === step.semantic_step_key,
+  );
+  if (matching.length < 2) return name;
+  const pass = matching.findIndex(
+    (item) => item.occurrence_id === step.occurrence_id,
+  );
+  return `${name} ${pass + 1}`;
+}
+
+export function latestReviewArtifact(
+  steps: RunStep[],
+  artifacts: ArtifactSummary[],
+): ArtifactSummary | null {
+  for (const step of [...steps].reverse()) {
+    if (step.state !== "completed") continue;
+    const reference = step.outputs.find((output) => output.type === "verdict");
+    if (!reference) continue;
+    const artifact = artifacts.find(
+      (item) => item.id === reference.artifact_id,
+    );
+    if (artifact) return artifact;
+  }
+  return null;
+}
+
+export function currentReviewResult(
+  run: RunProjection,
+): StatusPresentation | null {
+  if (!run.review_gate.required) return null;
+  if (run.review_gate.status === "accepted")
+    return {
+      label: "Accepted",
+      description:
+        "The latest completed semantic Review accepted the implementation.",
+      tone: "success",
+    };
+  if (run.review_gate.status === "rejected")
+    return {
+      label: "Rejected",
+      description:
+        "The latest completed semantic Review rejected the implementation.",
+      tone: "danger",
+    };
+  if (run.review_gate.status === "invalid")
+    return {
+      label: "Invalid verdict",
+      description:
+        "The latest Review did not produce a machine-readable verdict.",
+      tone: "danger",
+    };
+  return {
+    label: "Not completed",
+    description: "No completed semantic Review has produced a verdict yet.",
+    tone: "neutral",
+  };
 }
 
 export function stepResult(
@@ -330,14 +397,15 @@ export function stepResult(
       (item) => item.id === reference.artifact_id,
     );
     const preview = artifact?.preview;
-    if (
-      preview &&
-      typeof preview === "object" &&
-      !Array.isArray(preview) &&
-      preview.kind === "scalar" &&
-      typeof preview.value === "string"
-    )
-      return humanize(preview.value);
+    if (preview && typeof preview === "object" && !Array.isArray(preview)) {
+      if (
+        preview.kind === "review_verdict" &&
+        typeof preview.status === "string"
+      )
+        return humanize(preview.status);
+      if (preview.kind === "scalar" && typeof preview.value === "string")
+        return humanize(preview.value);
+    }
   }
   return null;
 }
@@ -351,6 +419,8 @@ export function artifactPreview(summary: ArtifactSummary): string {
   const preview = summary.preview;
   if (!preview || typeof preview !== "object" || Array.isArray(preview))
     return String(preview ?? "Value available");
+  if (preview.kind === "review_verdict" && typeof preview.status === "string")
+    return humanize(preview.status);
   if (preview.kind === "scalar")
     return typeof preview.value === "string"
       ? humanize(preview.value)
@@ -407,10 +477,4 @@ export function artifactProducer(
 export function humanize(value: string): string {
   const words = value.replaceAll("_", " ").replaceAll("-", " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Unknown";
-}
-
-function ordinal(value: number): string {
-  if (value === 2) return "second";
-  if (value === 3) return "third";
-  return `${value}th`;
 }

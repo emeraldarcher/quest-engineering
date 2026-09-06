@@ -9,6 +9,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
   alias QuestEngineering.Core.Tactics.Sequence
   alias QuestEngineering.Core.Tactics.Step
   alias QuestEngineering.Core.Tactics.Until
+  alias QuestEngineering.Server.DeliveryEligibility
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.QuestLaunch
@@ -210,12 +211,43 @@ defmodule QuestEngineering.Server.ProductApi.View do
     }
   end
 
+  defp lifecycle_for_run(run_id, %{status: "completed"}, nil) do
+    case DeliveryEligibility.check(run_id) do
+      {:ok, _acceptance} ->
+        %{
+          state: "preparing_review",
+          label: "Preparing Review",
+          current_run_id: run_id,
+          primary_action: nil
+        }
+
+      {:error, assessment} when is_map(assessment) ->
+        issue = DeliveryEligibility.issue(assessment)
+
+        %{
+          state: "needs_attention",
+          label: "Review Not Accepted",
+          current_run_id: run_id,
+          primary_action: "run_again",
+          issue: Map.take(issue, [:code, :message])
+        }
+
+      {:error, _error} ->
+        %{
+          state: "needs_attention",
+          label: "Needs Attention",
+          current_run_id: run_id,
+          primary_action: "run_again"
+        }
+    end
+  end
+
   defp lifecycle_for_run(run_id, _run, nil),
     do: %{
-      state: "preparing_review",
-      label: "Preparing Review",
+      state: "needs_attention",
+      label: "Needs Attention",
       current_run_id: run_id,
-      primary_action: nil
+      primary_action: "run_again"
     }
 
   def tactic_source(%Inline{body: body}), do: %{type: "inline", body: TacticCodec.encode(body)}

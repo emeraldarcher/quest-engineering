@@ -3,7 +3,9 @@ import type { Quest, RunProjection, RunStep } from "../../api/contracts";
 import {
   canCleanUp,
   canRunAgain,
+  currentReviewResult,
   diagnosticPresentation,
+  latestReviewArtifact,
   questPresentation,
   stepDisplayName,
 } from "./run-presentation";
@@ -36,6 +38,13 @@ function run(): RunProjection {
     squad: { id: "squad", key: "squad", name: "Squad", members: [] },
     steps: [],
     artifacts: [],
+    review_gate: {
+      required: false,
+      status: "not_required",
+      occurrence_id: null,
+      attempt_id: null,
+      artifact_id: null,
+    },
     step_counts: {
       pending: 0,
       waiting: 0,
@@ -109,17 +118,40 @@ describe("Work Yard operational presentation", () => {
     expect(diagnostic.description).toContain("Run base branch is unavailable");
   });
 
-  test("repeated semantic occurrences are passes, not fabricated attempt history", () => {
-    const step = (id: string): RunStep => ({
+  test("semantic remediation occurrences use visible cycle numbers", () => {
+    const step = (id: string, cycle: number): RunStep => ({
       occurrence_id: id,
       semantic_step_key: "review",
       name: "Review",
       instruction: "Review.",
       state: "completed",
       phase: "check",
-      remediation_cycle: 1,
+      remediation_cycle: cycle,
       control_path: [],
-      attempt: { id: `attempt-${id}`, number: 1, state: "completed" },
+      attempt: {
+        id: `attempt-${id}`,
+        number: 1,
+        state: "completed",
+        started_at: null,
+        finished_at: null,
+        outputs: [],
+        output_produced: false,
+        resolution: null,
+        retry_of_attempt_id: null,
+      },
+      attempts: [
+        {
+          id: `attempt-${id}`,
+          number: 1,
+          state: "completed",
+          started_at: null,
+          finished_at: null,
+          outputs: [],
+          output_produced: false,
+          resolution: null,
+          retry_of_attempt_id: null,
+        },
+      ],
       member: null,
       performer: {
         selector: null,
@@ -136,8 +168,78 @@ describe("Work Yard operational presentation", () => {
       outputs: [],
       issue: null,
     });
-    const steps = [step("first"), step("second")];
-    expect(stepDisplayName(steps, 0)).toBe("Review");
-    expect(stepDisplayName(steps, 1)).toBe("Review · second pass");
+    const steps = [step("first", 0), step("second", 1)];
+    expect(stepDisplayName(steps, 0)).toBe("Review 1");
+    expect(stepDisplayName(steps, 1)).toBe("Review 2");
+  });
+
+  test("latest Review result follows semantic occurrence order, not artifact order", () => {
+    const value = run();
+    const rejected = {
+      id: "verdict-rejected",
+      type: "verdict",
+      producer_occurrence_id: "review-1",
+      producer_attempt_id: "review-1-attempt-1",
+      preview: { kind: "review_verdict", status: "rejected" },
+    };
+    const accepted = {
+      id: "verdict-accepted",
+      type: "verdict",
+      producer_occurrence_id: "review-2",
+      producer_attempt_id: "review-2-attempt-1",
+      preview: { kind: "review_verdict", status: "accepted" },
+    };
+    const review = (id: string, artifactId: string): RunStep => ({
+      occurrence_id: id,
+      semantic_step_key: "review",
+      name: "Review",
+      instruction: "Review.",
+      state: "completed",
+      phase: "check",
+      remediation_cycle: id === "review-1" ? 0 : 1,
+      control_path: [],
+      attempt: null,
+      attempts: [],
+      member: null,
+      performer: {
+        selector: null,
+        class_key: null,
+        source_occurrence_id: null,
+        source_semantic_step_key: null,
+      },
+      context: {
+        mode: null,
+        source_occurrence_id: null,
+        source_semantic_step_key: null,
+      },
+      inputs: [],
+      outputs: [{ type: "verdict", artifact_id: artifactId }],
+      issue: null,
+    });
+    value.steps = [
+      review("review-1", rejected.id),
+      review("review-2", accepted.id),
+    ];
+    value.artifacts = [accepted, rejected];
+    value.review_gate = {
+      required: true,
+      status: "accepted",
+      occurrence_id: "review-2",
+      attempt_id: "review-2-attempt-1",
+      artifact_id: accepted.id,
+    };
+
+    expect(latestReviewArtifact(value.steps, value.artifacts)?.id).toBe(
+      accepted.id,
+    );
+    expect(currentReviewResult(value)?.label).toBe("Accepted");
+
+    const latest = value.steps[1];
+    if (!latest) throw new Error("Expected latest Review");
+    latest.state = "running";
+    latest.outputs = [];
+    expect(latestReviewArtifact(value.steps, value.artifacts)?.id).toBe(
+      rejected.id,
+    );
   });
 });

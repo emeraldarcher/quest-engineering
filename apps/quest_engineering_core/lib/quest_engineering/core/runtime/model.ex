@@ -169,7 +169,7 @@ defmodule QuestEngineering.Core.Runtime.StepOccurrence do
 end
 
 defmodule QuestEngineering.Core.Runtime.ExecutionAttempt do
-  @moduledoc "A concrete try to execute one step occurrence; the runtime currently creates exactly one."
+  @moduledoc "A concrete operational try beneath one semantic step occurrence."
 
   @enforce_keys [:id, :number, :status]
   defstruct [:id, :number, :status]

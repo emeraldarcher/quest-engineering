@@ -115,7 +115,7 @@ test("Overview is concise and separates execution, Delivery, Quest, and workspac
   expect(screen.getByText("Rowan")).toBeTruthy();
   expect(screen.getByText("Mira")).toBeTruthy();
   expect(
-    screen.getByText("Approved", { selector: ".result-section h3" }),
+    screen.getByText("Review: Accepted", { selector: ".result-section h3" }),
   ).toBeTruthy();
   expect(screen.queryByText("occ-implement")).toBeNull();
   expect(
@@ -135,15 +135,33 @@ test("Timeline uses snapshot Member names and current attempt without inventing 
   expect(screen.queryByRole("heading", { name: "Attempts" })).toBeNull();
 });
 
-test("remediation sequencing uses repeated semantic passes", () => {
+test("remediation history separates semantic Reviews from operational attempts", async () => {
   setup("work-yard-remediation", "remediation");
 
-  expect(
-    screen.getByRole("heading", { name: "Review · second pass" }),
-  ).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Repair" })).toBeTruthy();
-  expect(screen.getByText("Changes requested")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Review 1" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Repair 1" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Review 2" })).toBeTruthy();
+  expect(screen.getByText(/Rejected/)).toBeTruthy();
+  expect(screen.getByText("Accepted")).toBeTruthy();
+
+  const attempts = document.querySelector<HTMLDetailsElement>(
+    "details.attempt-history",
+  );
+  const summary = attempts?.querySelector("summary");
+  if (!attempts || !summary) throw new Error("Expected attempt history");
+  expect(attempts.open).toBe(false);
+  await fireEvent.click(summary);
+  expect(attempts.textContent).toContain("Attempt 1");
+  expect(attempts.textContent).toContain("Uncertain · Retried");
+  expect(attempts.textContent).toContain("No output produced");
+  expect(attempts.textContent).toContain("Attempt 2");
+  expect(attempts.textContent).toContain("Produced Verdict");
   expect(screen.queryByText("occ-review-first")).toBeNull();
+
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  expect(
+    screen.getByText("Review: Accepted", { selector: ".result-section h3" }),
+  ).toBeTruthy();
 });
 
 test("artifact details load lazily and arbitrary values retain Raw data fallback", async () => {

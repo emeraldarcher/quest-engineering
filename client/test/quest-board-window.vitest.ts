@@ -141,7 +141,9 @@ test("rich pickers show Product meaning without raw IDs", async () => {
   await fireEvent.click(
     screen.getByRole("button", { name: /Choose an Approach/ }),
   );
-  expect(screen.getByText("Implement → Review")).toBeTruthy();
+  expect(
+    screen.getAllByText("Implement → Review → Repair").length,
+  ).toBeGreaterThan(0);
   expect(
     screen.queryByRole("heading", { name: "Reusable Tactics" }),
   ).toBeNull();

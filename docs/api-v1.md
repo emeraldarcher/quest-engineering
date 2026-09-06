@@ -50,7 +50,9 @@ POST /runs/:id/worktree/cleanup
 GET  /runs/:run_id/artifacts/:artifact_id
 ```
 
-`delivery` is independent of Core Runtime and projects `preparing_review | awaiting_review | merged | closed_unmerged | no_changes | attention_required`, authoritative change counts, exact base/head revisions, safe issue data, and canonical GitHub review metadata.
+`delivery` is independent of Core Runtime and projects `preparing_review | awaiting_review | merged | closed_unmerged | no_changes | attention_required`, authoritative change counts, exact base/head revisions, safe issue data, and canonical GitHub review metadata. Delivery creation is server-gated: a Run whose Tactic produces `verdict` artifacts is eligible only when the latest completed verdict-producing semantic occurrence emitted `{ "status": "accepted" }`.
+
+Run detail keeps semantic occurrences separate from operational attempts. Each Step projection includes an ordered `attempts` list with Product-safe state, timing, retry resolution, and output references; artifact summaries include both producing occurrence and producing attempt IDs. `review_gate` reports `not_required | accepted | rejected | missing | invalid` and points to the latest relevant semantic Review occurrence and artifact without discarding older verdicts.
 
 `Retry Publishing` resumes the same Delivery and runs no model work. Cleanup accepts `{ "acknowledge_unmerged": true }` when applicable, removes only a clean managed worktree non-forcibly, and retains branches/history.
 

@@ -6,7 +6,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-test("decodes projected launch and current Step attempt without creating attempt history", async () => {
+test("decodes projected occurrence and nested attempt history", async () => {
   globalThis.fetch = mock(
     async () =>
       new Response(
@@ -39,7 +39,41 @@ test("decodes projected launch and current Step attempt without creating attempt
                 phase: "check",
                 remediation_cycle: 1,
                 control_path: [],
-                attempt: { id: "attempt-2", number: 2, state: "running" },
+                attempt: {
+                  id: "attempt-2",
+                  number: 2,
+                  state: "running",
+                  started_at: "2026-09-01T12:01:00Z",
+                  finished_at: null,
+                  outputs: [],
+                  output_produced: false,
+                  resolution: null,
+                  retry_of_attempt_id: "attempt-1",
+                },
+                attempts: [
+                  {
+                    id: "attempt-1",
+                    number: 1,
+                    state: "uncertain",
+                    started_at: "2026-09-01T12:00:00Z",
+                    finished_at: "2026-09-01T12:01:00Z",
+                    outputs: [],
+                    output_produced: false,
+                    resolution: "retried",
+                    retry_of_attempt_id: null,
+                  },
+                  {
+                    id: "attempt-2",
+                    number: 2,
+                    state: "running",
+                    started_at: "2026-09-01T12:01:00Z",
+                    finished_at: null,
+                    outputs: [],
+                    output_produced: false,
+                    resolution: null,
+                    retry_of_attempt_id: "attempt-1",
+                  },
+                ],
                 member: null,
                 performer: {
                   selector: "class",
@@ -58,6 +92,13 @@ test("decodes projected launch and current Step attempt without creating attempt
               },
             ],
             artifacts: [],
+            review_gate: {
+              required: true,
+              status: "missing",
+              occurrence_id: null,
+              attempt_id: null,
+              artifact_id: null,
+            },
             step_counts: {
               pending: 0,
               waiting: 0,
@@ -77,10 +118,12 @@ test("decodes projected launch and current Step attempt without creating attempt
   const run = await api.getRun("run-1");
 
   expect(run.launch.id).toBe("launch-1");
-  expect(run.steps[0]?.attempt).toEqual({
-    id: "attempt-2",
-    number: 2,
-    state: "running",
+  expect(run.steps[0]?.attempt?.id).toBe("attempt-2");
+  expect(run.steps[0]?.attempts).toHaveLength(2);
+  expect(run.steps[0]?.attempts[0]).toMatchObject({
+    number: 1,
+    state: "uncertain",
+    output_produced: false,
+    resolution: "retried",
   });
-  expect("attempts" in (run.steps[0] ?? {})).toBe(false);
 });

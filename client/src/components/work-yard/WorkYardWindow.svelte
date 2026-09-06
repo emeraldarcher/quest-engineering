@@ -4,6 +4,7 @@ import type {
   ArtifactDetail,
   ArtifactSummary,
   Quest,
+  RunAttempt,
   RunProjection,
   SnapshotMember,
 } from "../../api/contracts";
@@ -16,12 +17,14 @@ import {
   artifactTypeLabel,
   canCleanUp,
   canRunAgain,
+  currentReviewResult,
   deliveryPresentation,
   diagnosticPresentation,
   executionPresentation,
   formatLaunchTime,
   friendlyArtifact,
   humanize,
+  latestReviewArtifact,
   questPresentation,
   runProgress,
   stepDisplayName,
@@ -80,8 +83,7 @@ $: workspace = run
   ? workspacePresentation(run.execution_environment.state)
   : null;
 $: questStatus = run ? questPresentation(run, quest) : null;
-$: resultArtifact = run?.artifacts.find((item) => item.type === "verdict") ?? null;
-$: resultText = resultArtifact ? artifactPreview(resultArtifact) : null;
+$: reviewResult = run ? currentReviewResult(run) : null;
 $: uncertainStep = run?.steps.find((step) => step.recovery !== null) ?? null;
 $: if (run?.id !== activeRunId) {
   activeRunId = run?.id ?? null;
@@ -118,7 +120,9 @@ onMount(async () => {
     const item =
       scene === "artifact-raw"
         ? run?.artifacts.find((artifact) => artifact.type === "custom_metrics")
-        : run?.artifacts.find((artifact) => artifact.type === "verdict");
+        : run
+          ? latestReviewArtifact(run.steps, run.artifacts)
+          : null;
     if (item) await selectArtifact(item);
   }
   if (scene === "cleanup" && run?.delivery?.state === "closed_unmerged") {
@@ -269,6 +273,12 @@ function memberActivity(member: SnapshotMember): string {
 function shortRevision(value: string | null): string {
   return value ? value.slice(0, 10) : "Unavailable";
 }
+
+function attemptOutput(attempt: RunAttempt): string {
+  if (!attempt.output_produced) return "No output produced";
+  const labels = attempt.outputs.map((output) => artifactTypeLabel(output.type));
+  return `Produced ${labels.join(", ")}`;
+}
 </script>
 
 <aside class="management-window management-window-shell work-yard-window" aria-labelledby="work-yard-title">
@@ -388,8 +398,8 @@ function shortRevision(value: string | null): string {
 
                 <section class="overview-section result-section">
                   <span class="eyebrow">Result</span>
-                  <h3>{resultText ?? (run.status === "completed" ? "Execution completed" : "Work in progress")}</h3>
-                  <p>{run.quest.objective}</p>
+                  <h3 class="tone-text-{reviewResult?.tone ?? execution.tone}">{reviewResult ? `Review: ${reviewResult.label}` : run.status === "completed" ? "Execution completed" : "Work in progress"}</h3>
+                  <p>{reviewResult?.description ?? run.quest.objective}</p>
                   <dl class="status-table">
                     <div><dt>Execution</dt><dd class="tone-text-{execution.tone}">{execution.label}</dd></div>
                     <div><dt>Delivery</dt><dd class="tone-text-{delivery.tone}">{delivery.label}</dd></div>
@@ -425,6 +435,20 @@ function shortRevision(value: string | null): string {
                           {#each step.inputs as reference}<button on:click={() => { tab = "artifacts"; const item = run?.artifacts.find((artifact) => artifact.id === reference.artifact_id); if (item) void selectArtifact(item); }}>Input · {artifactTypeLabel(reference.type)}</button>{/each}
                           {#each step.outputs as reference}<button on:click={() => { tab = "artifacts"; const item = run?.artifacts.find((artifact) => artifact.id === reference.artifact_id); if (item) void selectArtifact(item); }}>Output · {artifactTypeLabel(reference.type)}</button>{/each}
                         </div>
+                      {/if}
+                      {#if step.attempts.length > 1}
+                        <details class="attempt-history">
+                          <summary>{step.attempts.length} operational attempts</summary>
+                          <ol>
+                            {#each step.attempts as attempt}
+                              {@const attemptStatus = executionPresentation(attempt.state)}
+                              <li>
+                                <span><strong>Attempt {attempt.number}</strong><em class="tone-text-{attemptStatus.tone}">{attemptStatus.label}{attempt.resolution === "retried" ? " · Retried" : attempt.resolution === "marked_failed" ? " · Marked failed" : ""}</em></span>
+                                <small>{attemptOutput(attempt)}</small>
+                              </li>
+                            {/each}
+                          </ol>
+                        </details>
                       {/if}
                     </div>
                   </li>
@@ -593,8 +617,8 @@ function shortRevision(value: string | null): string {
   .section-heading > span { color: var(--app-muted); font-size: .8rem; font-weight: 750; }
   .section-heading > .status-chip { color: white; }
   .timeline { margin: 0; padding: .5rem 0 0; list-style: none; }
-  .timeline li { position: relative; display: grid; grid-template-columns: 2.3rem minmax(0, 1fr); gap: .7rem; padding: .65rem 0 .7rem; }
-  .timeline li:not(:last-child)::after { position: absolute; top: 2.65rem; bottom: -.35rem; left: 1.05rem; width: 2px; content: ""; background: #d7c09a; }
+  .timeline > li { position: relative; display: grid; grid-template-columns: 2.3rem minmax(0, 1fr); gap: .7rem; padding: .65rem 0 .7rem; }
+  .timeline > li:not(:last-child)::after { position: absolute; top: 2.65rem; bottom: -.35rem; left: 1.05rem; width: 2px; content: ""; background: #d7c09a; }
   .timeline-marker { z-index: 1; display: grid; width: 2.15rem; height: 2.15rem; place-items: center; color: white; border: 3px solid #fff5df; border-radius: 50%; font-size: .8rem; font-weight: 900; }
   .timeline-copy { padding: .1rem .2rem .55rem; border-bottom: 1px solid #ead8b7; }
   .timeline-title h4 { margin: 0; color: var(--app-ink); font: 700 1.05rem Georgia, serif; text-shadow: none; }
@@ -604,6 +628,13 @@ function shortRevision(value: string | null): string {
   .step-issue { padding: .4rem .55rem; color: #783f3b !important; background: #f8ded5; border-radius: 5px; }
   .artifact-links { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .45rem; }
   .artifact-links button { min-height: 2rem; padding: .25rem .5rem; color: var(--app-teal-dark); background: #edf7ef; border: 1px solid #aabfa4; font-size: .72rem; box-shadow: none; }
+  .attempt-history { margin-top: .55rem; padding: .45rem .55rem; background: #f8edcf; border: 1px solid #dbc49d; border-radius: 6px; }
+  .attempt-history summary { color: var(--app-teal-dark); cursor: pointer; font-size: .76rem; font-weight: 800; }
+  .attempt-history ol { display: grid; gap: .35rem; margin: .45rem 0 0; padding: 0; list-style: none; }
+  .attempt-history li { display: grid; gap: .08rem; padding: .35rem .45rem; background: #fff9e9; border-left: 3px solid #c9ab7b; }
+  .attempt-history li span { display: flex; justify-content: space-between; gap: .7rem; font-size: .76rem; }
+  .attempt-history li em { font-style: normal; font-weight: 800; }
+  .attempt-history li small { color: var(--app-muted); font-size: .7rem; }
   .artifact-layout { display: grid; grid-template-columns: minmax(13rem, .72fr) minmax(0, 1.28fr); min-height: 24rem; margin-top: .8rem; border: 1px solid #d6bb8e; border-radius: 9px; overflow: hidden; }
   .artifact-list { padding: .5rem; background: #f0ddb9; border-right: 1px solid #d0b182; }
   .artifact-list button { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .55rem; width: 100%; min-height: 0; padding: .65rem; color: var(--app-ink); background: transparent; border: 1px solid transparent; box-shadow: none; text-align: left; }

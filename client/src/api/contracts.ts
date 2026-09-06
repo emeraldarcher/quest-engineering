@@ -143,6 +143,7 @@ export interface Quest {
       | "open_pull_request"
       | null;
     delivery?: DeliveryProjection;
+    issue?: { code: string; message: string };
   };
   archived_at: string | null;
 }
@@ -221,6 +222,17 @@ export interface ArtifactRef {
   type: string;
   artifact_id: string;
 }
+export interface RunAttempt {
+  id: string;
+  number: number;
+  state: string;
+  started_at: string | null;
+  finished_at: string | null;
+  outputs: ArtifactRef[];
+  output_produced: boolean;
+  resolution: "retried" | "marked_failed" | null;
+  retry_of_attempt_id: string | null;
+}
 export interface RunStep {
   occurrence_id: string;
   semantic_step_key: string;
@@ -230,11 +242,8 @@ export interface RunStep {
   phase: string | null;
   remediation_cycle: number | null;
   control_path: string[];
-  attempt: {
-    id: string;
-    number: number;
-    state: string;
-  } | null;
+  attempt: RunAttempt | null;
+  attempts: RunAttempt[];
   member: SnapshotMember | null;
   performer: {
     selector: string | null;
@@ -260,6 +269,7 @@ export interface ArtifactSummary {
   id: string;
   type: string;
   producer_occurrence_id: string;
+  producer_attempt_id: string | null;
   preview: JsonValue;
 }
 export interface DeliveryProjection {
@@ -312,6 +322,13 @@ export interface RunProjection {
   squad: { id: string; key: string; name: string; members: SnapshotMember[] };
   steps: RunStep[];
   artifacts: ArtifactSummary[];
+  review_gate: {
+    required: boolean;
+    status: "not_required" | "accepted" | "rejected" | "missing" | "invalid";
+    occurrence_id: string | null;
+    attempt_id: string | null;
+    artifact_id: string | null;
+  };
   step_counts: Record<StepState, number>;
   issues: Array<{ code: string; message: string }>;
 }

@@ -32,6 +32,13 @@ const base = (): RunProjection => ({
     members: [member("alice"), member("bob")],
   },
   artifacts: [],
+  review_gate: {
+    required: false,
+    status: "not_required",
+    occurrence_id: null,
+    attempt_id: null,
+    artifact_id: null,
+  },
   issues: [],
   step_counts: {
     pending: 0,
@@ -64,6 +71,7 @@ const step = (
   remediation_cycle: null,
   control_path: [],
   attempt: null,
+  attempts: [],
   member: bound ? member("alice") : null,
   performer: {
     selector: "class",

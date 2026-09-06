@@ -4,6 +4,7 @@ defmodule QuestEngineering.Server.DeliveryStore do
 
   import Ecto.Query
   alias Ecto.Changeset
+  alias QuestEngineering.Server.DeliveryEligibility
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RunDelivery
@@ -15,16 +16,17 @@ defmodule QuestEngineering.Server.DeliveryStore do
   alias QuestEngineering.Server.RunChangeNotifier
 
   @active ~w(pending preparing publishing creating_review review_open)
-  @nonrecoverable_attention ~w(pull_request_identity_mismatch cross_repository_pull_request_not_supported remote_branch_conflict delivery_content_changed base_branch_unresolved base_revision_unresolved)
+  @nonrecoverable_attention ~w(acceptance_not_satisfied pull_request_identity_mismatch cross_repository_pull_request_not_supported remote_branch_conflict delivery_content_changed base_branch_unresolved base_revision_unresolved)
 
   def ensure_for_completed_run(run_id) do
     launch = Repo.get_by!(QuestLaunch, run_id: run_id)
+    existing = launch && Repo.get_by(RunDelivery, run_id: run_id)
 
-    case launch && Repo.get_by(RunDelivery, run_id: run_id) do
-      %RunDelivery{} = delivery ->
+    case {existing, DeliveryEligibility.check(run_id)} do
+      {%RunDelivery{} = delivery, _acceptance} ->
         delivery
 
-      nil when not is_nil(launch) ->
+      {nil, {:ok, _acceptance}} ->
         now = now()
 
         Repo.insert!(
@@ -38,8 +40,11 @@ defmodule QuestEngineering.Server.DeliveryStore do
           })
         )
 
-      nil ->
-        Repo.rollback(:launch_not_found)
+      {nil, {:error, assessment}} when is_map(assessment) ->
+        {:error, DeliveryEligibility.issue(assessment)}
+
+      {nil, {:error, error}} ->
+        {:error, error}
     end
   end
 
@@ -122,7 +127,11 @@ defmodule QuestEngineering.Server.DeliveryStore do
         :ok
 
       is_nil(delivery) ->
-        {:error, :delivery_pending}
+        case DeliveryEligibility.check(run_id) do
+          {:ok, _acceptance} -> {:error, :delivery_pending}
+          {:error, assessment} when is_map(assessment) -> :ok
+          {:error, _error} -> {:error, :run_state_uncertain}
+        end
 
       delivery.state in ["closed_unmerged", "no_changes"] ->
         :ok
@@ -145,12 +154,21 @@ defmodule QuestEngineering.Server.DeliveryStore do
   end
 
   def preparing(run_id) do
-    transition(run_id, ~w(pending attention_required), %{
-      state: "preparing",
-      failure_stage: nil,
-      failure_code: nil,
-      failure_details: nil
-    })
+    case DeliveryEligibility.check(run_id) do
+      {:ok, _acceptance} ->
+        transition(run_id, ~w(pending attention_required), %{
+          state: "preparing",
+          failure_stage: nil,
+          failure_code: nil,
+          failure_details: nil
+        })
+
+      {:error, assessment} when is_map(assessment) ->
+        {:error, DeliveryEligibility.issue(assessment)}
+
+      {:error, error} ->
+        {:error, error}
+    end
   end
 
   def inspected(worker_id, generation, message) do
@@ -525,6 +543,9 @@ defmodule QuestEngineering.Server.DeliveryStore do
 
   defp issue_message("no_changes"),
     do: "Agent work completed, but there are no repository changes to publish."
+
+  defp issue_message("acceptance_not_satisfied"),
+    do: "Required semantic review acceptance was not satisfied; Delivery was blocked."
 
   defp issue_message(_), do: "Publishing requires attention."
 

@@ -116,6 +116,14 @@ defmodule QuestEngineering.Core.RuntimeTest do
                Runtime.transition(run, Runtime.completed(review_2, %{"verdict" => "approved"}))
 
       assert completed.status == :completed
+      assert length(completed.artifact_order) == 2
+
+      completed_review = Map.fetch!(completed.occurrences, review_1.occurrence_id)
+
+      assert Enum.map(completed_review.attempts, &{&1.number, &1.status}) ==
+               [{1, :failed}, {2, :completed}]
+
+      assert map_size(completed_review.output_artifact_ids) == 1
     end
 
     test "mark failed terminalizes the occurrence and Run" do
@@ -215,6 +223,63 @@ defmodule QuestEngineering.Core.RuntimeTest do
       assert region.remediations_completed == 1
       assert length(region.check_scope_ids) == 2
       assert length(region.otherwise_scope_ids) == 1
+    end
+
+    test "multiple rejected Reviews preserve history before later acceptance" do
+      plan = compile!(pressure_tactic())
+      {:ok, run, [plan_action]} = Runtime.start(plan)
+      {:ok, run, [implement]} = complete(run, plan_action, %{"plan" => %{}})
+      {:ok, run, [review_0]} = complete(run, implement, %{"change_set" => %{"version" => 0}})
+
+      {:ok, run, [repair_1]} =
+        complete(run, review_0, %{"verdict" => %{"status" => "rejected", "cycle" => 0}})
+
+      {:ok, run, [review_1]} =
+        complete(run, repair_1, %{"change_set" => %{"version" => 1}})
+
+      {:ok, run, [repair_2]} =
+        complete(run, review_1, %{"verdict" => %{"status" => "rejected", "cycle" => 1}})
+
+      {:ok, run, [review_2]} =
+        complete(run, repair_2, %{"change_set" => %{"version" => 2}})
+
+      assert {:ok, completed, []} =
+               complete(run, review_2, %{"verdict" => %{"status" => "accepted"}})
+
+      verdicts =
+        completed.artifact_order
+        |> Enum.map(&Map.fetch!(completed.artifacts, &1))
+        |> Enum.filter(&(&1.type == "verdict"))
+
+      assert Enum.map(verdicts, & &1.value["status"]) == ~w(rejected rejected accepted)
+
+      assert Enum.map(verdicts, & &1.producer_occurrence_id) ==
+               Enum.map(semantic_occurrences(completed, "review"), & &1.id)
+
+      assert length(semantic_occurrences(completed, "repair")) == 2
+      assert completed.status == :completed
+    end
+
+    test "an operational retry within Review does not create a verdict or remediation" do
+      plan = compile!(pressure_tactic())
+      {:ok, run, [plan_action]} = Runtime.start(plan)
+      {:ok, run, [implement]} = complete(run, plan_action, %{"plan" => %{}})
+      {:ok, run, [review_1]} = complete(run, implement, %{"change_set" => %{"version" => 0}})
+
+      assert {:ok, retried, [review_2]} =
+               Runtime.transition(run, Runtime.retry_requested(review_1))
+
+      assert review_2.occurrence_id == review_1.occurrence_id
+      assert semantic_occurrences(retried, "repair") == []
+
+      refute Enum.any?(retried.artifacts, fn {_id, artifact} -> artifact.type == "verdict" end)
+
+      assert {:ok, accepted, []} =
+               complete(retried, review_2, %{"verdict" => %{"status" => "accepted"}})
+
+      assert accepted.status == :completed
+      assert semantic_occurrences(accepted, "repair") == []
+      assert length(semantic_occurrences(accepted, "review")) == 1
     end
 
     test "immediate success never instantiates remediation and exports original carry" do

@@ -57,8 +57,12 @@ defmodule QuestEngineering.Server.CompletionAdapter do
 
   defp retain_terminal_workspace(_run_id, _run), do: :ok
 
-  defp ensure_delivery(run_id, %{status: :completed}),
-    do: DeliveryStore.ensure_for_completed_run(run_id)
+  defp ensure_delivery(run_id, %{status: :completed}) do
+    case DeliveryStore.ensure_for_completed_run(run_id) do
+      %QuestEngineering.Server.Persistence.RunDelivery{} = delivery -> delivery
+      {:error, _ineligible} -> nil
+    end
+  end
 
   defp ensure_delivery(_run_id, _run), do: nil
 

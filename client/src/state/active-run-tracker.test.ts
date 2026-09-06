@@ -49,6 +49,7 @@ function projection(
               remediation_cycle: null,
               control_path: [],
               attempt: null,
+              attempts: [],
               member,
               performer: {
                 selector: "class",
@@ -67,6 +68,13 @@ function projection(
             },
           ],
     artifacts: [],
+    review_gate: {
+      required: false,
+      status: "not_required",
+      occurrence_id: null,
+      attempt_id: null,
+      artifact_id: null,
+    },
     step_counts: {
       pending: 0,
       waiting: 0,

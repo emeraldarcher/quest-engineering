@@ -5,6 +5,7 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
   require Logger
 
   import Ecto.Query
+  alias QuestEngineering.Server.DeliveryEligibility
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
@@ -74,7 +75,36 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
 
   defp process_delivery(nil, _provider), do: :ok
 
-  defp process_delivery(%{state: "pending"} = delivery, _provider) do
+  defp process_delivery(%{state: state} = delivery, provider)
+       when state in ~w(pending preparing publishing creating_review) do
+    case DeliveryEligibility.check(delivery.run_id) do
+      {:ok, _acceptance} ->
+        process_eligible_delivery(delivery, provider)
+
+      {:error, assessment} when is_map(assessment) ->
+        issue = DeliveryEligibility.issue(assessment)
+        DeliveryStore.mark_attention(delivery.run_id, "acceptance", issue.code, issue.details)
+        :ok
+
+      {:error, _error} ->
+        :ok
+    end
+  end
+
+  defp process_delivery(%{state: "review_open"} = delivery, provider) do
+    case provider.inspect(delivery) do
+      {:ok, metadata} ->
+        DeliveryStore.observe_review(delivery.id, metadata)
+        :ok
+
+      {:error, _failure} ->
+        :ok
+    end
+  end
+
+  defp process_delivery(_delivery, _provider), do: :ok
+
+  defp process_eligible_delivery(%{state: "pending"} = delivery, _provider) do
     with {:ok, assignment, worker} <- eligible(delivery),
          true <- not is_nil(assignment.retention_confirmed_at),
          {:ok, _} <- DeliveryStore.preparing(delivery.run_id),
@@ -96,7 +126,7 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
     end
   end
 
-  defp process_delivery(%{state: "preparing"} = delivery, _provider) do
+  defp process_eligible_delivery(%{state: "preparing"} = delivery, _provider) do
     with {:ok, assignment, worker} <- eligible(delivery),
          :ok <-
            send_message(
@@ -109,7 +139,7 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
     end
   end
 
-  defp process_delivery(%{state: "publishing"} = delivery, provider) do
+  defp process_eligible_delivery(%{state: "publishing"} = delivery, provider) do
     result =
       run_after_preflight(provider, delivery, fn ->
         with {:ok, assignment, worker} <- eligible(delivery) do
@@ -124,7 +154,7 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
     handle_publish_result(delivery, result)
   end
 
-  defp process_delivery(%{state: "creating_review"} = delivery, provider) do
+  defp process_eligible_delivery(%{state: "creating_review"} = delivery, provider) do
     result =
       with {:ok, existing} <- provider.find_by_head(delivery) do
         if existing,
@@ -142,19 +172,6 @@ defmodule QuestEngineering.Server.DeliveryCoordinator do
         :ok
     end
   end
-
-  defp process_delivery(%{state: "review_open"} = delivery, provider) do
-    case provider.inspect(delivery) do
-      {:ok, metadata} ->
-        DeliveryStore.observe_review(delivery.id, metadata)
-        :ok
-
-      {:error, _failure} ->
-        :ok
-    end
-  end
-
-  defp process_delivery(_delivery, _provider), do: :ok
 
   @doc false
   def run_after_preflight(provider, delivery, continuation) when is_function(continuation, 0) do

@@ -6,6 +6,7 @@ import type {
   Loadout,
   Quest,
   QuestLifecycleState,
+  RunAttempt,
   RunProjection,
   RunStep,
   RunSummary,
@@ -351,6 +352,28 @@ function delivery(state: DeliveryProjection["state"]): DeliveryProjection {
   };
 }
 
+function runAttempt(
+  id: string,
+  number: number,
+  state: string,
+  outputs: RunAttempt["outputs"] = [],
+  options: { resolution?: RunAttempt["resolution"]; retryOf?: string } = {},
+): RunAttempt {
+  return {
+    id,
+    number,
+    state,
+    started_at: "2026-09-01T14:20:00Z",
+    finished_at: ["completed", "failed", "uncertain"].includes(state)
+      ? "2026-09-01T14:22:00Z"
+      : null,
+    outputs,
+    output_produced: outputs.length > 0,
+    resolution: options.resolution ?? null,
+    retry_of_attempt_id: options.retryOf ?? null,
+  };
+}
+
 function step(
   index: number,
   state: RunStep["state"],
@@ -373,8 +396,17 @@ function step(
       "failed",
       "uncertain",
     ].includes(state)
-      ? { id: `attempt-${index + 1}`, number: 1, state }
+      ? runAttempt(`attempt-${index + 1}`, 1, state)
       : null,
+    attempts: [
+      "scheduled",
+      "running",
+      "completed",
+      "failed",
+      "uncertain",
+    ].includes(state)
+      ? [runAttempt(`attempt-${index + 1}`, 1, state)]
+      : [],
     member,
     performer: {
       selector: "class",
@@ -466,6 +498,13 @@ function run(
     },
     steps,
     artifacts: [],
+    review_gate: {
+      required: false,
+      status: "not_required",
+      occurrence_id: null,
+      attempt_id: null,
+      artifact_id: null,
+    },
     issues: [],
     step_counts: counts(steps),
   };
@@ -551,11 +590,22 @@ function workYardStep(
     control_path: [],
     attempt: ["pending", "waiting"].includes(state)
       ? null
-      : {
-          id: `attempt-${id}`,
-          number: state === "running" ? 2 : 1,
+      : runAttempt(
+          `attempt-${id}`,
+          state === "running" ? 2 : 1,
           state,
-        },
+          outputs,
+        ),
+    attempts: ["pending", "waiting"].includes(state)
+      ? []
+      : [
+          runAttempt(
+            `attempt-${id}`,
+            state === "running" ? 2 : 1,
+            state,
+            outputs,
+          ),
+        ],
     member,
     performer: {
       selector: "class",
@@ -596,13 +646,15 @@ function workYardArtifacts(): {
       id: "artifact-verdict",
       type: "verdict",
       producer_occurrence_id: "occ-review",
-      preview: { kind: "scalar", value: "approved" },
-      value: "approved",
+      producer_attempt_id: "attempt-occ-review",
+      preview: { kind: "review_verdict", status: "accepted" },
+      value: { status: "accepted", findings: [] },
     },
     {
       id: "artifact-change-set",
       type: "change_set",
       producer_occurrence_id: "occ-implement",
+      producer_attempt_id: "attempt-occ-implement",
       preview: { kind: "json_summary", summary: "object" },
       value: {
         created: ["hello_world.md"],
@@ -614,6 +666,7 @@ function workYardArtifacts(): {
       id: "artifact-custom",
       type: "custom_metrics",
       producer_occurrence_id: "occ-review",
+      producer_attempt_id: "attempt-occ-review",
       preview: { kind: "json_summary", summary: "object" },
       value: {
         confidence: 0.94,
@@ -703,7 +756,7 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
           "Repair",
           "completed",
           workYardRowan,
-          [],
+          [{ type: "change_set", artifact_id: "artifact-repair-change-set" }],
           1,
         ),
         workYardStep(
@@ -736,16 +789,53 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
             : [{ type: "verdict", artifact_id: "artifact-verdict" }],
         ),
       ];
+  if (isRemediation) {
+    const firstReview = steps[1];
+    if (firstReview) {
+      const uncertain = runAttempt(
+        "attempt-occ-review-first-1",
+        1,
+        "uncertain",
+        [],
+        { resolution: "retried" },
+      );
+      const completed = runAttempt(
+        "attempt-occ-review-first-2",
+        2,
+        "completed",
+        firstReview.outputs,
+        { retryOf: uncertain.id },
+      );
+      firstReview.attempt = completed;
+      firstReview.attempts = [uncertain, completed];
+    }
+  }
+
+  const rejectedArtifact: ArtifactSummary = {
+    id: "artifact-changes-requested",
+    type: "verdict",
+    producer_occurrence_id: "occ-review-first",
+    producer_attempt_id: "attempt-occ-review-first-2",
+    preview: { kind: "review_verdict", status: "rejected" },
+  };
+  const repairArtifact: ArtifactSummary = {
+    id: "artifact-repair-change-set",
+    type: "change_set",
+    producer_occurrence_id: "occ-repair",
+    producer_attempt_id: "attempt-occ-repair",
+    preview: { kind: "json_summary", summary: "object" },
+  };
+  const initialChangeSet = artifacts.summaries.find(
+    (artifact) => artifact.id === "artifact-change-set",
+  );
+  const acceptedVerdict = artifacts.summaries.find(
+    (artifact) => artifact.id === "artifact-verdict",
+  );
   const runArtifacts = isRunning
     ? artifacts.summaries.slice(1, 2)
-    : artifacts.summaries;
-  if (isRemediation)
-    runArtifacts.push({
-      id: "artifact-changes-requested",
-      type: "verdict",
-      producer_occurrence_id: "occ-review-first",
-      preview: { kind: "scalar", value: "changes_requested" },
-    });
+    : isRemediation && initialChangeSet && acceptedVerdict
+      ? [initialChangeSet, rejectedArtifact, repairArtifact, acceptedVerdict]
+      : artifacts.summaries;
   const runValue: RunProjection = {
     id: "run-mini-test",
     status: isRunning ? "running" : "completed",
@@ -781,6 +871,13 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
     },
     steps,
     artifacts: runArtifacts,
+    review_gate: {
+      required: true,
+      status: isRunning ? "missing" : "accepted",
+      occurrence_id: isRunning ? null : "occ-review",
+      attempt_id: isRunning ? null : "attempt-occ-review",
+      artifact_id: isRunning ? null : "artifact-verdict",
+    },
     step_counts: counts(steps),
     issues: [],
   };
@@ -891,11 +988,18 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
           [runValue.id]: {
             ...artifacts.details,
             "artifact-changes-requested": {
-              id: "artifact-changes-requested",
-              type: "verdict",
-              producer_occurrence_id: "occ-review-first",
-              preview: { kind: "scalar", value: "changes_requested" },
-              value: "changes_requested",
+              ...rejectedArtifact,
+              value: {
+                status: "rejected",
+                findings: ["The implementation needs one repair."],
+              },
+            },
+            "artifact-repair-change-set": {
+              ...repairArtifact,
+              value: {
+                updated: ["README.md"],
+                summary: "Addressed the rejected review finding.",
+              },
             },
           },
         },
@@ -907,7 +1011,8 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
     id: "tactic-implement-review",
     key: "implement-and-review",
     name: "Implement & Review",
-    description: "A small implementation and independent review workflow.",
+    description:
+      "Implement, review, and repair until accepted (up to 3 repairs).",
     body: {
       type: "sequence",
       children: [
@@ -922,14 +1027,38 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
           produces: [{ type: "change_set", source: null }],
         },
         {
-          type: "step",
-          key: "review",
-          name: "Review",
-          instruction: "Review the implementation.",
-          performer: { selector: "class", value: "reviewer" },
-          context: { selector: "fresh", value: null },
-          consumes: [{ type: "change_set", source: "implement" }],
-          produces: [{ type: "verdict", source: null }],
+          type: "until",
+          check: {
+            type: "step",
+            key: "review",
+            name: "Review",
+            instruction: "Produce a structured accepted or rejected verdict.",
+            performer: { selector: "class", value: "reviewer" },
+            context: { selector: "fresh", value: null },
+            consumes: [{ type: "change_set", source: null }],
+            produces: [{ type: "verdict", source: null }],
+          },
+          condition: {
+            artifact: { type: "verdict", source: "review" },
+            field: "status",
+            operator: "equals",
+            value: "accepted",
+          },
+          otherwise: {
+            type: "step",
+            key: "repair",
+            name: "Repair",
+            instruction:
+              "Address the rejected verdict and update the change set.",
+            performer: { selector: "same_as", value: "implement" },
+            context: { selector: "continue_from", value: "implement" },
+            consumes: [
+              { type: "change_set", source: null },
+              { type: "verdict", source: null },
+            ],
+            produces: [{ type: "change_set", source: null }],
+          },
+          max_remediations: 3,
         },
       ],
     },
@@ -1062,6 +1191,13 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
     },
     steps: runSteps,
     artifacts: [],
+    review_gate: {
+      required: false,
+      status: "not_required",
+      occurrence_id: null,
+      attempt_id: null,
+      artifact_id: null,
+    },
     step_counts: counts(runSteps),
     issues: [],
   };

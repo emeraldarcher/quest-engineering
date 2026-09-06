@@ -511,6 +511,20 @@ function decodeQuest(value: unknown): Quest {
         ...(lifecycle.delivery
           ? { delivery: decodeDelivery(lifecycle.delivery) }
           : {}),
+        ...(lifecycle.issue
+          ? {
+              issue: (() => {
+                const issue = asRecord(
+                  lifecycle.issue,
+                  "quest lifecycle issue",
+                );
+                return {
+                  code: asString(issue.code, "quest lifecycle issue"),
+                  message: asString(issue.message, "quest lifecycle issue"),
+                };
+              })(),
+            }
+          : {}),
       };
     })(),
     archived_at: nullableString(x.archived_at, "quest"),
@@ -693,6 +707,7 @@ function decodeRun(value: unknown): RunProjection {
   );
   const counts = asRecord(x.step_counts, "step counts");
   const launch = asRecord(x.launch, "run launch");
+  const reviewGate = asRecord(x.review_gate, "run review gate");
   return {
     id: asString(x.id, "run"),
     status: runStatus(x.status),
@@ -744,6 +759,25 @@ function decodeRun(value: unknown): RunProjection {
     },
     steps: asArray(x.steps, "run steps").map(decodeRunStep),
     artifacts: asArray(x.artifacts, "artifacts").map(decodeArtifactSummary),
+    review_gate: {
+      required: asBoolean(reviewGate.required, "run review gate"),
+      status: asString(
+        reviewGate.status,
+        "run review gate",
+      ) as RunProjection["review_gate"]["status"],
+      occurrence_id: nullableString(
+        reviewGate.occurrence_id,
+        "run review gate occurrence",
+      ),
+      attempt_id: nullableString(
+        reviewGate.attempt_id,
+        "run review gate attempt",
+      ),
+      artifact_id: nullableString(
+        reviewGate.artifact_id,
+        "run review gate artifact",
+      ),
+    },
     step_counts: {
       pending: asNumber(counts.pending, "count"),
       waiting: asNumber(counts.waiting, "count"),
@@ -799,17 +833,8 @@ function decodeRunStep(value: unknown) {
         ? null
         : asNumber(x.remediation_cycle, "step"),
     control_path: strings(x.control_path, "step"),
-    attempt:
-      x.attempt === null
-        ? null
-        : (() => {
-            const attempt = asRecord(x.attempt, "step attempt");
-            return {
-              id: asString(attempt.id, "step attempt"),
-              number: asNumber(attempt.number, "step attempt"),
-              state: asString(attempt.state, "step attempt"),
-            };
-          })(),
+    attempt: x.attempt === null ? null : decodeRunAttempt(x.attempt),
+    attempts: asArray(x.attempts, "step attempts").map(decodeRunAttempt),
     member: x.member === null ? null : decodeSnapshotMember(x.member),
     performer: {
       selector: nullable(performer.selector, "performer"),
@@ -859,6 +884,31 @@ function decodeRunStep(value: unknown) {
           })(),
   };
 }
+function decodeRunAttempt(value: unknown) {
+  const attempt = asRecord(value, "step attempt");
+  const resolution =
+    attempt.resolution === null
+      ? null
+      : (asString(attempt.resolution, "step attempt") as
+          | "retried"
+          | "marked_failed");
+  return {
+    id: asString(attempt.id, "step attempt"),
+    number: asNumber(attempt.number, "step attempt"),
+    state: asString(attempt.state, "step attempt"),
+    started_at: nullableString(attempt.started_at, "step attempt"),
+    finished_at: nullableString(attempt.finished_at, "step attempt"),
+    outputs: asArray(attempt.outputs, "step attempt outputs").map(
+      decodeArtifactRef,
+    ),
+    output_produced: asBoolean(attempt.output_produced, "step attempt"),
+    resolution,
+    retry_of_attempt_id: nullableString(
+      attempt.retry_of_attempt_id,
+      "step attempt",
+    ),
+  };
+}
 function decodeArtifactRef(value: unknown) {
   const x = asRecord(value, "artifact reference");
   return {
@@ -872,6 +922,10 @@ function decodeArtifactSummary(value: unknown) {
     id: asString(x.id, "artifact"),
     type: asString(x.type, "artifact"),
     producer_occurrence_id: asString(x.producer_occurrence_id, "artifact"),
+    producer_attempt_id: nullableString(
+      x.producer_attempt_id,
+      "artifact producer attempt",
+    ),
     preview: x.preview as JsonValue,
   };
 }
