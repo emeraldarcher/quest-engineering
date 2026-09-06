@@ -204,7 +204,6 @@ async function openQuestRun(runId: string) {
     realtimeStatus={$realtimeStatusStore}
     serverReachable={$serverReachableStore}
   />
-  {#if $loadingStore}<div class="notice">Loading Product data…</div>{/if}
   {#if $errorStore && $selectedBuildingStore !== "quest-board"}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}</div>{/if}
 
   {#if showOnboarding && starterStatus}<StarterCrewOnboarding {store} {product} status={starterStatus} scene={onboardingScene} onAddProject={addOnboardingProject} onOpenProjects={() => selectBuilding("gatehouse")} onNavigate={navigateFromOnboarding} onDismiss={() => (onboardingDismissed = true)} onCompleted={() => (starterCompletionVisible = true)} />{/if}
@@ -234,7 +233,7 @@ async function openQuestRun(runId: string) {
   main { position: relative; height: 100vh; min-height: 0; overflow: hidden; }
   button { background: #2a2942; border: 2px solid #aea47e; box-shadow: inset 0 0 0 1px #120e23; color: #fff1a9; cursor: pointer; padding: .4rem .65rem; font: inherit; }
   button:hover, button:focus-visible { background: #24505f; outline: 2px solid #6dba79; outline-offset: 1px; }
-  .notice, .error { position: relative; z-index: 7; margin: .7rem; padding: .6rem; background: #27394aee; }
+  .error { position: relative; z-index: 7; margin: .7rem; padding: .6rem; background: #27394aee; }
   .error { color: #ffd174; border: 2px solid #a05b58; }
   .window-close { position: absolute; z-index: 9; top: 4.55rem; right: 1.3rem; padding: .1rem .5rem; font-size: 1.2rem; }
 </style>
