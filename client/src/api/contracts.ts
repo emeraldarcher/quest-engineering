@@ -222,6 +222,97 @@ export interface ArtifactRef {
   type: string;
   artifact_id: string;
 }
+export type HarnessSessionState =
+  | "starting"
+  | "running"
+  | "waiting_for_human"
+  | "recovering"
+  | "retained"
+  | "closed"
+  | "unavailable";
+export interface HumanAttention {
+  attention_id: string;
+  category: string;
+  message: string;
+  requested_at: string;
+  interaction?: {
+    kind:
+      | "confirmation"
+      | "text"
+      | "choice"
+      | "multiline_response"
+      | "conversational_intervention";
+    control_state:
+      | "intervention_pending"
+      | "human_control"
+      | "resuming_automation";
+    resume_command?: string;
+  };
+}
+export interface HarnessSessionProjection {
+  id: string;
+  harness: { kind: string; display_name: string };
+  worker: {
+    id: string;
+    display_name: string;
+    state: "connected" | "disconnected";
+  };
+  state: HarnessSessionState;
+  capabilities: {
+    can_attach_terminal: boolean;
+    can_send_input: boolean;
+    can_interrupt: boolean;
+    can_detect_attention: boolean;
+    can_resume: boolean;
+    can_observe_structured_events: boolean;
+    structured_confirmation: boolean;
+    structured_text_response: boolean;
+    structured_choice_response: boolean;
+    structured_multiline_response: boolean;
+    native_prompt_control: boolean;
+    conversational_takeover: boolean;
+    automation_resume: boolean;
+  };
+  attachment: {
+    mode: "local_native_terminal";
+    available: boolean;
+    reason: string | null;
+    can_observe: boolean;
+    can_takeover: boolean;
+    can_recover?: boolean;
+  };
+  attention: HumanAttention | null;
+  started_at: string;
+  last_activity_at: string;
+  events: Array<{
+    id: string;
+    type: string;
+    attention_id: string | null;
+    metadata: Record<string, JsonValue>;
+    occurred_at: string;
+  }>;
+}
+export interface LocalSessionAttachmentDescriptor {
+  descriptor_token: string;
+  expires_at: string;
+  mode: "local_native_terminal";
+  worker_id: string;
+  worker_generation: number;
+  session_id: string;
+  state: HarnessSessionState;
+  takeover_allowed: boolean;
+  recovery_allowed?: boolean;
+  terminal: {
+    attachment_mode: "local_native_terminal";
+    backend_kind: "herdr";
+    terminal_session_id: string;
+    terminal_target_id: string;
+    terminal_id: string | null;
+    supports_observation: boolean;
+    supports_takeover: boolean;
+  };
+}
+
 export interface RunAttempt {
   id: string;
   number: number;
@@ -232,6 +323,16 @@ export interface RunAttempt {
   output_produced: boolean;
   resolution: "retried" | "marked_failed" | null;
   retry_of_attempt_id: string | null;
+  operational?: {
+    recovery_epoch: number;
+    recovery_kind: "initial" | "human";
+    attempt_in_epoch: number;
+    attempt_allowance: number | null;
+    policy_source: "configured" | "legacy_unknown";
+    continuation_mode: "fresh" | "retained";
+    recovery_authorized_at: string;
+  } | null;
+  session?: HarnessSessionProjection | null;
 }
 export interface RunStep {
   occurrence_id: string;
@@ -244,6 +345,7 @@ export interface RunStep {
   control_path: string[];
   attempt: RunAttempt | null;
   attempts: RunAttempt[];
+  session?: HarnessSessionProjection | null;
   member: SnapshotMember | null;
   performer: {
     selector: string | null;
@@ -262,6 +364,11 @@ export interface RunStep {
   recovery?: {
     can_retry: boolean;
     can_mark_failed: boolean;
+    can_human_retry?: boolean;
+    can_retry_fresh?: boolean;
+    retained_session_available?: boolean;
+    classification?: string;
+    epoch_exhausted?: boolean;
     message: string;
   } | null;
 }
@@ -322,6 +429,25 @@ export interface RunProjection {
   squad: { id: string; key: string; name: string; members: SnapshotMember[] };
   steps: RunStep[];
   artifacts: ArtifactSummary[];
+  operational_recovery?: Array<{
+    id: string;
+    occurrence_id: string;
+    epoch_number: number;
+    authorization_kind: "initial" | "human";
+    attempt_allowance: number | null;
+    policy_source: "configured" | "legacy_unknown";
+    continuation_mode: "fresh" | "retained";
+    authorized_at: string;
+    attempts_scheduled: number;
+  }>;
+  semantic_remediation?: Array<{
+    region_occurrence_id: string;
+    semantic_region_id: string;
+    remediations_completed: number;
+    maximum_remediations: number;
+    status: string;
+    review_shaped: boolean;
+  }>;
   review_gate: {
     required: boolean;
     status: "not_required" | "accepted" | "rejected" | "missing" | "invalid";
@@ -339,6 +465,11 @@ export interface RunSummary {
   launched_at: string;
   step_counts: Record<StepState, number>;
   delivery: DeliveryProjection | null;
+  live_session_attention?: Array<{
+    session_id: string;
+    category: string;
+    attention_id: string;
+  }>;
 }
 export interface ArtifactDetail extends ArtifactSummary {
   value: JsonValue;

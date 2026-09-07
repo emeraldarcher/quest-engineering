@@ -212,14 +212,15 @@ test("Parallel and Until are structured containers rather than graph nodes", asy
     await screen.findByRole("heading", { name: "Repeat until accepted" }),
   ).toBeTruthy();
   expect(
-    (screen.getByLabelText("Maximum remediations") as HTMLInputElement).value,
+    (screen.getByLabelText("Maximum repairs") as HTMLInputElement).value,
   ).toBe("2");
   expect(screen.getByLabelText("Value type")).toBeTruthy();
   await fireEvent.change(screen.getByLabelText("Value type"), {
     target: { value: "boolean" },
   });
   expect(screen.getByLabelText("Accepted value")).toBeTruthy();
-  expect(screen.getByText(/check can run up to 3 times/)).toBeTruthy();
+  expect(screen.getByText(/up to 3 total checks/)).toBeTruthy();
+  expect(screen.getByText(/Up to 2 repairs/)).toBeTruthy();
   expect(document.body.textContent).not.toMatch(
     /join node|cyclic edge|region id/i,
   );

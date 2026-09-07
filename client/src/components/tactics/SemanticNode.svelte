@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { SemanticArtifactBinding, Tactic } from "../../api/contracts";
 import type { NodePath, TacticNode } from "../war-room/tactic-model";
-import { pathKey } from "../war-room/tactic-model";
+import { isReviewRemediationUntil, pathKey } from "../war-room/tactic-model";
 
 export let node: TacticNode;
 export let bindings: SemanticArtifactBinding[] = [];
@@ -118,7 +118,7 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
       <div class="condition-copy"><b>Accepted when</b><span>{untilConditionSummary(node)}</span></div>
       <div><span class="phase-label">If not accepted · Remediate</span><svelte:self {bindings} {tactics} node={node.otherwise} path={[...path, "otherwise"]} {selectedPath} {interactive} {onSelect} {compact} /></div>
     </div>
-    {#if typeof node.max_remediations === "number"}<small>Up to {node.max_remediations} {node.max_remediations === 1 ? "remediation" : "remediations"}; the check may run up to {node.max_remediations + 1} times.</small>{/if}
+    {#if typeof node.max_remediations === "number"}<small>{isReviewRemediationUntil(node) ? `Up to ${node.max_remediations} ${node.max_remediations === 1 ? "repair" : "repairs"}` : `Up to ${node.max_remediations} remediation ${node.max_remediations === 1 ? "iteration" : "iterations"}`}; the initial check may be followed by that many remediation opportunities.</small>{/if}
   </section>
 {:else}
   <article class="semantic-node use-node" class:selected={selectedPath === currentPath}>

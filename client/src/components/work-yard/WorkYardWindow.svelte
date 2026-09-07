@@ -6,8 +6,10 @@ import type {
   Quest,
   RunAttempt,
   RunProjection,
+  RunStep,
   SnapshotMember,
 } from "../../api/contracts";
+import { canOpenLocalLiveSession } from "../../platform/live-session";
 import { openPullRequest } from "../../platform/open-pull-request";
 import type { AppStore, ProductState } from "../../state/app-store";
 import "../management/management-window.css";
@@ -40,7 +42,11 @@ export let initialMemberKey: string | null = null;
 export let onMember: (key: string) => void = () => undefined;
 export let scene: string | null = null;
 
-const { error: errorStore, selectedRun: selectedRunStore } = store;
+const {
+  error: errorStore,
+  selectedRun: selectedRunStore,
+  sessionFocus: sessionFocusStore,
+} = store;
 
 type Tab = "overview" | "timeline" | "artifacts" | "delivery";
 
@@ -61,6 +67,7 @@ let recoveryDialog: HTMLDialogElement;
 let recoveryCancel: HTMLButtonElement;
 let recoveryTrigger: HTMLButtonElement;
 let recoveryAction: "retry" | "mark_failed" | null = null;
+let handledSessionFocus: string | null = null;
 
 $: run = $selectedRunStore;
 $: normalizedSearch = search.trim().toLocaleLowerCase();
@@ -85,6 +92,8 @@ $: workspace = run
 $: questStatus = run ? questPresentation(run, quest) : null;
 $: reviewResult = run ? currentReviewResult(run) : null;
 $: uncertainStep = run?.steps.find((step) => step.recovery !== null) ?? null;
+$: sessionSteps = uniqueSessionSteps(run?.steps ?? []);
+$: localAttachAvailable = canOpenLocalLiveSession();
 $: if (run?.id !== activeRunId) {
   activeRunId = run?.id ?? null;
   selectedArtifactId = null;
@@ -94,6 +103,21 @@ $: if (run?.id !== activeRunId) {
     run?.squad.members.some((member) => member.member_key === initialMemberKey)
       ? initialMemberKey
       : null;
+}
+$: if (
+  run &&
+  $sessionFocusStore?.runId === run.id &&
+  $sessionFocusStore.sessionId !== handledSessionFocus
+) {
+  handledSessionFocus = $sessionFocusStore.sessionId;
+  tab = "overview";
+  const focusedStep = run.steps.find(
+    (step) =>
+      step.occurrence_id === $sessionFocusStore?.occurrenceId &&
+      step.attempt?.id === $sessionFocusStore?.attemptId &&
+      step.session?.id === $sessionFocusStore?.sessionId,
+  );
+  if (focusedStep?.member) selectedMemberKey = focusedStep.member.member_key;
 }
 $: if (
   selectedArtifactId &&
@@ -191,6 +215,29 @@ async function confirmExecutionRecovery() {
   }
 }
 
+async function openSession(
+  step: RunStep,
+  mode: "observe" | "takeover" | "recovery",
+) {
+  if (!run || !step.attempt || !step.session || busy) return;
+  busy = true;
+  try {
+    await store.openLiveSession(run.id, step.attempt.id, step.session, mode);
+  } finally {
+    busy = false;
+  }
+}
+
+async function retryFresh(step: RunStep) {
+  if (!run || busy || !step.recovery?.can_retry_fresh) return;
+  busy = true;
+  try {
+    await store.recoverExecutionFresh(run.id, step.occurrence_id);
+  } finally {
+    busy = false;
+  }
+}
+
 async function retryPublishing() {
   if (!run || busy) return;
   busy = true;
@@ -255,6 +302,47 @@ async function performCleanup(acknowledgeUnmerged: boolean) {
   } finally {
     busy = false;
   }
+}
+
+function uniqueSessionSteps(steps: RunStep[]): RunStep[] {
+  const bySession = new Map<string, RunStep>();
+  for (const step of steps) {
+    if (step.session) bySession.set(step.session.id, step);
+  }
+  return [...bySession.values()];
+}
+
+function sessionControlLabel(step: RunStep): string {
+  const session = step.session;
+  if (!session) return "Session unavailable";
+  const control = session.attention?.interaction?.control_state;
+  if (control === "human_control") return "Human controlling session";
+  if (control === "resuming_automation") return "Resuming automation";
+  if (session.state === "waiting_for_human") return "Waiting for you";
+  if (session.state === "retained") return "Session retained";
+  return humanize(session.state);
+}
+
+function sessionEventLabel(event: {
+  type: string;
+  metadata: Record<string, unknown>;
+}): string {
+  if (
+    event.type === "local_session_opened" &&
+    event.metadata.human_control_started === true
+  )
+    return "Human control started";
+  if (
+    event.type === "local_session_opened" &&
+    event.metadata.human_recovery_session_opened === true
+  )
+    return "Retained session opened for recovery";
+  if (
+    event.type === "attention_resolved" &&
+    event.metadata.automation_resumed === true
+  )
+    return "Human returned control · automation resumed";
+  return humanize(event.type);
 }
 
 function latestMemberStep(member: SnapshotMember) {
@@ -374,11 +462,54 @@ function attemptOutput(attempt: RunAttempt): string {
                   <div><span class="eyebrow">Execution · {execution.label}</span><h3>{diagnostic.title}</h3><p>{uncertainStep?.recovery?.message ?? diagnostic.description}</p></div>
                   {#if uncertainStep}
                     <div class="recovery-actions">
+                      {#if uncertainStep.recovery?.epoch_exhausted}<small>Technical retry allowance exhausted. Human recovery starts a fresh operational allowance without changing remediation history.</small>{/if}
                       {#if uncertainStep.recovery?.can_retry}<button class="primary" disabled={busy} on:click={(event) => requestExecutionRecovery("retry", event)}>Retry Step</button>{/if}
                       {#if uncertainStep.recovery?.can_mark_failed}<button class="destructive" disabled={busy} on:click={(event) => requestExecutionRecovery("mark_failed", event)}>Mark Run Failed</button>{/if}
+                      {#if uncertainStep.recovery?.can_retry_fresh}<button class="secondary" disabled={busy} on:click={() => retryFresh(uncertainStep)}>Retry with fresh session</button>{/if}
                     </div>
                   {/if}
                 </article>
+              {/if}
+
+              {#if sessionSteps.length}
+                <section class="live-sessions" aria-labelledby="live-session-title">
+                  <div class="section-heading"><div><span class="eyebrow">Coding-agent execution</span><h3 id="live-session-title">Live Session</h3></div><span>{sessionSteps.length} {sessionSteps.length === 1 ? "session" : "sessions"}</span></div>
+                  <div class="session-list">
+                    {#each sessionSteps as step (step.occurrence_id)}
+                      {@const session = step.session}
+                      {#if session}
+                        <article class:session-focused={$sessionFocusStore?.sessionId === session.id} class:waiting={session.state === "waiting_for_human"}>
+                          <div class="session-copy">
+                            <span class="eyebrow">{step.member?.name ?? "Member"} · {step.name ?? humanize(step.semantic_step_key)}</span>
+                            <h4>{session.harness.display_name}</h4>
+                            <p><strong>{sessionControlLabel(step)}</strong> · {session.worker.display_name}</p>
+                            {#if session.attention}<blockquote>“{session.attention.message}”</blockquote>{/if}
+                            {#if session.attention?.interaction?.kind === "conversational_intervention"}
+                              <small>Use normal Pi chat for as many turns as needed. Return control with <code>{session.attention.interaction.resume_command ?? "/qe-resume"}</code>.</small>
+                            {/if}
+                            {#if session.events.length}<details class="session-history"><summary>Session history</summary><ul>{#each session.events as event}<li>{sessionEventLabel(event)} · {formatLaunchTime(event.occurred_at)}</li>{/each}</ul></details>{/if}
+                            {#if session.worker.state === "disconnected" || session.attachment.reason === "worker_offline"}<small>Session unavailable · Worker offline</small>
+                            {:else if !localAttachAvailable}<small>Live session available on {session.worker.display_name}. Browser attachment is unavailable.</small>
+                            {:else if !session.attachment.available}<small>Session unavailable · {humanize(session.attachment.reason ?? "attachment unavailable")}</small>{/if}
+                          </div>
+                          <div class="session-actions">
+                            {#if localAttachAvailable && session.attachment.available && session.attachment.can_observe}
+                              <button class="secondary" disabled={busy} on:click={() => openSession(step, "observe")}>{session.state === "retained" ? "Inspect Session" : "Open Session"}</button>
+                            {/if}
+                            {#if localAttachAvailable && session.attachment.can_takeover}
+                              <button class="primary" disabled={busy} on:click={() => openSession(step, "takeover")}>Take Control</button>
+                            {:else if localAttachAvailable && session.attachment.can_recover && step.recovery?.can_human_retry}
+                              <button class="primary" disabled={busy} on:click={() => openSession(step, "recovery")}>Help &amp; Retry</button>
+                              <small>Discuss the failure, then run <code>/qe-retry</code>.</small>
+                            {:else if step.recovery?.can_retry_fresh}
+                              <button class="secondary" disabled={busy} on:click={() => retryFresh(step)}>Retry with fresh session</button>
+                            {/if}
+                          </div>
+                        </article>
+                      {/if}
+                    {/each}
+                  </div>
+                </section>
               {/if}
 
               <div class="overview-grid">
@@ -420,6 +551,12 @@ function attemptOutput(attempt: RunAttempt): string {
           {:else if tab === "timeline"}
             <section class="timeline-section" aria-labelledby="timeline-title">
               <div class="section-heading"><div><span class="eyebrow">Semantic Step occurrences</span><h3 id="timeline-title">Timeline</h3></div><span>{run.step_counts.completed} of {totalSteps(run.step_counts)} completed</span></div>
+              {#each run.semantic_remediation ?? [] as remediation}
+                <p class="authority-note"><strong>{remediation.review_shaped ? "Review / remediation" : "Bounded iteration"}</strong> · {remediation.remediations_completed} of {remediation.maximum_remediations} {remediation.review_shaped ? "repairs" : "remediations"} used{remediation.status === "exhausted" ? " · Allowance exhausted" : ""}</p>
+              {/each}
+              {#each (run.operational_recovery ?? []).filter((epoch) => epoch.authorization_kind === "human") as epoch}
+                <p class="authority-note"><strong>Human recovery {epoch.epoch_number}</strong> · Fresh allowance: {epoch.attempt_allowance ?? "historical policy unknown"}{epoch.attempts_scheduled === 0 ? " · Authorized, waiting for scheduling resources" : ` · ${epoch.attempts_scheduled} ${epoch.attempts_scheduled === 1 ? "Attempt" : "Attempts"} scheduled`}</p>
+              {/each}
               <ol class="timeline">
                 {#each run.steps as step, index}
                   {@const stepStatus = executionPresentation(step.state)}
@@ -430,6 +567,7 @@ function attemptOutput(attempt: RunAttempt): string {
                       <div class="timeline-title"><h4>{stepDisplayName(run.steps, index)}</h4><span class="tone-text-{stepStatus.tone}">{outcome ?? stepStatus.label}{#if step.attempt && step.attempt.number > 1} · Attempt {step.attempt.number}{/if}</span></div>
                       {#if step.member}<p><strong>{step.member.name}</strong> · {step.member.class.name} <span aria-hidden="true">·</span> {step.member.loadout.name}</p>{/if}
                       {#if step.issue}<p class="step-issue">{step.issue.message}</p>{/if}
+                      {#if step.session}<p class="step-session"><strong>{step.session.harness.display_name}</strong> · {sessionControlLabel(step)} · {step.session.worker.display_name}</p>{/if}
                       {#if step.inputs.length || step.outputs.length}
                         <div class="artifact-links">
                           {#each step.inputs as reference}<button on:click={() => { tab = "artifacts"; const item = run?.artifacts.find((artifact) => artifact.id === reference.artifact_id); if (item) void selectArtifact(item); }}>Input · {artifactTypeLabel(reference.type)}</button>{/each}
@@ -438,13 +576,13 @@ function attemptOutput(attempt: RunAttempt): string {
                       {/if}
                       {#if step.attempts.length > 1}
                         <details class="attempt-history">
-                          <summary>{step.attempts.length} operational attempts</summary>
+                          <summary>{step.attempts.length} operational {step.attempts.length === 1 ? "attempt" : "attempts"}</summary>
                           <ol>
                             {#each step.attempts as attempt}
                               {@const attemptStatus = executionPresentation(attempt.state)}
                               <li>
                                 <span><strong>Attempt {attempt.number}</strong><em class="tone-text-{attemptStatus.tone}">{attemptStatus.label}{attempt.resolution === "retried" ? " · Retried" : attempt.resolution === "marked_failed" ? " · Marked failed" : ""}</em></span>
-                                <small>{attemptOutput(attempt)}</small>
+                                <small>{#if attempt.operational}{attempt.operational.recovery_epoch === 0 ? "Initial execution" : `Human recovery ${attempt.operational.recovery_epoch}`} · Attempt {attempt.operational.attempt_in_epoch}{attempt.operational.attempt_allowance ? ` of ${attempt.operational.attempt_allowance}` : ""} · {/if}{attemptOutput(attempt)}</small>
                               </li>
                             {/each}
                           </ol>
@@ -522,6 +660,7 @@ function attemptOutput(attempt: RunAttempt): string {
               {#if run.delivery}<div><span>Delivery base revision</span><code>{shortRevision(run.delivery.revisions.base)}</code></div><div><span>Delivery head revision</span><code>{shortRevision(run.delivery.revisions.head)}</code></div>{/if}
               <div><span>Run branch</span><code>{run.execution_environment.branch ?? "Unavailable"}</code></div>
               <div><span>Dirty source changes excluded</span><code>{run.execution_environment.source_dirty_changes_excluded === null ? "Unavailable" : run.execution_environment.source_dirty_changes_excluded ? "Yes" : "No"}</code></div>
+              {#each sessionSteps as step}{#if step.session}<div><span>{step.session.harness.display_name} session ID</span><code>{step.session.id}</code></div>{/if}{/each}
             </div>
             {#if $errorStore}<div class="technical-code"><span>Last operation code</span><code>{$errorStore.code}</code></div>{/if}
             {#if run.delivery?.issue}<div class="technical-code"><span>Delivery issue code</span><code>{run.delivery.issue.code}</code></div>{/if}
@@ -593,6 +732,19 @@ function attemptOutput(attempt: RunAttempt): string {
   .attention-card p, .diagnostic-card p { margin: .2rem 0 0; color: #6c5149; font-size: .85rem; line-height: 1.4; }
   .attention-icon { display: grid; width: 2rem; height: 2rem; place-items: center; color: white; background: var(--app-coral); border-radius: 50%; font-weight: 900; }
   .recovery-actions { display: grid; gap: .4rem; min-width: 8.5rem; }
+  .live-sessions { margin-bottom:1rem; padding:.9rem; background:#edf3df; border:1px solid #aebe91; border-radius:10px; }
+  .session-list { display:grid; gap:.6rem; margin-top:.7rem; }
+  .session-list article { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:.8rem; padding:.75rem; background:#fffaf0; border:1px solid #cbb990; border-left:5px solid var(--app-teal); border-radius:8px; }
+  .session-list article.waiting { background:#fff0d5; border-color:#d5986f; border-left-color:var(--app-coral); }
+  .session-list article.session-focused { box-shadow:0 0 0 3px #6dba7955; }
+  .session-copy h4 { margin:.1rem 0; color:var(--app-ink); font:700 1.08rem Georgia,serif; }
+  .session-copy p,.session-copy blockquote,.session-copy small { margin:.18rem 0; color:var(--app-muted); font-size:.82rem; }
+  .session-history { margin-top:.3rem; color:var(--app-muted); font-size:.75rem; }
+  .session-history summary { cursor:pointer; color:var(--app-teal-dark); font-weight:750; }
+  .session-history ul { margin:.25rem 0 0; padding-left:1rem; }
+  .session-copy blockquote { color:#7b443b; font-style:italic; }
+  .session-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
+  .step-session { padding:.3rem .45rem; background:#e8f2df; border-radius:5px; }
   .overview-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(15rem, .75fr); gap: 1rem; }
   .overview-section { min-width: 0; padding: .95rem; background: #fff9e9; border: 1px solid #d8bd91; border-radius: 10px; }
   .overview-section > h3 { margin-bottom: .65rem; }

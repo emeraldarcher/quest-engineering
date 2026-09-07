@@ -65,6 +65,25 @@ test("the HUD is passive status rather than building navigation", () => {
   expect(within(hud).getByText("2 Quests awaiting review")).toBeTruthy();
 });
 
+test("live session attention is counted while remaining distinguishable", () => {
+  const value = fixture("town-hud-idle");
+  render(TownHud, {
+    props: {
+      product: value.product,
+      realtimeStatus: "connected",
+      liveAttentionCount: 2,
+    },
+  });
+  expect(
+    screen.getByText(
+      "2 attention items includes 2 live sessions waiting for help",
+    ),
+  ).toBeTruthy();
+  expect(
+    screen.getByTitle(/2 live sessions waiting for human help/),
+  ).toBeTruthy();
+});
+
 test("zero metric slots remain present and connectivity changes emphasis truthfully", async () => {
   const idle = fixture("town-hud-idle");
   const rendered = render(TownHud, {

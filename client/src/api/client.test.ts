@@ -158,6 +158,78 @@ test("War Room sends anonymous and persisted-candidate draft previews without pe
   ]);
 });
 
+test("local session descriptors are unavailable to web clients and marked for Tauri", async () => {
+  const web = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+  await expect(
+    web.getSessionAttachment("run", "attempt", "session"),
+  ).rejects.toMatchObject({ code: "local_session_attachment_unavailable" });
+
+  let request: RequestInit | undefined;
+  globalThis.fetch = mock(
+    async (_input: RequestInfo | URL, init?: RequestInit) => {
+      request = init;
+      return new Response(
+        JSON.stringify({
+          attachment: {
+            descriptor_token: "short-lived-token",
+            expires_at: "2099-01-01T00:00:00Z",
+            mode: "local_native_terminal",
+            worker_id: "local-worker",
+            worker_generation: 2,
+            session_id: "session",
+            state: "waiting_for_human",
+            takeover_allowed: true,
+            terminal: {
+              attachment_mode: "local_native_terminal",
+              backend_kind: "herdr",
+              terminal_session_id: "quest-engineering-worker",
+              terminal_target_id: "qe-agent",
+              terminal_id: "terminal-1",
+              supports_observation: true,
+              supports_takeover: true,
+            },
+          },
+        }),
+      );
+    },
+  ) as unknown as typeof fetch;
+  const desktop = new ApiClient({
+    httpBaseUrl: "http://example.test/api/v1",
+    localTauriClient: true,
+  });
+  const descriptor = await desktop.getSessionAttachment(
+    "run",
+    "attempt",
+    "session",
+  );
+
+  expect(descriptor.session_id).toBe("session");
+  expect(descriptor.takeover_allowed).toBe(true);
+  expect(
+    (request?.headers as Record<string, string>)[
+      "x-quest-engineering-local-client"
+    ],
+  ).toBe("tauri");
+
+  let openedBody: unknown;
+  globalThis.fetch = mock(
+    async (_input: RequestInfo | URL, init?: RequestInit) => {
+      openedBody = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({
+          session_id: "session",
+          result: "human_control_started",
+        }),
+      );
+    },
+  ) as unknown as typeof fetch;
+  await desktop.recordSessionOpened("short-lived-token", "takeover");
+  expect(openedBody).toEqual({
+    descriptor_token: "short-lived-token",
+    mode: "takeover",
+  });
+});
+
 test("maps Product validation envelope into a typed client error", async () => {
   globalThis.fetch = mock(
     async () =>

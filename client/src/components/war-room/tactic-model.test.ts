@@ -6,6 +6,7 @@ import {
   emptyDraft,
   generatedLocalKey,
   insertAfter,
+  isReviewRemediationUntil,
   localDraftIssues,
   makeStep,
   makeUntil,
@@ -97,9 +98,25 @@ test("Step and TacticUse identities share stable collision-safe keys", () => {
 
 test("Until authoring states exact remediation-count semantics", () => {
   const until = makeUntil(sequence(), builder);
-  expect(until.max_remediations).toBe(2);
-  expect(until.max_remediations + 1).toBe(3);
+  expect(until.max_remediations).toBe(3);
+  expect(until.max_remediations + 1).toBe(4);
   expect(until.condition.operator).toBe("equals");
+  expect(isReviewRemediationUntil(until)).toBe(false);
+  if (until.check.type !== "step" || until.otherwise.type !== "step")
+    throw new Error("Expected Step phases");
+  until.check.name = "Review";
+  until.otherwise.name = "Repair";
+  expect(isReviewRemediationUntil(until)).toBe(true);
+  const invalid = {
+    id: null,
+    key: "invalid-until",
+    name: "Invalid Until",
+    description: "",
+    body: { ...until, max_remediations: 0 },
+  };
+  expect(localDraftIssues(invalid)).toContain(
+    "Maximum remediation iterations must be a positive whole number.",
+  );
 });
 
 test("empty and malformed local drafts are guided without compiler inference", () => {
