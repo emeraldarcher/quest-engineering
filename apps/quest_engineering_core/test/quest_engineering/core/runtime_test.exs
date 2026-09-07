@@ -225,6 +225,41 @@ defmodule QuestEngineering.Core.RuntimeTest do
       assert length(region.otherwise_scope_ids) == 1
     end
 
+    test "operational retries remain inside one semantic remediation occurrence" do
+      plan = compile!(pressure_tactic())
+      {:ok, run, [plan_action]} = Runtime.start(plan)
+      {:ok, run, [implement]} = complete(run, plan_action, %{"plan" => %{}})
+      {:ok, run, [review_1]} = complete(run, implement, %{"change_set" => %{"version" => 0}})
+
+      {:ok, run, [repair_1]} =
+        complete(run, review_1, %{"verdict" => %{"status" => "rejected"}})
+
+      assert {:ok, run, [repair_1_retry]} =
+               Runtime.transition(run, Runtime.retry_requested(repair_1))
+
+      assert repair_1_retry.occurrence_id == repair_1.occurrence_id
+      assert repair_1_retry.attempt_id != repair_1.attempt_id
+      assert hd(Map.values(run.regions)).remediations_completed == 0
+
+      {:ok, run, [review_2]} =
+        complete(run, repair_1_retry, %{"change_set" => %{"version" => 1}})
+
+      assert hd(Map.values(run.regions)).remediations_completed == 1
+
+      {:ok, run, [repair_2]} =
+        complete(run, review_2, %{"verdict" => %{"status" => "rejected"}})
+
+      assert {:ok, run, [repair_2_retry]} =
+               Runtime.transition(run, Runtime.retry_requested(repair_2))
+
+      {:ok, run, [review_3]} =
+        complete(run, repair_2_retry, %{"change_set" => %{"version" => 2}})
+
+      assert hd(Map.values(run.regions)).remediations_completed == 2
+      assert run.occurrences[review_3.occurrence_id].remediation_cycle == 2
+      assert length(semantic_occurrences(run, "repair")) == 2
+    end
+
     test "multiple rejected Reviews preserve history before later acceptance" do
       plan = compile!(pressure_tactic())
       {:ok, run, [plan_action]} = Runtime.start(plan)

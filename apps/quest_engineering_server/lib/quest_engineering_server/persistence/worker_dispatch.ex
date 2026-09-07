@@ -15,6 +15,7 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
     field :claim_token, :string
     field :claim_expires_at, :utc_datetime_usec
     field :last_connection_generation, :integer
+    field :execution_session_id, :string
     field :dispatched_at, :utc_datetime_usec
     field :acknowledged_at, :utc_datetime_usec
     field :terminal_at, :utc_datetime_usec
@@ -35,6 +36,7 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
       :claim_token,
       :claim_expires_at,
       :last_connection_generation,
+      :execution_session_id,
       :dispatched_at,
       :acknowledged_at,
       :terminal_at,

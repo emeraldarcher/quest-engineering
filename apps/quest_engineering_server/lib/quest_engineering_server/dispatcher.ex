@@ -23,7 +23,13 @@ defmodule QuestEngineering.Server.Dispatcher do
   def handle_call({:deliver, dispatch}, _from, state) do
     result =
       with {:ok, %{generation: generation}} <- WorkerConnections.lookup(dispatch.worker_id),
-           :ok <- send_execute(dispatch.worker_id, generation, dispatch.execution) do
+           :ok <-
+             send_execute(
+               dispatch.worker_id,
+               generation,
+               dispatch.execution,
+               dispatch.operational_recovery
+             ) do
         DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation)
       end
 
@@ -51,9 +57,13 @@ defmodule QuestEngineering.Server.Dispatcher do
   end
 
   defp redeliver_one(dispatch, worker_id, generation) do
-    with {:ok, %{scheduled: scheduled, execution: execution}} <-
-           SchedulingStore.fetch_execution(dispatch.action_id),
-         :ok <- send_execute(worker_id, generation, execution),
+    with {:ok,
+          %{
+            scheduled: scheduled,
+            execution: execution,
+            operational_recovery: operational_recovery
+          }} <- SchedulingStore.fetch_execution(dispatch.action_id),
+         :ok <- send_execute(worker_id, generation, execution, operational_recovery),
          {:ok, updated} <-
            DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation) do
       RunChangeNotifier.notify(scheduled.run_id)
@@ -68,8 +78,8 @@ defmodule QuestEngineering.Server.Dispatcher do
     end
   end
 
-  defp send_execute(worker_id, generation, execution) do
-    message = WorkerProtocol.execute_action(worker_id, execution)
+  defp send_execute(worker_id, generation, execution, operational_recovery) do
+    message = WorkerProtocol.execute_action(worker_id, execution, operational_recovery)
     WorkerConnections.send_protocol(worker_id, generation, message)
   end
 end

@@ -4,9 +4,9 @@ import type { WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import type { ExecuteAction, JsonValue } from "../src/protocol/types.ts";
-import { PiProvider } from "../src/providers/pi/provider.ts";
+import { PiHarness } from "../src/providers/pi/provider.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
-import { HerdrSessionHost } from "../src/session-host/herdr/session-host.ts";
+import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
 
 const id = crypto.randomUUID().slice(0, 8);
@@ -101,10 +101,10 @@ const registry = new DispatchRegistry(
   join(config.dataRoot, "dispatches.sqlite"),
   config.dataRoot,
 );
-const host = new HerdrSessionHost(
+const host = new HerdrTerminalBackend(
   new LocalHerdrConnectionProvider(config.herdrSession),
 );
-const provider = new PiProvider(host, config);
+const provider = new PiHarness(host, config);
 const executor = new DispatchExecutor(registry, provider, async () => false);
 
 const implement = makeAction({
@@ -204,13 +204,13 @@ const proof = {
   },
   freshReview: { independentLineage: true },
   attach: {
-    implement: host.attachInfo({
+    implement: host.attachment({
       sessionName: config.herdrSession,
       workspaceId: implementLineage.workspaceId as string,
       paneId: implementLineage.paneId as string,
       agentName: implementLineage.agentName as string,
     }),
-    review: host.attachInfo({
+    review: host.attachment({
       sessionName: config.herdrSession,
       workspaceId: reviewLineage.workspaceId as string,
       paneId: reviewLineage.paneId as string,
@@ -249,7 +249,7 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
       : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 4,
+    protocol_version: 5,
     worker_id: config.workerId,
     execution: {
       identity: {

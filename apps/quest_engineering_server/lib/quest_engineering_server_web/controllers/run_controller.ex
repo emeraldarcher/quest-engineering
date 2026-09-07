@@ -4,6 +4,8 @@ defmodule QuestEngineering.ServerWeb.RunController do
   alias QuestEngineering.Server.DeliveryCoordinator
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.ExecutionRecovery
+  alias QuestEngineering.Server.ExecutionSessionStore
+  alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Product.Repository
   alias QuestEngineering.Server.Repo
@@ -58,6 +60,24 @@ defmodule QuestEngineering.ServerWeb.RunController do
         details: %{field: "occurrence_id"}
       })
 
+  def recover_execution_fresh(
+        conn,
+        %{"id" => run_id, "occurrence_id" => occurrence_id, "request_id" => request_id}
+      )
+      when is_binary(occurrence_id) and is_binary(request_id) and request_id != "" do
+    case OperationalRecovery.authorize_fresh(run_id, occurrence_id, request_id) do
+      {:ok, _recovery} -> render_run(conn, run_id)
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def recover_execution_fresh(conn, _params),
+    do:
+      Api.render_error(conn, %OperationalRecovery.Error{
+        code: :invalid_execution_recovery,
+        details: %{fields: ["occurrence_id", "request_id"]}
+      })
+
   def mark_execution_failed(conn, %{"id" => run_id, "occurrence_id" => occurrence_id})
       when is_binary(occurrence_id) do
     case ExecutionRecovery.mark_failed(run_id, occurrence_id) do
@@ -106,11 +126,54 @@ defmodule QuestEngineering.ServerWeb.RunController do
     end
   end
 
+  def session_attachment(
+        conn,
+        %{"id" => run_id, "attempt_id" => attempt_id, "session_id" => session_id}
+      ) do
+    with :ok <- require_local_tauri(conn),
+         {:ok, descriptor} <-
+           ExecutionSessionStore.attachment_descriptor(run_id, attempt_id, session_id) do
+      json(conn, %{attachment: descriptor})
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def session_opened(conn, %{"descriptor_token" => token, "mode" => mode})
+      when mode in ["observe", "takeover"] do
+    with :ok <- require_local_tauri(conn),
+         {:ok, session} <- ExecutionSessionStore.record_opened(token, mode) do
+      json(conn, %{
+        session_id: session.id,
+        result: if(mode == "takeover", do: "human_control_started", else: "local_session_opened")
+      })
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def session_opened(conn, _params), do: Api.render_error(conn, :invalid_attachment_descriptor)
+
   def artifact(conn, %{"run_id" => run_id, "artifact_id" => artifact_id}) do
     case RunProjection.artifact(run_id, artifact_id) do
       {:ok, artifact} -> json(conn, %{artifact: artifact})
       {:error, error} -> Api.render_error(conn, error)
     end
+  end
+
+  defp require_local_tauri(conn) do
+    enabled = Application.get_env(:quest_engineering_server, :local_session_attach_enabled, false)
+    local_request = conn.remote_ip in [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}]
+    local_host = conn.host in ["127.0.0.1", "localhost", "::1"]
+
+    direct_request =
+      get_req_header(conn, "forwarded") == [] and get_req_header(conn, "x-forwarded-for") == []
+
+    tauri_client = get_req_header(conn, "x-quest-engineering-local-client") == ["tauri"]
+
+    if enabled and local_request and local_host and direct_request and tauri_client,
+      do: :ok,
+      else: {:error, :local_session_attachment_disabled}
   end
 
   defp render_run(conn, run_id) do

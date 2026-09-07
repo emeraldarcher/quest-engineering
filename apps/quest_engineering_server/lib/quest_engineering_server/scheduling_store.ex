@@ -10,6 +10,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
   alias QuestEngineering.Core.Tactics.ContextRequirement
   alias QuestEngineering.Core.Tactics.PerformerRequirement
   alias QuestEngineering.Server.CapabilityMatcher
+  alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
@@ -78,7 +79,12 @@ defmodule QuestEngineering.Server.SchedulingStore do
              scheduled.resolved_execution,
              scheduled.resolved_execution_version
            ) do
-      {:ok, %{scheduled: scheduled, execution: execution}}
+      {:ok,
+       %{
+         scheduled: scheduled,
+         execution: execution,
+         operational_recovery: OperationalRecovery.execution_metadata(action_id)
+       }}
     else
       nil -> {:error, invariant(:scheduled_execution_not_found, %{action_id: action_id})}
       {:error, error} -> {:error, invariant(:invalid_resolved_execution, %{error: error})}
@@ -376,6 +382,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
     now = now()
     insert_member_binding!(action, resolved.member, now)
     insert_context_binding!(action, resolved.context, now)
+    OperationalRecovery.attribute_scheduled_attempt!(action)
 
     encoded_execution = ResolvedExecutionCodec.encode(resolved.execution)
 
@@ -425,7 +432,8 @@ defmodule QuestEngineering.Server.SchedulingStore do
       worker_slot: resolved.slot,
       state: :claimed,
       claim_token: dispatch.claim_token,
-      execution: resolved.execution
+      execution: resolved.execution,
+      operational_recovery: OperationalRecovery.execution_metadata(action.id)
     }
   end
 

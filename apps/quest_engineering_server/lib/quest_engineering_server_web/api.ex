@@ -88,6 +88,38 @@ defmodule QuestEngineering.ServerWeb.Api do
       {400, "malformed_request", "The execution recovery request is malformed.", [],
        safe(details)}
 
+  defp error_view(%{code: code, details: details})
+       when code in [
+              :execution_still_uncertain,
+              :execution_not_recoverable,
+              :recovery_identity_mismatch,
+              :recovery_request_conflict,
+              :retained_session_unavailable,
+              :recovery_worker_mismatch,
+              :recovery_session_mismatch,
+              :recovery_pi_session_mismatch,
+              :stale_recovery_worker_generation,
+              :replacement_attempt_already_exists,
+              :recovery_workspace_unavailable,
+              :operational_attempt_allowance_exhausted
+            ],
+       do:
+         {409, to_string(code), "The execution cannot begin this recovery cycle.", [],
+          safe(details)}
+
+  defp error_view(code)
+       when code in [
+              :local_session_attachment_disabled,
+              :worker_offline,
+              :stale_attachment_descriptor,
+              :attachment_unavailable,
+              :invalid_attachment_descriptor,
+              :session_not_found
+            ] do
+    status = if code == :session_not_found, do: 404, else: 409
+    {status, to_string(code), "Local live-session attachment is unavailable.", [], %{}}
+  end
+
   defp error_view(code)
        when code in [
               :delivery_not_retryable,

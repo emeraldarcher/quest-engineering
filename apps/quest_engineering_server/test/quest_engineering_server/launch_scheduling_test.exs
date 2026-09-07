@@ -12,16 +12,21 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.ExecutionRecovery
+  alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.LaunchQuest
+  alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
+  alias QuestEngineering.Server.Persistence.OperationalAttemptAttribution
+  alias QuestEngineering.Server.Persistence.OperationalRecoveryEpoch
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RunDelivery
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
+  alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Product.TacticLibrary
@@ -29,6 +34,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.RuntimeStore
   alias QuestEngineering.Server.RunWorkspaceStore
   alias QuestEngineering.Server.SchedulingStore
+  alias QuestEngineering.Server.WorkerMessageHandler
   alias QuestEngineering.Server.WorkerStore
 
   setup do
@@ -433,6 +439,401 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert {:waiting, waits} = SchedulingStore.schedule_next(second_launch.run_id)
     assert Enum.any?(waits, &(&1.code == :waiting_for_member))
     assert Repo.get!(ScheduledActionExecution, first.action_id).state == "active"
+  end
+
+  test "launch snapshot freezes the user-authored semantic remediation limit" do
+    fixture = product_fixture()
+
+    body =
+      until(
+        check:
+          step("review",
+            name: "Review",
+            performer: class("reviewer"),
+            instruction: "Review.",
+            produces: [artifact("verdict")]
+          ),
+        condition: equals(field(artifact("verdict", from: "review"), "status"), "accepted"),
+        otherwise:
+          step("repair",
+            name: "Repair",
+            performer: class("builder"),
+            instruction: "Repair."
+          ),
+        max_remediations: 1
+      )
+
+    assert {:ok, definition} =
+             TacticLibrary.create(%{
+               key: unique("bounded-review"),
+               name: "Bounded Review",
+               body: body
+             })
+
+    assert {:ok, _quest} =
+             Products.update_quest(fixture.quest.id, %{
+               tactic_source: TacticSource.definition(definition.id)
+             })
+
+    assert {:ok, first} = LaunchQuest.launch(fixture.quest.id)
+    assert {:ok, %{run: first_run}} = RuntimeStore.fetch_run(first.run_id)
+    assert hd(first_run.plan.control_regions).max_remediations == 1
+
+    assert {:ok, _updated} =
+             TacticLibrary.update(definition.id, %{
+               body: %{body | max_remediations: 3}
+             })
+
+    assert {:ok, %{run: unchanged}} = RuntimeStore.fetch_run(first.run_id)
+    assert hd(unchanged.plan.control_regions).max_remediations == 1
+
+    assert {:ok, future_quest} =
+             Products.create_quest(%{
+               title: "Future bounded review",
+               objective: fixture.quest.objective,
+               workspace_id: fixture.quest.workspace_id,
+               squad_id: fixture.squad.id,
+               tactic_source: TacticSource.definition(definition.id)
+             })
+
+    assert {:ok, second} = LaunchQuest.launch(future_quest.id)
+    assert {:ok, %{run: second_run}} = RuntimeStore.fetch_run(second.run_id)
+    assert hd(second_run.plan.control_regions).max_remediations == 3
+  end
+
+  test "step-scoped takeover fixture resolves only into Implement and isolates Review context",
+       context do
+    objective =
+      "Create a harmless test file according to the instructions you receive during implementation."
+
+    forced_takeover =
+      "Before making repository changes, immediately request conversational intervention and wait for explicit /qe-resume before implementing the human guidance."
+
+    review_instruction =
+      "Review the implementation against the Quest requirements. Do not deliberately invoke the takeover acceptance mechanism; request human assistance only for a genuine blocker."
+
+    tactic =
+      sequence([
+        step("implement",
+          name: "Implement",
+          performer: class("builder"),
+          context: fresh(),
+          instruction: forced_takeover,
+          produces: [artifact("change_set")]
+        ),
+        step("review",
+          name: "Review",
+          performer: class("reviewer"),
+          context: fresh(),
+          instruction: review_instruction,
+          consumes: [artifact("change_set", from: "implement")],
+          produces: [artifact("verdict")]
+        )
+      ])
+
+    fixture = product_fixture(tactic: tactic, objective: objective)
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-takeover-scope", context.workspace_root)
+
+    assert {:ok, implement} = SchedulingStore.schedule_next(launched.run_id)
+    assert implement.execution.work.quest_objective == objective
+    assert implement.execution.work.step_instruction == forced_takeover
+    assert implement.execution.performer.member_key == "alice"
+
+    complete(worker, implement, %{
+      "change_set" => %{"files" => ["human-picked.txt"], "status" => "completed"}
+    })
+
+    assert {:ok, review} = SchedulingStore.schedule_next(launched.run_id)
+    assert review.execution.work.quest_objective == objective
+    assert review.execution.work.step_instruction == review_instruction
+    assert review.execution.work.class_instructions == "Review independently."
+
+    assert review.execution.work.inputs["change_set"].value == %{
+             "files" => ["human-picked.txt"],
+             "status" => "completed"
+           }
+
+    refute inspect(review.execution.work) =~ forced_takeover
+    assert implement.execution.context.mode == :fresh
+    assert review.execution.context.mode == :fresh
+
+    assert implement.execution.context.logical_lineage_id !=
+             review.execution.context.logical_lineage_id
+
+    assert implement.execution.performer.member_key != review.execution.performer.member_key
+  end
+
+  test "retryable operational failure appends a same-occurrence Attempt in epoch zero", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-auto-retry", context.workspace_root)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    first_attribution = Repo.get!(OperationalAttemptAttribution, first.action_id)
+    epoch = Repo.get!(OperationalRecoveryEpoch, first_attribution.epoch_id)
+    assert epoch.epoch_number == 0
+    assert epoch.attempt_allowance == 2
+    assert first_attribution.attempt_in_epoch == 1
+
+    assert {:ok, %{"result" => "automatic_retry_scheduled"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: first.action_id,
+               occurrence_id: first.execution.identity.occurrence_id,
+               attempt_id: first.execution.identity.attempt_id,
+               failure: %{
+                 "classification" => "auto_retryable",
+                 "reason" => "transient_harness_failure"
+               }
+             })
+
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+    second_attribution = Repo.get!(OperationalAttemptAttribution, second.action_id)
+    assert second.execution.identity.occurrence_id == first.execution.identity.occurrence_id
+    assert second.execution.identity.attempt_id != first.execution.identity.attempt_id
+    assert second_attribution.epoch_id == first_attribution.epoch_id
+    assert second_attribution.global_attempt_number == 2
+    assert second_attribution.attempt_in_epoch == 2
+    assert Repo.get_by!(WorkerDispatch, action_id: first.action_id).state == "failed"
+  end
+
+  test "each recovery epoch snapshots the current server-owned allowance", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-policy-snapshot", context.workspace_root)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+    initial_attribution = Repo.get!(OperationalAttemptAttribution, first.action_id)
+    initial_epoch = Repo.get!(OperationalRecoveryEpoch, initial_attribution.epoch_id)
+    assert initial_epoch.attempt_allowance == 2
+
+    previous =
+      Application.fetch_env!(:quest_engineering_server, :max_operational_attempts_per_epoch)
+
+    Application.put_env(:quest_engineering_server, :max_operational_attempts_per_epoch, 3)
+
+    on_exit(fn ->
+      Application.put_env(
+        :quest_engineering_server,
+        :max_operational_attempts_per_epoch,
+        previous
+      )
+    end)
+
+    assert {:ok, _} = fail_operational(worker, first, "operator_recovery_required")
+
+    assert {:ok, recovered} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert recovered.attempt_allowance == 3
+    assert Repo.get!(OperationalRecoveryEpoch, initial_epoch.id).attempt_allowance == 2
+  end
+
+  test "an exhausted epoch can be followed by multiple full human recovery epochs", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-multiple-recovery", context.workspace_root)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    fail_operational(worker, first, "auto_retryable")
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, %{"result" => "exhausted"}} =
+             fail_operational(worker, second, "auto_retryable")
+
+    request_1 = Ecto.UUID.generate()
+
+    assert {:ok, epoch_1} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               request_1
+             )
+
+    assert epoch_1.epoch_number == 1
+    assert {:ok, third} = SchedulingStore.schedule_next(launched.run_id)
+    third_attribution = Repo.get!(OperationalAttemptAttribution, third.action_id)
+    assert third_attribution.global_attempt_number == 3
+    assert third_attribution.attempt_in_epoch == 1
+
+    assert {:ok, %{"result" => "automatic_retry_scheduled"}} =
+             fail_operational(worker, third, "auto_retryable")
+
+    assert {:ok, fourth} = SchedulingStore.schedule_next(launched.run_id)
+    fourth_attribution = Repo.get!(OperationalAttemptAttribution, fourth.action_id)
+    assert fourth_attribution.global_attempt_number == 4
+    assert fourth_attribution.attempt_in_epoch == 2
+    assert fourth_attribution.epoch_id == third_attribution.epoch_id
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             fail_operational(worker, fourth, "operator_recovery_required")
+
+    request_2 = Ecto.UUID.generate()
+
+    assert {:ok, epoch_2} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               request_2
+             )
+
+    assert epoch_2.epoch_number == 2
+    assert {:ok, fifth} = SchedulingStore.schedule_next(launched.run_id)
+    fifth_attribution = Repo.get!(OperationalAttemptAttribution, fifth.action_id)
+    assert fifth_attribution.global_attempt_number == 5
+    assert fifth_attribution.attempt_in_epoch == 1
+    assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 3
+  end
+
+  test "human recovery appends an idempotent fresh epoch with a full allowance", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-human-retry", context.workspace_root)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: first.action_id,
+               occurrence_id: first.execution.identity.occurrence_id,
+               attempt_id: first.execution.identity.attempt_id,
+               failure: %{
+                 "classification" => "operator_recovery_required",
+                 "reason" => "authentication_required"
+               }
+             })
+
+    request_id = Ecto.UUID.generate()
+
+    requests =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          OperationalRecovery.authorize_fresh(
+            launched.run_id,
+            first.execution.identity.occurrence_id,
+            request_id
+          )
+        end)
+      end
+
+    assert [{:ok, first_result}, {:ok, second_result}] = Enum.map(requests, &Task.await/1)
+    assert first_result.id == second_result.id
+
+    assert Enum.sort([first_result.idempotent_replay?, second_result.idempotent_replay?]) == [
+             false,
+             true
+           ]
+
+    recovery = first_result
+    assert recovery.epoch_number == 1
+    assert recovery.attempt_allowance == 2
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 1
+    assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 2
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+    second_attribution = Repo.get!(OperationalAttemptAttribution, second.action_id)
+    second_epoch = Repo.get!(OperationalRecoveryEpoch, second_attribution.epoch_id)
+    assert second_epoch.epoch_number == 1
+    assert second_epoch.attempt_allowance == 2
+    assert second_attribution.global_attempt_number == 2
+    assert second_attribution.attempt_in_epoch == 1
+    assert second.execution.identity.occurrence_id == first.execution.identity.occurrence_id
+    assert Repo.get_by!(WorkerDispatch, action_id: first.action_id).state == "failed"
+  end
+
+  test "human recovery refuses an execution that remains uncertain", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-uncertain-human-retry", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.mark_uncertain(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id,
+               %{
+                 "reason" => "outcome_unknown"
+               }
+             )
+
+    assert {:error, %OperationalRecovery.Error{code: :execution_still_uncertain}} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 1
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 1
+  end
+
+  test "retained human recovery carries the validated lineage into a new Attempt", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-retained-retry", context.workspace_root)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: first.action_id,
+               occurrence_id: first.execution.identity.occurrence_id,
+               attempt_id: first.execution.identity.attempt_id,
+               failure: %{
+                 "classification" => "operator_recovery_required",
+                 "reason" => "manual_action_required"
+               }
+             })
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    lineage_id = Ecto.UUID.generate()
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: lineage_id,
+               action_id: first.action_id,
+               run_id: launched.run_id,
+               occurrence_id: first.execution.identity.occurrence_id,
+               attempt_id: first.execution.identity.attempt_id,
+               member_key: first.execution.performer.member_key,
+               harness_kind: "pi",
+               harness_display_name: "Pi",
+               state: :retained,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: %{"supports_takeover" => true},
+               provider_session_id: "pi-session-retained",
+               attention: nil,
+               started_at: now,
+               last_activity_at: now
+             })
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, recovery} =
+             OperationalRecovery.authorize(%{
+               request_id: request_id,
+               run_id: launched.run_id,
+               occurrence_id: first.execution.identity.occurrence_id,
+               attempt_id: first.execution.identity.attempt_id,
+               action_id: first.action_id,
+               member_key: first.execution.performer.member_key,
+               worker_id: worker.id,
+               session_id: lineage_id,
+               lineage_id: lineage_id,
+               pi_session_id: "pi-session-retained"
+             })
+
+    assert recovery.continuation_mode == "retained"
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+    assert second.execution.identity.occurrence_id == first.execution.identity.occurrence_id
+    assert second.execution.identity.attempt_id != first.execution.identity.attempt_id
+    assert second.operational_recovery.continuation_mode == "retained"
+    assert second.operational_recovery.retained_lineage_id == lineage_id
+    assert second.operational_recovery.attempt_in_epoch == 1
   end
 
   test "Member affinity and continued logical context remain independent", context do
@@ -956,7 +1357,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     {:ok, quest} =
       Products.create_quest(%{
         title: "Launch test",
-        objective: "Prove product-to-execution binding.",
+        objective: Keyword.get(options, :objective, "Prove product-to-execution binding."),
         workspace_ref: "workspace:test",
         squad_id: squad.id,
         tactic_source: %Inline{body: tactic}
@@ -997,12 +1398,25 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     value
   end
 
-  defp complete(worker, dispatch) do
+  defp fail_operational(worker, dispatch, classification) do
+    WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+      type: :step_failed,
+      action_id: dispatch.action_id,
+      occurrence_id: dispatch.execution.identity.occurrence_id,
+      attempt_id: dispatch.execution.identity.attempt_id,
+      failure: %{
+        "classification" => classification,
+        "reason" => "simulated_operational_failure"
+      }
+    })
+  end
+
+  defp complete(worker, dispatch, outputs \\ %{}) do
     message = %{
       action_id: dispatch.action_id,
       occurrence_id: dispatch.execution.identity.occurrence_id,
       attempt_id: dispatch.execution.identity.attempt_id,
-      outputs: %{}
+      outputs: outputs
     }
 
     assert {:ok, _result} =

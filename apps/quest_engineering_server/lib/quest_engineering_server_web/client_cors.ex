@@ -13,7 +13,10 @@ defmodule QuestEngineering.ServerWeb.ClientCors do
       |> put_resp_header("access-control-allow-origin", origin)
       |> put_resp_header("vary", "origin")
       |> put_resp_header("access-control-allow-methods", "GET, POST, PATCH, OPTIONS")
-      |> put_resp_header("access-control-allow-headers", "content-type")
+      |> put_resp_header(
+        "access-control-allow-headers",
+        "content-type, x-quest-engineering-local-client"
+      )
       |> maybe_preflight()
     else
       conn

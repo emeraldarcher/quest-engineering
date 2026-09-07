@@ -41,7 +41,7 @@ export interface HerdrControlClient {
   startAgent(input: {
     paneId: string;
     name: string;
-    kind: "pi";
+    integrationKind: string;
     args: string[];
     timeoutMs?: number;
   }): Promise<HostedAgent>;
@@ -55,6 +55,7 @@ export interface HerdrControlClient {
     options?: { until?: HostedAgentStatus[]; timeoutMs?: number },
   ): Promise<HostedAgent>;
   getAgent(target: string): Promise<HostedAgent>;
+  sendKeys(target: string, keys: string[]): Promise<void>;
   disconnect(): void;
 }
 
@@ -166,7 +167,7 @@ export class HerdrSocketClient implements HerdrControlClient {
   async startAgent(input: {
     paneId: string;
     name: string;
-    kind: "pi";
+    integrationKind: string;
     args: string[];
     timeoutMs?: number;
   }): Promise<HostedAgent> {
@@ -184,7 +185,7 @@ export class HerdrSocketClient implements HerdrControlClient {
       {
         pane_id: input.paneId,
         name: input.name,
-        kind: input.kind,
+        kind: input.integrationKind,
         args: input.args,
         timeout_ms: remainingMs,
       },
@@ -194,12 +195,12 @@ export class HerdrSocketClient implements HerdrControlClient {
     // Herdr may accept launch before its response projection includes the agent.
     // Discover that exact launch rather than issuing a duplicate start request.
     const launched = record(result.agent)
-      ? mapAgent(result.agent, input.kind)
+      ? mapAgent(result.agent, input.integrationKind)
       : undefined;
     if (
       launched?.interactiveReady &&
       launched.name === input.name &&
-      launched.agent === input.kind
+      launched.agent === input.integrationKind
     )
       return launched;
     while (Date.now() < deadline) {
@@ -208,7 +209,7 @@ export class HerdrSocketClient implements HerdrControlClient {
         if (
           current.interactiveReady &&
           current.name === input.name &&
-          current.agent === input.kind
+          current.agent === input.integrationKind
         )
           return current;
       } catch {
@@ -261,6 +262,10 @@ export class HerdrSocketClient implements HerdrControlClient {
   async getAgent(target: string): Promise<HostedAgent> {
     const result = await this.request("agent.get", { target });
     return mapAgent(object(result.agent, "agent"));
+  }
+
+  async sendKeys(target: string, keys: string[]): Promise<void> {
+    await this.request("agent.send_keys", { target, keys });
   }
 
   async request(

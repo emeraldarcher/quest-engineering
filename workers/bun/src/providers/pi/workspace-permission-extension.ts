@@ -2,7 +2,14 @@ import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const READ_ONLY = new Set(["read", "grep", "find", "ls", "qe_step_result"]);
+const READ_ONLY = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "qe_step_result",
+  "qe_request_human_assistance",
+]);
 const PATH_FIELDS = ["path", "file_path", "directory", "cwd"];
 
 export default function workspacePermissionExtension(pi: ExtensionAPI) {
@@ -25,13 +32,16 @@ export default function workspacePermissionExtension(pi: ExtensionAPI) {
         reason: `Tool ${event.toolName} is outside the resolved QE capability mapping.`,
         terminate: true,
       };
-    if (access() === "none" && event.toolName !== "qe_step_result")
+    if (access() === "none" && !workspaceAccessAllows("none", event.toolName))
       return {
         block: true,
         reason: "This execution has no workspace access.",
         terminate: true,
       };
-    if (access() === "read_only" && !READ_ONLY.has(event.toolName))
+    if (
+      access() === "read_only" &&
+      !workspaceAccessAllows("read_only", event.toolName)
+    )
       return {
         block: true,
         reason: `Tool ${event.toolName} is not permitted by read-only workspace access.`,
@@ -57,6 +67,16 @@ export default function workspacePermissionExtension(pi: ExtensionAPI) {
         }
       : undefined,
   );
+}
+
+export function workspaceAccessAllows(
+  access: string,
+  toolName: string,
+): boolean {
+  if (access === "none")
+    return ["qe_step_result", "qe_request_human_assistance"].includes(toolName);
+  if (access === "read_only") return READ_ONLY.has(toolName);
+  return access === "read_write";
 }
 
 function outsideWorkspace(input: unknown): string | null {

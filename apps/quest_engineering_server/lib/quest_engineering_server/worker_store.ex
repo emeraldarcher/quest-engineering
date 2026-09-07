@@ -7,6 +7,7 @@ defmodule QuestEngineering.Server.WorkerStore do
   require Logger
 
   alias Ecto.Changeset
+  alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
@@ -252,8 +253,9 @@ defmodule QuestEngineering.Server.WorkerStore do
     }
   end
 
-  defp notify_availability_transition({:ok, %Worker{}} = result) do
+  defp notify_availability_transition({:ok, %Worker{id: worker_id}} = result) do
     ProductChangeNotifier.notify(["workspaces", "workspace_sources", "execution_options"])
+    ExecutionSessionStore.notify_worker_runs(worker_id)
     result
   end
 

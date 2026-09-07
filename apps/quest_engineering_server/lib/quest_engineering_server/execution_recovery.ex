@@ -5,6 +5,7 @@ defmodule QuestEngineering.Server.ExecutionRecovery do
 
   alias QuestEngineering.Core.Runtime
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
@@ -33,6 +34,7 @@ defmodule QuestEngineering.Server.ExecutionRecovery do
     result =
       Repo.transaction(fn ->
         {_dispatch, action} = lock_uncertain!(run_id, occurrence_id)
+        ensure_retry_allowance!(resolution, action.id)
         failure = resolution_failure(resolution)
         event = resolution_event(resolution, action, failure)
         transition_id = transition_id(resolution, action.id)
@@ -95,6 +97,15 @@ defmodule QuestEngineering.Server.ExecutionRecovery do
 
       value ->
         value
+    end
+  end
+
+  defp ensure_retry_allowance!(:mark_failed, _action_id), do: :ok
+
+  defp ensure_retry_allowance!(:retry, action_id) do
+    case OperationalRecovery.ensure_same_epoch_retry_available(action_id) do
+      :ok -> :ok
+      {:error, error} -> Repo.rollback(error)
     end
   end
 

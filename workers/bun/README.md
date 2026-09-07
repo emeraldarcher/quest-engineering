@@ -1,6 +1,6 @@
 # Quest Engineering Bun Worker v0.12
 
-The Bun Worker is the sole filesystem authority for Worker Protocol v4. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
+The Bun Worker is the sole filesystem authority for Worker Protocol v5. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
 
 ## Required configuration
 
@@ -23,7 +23,7 @@ QE_MAX_CONCURRENCY=1
 QE_HERDR_SESSION=quest-engineering-worker
 ```
 
-Bindings created through control-plane discovery are stored in `workspace-bindings.json`. Physical Run mappings and Git provenance are stored with SQLite `synchronous=FULL` in `run-worktrees.sqlite`.
+Bindings created through control-plane discovery are stored in `workspace-bindings.json`. Physical Run mappings and Git provenance are stored with SQLite `synchronous=FULL` in `run-worktrees.sqlite`. Dispatch, Pi harness-session/physical-lineage identity, Herdr terminal identity, activity and unresolved HumanAttention are stored in `dispatches.sqlite`.
 
 `QE_MAX_CONCURRENCY` is the number of simultaneous execution slots advertised by this long-lived host; it defaults conservatively to `1`. Set `QE_MAX_CONCURRENCY=2` explicitly on a development/staging Worker to allow two otherwise-eligible Actions to execute at once. Worker slots are independent of Product Member occupancy: with an Engineering Pair, Run A's reviewer and Run B's builder may use two slots concurrently, while the same `{squad_id, member_key}` builder may not execute for both Runs at once.
 
@@ -60,6 +60,12 @@ Terminal worktrees are retained. There is no automatic GC.
 `terminal.shell` requires `read_write` and root-specific `allow_unconfined_shell: true`. Pi always starts with `--no-skills`, `--no-prompt-templates`, and `--no-context-files`.
 
 Continuation requires exact model, reasoning, tools, logical Workspace, binding, worktree, canonical root, and access equality. It never crosses a Run worktree or Worker.
+
+## Live sessions
+
+`AgentHarness` owns coding-agent semantics and `TerminalSessionBackend` owns terminal transport. The production composition is `PiHarness → HerdrTerminalBackend`; Herdr is not a provider. The existing lineage ID is the Pi harness-session identity rather than a duplicate alias. Continuations may associate several Attempts with that same session.
+
+Herdr's actual `blocked` agent state creates provider-neutral HumanAttention; Pi's explicit `qe_request_human_assistance` tool can enrich the same episode with structured context. In `conversational_intervention` mode, Pi blocks and terminates only the current agent run, returns to its ordinary editor, permits multi-turn human chat, and resumes automation only through `/qe-resume`. The Worker keeps collecting the same dispatch across Pi's `agent_settled` boundary and persists the Product-safe checkpoint/lifecycle in the existing lineage registry. QE does not scan terminal or chat prose. Waiting retains dispatch, Member, Worker-slot, lineage and worktree occupancy. See [live-session acceptance](docs/live-session-acceptance.md) and the repository [architecture](../../docs/live-execution-sessions.md).
 
 ## Gates
 

@@ -1,26 +1,32 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import { arch, platform } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   assertExecutionSupported,
   workerCapabilities,
 } from "./capabilities.ts";
 import type { WorkerConfig } from "./config.ts";
 import { DispatchExecutor } from "./dispatch/executor.ts";
-import { type DispatchRecord, DispatchRegistry } from "./dispatch/registry.ts";
+import {
+  type DispatchRecord,
+  DispatchRegistry,
+  type ProviderLineage,
+} from "./dispatch/registry.ts";
 import { decodeExecuteAction } from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
   ReconcileDispatch,
+  ReconcileSession,
   WorkerCapabilities,
 } from "./protocol/types.ts";
 import { WORKER_PROTOCOL_VERSION } from "./protocol/types.ts";
-import { FakeAgentProvider } from "./providers/fake/provider.ts";
-import { PiProvider } from "./providers/pi/provider.ts";
-import type { AgentProvider } from "./providers/types.ts";
+import { FakeHarness } from "./providers/fake/provider.ts";
+import { PiHarness } from "./providers/pi/provider.ts";
+import type { AgentHarness } from "./providers/types.ts";
 import { LocalHerdrConnectionProvider } from "./session-host/herdr/connection.ts";
-import { HerdrSessionHost } from "./session-host/herdr/session-host.ts";
+import { HerdrTerminalBackend } from "./session-host/herdr/session-host.ts";
 import {
   applyBindingReconciliation,
   persistWorkspaceBindings,
@@ -45,6 +51,8 @@ export class QuestEngineeringWorker {
   private readonly capabilities: WorkerCapabilities;
   private stopping = false;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
+  private recoveryScanActive = false;
+  private readonly sessionReports = new Map<string, Promise<boolean>>();
   private readonly sourceCandidates = new Map<
     string,
     {
@@ -61,19 +69,22 @@ export class QuestEngineeringWorker {
   constructor(private readonly config: WorkerConfig) {
     this.worktrees = new RunWorktreeRegistry(config);
     this.deliveries = new RunDeliveryRegistry(config, this.worktrees);
-    this.registry = new DispatchRegistry(
-      join(config.dataRoot, "dispatches.sqlite"),
-      config.dataRoot,
-    );
-    const provider: AgentProvider =
+    const harness: AgentHarness =
       config.provider === "fake"
-        ? new FakeAgentProvider(config.fakeOutputs, config.fakeDelayMs)
-        : new PiProvider(
-            new HerdrSessionHost(
+        ? new FakeHarness(config.fakeOutputs, config.fakeDelayMs)
+        : new PiHarness(
+            new HerdrTerminalBackend(
               new LocalHerdrConnectionProvider(config.herdrSession),
             ),
             config,
           );
+    this.registry = new DispatchRegistry(
+      join(config.dataRoot, "dispatches.sqlite"),
+      config.dataRoot,
+      harness.kind,
+      harness.capabilities,
+    );
+    // Harness and terminal transport are composed once per long-lived Worker.
     const capabilities = workerCapabilities(config, platform(), arch());
     this.capabilities = capabilities;
     this.channel = new PhoenixWorkerChannel(
@@ -94,8 +105,9 @@ export class QuestEngineeringWorker {
     );
     this.executor = new DispatchExecutor(
       this.registry,
-      provider,
+      harness,
       (dispatch, type) => this.report(dispatch, type),
+      (dispatch, lineage) => this.reportHarnessSession(dispatch, lineage),
     );
   }
 
@@ -117,8 +129,8 @@ export class QuestEngineeringWorker {
     }
   }
 
-  attachInfo(actionId: string) {
-    return this.executor.attachInfo(actionId);
+  attachment(actionId: string) {
+    return this.executor.attachment(actionId);
   }
 
   async stop(): Promise<void> {
@@ -274,7 +286,28 @@ export class QuestEngineeringWorker {
         throw new Error(
           "Resolved execution root differs from the durable Run worktree.",
         );
-      const acceptance = this.executor.accept(action);
+      let acceptance: ReturnType<DispatchExecutor["accept"]>;
+      try {
+        acceptance = this.executor.accept(action);
+      } catch (error) {
+        if (action.operational_recovery?.authorization_kind !== "human")
+          throw error;
+        await this.channel.sendProtocol({
+          type: "step_failed",
+          protocol_version: WORKER_PROTOCOL_VERSION,
+          worker_id: this.config.workerId,
+          action_id: action.action_id,
+          occurrence_id: action.occurrence_id,
+          attempt_id: action.attempt_id,
+          failure: {
+            reason: "retained_recovery_unavailable",
+            classification: "operator_recovery_required",
+            message:
+              "The retained session could not be safely continued. Explicitly retry with a fresh session.",
+          },
+        });
+        return;
+      }
       try {
         await this.sendAcceptedOrState(acceptance.dispatch);
       } finally {
@@ -287,11 +320,21 @@ export class QuestEngineeringWorker {
     }
     if (message.type === "reconcile_request") {
       const dispatches = this.registry.reconcilePayloads();
+      const sessions = this.registry.listLineages().flatMap((lineage) => {
+        const dispatch = this.registry
+          .list()
+          .filter((item) => item.lineageId === lineage.lineageId)
+          .at(-1);
+        return dispatch
+          ? [harnessSessionPayload(dispatch, lineage, this.executor)]
+          : [];
+      });
       const response = await this.channel.sendProtocol({
         type: "reconcile_state",
         protocol_version: WORKER_PROTOCOL_VERSION,
         worker_id: this.config.workerId,
         dispatches,
+        sessions,
       });
       if (response.result === "reconciled") {
         for (const dispatch of this.registry.list()) {
@@ -328,8 +371,97 @@ export class QuestEngineeringWorker {
           worker_id: this.config.workerId,
         })
         .catch(() => undefined);
+      void this.scanRecoveryRequests();
     }, this.config.heartbeatMs);
     this.heartbeat.unref?.();
+    void this.scanRecoveryRequests();
+  }
+
+  private async scanRecoveryRequests(): Promise<void> {
+    if (this.recoveryScanActive || !this.channel.isRegistered()) return;
+    this.recoveryScanActive = true;
+    try {
+      for (const lineage of this.registry.listLineages()) {
+        if (
+          lineage.activeActionId !== null ||
+          lineage.sessionState !== "retained"
+        )
+          continue;
+        const path = join(
+          dirname(lineage.resultControlPath),
+          "recovery-control.json",
+        );
+        if (!existsSync(path)) continue;
+        let request: Record<string, unknown>;
+        try {
+          request = JSON.parse(await Bun.file(path).text()) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          continue;
+        }
+        if (request.version !== 1 || request.state !== "requested") continue;
+        const identity = request.identity as Record<string, unknown>;
+        const actionId = String(identity?.actionId ?? "");
+        let dispatch: DispatchRecord;
+        try {
+          dispatch = this.registry.get(actionId);
+        } catch {
+          await writeRecoveryResult(path, request, "rejected", {
+            rejectionCode: "unknown_action",
+          });
+          continue;
+        }
+        const nativeSession =
+          lineage.nativeSession?.kind === "id"
+            ? lineage.nativeSession.value
+            : null;
+        if (
+          dispatch.state !== "failed" ||
+          dispatch.lineageId !== lineage.lineageId ||
+          identity.workerId !== this.config.workerId ||
+          identity.lineageId !== lineage.lineageId ||
+          identity.runId !== dispatch.action.run_id ||
+          identity.occurrenceId !== dispatch.action.occurrence_id ||
+          identity.attemptId !== dispatch.action.attempt_id ||
+          request.memberKey !==
+            dispatch.action.execution.performer.member_key ||
+          request.piSessionId !== nativeSession
+        ) {
+          await writeRecoveryResult(path, request, "rejected", {
+            rejectionCode: "recovery_provenance_mismatch",
+          });
+          continue;
+        }
+        try {
+          const response = await this.channel.sendProtocol({
+            type: "human_recovery_requested",
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            worker_id: this.config.workerId,
+            recovery: {
+              request_id: String(request.requestId),
+              run_id: dispatch.action.run_id,
+              occurrence_id: dispatch.action.occurrence_id,
+              attempt_id: dispatch.action.attempt_id,
+              action_id: dispatch.action.action_id,
+              member_key: dispatch.action.execution.performer.member_key,
+              session_id: lineage.lineageId,
+              lineage_id: lineage.lineageId,
+              pi_session_id: String(request.piSessionId),
+            },
+          });
+          await writeRecoveryResult(path, request, "authorized", {
+            recoveryEpoch: Number(response.recovery_epoch),
+            attemptAllowance: Number(response.attempt_allowance),
+          });
+        } catch {
+          // Keep the stable request pending across disconnects and lost acknowledgements.
+        }
+      }
+    } finally {
+      this.recoveryScanActive = false;
+    }
   }
 
   private async reportWorkspaceSources(): Promise<void> {
@@ -656,6 +788,40 @@ export class QuestEngineeringWorker {
     await this.report(dispatchPayload(dispatch, "running"), "dispatch_state");
   }
 
+  private reportHarnessSession(
+    dispatch: DispatchRecord,
+    lineage: ProviderLineage,
+  ): Promise<boolean> {
+    const previous =
+      this.sessionReports.get(lineage.lineageId) ?? Promise.resolve(false);
+    const operation = previous
+      .catch(() => false)
+      .then(async () => {
+        if (!this.channel.isRegistered()) return false;
+        try {
+          await this.channel.sendProtocol({
+            type: "session_state",
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            worker_id: this.config.workerId,
+            session: harnessSessionPayload(dispatch, lineage, this.executor),
+          });
+          return true;
+        } catch (error) {
+          console.warn(
+            `Could not report harness session ${lineage.lineageId}`,
+            error instanceof Error ? error.message : String(error),
+          );
+          return false;
+        }
+      });
+    this.sessionReports.set(lineage.lineageId, operation);
+    void operation.finally(() => {
+      if (this.sessionReports.get(lineage.lineageId) === operation)
+        this.sessionReports.delete(lineage.lineageId);
+    });
+    return operation;
+  }
+
   private async report(
     dispatch: ReconcileDispatch,
     type: DispatchReportType,
@@ -698,6 +864,102 @@ export class QuestEngineeringWorker {
       return false;
     }
   }
+}
+
+function harnessSessionPayload(
+  dispatch: DispatchRecord,
+  lineage: ProviderLineage,
+  executor: DispatchExecutor,
+): ReconcileSession {
+  const capability = lineage.capabilities;
+  let terminal: ReconcileSession["terminal"] = null;
+  if (capability.canAttachTerminal) {
+    try {
+      const descriptor = executor.attachment(dispatch.action.action_id);
+      terminal = {
+        attachment_mode: descriptor.mode,
+        backend_kind: descriptor.backendKind,
+        terminal_session_id: descriptor.terminalSessionId,
+        terminal_target_id: descriptor.terminalTargetId,
+        ...(descriptor.terminalId
+          ? { terminal_id: descriptor.terminalId }
+          : {}),
+        supports_observation: descriptor.supportsObservation,
+        supports_takeover: descriptor.supportsTakeover,
+      };
+    } catch {
+      terminal = null;
+    }
+  }
+  return {
+    session_id: lineage.lineageId,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    member_key: dispatch.action.execution.performer.member_key,
+    harness_kind: lineage.harnessKind,
+    harness_display_name: lineage.harnessKind === "pi" ? "Pi" : "Test Harness",
+    state: lineage.sessionState,
+    capabilities: {
+      can_attach_terminal: capability.canAttachTerminal,
+      can_send_input: capability.canSendInput,
+      can_interrupt: capability.canInterrupt,
+      can_detect_attention: capability.canDetectAttention,
+      can_resume: capability.canResume,
+      can_observe_structured_events: capability.canObserveStructuredEvents,
+      structured_confirmation: capability.structuredConfirmation,
+      structured_text_response: capability.structuredTextResponse,
+      structured_choice_response: capability.structuredChoiceResponse,
+      structured_multiline_response: capability.structuredMultilineResponse,
+      native_prompt_control: capability.nativePromptControl,
+      conversational_takeover: capability.conversationalTakeover,
+      automation_resume: capability.automationResume,
+    },
+    terminal,
+    provider_session_id:
+      lineage.nativeSession?.kind === "id" ? lineage.nativeSession.value : null,
+    attention: lineage.attention
+      ? {
+          attention_id: lineage.attention.attentionId,
+          category: lineage.attention.category,
+          message: lineage.attention.message,
+          requested_at: lineage.attention.requestedAt,
+          ...(lineage.attention.interaction
+            ? {
+                interaction: {
+                  kind: lineage.attention.interaction.kind,
+                  control_state: lineage.attention.interaction.controlState,
+                  ...(lineage.attention.interaction.resumeCommand
+                    ? {
+                        resume_command:
+                          lineage.attention.interaction.resumeCommand,
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        }
+      : null,
+    intervention: lineage.intervention
+      ? {
+          attention_id: lineage.intervention.attentionId,
+          kind: lineage.intervention.kind,
+          state: lineage.intervention.state,
+          requested_at: lineage.intervention.requestedAt,
+          ...(lineage.intervention.handedBackAt
+            ? { handed_back_at: lineage.intervention.handedBackAt }
+            : {}),
+          ...(lineage.intervention.automationResumedAt
+            ? {
+                automation_resumed_at: lineage.intervention.automationResumedAt,
+              }
+            : {}),
+        }
+      : null,
+    started_at: lineage.startedAt,
+    last_activity_at: lineage.lastActivityAt,
+  };
 }
 
 function discoverGitRoots(
@@ -859,6 +1121,35 @@ export function dispatchReportMessage(
         }
       : {}),
   };
+}
+
+async function writeRecoveryResult(
+  path: string,
+  request: Record<string, unknown>,
+  state: "authorized" | "rejected",
+  fields: Record<string, unknown>,
+): Promise<void> {
+  if (!existsSync(path)) return;
+  try {
+    const current = JSON.parse(await Bun.file(path).text()) as Record<
+      string,
+      unknown
+    >;
+    if (
+      current.state !== "requested" ||
+      current.requestId !== request.requestId
+    )
+      return;
+  } catch {
+    return;
+  }
+  const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await writeFile(
+    temporary,
+    `${JSON.stringify({ ...request, ...fields, state })}\n`,
+    { encoding: "utf8", mode: 0o600, flag: "wx" },
+  );
+  await rename(temporary, path);
 }
 
 function dispatchPayload(

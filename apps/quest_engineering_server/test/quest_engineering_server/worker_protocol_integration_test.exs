@@ -17,6 +17,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
+  alias QuestEngineering.Server.RunProjection
   alias QuestEngineering.Server.RuntimeStore
   alias QuestEngineering.Server.WorkerStore
 
@@ -47,7 +48,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     %{workspace_root: root}
   end
 
-  test "v4 registration fences an older connection", context do
+  test "v5 registration fences an older connection", context do
     worker_id = unique("worker-fence")
     first = start_worker(worker_id, context.workspace_root, max_concurrency: 2)
     assert_eventually(fn -> FakeWorker.connected?(first) end)
@@ -89,6 +90,104 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
       match?({:ok, %{revision: 1}}, RuntimeStore.fetch_run(launched.run_id))
     end)
 
+    assert Repo.get!(ScheduledActionExecution, action.id).state == "completed"
+  end
+
+  test "human attention survives reconnect and resumes the same active Attempt", context do
+    worker_id = unique("worker-human-assist")
+    worker = start_worker(worker_id, context.workspace_root)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    quest = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(quest.id)
+    [action] = launched.actions
+    attempt_id = action.attempt_id
+
+    assert_eventually(fn ->
+      match?({:ok, %{state: :acknowledged}}, DispatchStore.fetch(action.id))
+    end)
+
+    attention_id = Ecto.UUID.generate()
+    :ok = FakeWorker.request_attention(worker, action.id, attention_id)
+
+    assert_eventually(fn ->
+      with {:ok, projection} <- RunProjection.get(launched.run_id),
+           [step] <- projection.steps do
+        match?(
+          %{
+            state: "running",
+            attempt: %{id: ^attempt_id},
+            session: %{attention: %{"attention_id" => ^attention_id}}
+          },
+          step
+        )
+      else
+        _ -> false
+      end
+    end)
+
+    assert Repo.get!(ScheduledActionExecution, action.id).state == "active"
+    assert {:ok, %{state: :running}} = DispatchStore.fetch(action.id)
+    assert FakeWorker.execution_count(worker, action.id) == 1
+
+    :ok = FakeWorker.disconnect(worker)
+
+    assert_eventually(fn ->
+      with {:ok, projection} <- RunProjection.get(launched.run_id),
+           [step] <- projection.steps do
+        match?(
+          %{session: %{state: "unavailable", attachment: %{reason: "worker_offline"}}},
+          step
+        )
+      else
+        _ -> false
+      end
+    end)
+
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+
+    assert_eventually(fn ->
+      with {:ok, projection} <- RunProjection.get(launched.run_id),
+           [step] <- projection.steps do
+        match?(
+          %{
+            session: %{
+              state: "waiting_for_human",
+              attention: %{"attention_id" => ^attention_id}
+            }
+          },
+          step
+        )
+      else
+        _ -> false
+      end
+    end)
+
+    :ok = FakeWorker.resolve_attention(worker, action.id)
+
+    assert_eventually(fn ->
+      with {:ok, projection} <- RunProjection.get(launched.run_id),
+           [step] <- projection.steps do
+        match?(
+          %{
+            state: "running",
+            attempt: %{id: ^attempt_id},
+            session: %{state: "running", attention: nil}
+          },
+          step
+        )
+      else
+        _ -> false
+      end
+    end)
+
+    :ok = FakeWorker.complete(worker, action.id, %{})
+
+    assert_eventually(fn ->
+      match?({:ok, %{revision: 1}}, RuntimeStore.fetch_run(launched.run_id))
+    end)
+
+    assert FakeWorker.execution_count(worker, action.id) == 1
     assert Repo.get!(ScheduledActionExecution, action.id).state == "completed"
   end
 

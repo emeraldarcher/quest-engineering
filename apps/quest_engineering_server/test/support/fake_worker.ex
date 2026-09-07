@@ -177,6 +177,12 @@ defmodule QuestEngineering.Server.FakeWorker do
   def drop_completion(worker, value), do: GenServer.call(worker, {:drop_completion, value})
   def mark_running(worker, action_id), do: GenServer.call(worker, {:mark_running, action_id})
 
+  def request_attention(worker, action_id, attention_id),
+    do: GenServer.call(worker, {:request_attention, action_id, attention_id})
+
+  def resolve_attention(worker, action_id),
+    do: GenServer.call(worker, {:resolve_attention, action_id})
+
   def complete(worker, action_id, outputs),
     do: GenServer.call(worker, {:complete, action_id, outputs})
 
@@ -191,7 +197,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         options
         |> Keyword.get(:capabilities, default_capabilities())
         |> Map.put_new("workspace_bindings", []),
-      protocol_version: Keyword.get(options, :protocol_version, 4),
+      protocol_version: Keyword.get(options, :protocol_version, 5),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -200,6 +206,7 @@ defmodule QuestEngineering.Server.FakeWorker do
       connected?: false,
       registered?: false,
       known: %{},
+      sessions: %{},
       worktrees: %{},
       execution_counts: %{},
       drop_ack?: false,
@@ -255,6 +262,51 @@ defmodule QuestEngineering.Server.FakeWorker do
         dispatch = %{dispatch | state: :running}
         next = put_in(state.known[action_id], dispatch)
         {:reply, :ok, maybe_send_state(next, dispatch)}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:request_attention, action_id, attention_id}, _from, state) do
+    case fetch_known(state, action_id) do
+      {:ok, dispatch} ->
+        dispatch = %{dispatch | state: :running}
+
+        attention = %{
+          "attention_id" => attention_id,
+          "category" => "needs_input",
+          "message" => "Fake harness needs input.",
+          "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+
+        session = session_payload(dispatch, "waiting_for_human", attention)
+
+        next =
+          state
+          |> put_in([:known, action_id], dispatch)
+          |> put_in([:sessions, action_id], session)
+          |> maybe_send_state(dispatch)
+          |> send_protocol(session_message(state, session))
+
+        {:reply, :ok, next}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:resolve_attention, action_id}, _from, state) do
+    case fetch_known(state, action_id) do
+      {:ok, dispatch} ->
+        session = session_payload(dispatch, "running", nil)
+
+        next =
+          state
+          |> put_in([:sessions, action_id], session)
+          |> send_protocol(session_message(state, session))
+
+        {:reply, :ok, next}
 
       error ->
         {:reply, error, state}
@@ -415,12 +467,14 @@ defmodule QuestEngineering.Server.FakeWorker do
 
   defp handle_protocol(%{"type" => "reconcile_request"}, state) do
     dispatches = state.known |> Map.values() |> Enum.map(&state_payload/1)
+    sessions = Map.values(state.sessions)
 
     send_protocol(state, %{
       "type" => "reconcile_state",
       "protocol_version" => state.protocol_version,
       "worker_id" => state.worker_id,
-      "dispatches" => dispatches
+      "dispatches" => dispatches,
+      "sessions" => sessions
     })
   end
 
@@ -476,6 +530,46 @@ defmodule QuestEngineering.Server.FakeWorker do
     }
     |> maybe_put("outputs", dispatch.outputs)
     |> maybe_put("failure", dispatch.failure)
+  end
+
+  defp session_message(state, session) do
+    %{
+      "type" => "session_state",
+      "protocol_version" => state.protocol_version,
+      "worker_id" => state.worker_id,
+      "session" => session
+    }
+  end
+
+  defp session_payload(dispatch, session_state, attention) do
+    execution = dispatch.wire_action["execution"]
+    identity = execution["identity"]
+    now = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    %{
+      "session_id" => "fake-session-" <> Base.url_encode64(dispatch.action_id, padding: false),
+      "action_id" => dispatch.action_id,
+      "run_id" => identity["run_id"],
+      "occurrence_id" => dispatch.occurrence_id,
+      "attempt_id" => dispatch.attempt_id,
+      "member_key" => execution["performer"]["member_key"],
+      "harness_kind" => "fake",
+      "harness_display_name" => "Test Harness",
+      "state" => session_state,
+      "capabilities" => %{
+        "can_attach_terminal" => false,
+        "can_send_input" => true,
+        "can_interrupt" => true,
+        "can_detect_attention" => true,
+        "can_resume" => true,
+        "can_observe_structured_events" => true
+      },
+      "terminal" => nil,
+      "provider_session_id" => nil,
+      "attention" => attention,
+      "started_at" => now,
+      "last_activity_at" => now
+    }
   end
 
   defp identity_message(state, dispatch, type) do

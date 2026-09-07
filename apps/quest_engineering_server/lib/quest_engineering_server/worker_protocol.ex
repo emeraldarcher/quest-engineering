@@ -16,11 +16,17 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 4
+  @version 5
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @reasoning ~w(low medium high)
   @access ~w(none read_only read_write)
+  @session_states ~w(starting running waiting_for_human recovering retained closed unavailable)
+  @attention_categories ~w(needs_input needs_permission needs_authentication needs_confirmation blocked_external interactive_prompt unknown_interactive_block)
+  @interaction_kinds ~w(confirmation text choice multiline_response conversational_intervention)
+  @human_control_states ~w(intervention_pending human_control resuming_automation)
+  @intervention_states ~w(intervention_pending resuming_automation resumed)
+  @failure_classifications ~w(auto_retryable operator_recovery_required terminal_not_recoverable)
 
   defmodule Message do
     @moduledoc false
@@ -39,7 +45,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             worktree: map() | nil,
             candidates: [map()] | nil,
             binding: map() | nil,
-            delivery: map() | nil
+            delivery: map() | nil,
+            session: map() | nil,
+            sessions: [map()] | nil,
+            recovery: map() | nil
           }
 
     defstruct [
@@ -55,7 +64,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :worktree,
       :candidates,
       :binding,
-      :delivery
+      :delivery,
+      :session,
+      :sessions,
+      :recovery
     ]
   end
 
@@ -68,7 +80,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 4
+  @spec version() :: 5
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -206,13 +218,14 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     }
   end
 
-  def execute_action(worker_id, %ResolvedExecution{} = execution) do
+  def execute_action(worker_id, %ResolvedExecution{} = execution, operational_recovery \\ nil) do
     %{
       "type" => "execute_action",
       "protocol_version" => @version,
       "worker_id" => worker_id,
       "execution" => execution(execution)
     }
+    |> maybe_put("operational_recovery", encode_operational_recovery(operational_recovery))
   end
 
   def protocol_error(%Error{} = protocol_error) do
@@ -321,6 +334,23 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end
   end
 
+  defp decode_message("session_state", worker_id, %{"session" => session}) do
+    with {:ok, decoded} <- decode_session(session) do
+      {:ok, %Message{type: :session_state, worker_id: worker_id, session: decoded}}
+    end
+  end
+
+  defp decode_message("human_recovery_requested", worker_id, %{"recovery" => recovery}) do
+    with {:ok, decoded} <- decode_human_recovery(recovery) do
+      {:ok,
+       %Message{
+         type: :human_recovery_requested,
+         worker_id: worker_id,
+         recovery: Map.put(decoded, :worker_id, worker_id)
+       }}
+    end
+  end
+
   defp decode_message("dispatch_accepted", worker_id, payload) do
     with {:ok, fields} <- dispatch_identity(payload) do
       {:ok,
@@ -360,7 +390,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_message("step_failed", worker_id, payload) do
     with {:ok, fields} <- dispatch_identity(payload),
-         {:ok, failure} <- required_plain_map(payload, "failure") do
+         {:ok, failure} <- required_plain_map(payload, "failure"),
+         {:ok, failure} <- classified_failure(failure) do
       {:ok,
        struct!(
          Message,
@@ -369,10 +400,23 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end
   end
 
-  defp decode_message("reconcile_state", worker_id, %{"dispatches" => dispatches})
+  defp decode_message("reconcile_state", worker_id, %{"dispatches" => dispatches} = payload)
        when is_list(dispatches) do
-    with {:ok, decoded} <- decode_reconcile_dispatches(dispatches) do
-      {:ok, %Message{type: :reconcile_state, worker_id: worker_id, dispatches: decoded}}
+    sessions = Map.get(payload, "sessions", [])
+
+    with true <- is_list(sessions),
+         {:ok, decoded} <- decode_reconcile_dispatches(dispatches),
+         {:ok, decoded_sessions} <- decode_sessions(sessions) do
+      {:ok,
+       %Message{
+         type: :reconcile_state,
+         worker_id: worker_id,
+         dispatches: decoded,
+         sessions: decoded_sessions
+       }}
+    else
+      false -> error(:invalid_field, "sessions", %{expected: "array"})
+      {:error, _} = error -> error
     end
   end
 
@@ -381,6 +425,281 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_message(type, _worker_id, _payload),
     do: error(:unknown_message_type, "type", %{received: type})
+
+  defp decode_human_recovery(value) when is_map(value) do
+    with {:ok, request_id} <- required_string(value, "request_id"),
+         {:ok, run_id} <- required_string(value, "run_id"),
+         {:ok, occurrence_id} <- required_string(value, "occurrence_id"),
+         {:ok, attempt_id} <- required_string(value, "attempt_id"),
+         {:ok, action_id} <- required_string(value, "action_id"),
+         {:ok, member_key} <- required_string(value, "member_key"),
+         {:ok, session_id} <- required_string(value, "session_id"),
+         {:ok, lineage_id} <- required_string(value, "lineage_id"),
+         {:ok, pi_session_id} <- required_string(value, "pi_session_id") do
+      {:ok,
+       %{
+         request_id: request_id,
+         run_id: run_id,
+         occurrence_id: occurrence_id,
+         attempt_id: attempt_id,
+         action_id: action_id,
+         member_key: member_key,
+         session_id: session_id,
+         lineage_id: lineage_id,
+         pi_session_id: pi_session_id
+       }}
+    end
+  end
+
+  defp decode_human_recovery(_), do: error(:invalid_field, "recovery")
+
+  defp decode_sessions(sessions) do
+    Enum.reduce_while(sessions, {:ok, []}, fn value, {:ok, decoded} ->
+      case decode_session(value) do
+        {:ok, session} -> {:cont, {:ok, [session | decoded]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
+  defp decode_session(value) when is_map(value) do
+    with {:ok, session_id} <- required_string(value, "session_id"),
+         {:ok, action_id} <- required_string(value, "action_id"),
+         {:ok, run_id} <- required_string(value, "run_id"),
+         {:ok, occurrence_id} <- required_string(value, "occurrence_id"),
+         {:ok, attempt_id} <- required_string(value, "attempt_id"),
+         {:ok, member_key} <- required_string(value, "member_key"),
+         {:ok, harness_kind} <- required_string(value, "harness_kind"),
+         {:ok, harness_display_name} <- required_string(value, "harness_display_name"),
+         {:ok, state} <- session_state(value["state"]),
+         {:ok, capabilities} <- decode_session_capabilities(value["capabilities"]),
+         {:ok, terminal} <- decode_terminal(value["terminal"]),
+         {:ok, provider_session_id} <- optional_string(value["provider_session_id"]),
+         {:ok, attention} <- decode_attention(value["attention"]),
+         {:ok, intervention} <- decode_intervention(value["intervention"]),
+         {:ok, started_at} <- timestamp(value["started_at"], "session.started_at"),
+         {:ok, last_activity_at} <-
+           timestamp(value["last_activity_at"], "session.last_activity_at") do
+      {:ok,
+       %{
+         session_id: session_id,
+         action_id: action_id,
+         run_id: run_id,
+         occurrence_id: occurrence_id,
+         attempt_id: attempt_id,
+         member_key: member_key,
+         harness_kind: harness_kind,
+         harness_display_name: harness_display_name,
+         state: state,
+         capabilities: capabilities,
+         terminal: terminal,
+         provider_session_id: provider_session_id,
+         attention: attention,
+         intervention: intervention,
+         started_at: started_at,
+         last_activity_at: last_activity_at
+       }}
+    end
+  end
+
+  defp decode_session(_), do: error(:invalid_field, "session")
+
+  defp decode_session_capabilities(value) when is_map(value) do
+    with {:ok, attach} <- required_boolean(value, "can_attach_terminal"),
+         {:ok, input} <- required_boolean(value, "can_send_input"),
+         {:ok, interrupt} <- required_boolean(value, "can_interrupt"),
+         {:ok, attention} <- required_boolean(value, "can_detect_attention"),
+         {:ok, resume} <- required_boolean(value, "can_resume"),
+         {:ok, events} <- required_boolean(value, "can_observe_structured_events"),
+         {:ok, confirmation} <- optional_capability(value, "structured_confirmation"),
+         {:ok, text} <- optional_capability(value, "structured_text_response"),
+         {:ok, choice} <- optional_capability(value, "structured_choice_response"),
+         {:ok, multiline} <- optional_capability(value, "structured_multiline_response"),
+         {:ok, native_prompt} <- optional_capability(value, "native_prompt_control"),
+         {:ok, conversational} <- optional_capability(value, "conversational_takeover"),
+         {:ok, automation_resume} <- optional_capability(value, "automation_resume") do
+      {:ok,
+       %{
+         "can_attach_terminal" => attach,
+         "can_send_input" => input,
+         "can_interrupt" => interrupt,
+         "can_detect_attention" => attention,
+         "can_resume" => resume,
+         "can_observe_structured_events" => events,
+         "structured_confirmation" => confirmation,
+         "structured_text_response" => text,
+         "structured_choice_response" => choice,
+         "structured_multiline_response" => multiline,
+         "native_prompt_control" => native_prompt,
+         "conversational_takeover" => conversational,
+         "automation_resume" => automation_resume
+       }}
+    end
+  end
+
+  defp decode_session_capabilities(_), do: error(:invalid_field, "session.capabilities")
+
+  defp decode_terminal(nil), do: {:ok, nil}
+
+  defp decode_terminal(
+         %{
+           "attachment_mode" => "local_native_terminal",
+           "backend_kind" => backend,
+           "terminal_session_id" => session_id,
+           "terminal_target_id" => target_id,
+           "supports_observation" => observation,
+           "supports_takeover" => takeover
+         } = terminal
+       )
+       when is_binary(backend) and backend != "" and is_binary(session_id) and session_id != "" and
+              is_binary(target_id) and target_id != "" and is_boolean(observation) and
+              is_boolean(takeover) do
+    {:ok,
+     %{
+       "attachment_mode" => "local_native_terminal",
+       "backend_kind" => backend,
+       "terminal_session_id" => session_id,
+       "terminal_target_id" => target_id,
+       "terminal_id" => terminal["terminal_id"],
+       "supports_observation" => observation,
+       "supports_takeover" => takeover
+     }}
+  end
+
+  defp decode_terminal(_), do: error(:invalid_field, "session.terminal")
+
+  defp decode_attention(nil), do: {:ok, nil}
+
+  defp decode_attention(
+         %{
+           "attention_id" => id,
+           "category" => category,
+           "message" => message,
+           "requested_at" => requested_at
+         } = value
+       )
+       when is_binary(id) and id != "" and category in @attention_categories and
+              is_binary(message) and byte_size(message) > 0 and byte_size(message) <= 240 do
+    with {:ok, timestamp} <- timestamp(requested_at, "session.attention.requested_at"),
+         {:ok, interaction} <- decode_interaction(value["interaction"]) do
+      {:ok,
+       %{
+         "attention_id" => id,
+         "category" => category,
+         "message" => message,
+         "requested_at" => DateTime.to_iso8601(timestamp)
+       }
+       |> maybe_put("interaction", interaction)}
+    end
+  end
+
+  defp decode_attention(_), do: error(:invalid_field, "session.attention")
+
+  defp decode_interaction(nil), do: {:ok, nil}
+
+  defp decode_interaction(%{"kind" => kind, "control_state" => state} = value)
+       when kind in @interaction_kinds and state in @human_control_states do
+    with {:ok, command} <- optional_string(value["resume_command"]) do
+      {:ok,
+       %{"kind" => kind, "control_state" => state}
+       |> maybe_put("resume_command", command)}
+    end
+  end
+
+  defp decode_interaction(_), do: error(:invalid_field, "session.attention.interaction")
+
+  defp decode_intervention(nil), do: {:ok, nil}
+
+  defp decode_intervention(
+         %{
+           "attention_id" => id,
+           "kind" => "conversational_intervention",
+           "state" => state,
+           "requested_at" => requested_at
+         } = value
+       )
+       when is_binary(id) and id != "" and state in @intervention_states do
+    with {:ok, requested} <- timestamp(requested_at, "session.intervention.requested_at"),
+         {:ok, handed_back} <-
+           optional_timestamp(value["handed_back_at"], "session.intervention.handed_back_at"),
+         {:ok, resumed} <-
+           optional_timestamp(
+             value["automation_resumed_at"],
+             "session.intervention.automation_resumed_at"
+           ),
+         :ok <- valid_intervention_timestamps(state, handed_back, resumed) do
+      {:ok,
+       %{
+         "attention_id" => id,
+         "kind" => "conversational_intervention",
+         "state" => state,
+         "requested_at" => DateTime.to_iso8601(requested)
+       }
+       |> maybe_put("handed_back_at", handed_back && DateTime.to_iso8601(handed_back))
+       |> maybe_put("automation_resumed_at", resumed && DateTime.to_iso8601(resumed))}
+    end
+  end
+
+  defp decode_intervention(_), do: error(:invalid_field, "session.intervention")
+
+  defp valid_intervention_timestamps("intervention_pending", nil, nil), do: :ok
+  defp valid_intervention_timestamps("resuming_automation", %DateTime{}, nil), do: :ok
+  defp valid_intervention_timestamps("resumed", %DateTime{}, %DateTime{}), do: :ok
+
+  defp valid_intervention_timestamps(_state, _handed_back, _resumed),
+    do: error(:invalid_field, "session.intervention.lifecycle_timestamps")
+
+  defp session_state(value) when value in @session_states do
+    {:ok,
+     case value do
+       "starting" -> :starting
+       "running" -> :running
+       "waiting_for_human" -> :waiting_for_human
+       "recovering" -> :recovering
+       "retained" -> :retained
+       "closed" -> :closed
+       "unavailable" -> :unavailable
+     end}
+  end
+
+  defp session_state(value), do: error(:invalid_field, "session.state", %{received: value})
+
+  defp optional_string(nil), do: {:ok, nil}
+  defp optional_string(value) when is_binary(value) and value != "", do: {:ok, value}
+  defp optional_string(_), do: error(:invalid_field, "session.provider_session_id")
+
+  defp required_boolean(value, key) do
+    case Map.fetch(value, key) do
+      {:ok, boolean} when is_boolean(boolean) -> {:ok, boolean}
+      _ -> error(:invalid_field, "session.capabilities.#{key}")
+    end
+  end
+
+  defp optional_capability(value, key) do
+    case Map.get(value, key, false) do
+      boolean when is_boolean(boolean) -> {:ok, boolean}
+      _ -> error(:invalid_field, "session.capabilities.#{key}")
+    end
+  end
+
+  defp optional_timestamp(nil, _field), do: {:ok, nil}
+  defp optional_timestamp(value, field), do: timestamp(value, field)
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp timestamp(value, field) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      _ -> error(:invalid_field, field)
+    end
+  end
+
+  defp timestamp(_value, field), do: error(:invalid_field, field)
 
   defp decode_reconcile_dispatches(dispatches) do
     Enum.reduce_while(dispatches, {:ok, []}, fn payload, {:ok, decoded} ->
@@ -615,10 +934,28 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp optional_outputs(payload, :completed), do: required_outputs(payload)
   defp optional_outputs(_payload, _state), do: {:ok, nil}
 
-  defp optional_failure(payload, state) when state in [:failed, :uncertain],
-    do: required_plain_map(payload, "failure")
+  defp optional_failure(payload, :failed) do
+    with {:ok, failure} <- required_plain_map(payload, "failure"),
+         do: classified_failure(failure)
+  end
+
+  defp optional_failure(payload, :uncertain), do: required_plain_map(payload, "failure")
 
   defp optional_failure(_payload, _state), do: {:ok, nil}
+
+  defp classified_failure(%{"classification" => classification} = failure)
+       when classification in @failure_classifications,
+       do: {:ok, failure}
+
+  defp classified_failure(%{"classification" => classification}),
+    do:
+      error(:invalid_field, "failure.classification", %{
+        received: classification,
+        allowed: @failure_classifications
+      })
+
+  defp classified_failure(failure),
+    do: {:ok, Map.put(failure, "classification", "operator_recovery_required")}
 
   defp required_outputs(payload) do
     case payload["outputs"] do
@@ -870,6 +1207,21 @@ defmodule QuestEngineering.Server.WorkerProtocol do
         "source_occurrence_id" => context.source_occurrence_id,
         "logical_lineage_id" => context.logical_lineage_id
       }
+    }
+  end
+
+  defp encode_operational_recovery(nil), do: nil
+
+  defp encode_operational_recovery(recovery) do
+    %{
+      "epoch_number" => recovery.epoch_number,
+      "attempt_in_epoch" => recovery.attempt_in_epoch,
+      "attempt_allowance" => recovery.attempt_allowance,
+      "authorization_kind" => recovery.authorization_kind,
+      "continuation_mode" => recovery.continuation_mode,
+      "retained_lineage_id" => recovery.retained_lineage_id,
+      "source_attempt_id" => recovery.source_attempt_id,
+      "request_id" => recovery.request_id
     }
   end
 

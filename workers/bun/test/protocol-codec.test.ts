@@ -5,7 +5,7 @@ import {
 } from "../src/protocol/codec.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v4 ResolvedExecution codec", () => {
+describe("Worker Protocol v5 ResolvedExecution codec", () => {
   test("requires and preserves separated semantic instructions", () => {
     const input = action({
       instruction: "Inspect inputs.\nProduce the result.",
@@ -25,6 +25,32 @@ describe("Worker Protocol v4 ResolvedExecution codec", () => {
         "worker-test",
       ),
     ).toThrow(ProtocolDecodeError);
+  });
+
+  test("decodes normalized operational retry attribution without changing semantic context", () => {
+    const input = action();
+    const decoded = decodeExecuteAction(
+      {
+        ...input,
+        operational_recovery: {
+          epoch_number: 1,
+          attempt_in_epoch: 1,
+          attempt_allowance: 2,
+          authorization_kind: "human",
+          continuation_mode: "retained",
+          retained_lineage_id: "lineage-retained",
+          source_attempt_id: "attempt-1",
+          request_id: "request-1",
+        },
+      },
+      input.worker_id,
+    );
+    expect(decoded.operational_recovery).toMatchObject({
+      epoch_number: 1,
+      attempt_in_epoch: 1,
+      continuation_mode: "retained",
+    });
+    expect(decoded.execution.context).toEqual(input.execution.context);
   });
 
   test("rejects protocol v2", () => {

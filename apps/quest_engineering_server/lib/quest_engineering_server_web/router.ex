@@ -58,9 +58,16 @@ defmodule QuestEngineering.ServerWeb.Router do
     get "/runs", RunController, :index
     get "/runs/:id/changes", RunController, :changes
     post "/runs/:id/execution/retry", RunController, :retry_execution
+    post "/runs/:id/execution/recover-fresh", RunController, :recover_execution_fresh
     post "/runs/:id/execution/mark-failed", RunController, :mark_execution_failed
     post "/runs/:id/delivery/retry", RunController, :retry_delivery
     post "/runs/:id/worktree/cleanup", RunController, :cleanup
+
+    post "/runs/:id/attempts/:attempt_id/sessions/:session_id/attachment",
+         RunController,
+         :session_attachment
+
+    post "/session-attachments/opened", RunController, :session_opened
     get "/runs/:run_id/artifacts/:artifact_id", RunController, :artifact
     get "/runs/:id", RunController, :show
   end
