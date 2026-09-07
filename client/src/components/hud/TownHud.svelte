@@ -12,10 +12,15 @@ import { countLabel, townHudCounts } from "./hud-presentation";
 export let product: ProductState;
 export let realtimeStatus: RealtimeStatus;
 export let serverReachable: boolean | null = null;
+export let liveAttentionCount = 0;
 
 $: counts = townHudCounts(product.quests);
 $: activeLabel = `${countLabel(counts.activeQuests, "active Quest")}`;
 $: activeTooltip = `${activeLabel} that ${counts.activeQuests === 1 ? "is" : "are"} not complete.${counts.preparingReviewQuests ? ` ${countLabel(counts.preparingReviewQuests, "Quest")} preparing review.` : ""}`;
+$: totalAttention = counts.attentionQuests + liveAttentionCount;
+$: attentionAccessibleLabel = liveAttentionCount
+  ? `${countLabel(totalAttention, "attention item")} includes ${countLabel(liveAttentionCount, "live session")} waiting for help`
+  : `${countLabel(counts.attentionQuests, "active Quest")} ${counts.attentionQuests === 1 ? "needs" : "need"} attention`;
 </script>
 
 <header class="town-hud" aria-label="Quest Engineering town status">
@@ -42,10 +47,10 @@ $: activeTooltip = `${activeLabel} that ${counts.activeQuests === 1 ? "is" : "ar
       tone="working"
     />
     <HudMetric
-      count={counts.attentionQuests}
-      label="Attention"
-      accessibleLabel={`${countLabel(counts.attentionQuests, "active Quest")} ${counts.attentionQuests === 1 ? "needs" : "need"} attention`}
-      tooltip={`${countLabel(counts.attentionQuests, "active Quest")} ${counts.attentionQuests === 1 ? "needs" : "need"} attention.`}
+      count={totalAttention}
+      label="Needs Attention"
+      accessibleLabel={attentionAccessibleLabel}
+      tooltip={`${countLabel(liveAttentionCount, "live session")} waiting for human help; ${countLabel(counts.attentionQuests, "Quest")} has review, Delivery, or Product attention.`}
       icon={attentionIcon}
       tone="attention"
     />

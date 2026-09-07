@@ -5,6 +5,7 @@ defmodule QuestEngineering.Server.Reconciler do
 
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.OperationalFailure
   alias QuestEngineering.Server.Persistence.ReconciliationAnomaly
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerDispatch
@@ -135,7 +136,10 @@ defmodule QuestEngineering.Server.Reconciler do
   end
 
   defp apply_observed(worker_id, generation, %{state: :failed} = item) do
-    DispatchStore.mark_failed(worker_id, generation, item.action_id, item.failure)
+    case OperationalFailure.record(worker_id, generation, item) do
+      {:ok, result} -> {:ok, result.dispatch}
+      {:error, error} -> {:error, error}
+    end
   end
 
   defp apply_observed(worker_id, generation, %{state: :uncertain} = item) do

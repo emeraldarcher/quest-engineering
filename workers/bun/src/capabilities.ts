@@ -40,6 +40,7 @@ export function workerCapabilities(
       "run_worktree_retention_v1",
       "run_worktree_cleanup_v1",
       "workspace_binding_status_v1",
+      "live_execution_sessions_v1",
     ],
     workspace_bindings: config.workspaceBindings.map((binding) => ({
       ...binding,

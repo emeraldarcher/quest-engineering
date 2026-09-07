@@ -10,8 +10,10 @@ import {
   type DeliveryProjection,
   decodeApiError,
   type ExecutionOption,
+  type HarnessSessionState,
   type JsonValue,
   type Loadout,
+  type LocalSessionAttachmentDescriptor,
   nullableString,
   type Quest,
   type QuestPreview,
@@ -34,6 +36,7 @@ import {
 
 export interface ApiClientConfig {
   httpBaseUrl: string;
+  localTauriClient?: boolean;
 }
 export interface ClassInput {
   key?: string;
@@ -155,6 +158,16 @@ export class ApiClient {
       { occurrence_id: occurrenceId },
       (value) => decodeRun(asRecord(value, "run").run),
     );
+  recoverExecutionFresh = (
+    runId: string,
+    occurrenceId: string,
+    requestId: string,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/execution/recover-fresh`,
+      { occurrence_id: occurrenceId, request_id: requestId },
+      (value) => decodeRun(asRecord(value, "run").run),
+    );
   markExecutionFailed = (runId: string, occurrenceId: string) =>
     this.post(
       `/runs/${encodeURIComponent(runId)}/execution/mark-failed`,
@@ -172,6 +185,36 @@ export class ApiClient {
       `/runs/${encodeURIComponent(runId)}/worktree/cleanup`,
       { acknowledge_unmerged: acknowledgeUnmerged },
       (value) => asRecord(value, "execution environment").execution_environment,
+    );
+  getSessionAttachment = (
+    runId: string,
+    attemptId: string,
+    sessionId: string,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/sessions/${encodeURIComponent(sessionId)}/attachment`,
+      {},
+      (value) =>
+        decodeSessionAttachment(
+          asRecord(value, "session attachment").attachment,
+        ),
+      undefined,
+      true,
+    );
+  recordSessionOpened = (
+    descriptorToken: string,
+    mode: "observe" | "takeover" | "recovery",
+  ) =>
+    this.post(
+      "/session-attachments/opened",
+      { descriptor_token: descriptorToken, mode },
+      (value) =>
+        asString(
+          asRecord(value, "opened session").session_id,
+          "opened session",
+        ),
+      undefined,
+      true,
     );
   getRunChanges = (runId: string) =>
     this.get(
@@ -296,13 +339,22 @@ export class ApiClient {
     body: unknown,
     decode: (value: unknown) => T,
     signal?: AbortSignal,
+    localOnly = false,
   ): Promise<T> {
+    if (localOnly && !this.config.localTauriClient)
+      throw new ApiError(
+        "local_session_attachment_unavailable",
+        "Live sessions can only be opened from the local desktop app.",
+      );
     return this.request(
       path,
       {
         method: "POST",
         body: JSON.stringify(body),
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(localOnly ? { "x-quest-engineering-local-client": "tauri" } : {}),
+        },
         ...(signal ? { signal } : {}),
       },
       decode,
@@ -682,6 +734,50 @@ function decodeDelivery(value: unknown): DeliveryProjection {
     can_retry: asBoolean(x.can_retry, "delivery"),
   };
 }
+function decodeSessionAttachment(
+  value: unknown,
+): LocalSessionAttachmentDescriptor {
+  const x = asRecord(value, "session attachment");
+  const terminal = asRecord(x.terminal, "session terminal");
+  if (x.mode !== "local_native_terminal" || terminal.backend_kind !== "herdr")
+    throw new Error("Unsupported local session attachment transport.");
+  return {
+    descriptor_token: asString(x.descriptor_token, "session attachment"),
+    expires_at: asString(x.expires_at, "session attachment"),
+    mode: "local_native_terminal",
+    worker_id: asString(x.worker_id, "session attachment"),
+    worker_generation: asNumber(x.worker_generation, "session attachment"),
+    session_id: asString(x.session_id, "session attachment"),
+    state: asString(
+      x.state,
+      "session attachment",
+    ) as LocalSessionAttachmentDescriptor["state"],
+    takeover_allowed: asBoolean(x.takeover_allowed, "session attachment"),
+    recovery_allowed: x.recovery_allowed === true,
+    terminal: {
+      attachment_mode: "local_native_terminal",
+      backend_kind: "herdr",
+      terminal_session_id: asString(
+        terminal.terminal_session_id,
+        "session terminal",
+      ),
+      terminal_target_id: asString(
+        terminal.terminal_target_id,
+        "session terminal",
+      ),
+      terminal_id: nullableString(terminal.terminal_id, "session terminal"),
+      supports_observation: asBoolean(
+        terminal.supports_observation,
+        "session terminal",
+      ),
+      supports_takeover: asBoolean(
+        terminal.supports_takeover,
+        "session terminal",
+      ),
+    },
+  };
+}
+
 function decodeRunSummary(value: unknown): RunSummary {
   const x = asRecord(value, "run summary");
   return {
@@ -691,6 +787,20 @@ function decodeRunSummary(value: unknown): RunSummary {
     launched_at: asString(x.launched_at, "run"),
     step_counts: x.step_counts as Record<StepState, number>,
     delivery: x.delivery == null ? null : decodeDelivery(x.delivery),
+    live_session_attention: asArray(
+      x.live_session_attention ?? [],
+      "live session attention",
+    ).map((value) => {
+      const attention = asRecord(value, "live session attention");
+      return {
+        session_id: asString(attention.session_id, "live session attention"),
+        category: asString(attention.category, "live session attention"),
+        attention_id: asString(
+          attention.attention_id,
+          "live session attention",
+        ),
+      };
+    }),
   };
 }
 function decodeRun(value: unknown): RunProjection {
@@ -759,6 +869,18 @@ function decodeRun(value: unknown): RunProjection {
     },
     steps: asArray(x.steps, "run steps").map(decodeRunStep),
     artifacts: asArray(x.artifacts, "artifacts").map(decodeArtifactSummary),
+    operational_recovery:
+      x.operational_recovery === undefined
+        ? []
+        : asArray(x.operational_recovery, "operational recovery").map(
+            decodeOperationalRecoveryEpoch,
+          ),
+    semantic_remediation:
+      x.semantic_remediation === undefined
+        ? []
+        : asArray(x.semantic_remediation, "semantic remediation").map(
+            decodeSemanticRemediation,
+          ),
     review_gate: {
       required: asBoolean(reviewGate.required, "run review gate"),
       status: asString(
@@ -815,6 +937,60 @@ function decodeSnapshotMember(value: unknown) {
     },
   };
 }
+function decodeOperationalRecoveryEpoch(value: unknown) {
+  const epoch = asRecord(value, "operational recovery epoch");
+  return {
+    id: asString(epoch.id, "operational recovery epoch"),
+    occurrence_id: asString(epoch.occurrence_id, "operational recovery epoch"),
+    epoch_number: asNumber(epoch.epoch_number, "operational recovery epoch"),
+    authorization_kind: asString(
+      epoch.authorization_kind,
+      "operational recovery epoch",
+    ) as "initial" | "human",
+    attempt_allowance:
+      epoch.attempt_allowance === null
+        ? null
+        : asNumber(epoch.attempt_allowance, "operational recovery epoch"),
+    policy_source: asString(
+      epoch.policy_source,
+      "operational recovery epoch",
+    ) as "configured" | "legacy_unknown",
+    continuation_mode: asString(
+      epoch.continuation_mode,
+      "operational recovery epoch",
+    ) as "fresh" | "retained",
+    authorized_at: asString(epoch.authorized_at, "operational recovery epoch"),
+    attempts_scheduled: asNumber(
+      epoch.attempts_scheduled,
+      "operational recovery epoch",
+    ),
+  };
+}
+
+function decodeSemanticRemediation(value: unknown) {
+  const remediation = asRecord(value, "semantic remediation");
+  return {
+    region_occurrence_id: asString(
+      remediation.region_occurrence_id,
+      "semantic remediation",
+    ),
+    semantic_region_id: asString(
+      remediation.semantic_region_id,
+      "semantic remediation",
+    ),
+    remediations_completed: asNumber(
+      remediation.remediations_completed,
+      "semantic remediation",
+    ),
+    maximum_remediations: asNumber(
+      remediation.maximum_remediations,
+      "semantic remediation",
+    ),
+    status: asString(remediation.status, "semantic remediation"),
+    review_shaped: asBoolean(remediation.review_shaped, "semantic remediation"),
+  };
+}
+
 function decodeRunStep(value: unknown) {
   const x = asRecord(value, "run step");
   const performer = asRecord(x.performer, "performer");
@@ -835,6 +1011,7 @@ function decodeRunStep(value: unknown) {
     control_path: strings(x.control_path, "step"),
     attempt: x.attempt === null ? null : decodeRunAttempt(x.attempt),
     attempts: asArray(x.attempts, "step attempts").map(decodeRunAttempt),
+    session: x.session == null ? null : decodeHarnessSession(x.session),
     member: x.member === null ? null : decodeSnapshotMember(x.member),
     performer: {
       selector: nullable(performer.selector, "performer"),
@@ -879,6 +1056,14 @@ function decodeRunStep(value: unknown) {
                 recovery.can_mark_failed,
                 "execution recovery",
               ),
+              can_human_retry: recovery.can_human_retry === true,
+              can_retry_fresh: recovery.can_retry_fresh === true,
+              retained_session_available:
+                recovery.retained_session_available === true,
+              ...(typeof recovery.classification === "string"
+                ? { classification: recovery.classification }
+                : {}),
+              epoch_exhausted: recovery.epoch_exhausted === true,
               message: asString(recovery.message, "execution recovery"),
             };
           })(),
@@ -907,8 +1092,195 @@ function decodeRunAttempt(value: unknown) {
       attempt.retry_of_attempt_id,
       "step attempt",
     ),
+    operational:
+      attempt.operational == null
+        ? null
+        : decodeOperationalAttempt(attempt.operational),
+    session:
+      attempt.session == null ? null : decodeHarnessSession(attempt.session),
   };
 }
+function decodeOperationalAttempt(value: unknown) {
+  const operational = asRecord(value, "operational attempt");
+  return {
+    recovery_epoch: asNumber(operational.recovery_epoch, "operational attempt"),
+    recovery_kind: asString(operational.recovery_kind, "operational attempt") as
+      | "initial"
+      | "human",
+    attempt_in_epoch: asNumber(
+      operational.attempt_in_epoch,
+      "operational attempt",
+    ),
+    attempt_allowance:
+      operational.attempt_allowance === null
+        ? null
+        : asNumber(operational.attempt_allowance, "operational attempt"),
+    policy_source: asString(operational.policy_source, "operational attempt") as
+      | "configured"
+      | "legacy_unknown",
+    continuation_mode: asString(
+      operational.continuation_mode,
+      "operational attempt",
+    ) as "fresh" | "retained",
+    recovery_authorized_at: asString(
+      operational.recovery_authorized_at,
+      "operational attempt",
+    ),
+  };
+}
+
+function decodeHarnessSession(value: unknown) {
+  const session = asRecord(value, "harness session");
+  const harness = asRecord(session.harness, "harness identity");
+  const worker = asRecord(session.worker, "session Worker");
+  const capabilities = asRecord(session.capabilities, "session capabilities");
+  const attachment = asRecord(session.attachment, "session attachment");
+  const attention =
+    session.attention === null
+      ? null
+      : asRecord(session.attention, "human attention");
+  return {
+    id: asString(session.id, "harness session"),
+    harness: {
+      kind: asString(harness.kind, "harness identity"),
+      display_name: asString(harness.display_name, "harness identity"),
+    },
+    worker: {
+      id: asString(worker.id, "session Worker"),
+      display_name: asString(worker.display_name, "session Worker"),
+      state: asString(worker.state, "session Worker") as
+        | "connected"
+        | "disconnected",
+    },
+    state: asString(session.state, "harness session") as HarnessSessionState,
+    capabilities: {
+      can_attach_terminal: asBoolean(
+        capabilities.can_attach_terminal,
+        "session capabilities",
+      ),
+      can_send_input: asBoolean(
+        capabilities.can_send_input,
+        "session capabilities",
+      ),
+      can_interrupt: asBoolean(
+        capabilities.can_interrupt,
+        "session capabilities",
+      ),
+      can_detect_attention: asBoolean(
+        capabilities.can_detect_attention,
+        "session capabilities",
+      ),
+      can_resume: asBoolean(capabilities.can_resume, "session capabilities"),
+      can_observe_structured_events: asBoolean(
+        capabilities.can_observe_structured_events,
+        "session capabilities",
+      ),
+      structured_confirmation: asBoolean(
+        capabilities.structured_confirmation,
+        "session capabilities",
+      ),
+      structured_text_response: asBoolean(
+        capabilities.structured_text_response,
+        "session capabilities",
+      ),
+      structured_choice_response: asBoolean(
+        capabilities.structured_choice_response,
+        "session capabilities",
+      ),
+      structured_multiline_response: asBoolean(
+        capabilities.structured_multiline_response,
+        "session capabilities",
+      ),
+      native_prompt_control: asBoolean(
+        capabilities.native_prompt_control,
+        "session capabilities",
+      ),
+      conversational_takeover: asBoolean(
+        capabilities.conversational_takeover,
+        "session capabilities",
+      ),
+      automation_resume: asBoolean(
+        capabilities.automation_resume,
+        "session capabilities",
+      ),
+    },
+    attachment: {
+      mode: "local_native_terminal" as const,
+      available: asBoolean(attachment.available, "session attachment"),
+      reason: nullableString(attachment.reason, "session attachment"),
+      can_observe: asBoolean(attachment.can_observe, "session attachment"),
+      can_takeover: asBoolean(attachment.can_takeover, "session attachment"),
+      can_recover: attachment.can_recover === true,
+    },
+    attention: attention
+      ? {
+          attention_id: asString(attention.attention_id, "human attention"),
+          category: asString(attention.category, "human attention"),
+          message: asString(attention.message, "human attention"),
+          requested_at: asString(attention.requested_at, "human attention"),
+          ...(attention.interaction == null
+            ? {}
+            : {
+                interaction: decodeHumanInteraction(attention.interaction),
+              }),
+        }
+      : null,
+    started_at: asString(session.started_at, "harness session"),
+    last_activity_at: asString(session.last_activity_at, "harness session"),
+    events: asArray(session.events, "session events").map((value) => {
+      const event = asRecord(value, "session event");
+      return {
+        id: asString(event.id, "session event"),
+        type: asString(event.type, "session event"),
+        attention_id: nullableString(event.attention_id, "session event"),
+        metadata: asRecord(event.metadata, "session event metadata") as Record<
+          string,
+          JsonValue
+        >,
+        occurred_at: asString(event.occurred_at, "session event"),
+      };
+    }),
+  };
+}
+function decodeHumanInteraction(value: unknown) {
+  const interaction = asRecord(value, "human interaction");
+  const kind = asString(interaction.kind, "human interaction");
+  const controlState = asString(interaction.control_state, "human interaction");
+  if (
+    ![
+      "confirmation",
+      "text",
+      "choice",
+      "multiline_response",
+      "conversational_intervention",
+    ].includes(kind) ||
+    !["intervention_pending", "human_control", "resuming_automation"].includes(
+      controlState,
+    )
+  )
+    throw new Error("Unsupported human interaction state.");
+  return {
+    kind: kind as
+      | "confirmation"
+      | "text"
+      | "choice"
+      | "multiline_response"
+      | "conversational_intervention",
+    control_state: controlState as
+      | "intervention_pending"
+      | "human_control"
+      | "resuming_automation",
+    ...(interaction.resume_command == null
+      ? {}
+      : {
+          resume_command: asString(
+            interaction.resume_command,
+            "human interaction",
+          ),
+        }),
+  };
+}
+
 function decodeArtifactRef(value: unknown) {
   const x = asRecord(value, "artifact reference");
   return {

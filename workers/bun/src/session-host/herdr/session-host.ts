@@ -1,16 +1,18 @@
 import type {
-  AttachDescriptor,
   HostedAgent,
   HostedAgentStatus,
   HostedExecutionRef,
   HostedPane,
   HostedSnapshot,
-  SessionHost,
+  TerminalAttachmentDescriptor,
+  TerminalSessionBackend,
 } from "../types.ts";
 import type { HerdrControlClient } from "./client.ts";
 import type { LocalHerdrConnectionProvider } from "./connection.ts";
 
-export class HerdrSessionHost implements SessionHost {
+/** Herdr terminal/session transport. It contains no Pi lifecycle policy. */
+export class HerdrTerminalBackend implements TerminalSessionBackend {
+  readonly backendKind = "herdr";
   readonly sessionName: string;
   private clients = new Set<HerdrControlClient>();
 
@@ -86,7 +88,7 @@ export class HerdrSessionHost implements SessionHost {
   async startAgent(input: {
     paneId: string;
     name: string;
-    kind: "pi";
+    integrationKind: string;
     args: string[];
   }): Promise<HostedAgent> {
     const client = await this.client();
@@ -110,33 +112,47 @@ export class HerdrSessionHost implements SessionHost {
     }
   }
 
-  async wait(
+  async observeAgentState(
     target: string,
     options: { until?: HostedAgentStatus[]; timeoutMs?: number } = {},
   ): Promise<HostedAgent> {
     const client = await this.client();
     try {
+      // Herdr's agent.wait result is the terminal-agent state authority.
       return await client.wait(target, options);
     } finally {
       this.clients.delete(client);
     }
   }
 
-  async getAgent(target: string): Promise<HostedAgent> {
+  async inspectAgentState(target: string): Promise<HostedAgent> {
     const client = await this.client();
     try {
+      // Herdr's agent.get result is the point-in-time state authority.
       return await client.getAgent(target);
     } finally {
       this.clients.delete(client);
     }
   }
 
-  attachInfo(ref: HostedExecutionRef): AttachDescriptor {
+  async sendKeys(target: string, keys: string[]): Promise<void> {
+    const client = await this.client();
+    try {
+      await client.sendKeys(target, keys);
+    } finally {
+      this.clients.delete(client);
+    }
+  }
+
+  attachment(ref: HostedExecutionRef): TerminalAttachmentDescriptor {
     return {
-      kind: "herdr_cli",
-      sessionName: ref.sessionName,
-      agentName: ref.agentName,
-      command: `herdr --session ${shellQuote(ref.sessionName)} agent attach ${shellQuote(ref.agentName)}`,
+      mode: "local_native_terminal",
+      backendKind: "herdr",
+      terminalSessionId: ref.sessionName,
+      terminalTargetId: ref.agentName,
+      ...(ref.terminalId ? { terminalId: ref.terminalId } : {}),
+      supportsObservation: true,
+      supportsTakeover: true,
     };
   }
 
@@ -150,8 +166,4 @@ export class HerdrSessionHost implements SessionHost {
     this.clients.add(connection.client);
     return connection.client;
   }
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
 }

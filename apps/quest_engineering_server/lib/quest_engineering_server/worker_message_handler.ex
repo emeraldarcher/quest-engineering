@@ -6,6 +6,9 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Dispatcher
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.ExecutionSessionStore
+  alias QuestEngineering.Server.OperationalFailure
+  alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.ProductChangeNotifier
   alias QuestEngineering.Server.Reconciler
   alias QuestEngineering.Server.RunChangeNotifier
@@ -119,6 +122,34 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     end
   end
 
+  def handle(worker_id, generation, %{type: :human_recovery_requested, recovery: recovery}) do
+    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, authorized} <- OperationalRecovery.authorize(recovery, mode: :retained) do
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "human_recovery_authorized",
+         "request_id" => authorized.request_id,
+         "recovery_epoch" => authorized.epoch_number,
+         "attempt_allowance" => authorized.attempt_allowance,
+         "idempotent_replay" => authorized.idempotent_replay?
+       }}
+    end
+  end
+
+  def handle(worker_id, generation, %{type: :session_state, session: session}) do
+    with {:ok, persisted} <- ExecutionSessionStore.record(worker_id, generation, session) do
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "session_recorded",
+         "session_id" => persisted.id
+       }}
+    end
+  end
+
   def handle(worker_id, generation, %{type: :dispatch_accepted} = message) do
     with :ok <- validate_identity(worker_id, message),
          {:ok, dispatch} <- DispatchStore.acknowledge(worker_id, generation, message.action_id) do
@@ -159,26 +190,26 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   def handle(worker_id, generation, %{type: :step_failed} = message),
     do: failure(worker_id, generation, message)
 
-  def handle(worker_id, generation, %{type: :reconcile_state, dispatches: dispatches}) do
-    case Reconciler.reconcile(worker_id, generation, dispatches) do
-      {:ok, reconciliation} ->
-        _ = Dispatcher.redeliver(worker_id, generation)
-        Scheduler.wake_all()
-        Enum.each(Reconciler.run_ids_for_worker(worker_id), &RunChangeNotifier.notify/1)
+  def handle(worker_id, generation, %{type: :reconcile_state, dispatches: dispatches} = message) do
+    sessions = Map.get(message, :sessions, [])
 
-        {:ok,
-         %{
-           "type" => "message_result",
-           "protocol_version" => WorkerProtocol.version(),
-           "result" => "reconciled",
-           "observed_count" => length(reconciliation.observed),
-           "anomaly_count" => length(reconciliation.anomalies),
-           "dispatch_resolutions" =>
-             Enum.filter(reconciliation.observed, &Map.has_key?(&1, :resolution))
-         }}
+    with {:ok, _persisted_sessions} <-
+           ExecutionSessionStore.reconcile(worker_id, generation, sessions || []),
+         {:ok, reconciliation} <- Reconciler.reconcile(worker_id, generation, dispatches) do
+      _ = Dispatcher.redeliver(worker_id, generation)
+      Scheduler.wake_all()
+      Enum.each(Reconciler.run_ids_for_worker(worker_id), &RunChangeNotifier.notify/1)
 
-      {:error, error} ->
-        {:error, error}
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "reconciled",
+         "observed_count" => length(reconciliation.observed),
+         "anomaly_count" => length(reconciliation.anomalies),
+         "dispatch_resolutions" =>
+           Enum.filter(reconciliation.observed, &Map.has_key?(&1, :resolution))
+       }}
     end
   end
 
@@ -207,11 +238,14 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
   defp failure(worker_id, generation, message) do
     with :ok <- validate_identity(worker_id, message),
-         {:ok, dispatch} <-
-           DispatchStore.mark_failed(worker_id, generation, message.action_id, message.failure) do
+         {:ok, result} <- OperationalFailure.record(worker_id, generation, message) do
       Scheduler.wake_all()
+      ProductChangeNotifier.notify(["quests", "runs"])
       notify_action(message.action_id)
-      {:ok, response(:dispatch_failed, dispatch)}
+
+      {:ok,
+       response(result.policy, result.dispatch)
+       |> Map.put("run_revision", result.transition && result.transition.revision)}
     end
   end
 

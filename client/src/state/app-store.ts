@@ -5,6 +5,7 @@ import {
   type ArtifactDetail,
   type ClassDefinition,
   type ExecutionOption,
+  type HarnessSessionProjection,
   type Loadout,
   type Quest,
   type RunProjection,
@@ -17,9 +18,20 @@ import {
   type WorkspaceSource,
 } from "../api/contracts";
 import type { ClientFixture } from "../fixtures/fixtures";
+import {
+  type AttentionTarget,
+  initializeAttentionNotifications,
+  notifyHumanAttention,
+} from "../platform/attention-notification";
+import {
+  canOpenLocalLiveSession,
+  openLocalLiveSession,
+  type SessionOpenMode,
+} from "../platform/live-session";
 import { RealtimeClient, type RealtimeStatus } from "../realtime/client";
 import { projectActiveCrewActivities } from "../world/crew/active-crew";
 import { ActiveRunTracker } from "./active-run-tracker";
+import { recordAttentionOnce } from "./attention-dedupe";
 import { executeStarterCrewCommand } from "./starter-crew-command";
 
 export type BuildingId =
@@ -81,6 +93,15 @@ export function createAppStore(
   const starterStatus = writable<StarterCrewStatus | null>(
     fixture?.starterStatus ?? null,
   );
+  const liveAttentions = writable<AttentionTarget[]>([]);
+  const attentionNotifications = writable<AttentionTarget[]>([]);
+  const sessionFocus = writable<{
+    runId: string;
+    occurrenceId: string;
+    attemptId: string;
+    sessionId: string;
+  } | null>(null);
+  const seenAttentionIds = new Set<string>(readSeenAttentionIds());
   const activeCrew = writable(
     fixture
       ? projectActiveCrewActivities(
@@ -103,12 +124,15 @@ export function createAppStore(
       if (status === "connected") {
         serverReachable.set(true);
         activeRunTracker?.reconnect();
-      } else if (status === "reconnecting" || status === "disconnected")
+      } else if (status === "reconnecting" || status === "disconnected") {
         activeRunTracker?.suspend();
+        liveAttentions.set([]);
+      }
     },
     onJoined: (run) => {
       selectedRun.set(run);
       activeRunTracker?.seed(run);
+      observeAttention(run);
     },
     onInvalidated: (runId) => {
       if (activeRunTracker?.isTracking(runId))
@@ -123,13 +147,17 @@ export function createAppStore(
       void loadProduct();
     },
   });
-  if (!fixture)
+  if (!fixture) {
+    void initializeAttentionNotifications((target) => {
+      void focusAttention(target, true);
+    });
     activeRunTracker = new ActiveRunTracker({
       getRun: (runId) => api.getRun(runId),
       watchRun: (runId) => realtime.watchRun(runId),
       onActivities: (activities) => activeCrew.set(activities),
       onProjection: (projection) => {
         if (get(selectedRun)?.id === projection.id) selectedRun.set(projection);
+        observeAttention(projection);
       },
       onError: (runId, cause) => {
         if (get(selectedRun)?.id === runId) reportError(cause);
@@ -137,6 +165,48 @@ export function createAppStore(
           console.warn("Active crew projection could not refresh.", cause);
       },
     });
+  }
+
+  function observeAttention(run: RunProjection) {
+    const activeTargets: AttentionTarget[] = [];
+    for (const step of run.steps) {
+      const session = step.session;
+      const attention = session?.attention;
+      const attempt = step.attempt;
+      if (!session || !attention || !attempt || !step.member) continue;
+      const target: AttentionTarget = {
+        attentionId: attention.attention_id,
+        runId: run.id,
+        occurrenceId: step.occurrence_id,
+        attemptId: attempt.id,
+        sessionId: session.id,
+        questTitle: run.quest.title,
+        memberName: step.member.name,
+        stepName: step.name ?? step.semantic_step_key,
+        harnessName: session.harness.display_name,
+        message: attention.message,
+      };
+      activeTargets.push(target);
+      if (recordAttentionOnce(seenAttentionIds, target.attentionId)) {
+        attentionNotifications.update((items) => [...items, target]);
+        persistSeenAttentionIds(seenAttentionIds);
+        void notifyHumanAttention(target);
+      }
+    }
+    liveAttentions.update((items) => [
+      ...items.filter((item) => item.runId !== run.id),
+      ...activeTargets,
+    ]);
+    attentionNotifications.update((items) =>
+      items.filter(
+        (item) =>
+          item.runId !== run.id ||
+          activeTargets.some(
+            (active) => active.attentionId === item.attentionId,
+          ),
+      ),
+    );
+  }
 
   async function loadProduct(quiet = false) {
     if (fixture) {
@@ -293,6 +363,7 @@ export function createAppStore(
       if (request !== runRequest) return;
       selectedRun.set(run);
       activeRunTracker?.seed(run);
+      observeAttention(run);
       realtime.selectRun(runId);
       history.replaceState(null, "", `#/run/${encodeURIComponent(runId)}`);
     } catch (cause) {
@@ -325,6 +396,7 @@ export function createAppStore(
         if (request === runRequest && get(selectedRun)?.id === runId) {
           selectedRun.set(run);
           activeRunTracker?.seed(run);
+          observeAttention(run);
           error.set(null);
         }
       } while (refetchNeeded);
@@ -359,8 +431,72 @@ export function createAppStore(
     return command(() => api.getArtifact(runId, artifactId));
   }
 
+  async function openLiveSession(
+    runId: string,
+    attemptId: string,
+    session: HarnessSessionProjection,
+    mode: SessionOpenMode,
+  ) {
+    if (!canOpenLocalLiveSession()) {
+      reportError(
+        new ApiError(
+          "local_session_attachment_unavailable",
+          `Live session available on ${session.worker.display_name}, but browser attachment is unavailable.`,
+        ),
+      );
+      return false;
+    }
+    const attachment = await command(() =>
+      api.getSessionAttachment(runId, attemptId, session.id),
+    );
+    if (!attachment) return false;
+    const opened = await command(async () => {
+      await openLocalLiveSession(attachment, mode);
+      // Native Tauri validation and Terminal launch succeeded; descriptor
+      // issuance alone is never recorded as a human attachment.
+      return api.recordSessionOpened(attachment.descriptor_token, mode);
+    });
+    return Boolean(opened);
+  }
+
+  async function focusAttention(target: AttentionTarget, open = false) {
+    await selectRun(target.runId);
+    sessionFocus.set({
+      runId: target.runId,
+      occurrenceId: target.occurrenceId,
+      attemptId: target.attemptId,
+      sessionId: target.sessionId,
+    });
+    selectBuildingId("work-area");
+    if (!open) return;
+    const projection = get(selectedRun);
+    const step = projection?.steps.find(
+      (item) => item.occurrence_id === target.occurrenceId,
+    );
+    if (projection && step?.attempt?.id === target.attemptId && step.session)
+      await openLiveSession(
+        projection.id,
+        target.attemptId,
+        step.session,
+        "takeover",
+      );
+  }
+
+  function dismissAttention(attentionId: string) {
+    attentionNotifications.update((items) =>
+      items.filter((item) => item.attentionId !== attentionId),
+    );
+  }
+
   async function retryExecution(runId: string, occurrenceId: string) {
     const result = await command(() => api.retryExecution(runId, occurrenceId));
+    if (result) await invalidateRun(runId);
+  }
+
+  async function recoverExecutionFresh(runId: string, occurrenceId: string) {
+    const result = await command(() =>
+      api.recoverExecutionFresh(runId, occurrenceId, crypto.randomUUID()),
+    );
     if (result) await invalidateRun(runId);
   }
 
@@ -409,6 +545,9 @@ export function createAppStore(
     selectedBuilding,
     selectedRun,
     activeCrew,
+    liveAttentions,
+    attentionNotifications,
+    sessionFocus,
     loading,
     error,
     realtimeStatus,
@@ -424,7 +563,11 @@ export function createAppStore(
     command,
     reportError,
     loadArtifact,
+    openLiveSession,
+    focusAttention,
+    dismissAttention,
     retryExecution,
+    recoverExecutionFresh,
     markExecutionFailed,
     retryPublishing,
     cleanupWorktree,
@@ -433,6 +576,28 @@ export function createAppStore(
     isEmptyFirstRun,
     dispose,
   };
+}
+function readSeenAttentionIds(): string[] {
+  try {
+    const value = JSON.parse(
+      sessionStorage.getItem("qe-seen-attention") ?? "[]",
+    );
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+function persistSeenAttentionIds(values: Set<string>): void {
+  try {
+    sessionStorage.setItem(
+      "qe-seen-attention",
+      JSON.stringify([...values].slice(-200)),
+    );
+  } catch {
+    // Storage can be unavailable in hardened webviews; in-memory dedupe remains.
+  }
 }
 function toApiError(cause: unknown): ApiError {
   return cause instanceof ApiError

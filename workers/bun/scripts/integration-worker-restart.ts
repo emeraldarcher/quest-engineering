@@ -4,9 +4,9 @@ import type { WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import type { ExecuteAction } from "../src/protocol/types.ts";
-import { PiProvider } from "../src/providers/pi/provider.ts";
+import { PiHarness } from "../src/providers/pi/provider.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
-import { HerdrSessionHost } from "../src/session-host/herdr/session-host.ts";
+import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
 
 if (process.argv[2] === "--child") {
@@ -22,8 +22,10 @@ if (process.argv[2] === "--child") {
     join(config.dataRoot, "dispatches.sqlite"),
     config.dataRoot,
   );
-  const provider = new PiProvider(
-    new HerdrSessionHost(new LocalHerdrConnectionProvider(config.herdrSession)),
+  const provider = new PiHarness(
+    new HerdrTerminalBackend(
+      new LocalHerdrConnectionProvider(config.herdrSession),
+    ),
     config,
   );
   const executor = new DispatchExecutor(registry, provider, async () => false);
@@ -135,7 +137,7 @@ const instruction =
   'Use bash to run "sleep 20" first. After it finishes, create restart-proof.txt containing exactly "same Pi survived Worker restart" followed by a newline. Produce change_set describing the file.';
 const action: ExecuteAction = {
   type: "execute_action",
-  protocol_version: 4,
+  protocol_version: 5,
   worker_id: config.workerId,
   execution: {
     identity: {
@@ -209,7 +211,7 @@ registry = new DispatchRegistry(
 const before = registry.get("restart-action");
 const lineageBefore = registry.getLineage(before.lineageId as string);
 registry.close();
-const inspectionHost = new HerdrSessionHost(
+const inspectionHost = new HerdrTerminalBackend(
   new LocalHerdrConnectionProvider(config.herdrSession),
 );
 const agentsBefore = (await inspectionHost.snapshot()).agents.filter(
@@ -224,7 +226,7 @@ registry = new DispatchRegistry(
   join(config.dataRoot, "dispatches.sqlite"),
   config.dataRoot,
 );
-const provider = new PiProvider(inspectionHost, config);
+const provider = new PiHarness(inspectionHost, config);
 const restarted = new DispatchExecutor(registry, provider, async () => false);
 await restarted.recoverAll();
 await waitRegistry(registry, "completed", 600_000);

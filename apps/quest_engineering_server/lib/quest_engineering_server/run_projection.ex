@@ -5,7 +5,11 @@ defmodule QuestEngineering.Server.RunProjection do
 
   alias QuestEngineering.Server.DeliveryEligibility
   alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.ExecutionSessionStore
+  alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
+  alias QuestEngineering.Server.Persistence.OperationalAttemptAttribution
+  alias QuestEngineering.Server.Persistence.OperationalRecoveryEpoch
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
@@ -62,17 +66,37 @@ defmodule QuestEngineering.Server.RunProjection do
       quest_title: projection.quest.title,
       launched_at: projection.launched_at,
       step_counts: projection.step_counts,
+      live_session_attention:
+        projection.steps
+        |> Enum.map(& &1.session)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.filter(&is_map(&1.attention))
+        |> Enum.map(fn session ->
+          %{
+            session_id: session.id,
+            category: session.attention["category"],
+            attention_id: session.attention["attention_id"]
+          }
+        end),
       delivery: projection.delivery
     }
   end
 
   defp build(launch, snapshot, run, revision) do
-    {actions, scheduled, dispatches} = execution_data(run.id)
+    {actions, scheduled, dispatches, sessions, session_events, attributions, epochs} =
+      execution_data(run.id)
 
     execution = %{
       action_by_attempt: Map.new(actions, fn action -> {action.attempt_id, action} end),
       scheduled_by_action: Map.new(scheduled, &{&1.action_id, &1}),
-      dispatch_by_action: Map.new(dispatches, &{&1.action_id, &1})
+      dispatch_by_action: Map.new(dispatches, &{&1.action_id, &1}),
+      session_by_action:
+        Map.new(sessions, fn {action_id, session, worker} ->
+          {action_id, {session, worker}}
+        end),
+      session_events: session_events,
+      attribution_by_action: Map.new(attributions, &{&1.action_id, &1}),
+      epoch_by_id: Map.new(epochs, &{&1.id, &1})
     }
 
     plan_by_key = Map.new(run.plan.steps, &{&1.key, &1})
@@ -120,6 +144,8 @@ defmodule QuestEngineering.Server.RunProjection do
       steps: steps,
       artifacts: artifacts,
       review_gate: review_gate(review_gate),
+      semantic_remediation: semantic_remediation(run),
+      operational_recovery: operational_recovery_epochs(epochs, attributions),
       step_counts: counts(states),
       issues:
         run_issues(run, steps, review_gate) ++
@@ -213,7 +239,20 @@ defmodule QuestEngineering.Server.RunProjection do
         do: [],
         else: Repo.all(from item in WorkerDispatch, where: item.action_id in ^action_ids)
 
-    {actions, scheduled, dispatches}
+    sessions = ExecutionSessionStore.list_for_actions(action_ids)
+    session_events = ExecutionSessionStore.audit_history(run_id)
+
+    attributions =
+      Repo.all(from item in OperationalAttemptAttribution, where: item.run_id == ^run_id)
+
+    epochs =
+      Repo.all(
+        from item in OperationalRecoveryEpoch,
+          where: item.run_id == ^run_id,
+          order_by: [asc: item.occurrence_id, asc: item.epoch_number]
+      )
+
+    {actions, scheduled, dispatches, sessions, session_events, attributions, epochs}
   end
 
   defp step(occurrence, execution, run, snapshot, plan_by_key) do
@@ -224,6 +263,7 @@ defmodule QuestEngineering.Server.RunProjection do
     state = occurrence_state(occurrence.status, scheduled, dispatch)
     member = if scheduled, do: member(snapshot, scheduled.member_key), else: nil
     attempts = attempts(occurrence, execution)
+    current_attempt = Enum.find(attempts, &(&1.id == occurrence.current_attempt_id))
 
     %{
       occurrence_id: occurrence.id,
@@ -234,29 +274,66 @@ defmodule QuestEngineering.Server.RunProjection do
       phase: occurrence.phase && Atom.to_string(occurrence.phase),
       remediation_cycle: occurrence.remediation_cycle,
       control_path: occurrence.control_path,
-      attempt: Enum.find(attempts, &(&1.id == occurrence.current_attempt_id)),
+      attempt: current_attempt,
       attempts: attempts,
+      session: current_attempt && current_attempt.session,
       member: member,
       performer: performer(action, plan_step, run),
       context: context(action, plan_step, run),
       inputs: artifact_refs(occurrence.input_artifact_ids),
       outputs: artifact_refs(occurrence.output_artifact_ids),
       issue: issue(state, dispatch),
-      recovery: recovery(state, dispatch)
+      recovery: recovery(state, dispatch, current_attempt)
     }
   end
 
-  defp recovery("uncertain", dispatch) do
+  defp recovery("uncertain", dispatch, _attempt) do
     %{
-      can_retry: true,
+      can_retry: OperationalRecovery.same_epoch_retry_available?(dispatch.action_id),
       can_mark_failed: true,
+      can_human_retry: false,
+      can_retry_fresh: false,
       message:
-        get_in(dispatch && dispatch.failure, ["message"]) ||
+        get_in(dispatch.failure, ["message"]) ||
           "The Worker could not prove whether this attempt completed."
     }
   end
 
-  defp recovery(_state, _dispatch), do: nil
+  defp recovery("failed", dispatch, attempt) do
+    classification = get_in(dispatch && dispatch.failure, ["classification"])
+    retained_available = retained_session_available?(attempt)
+    recoverable = classification != "terminal_not_recoverable"
+
+    %{
+      can_retry: false,
+      can_mark_failed: false,
+      can_human_retry: recoverable and retained_available,
+      can_retry_fresh: recoverable,
+      retained_session_available: retained_available,
+      classification: classification || "operator_recovery_required",
+      epoch_exhausted: epoch_exhausted?(classification, attempt),
+      message:
+        get_in(dispatch && dispatch.failure, ["message"]) ||
+          "The operational Attempt failed."
+    }
+  end
+
+  defp recovery(_state, _dispatch, _attempt), do: nil
+
+  defp retained_session_available?(%{
+         session: %{state: "retained", attachment: %{available: true}}
+       }),
+       do: true
+
+  defp retained_session_available?(_attempt), do: false
+
+  defp epoch_exhausted?("auto_retryable", %{
+         operational: %{attempt_in_epoch: used, attempt_allowance: allowance}
+       })
+       when is_integer(allowance),
+       do: used >= allowance
+
+  defp epoch_exhausted?(_classification, _attempt), do: false
 
   defp occurrence_state(:pending, _scheduled, _dispatch), do: "pending"
   defp occurrence_state(:completed, _scheduled, _dispatch), do: "completed"
@@ -307,27 +384,171 @@ defmodule QuestEngineering.Server.RunProjection do
   end
 
   defp attempts(occurrence, execution) do
-    Enum.map(occurrence.attempts, fn attempt ->
-      action = Map.get(execution.action_by_attempt, attempt.id)
-      scheduled = action && Map.get(execution.scheduled_by_action, action.id)
-      dispatch = action && Map.get(execution.dispatch_by_action, action.id)
-      outputs = attempt_outputs(attempt, occurrence)
-
-      %{
-        id: attempt.id,
-        number: attempt.number,
-        state: attempt_state(attempt, scheduled, dispatch),
-        started_at:
-          iso((dispatch && dispatch.dispatched_at) || (scheduled && scheduled.bound_at)),
-        finished_at:
-          iso((dispatch && dispatch.terminal_at) || (scheduled && scheduled.terminal_at)),
-        outputs: outputs,
-        output_produced: outputs != [],
-        resolution: attempt_resolution(dispatch),
-        retry_of_attempt_id: previous_attempt_id(occurrence.attempts, attempt.number)
-      }
-    end)
+    Enum.map(occurrence.attempts, &project_attempt(&1, occurrence, execution))
   end
+
+  defp project_attempt(attempt, occurrence, execution) do
+    facts = attempt_execution_facts(attempt, execution)
+    outputs = attempt_outputs(attempt, occurrence)
+
+    %{
+      id: attempt.id,
+      number: attempt.number,
+      state: attempt_state(attempt, facts.scheduled, facts.dispatch),
+      started_at: started_at(facts),
+      finished_at: finished_at(facts),
+      outputs: outputs,
+      output_produced: outputs != [],
+      resolution: attempt_resolution(facts.dispatch),
+      retry_of_attempt_id: previous_attempt_id(occurrence.attempts, attempt.number),
+      operational: operational_attempt(facts.attribution, facts.epoch),
+      session: attempt_session(facts.action, execution)
+    }
+  end
+
+  defp attempt_execution_facts(attempt, execution) do
+    action = Map.get(execution.action_by_attempt, attempt.id)
+    scheduled = action && Map.get(execution.scheduled_by_action, action.id)
+    dispatch = action && Map.get(execution.dispatch_by_action, action.id)
+    attribution = action && Map.get(execution.attribution_by_action, action.id)
+    epoch = attribution && Map.get(execution.epoch_by_id, attribution.epoch_id)
+
+    %{
+      action: action,
+      scheduled: scheduled,
+      dispatch: dispatch,
+      attribution: attribution,
+      epoch: epoch
+    }
+  end
+
+  defp started_at(%{dispatch: dispatch, scheduled: scheduled}),
+    do: iso((dispatch && dispatch.dispatched_at) || (scheduled && scheduled.bound_at))
+
+  defp finished_at(%{dispatch: dispatch, scheduled: scheduled}),
+    do: iso((dispatch && dispatch.terminal_at) || (scheduled && scheduled.terminal_at))
+
+  defp operational_attempt(nil, _epoch), do: nil
+
+  defp operational_attempt(attribution, epoch) do
+    %{
+      recovery_epoch: epoch.epoch_number,
+      recovery_kind: epoch.authorization_kind,
+      attempt_in_epoch: attribution.attempt_in_epoch,
+      attempt_allowance: epoch.attempt_allowance,
+      policy_source: epoch.policy_source,
+      continuation_mode: epoch.continuation_mode,
+      recovery_authorized_at: iso(epoch.authorized_at)
+    }
+  end
+
+  defp attempt_session(nil, _execution), do: nil
+
+  defp attempt_session(action, execution) do
+    case Map.get(execution.session_by_action, action.id) do
+      {persisted, worker} ->
+        session_projection(persisted, worker, execution.session_events, action.id)
+
+      nil ->
+        nil
+    end
+  end
+
+  defp session_projection(session, worker, events, action_id) do
+    current_usage = session.current_action_id == action_id
+    available = session_available?(session, worker)
+
+    %{
+      id: session.id,
+      harness: %{kind: session.harness_kind, display_name: session.harness_display_name},
+      worker: %{
+        id: worker.id,
+        display_name: worker.id,
+        state: worker.status
+      },
+      state: session_state(session, worker, current_usage),
+      capabilities: capability_projection(session.capabilities),
+      attachment: attachment_projection(session, worker, current_usage, available),
+      attention: if(current_usage, do: session.attention, else: nil),
+      started_at: iso(session.started_at),
+      last_activity_at: iso(session.last_activity_at),
+      events:
+        events
+        |> Enum.filter(&(&1.session_id == session.id and &1.action_id == action_id))
+        |> Enum.map(fn event ->
+          %{
+            id: event.id,
+            type: event.event_type,
+            attention_id: event.attention_id,
+            metadata: event.metadata,
+            occurred_at: iso(event.occurred_at)
+          }
+        end)
+    }
+  end
+
+  defp capability_projection(capabilities) do
+    Map.merge(
+      %{
+        "structured_confirmation" => false,
+        "structured_text_response" => false,
+        "structured_choice_response" => false,
+        "structured_multiline_response" => false,
+        "native_prompt_control" => false,
+        "conversational_takeover" => false,
+        "automation_resume" => false
+      },
+      capabilities
+    )
+  end
+
+  defp session_available?(session, worker) do
+    worker.status == "connected" and
+      session.last_connection_generation == worker.connection_generation and
+      session.state not in ["closed", "unavailable"] and is_map(session.terminal) and
+      get_in(session.capabilities, ["can_attach_terminal"]) == true
+  end
+
+  defp session_state(_session, %{status: status}, _current_usage)
+       when status != "connected",
+       do: "unavailable"
+
+  defp session_state(session, worker, _current_usage)
+       when session.last_connection_generation != worker.connection_generation,
+       do: "recovering"
+
+  defp session_state(session, _worker, true), do: session.state
+  defp session_state(_session, _worker, false), do: "retained"
+
+  defp attachment_projection(session, worker, current_usage, available) do
+    %{
+      mode: "local_native_terminal",
+      available: available,
+      reason: attachment_unavailable_reason(session, worker, available),
+      can_observe: available and get_in(session.terminal, ["supports_observation"]) == true,
+      can_takeover:
+        available and current_usage and session.state == "waiting_for_human" and
+          get_in(session.terminal, ["supports_takeover"]) == true,
+      can_recover:
+        available and current_usage and session.state == "retained" and
+          get_in(session.terminal, ["supports_takeover"]) == true
+    }
+  end
+
+  defp attachment_unavailable_reason(_session, %{status: status}, _available)
+       when status != "connected",
+       do: "worker_offline"
+
+  defp attachment_unavailable_reason(session, worker, _available)
+       when session.last_connection_generation != worker.connection_generation,
+       do: "recovering"
+
+  defp attachment_unavailable_reason(%{terminal: terminal}, _worker, _available)
+       when not is_map(terminal),
+       do: "terminal_unavailable"
+
+  defp attachment_unavailable_reason(_session, _worker, false), do: "attachment_unavailable"
+  defp attachment_unavailable_reason(_session, _worker, true), do: nil
 
   defp attempt_state(_attempt, _scheduled, %{state: "uncertain"}), do: "uncertain"
 
@@ -467,6 +688,44 @@ defmodule QuestEngineering.Server.RunProjection do
   defp review_until_exhausted?(run) do
     Enum.any?(run.plan.control_regions, fn region ->
       region.id == run.failure.region_id and region.condition_binding.artifact_type == "verdict"
+    end)
+  end
+
+  defp operational_recovery_epochs(epochs, attributions) do
+    attempts_by_epoch = Enum.group_by(attributions, & &1.epoch_id)
+
+    Enum.map(epochs, fn epoch ->
+      attempts = Map.get(attempts_by_epoch, epoch.id, [])
+
+      %{
+        id: epoch.id,
+        occurrence_id: epoch.occurrence_id,
+        epoch_number: epoch.epoch_number,
+        authorization_kind: epoch.authorization_kind,
+        attempt_allowance: epoch.attempt_allowance,
+        policy_source: epoch.policy_source,
+        continuation_mode: epoch.continuation_mode,
+        authorized_at: iso(epoch.authorized_at),
+        attempts_scheduled: length(attempts)
+      }
+    end)
+  end
+
+  defp semantic_remediation(run) do
+    regions = Map.new(run.plan.control_regions, &{&1.id, &1})
+
+    Enum.map(run.region_order, fn id ->
+      occurrence = Map.fetch!(run.regions, id)
+      semantic = Map.fetch!(regions, occurrence.semantic_region_id)
+
+      %{
+        region_occurrence_id: occurrence.id,
+        semantic_region_id: occurrence.semantic_region_id,
+        remediations_completed: occurrence.remediations_completed,
+        maximum_remediations: semantic.max_remediations,
+        status: Atom.to_string(occurrence.status),
+        review_shaped: semantic.condition_binding.artifact_type == "verdict"
+      }
     end)
   end
 

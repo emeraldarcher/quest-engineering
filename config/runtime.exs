@@ -1,5 +1,17 @@
 import Config
 
+config :quest_engineering_server,
+  local_session_attach_enabled:
+    System.get_env("QE_LOCAL_SESSION_ATTACH_ENABLED", "false") in ~w(1 true TRUE yes YES),
+  max_operational_attempts_per_epoch:
+    System.get_env("QE_MAX_OPERATIONAL_ATTEMPTS_PER_EPOCH", "2")
+    |> String.to_integer()
+    |> then(fn value ->
+      if value > 0,
+        do: value,
+        else: raise("QE_MAX_OPERATIONAL_ATTEMPTS_PER_EPOCH must be a positive integer")
+    end)
+
 if System.get_env("PHX_SERVER") do
   config :quest_engineering_server, QuestEngineering.ServerWeb.Endpoint, server: true
 end

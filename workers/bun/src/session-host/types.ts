@@ -48,13 +48,24 @@ export interface HostedExecutionRef {
   agentName: string;
   nativeSession?: NativeSessionRef;
 }
-export interface AttachDescriptor {
-  kind: "herdr_cli";
-  sessionName: string;
-  agentName: string;
-  command: string;
+
+/** Transport-neutral descriptor persisted/projected by the Worker. */
+export interface TerminalAttachmentDescriptor {
+  mode: "local_native_terminal";
+  backendKind: "herdr" | (string & {});
+  terminalSessionId: string;
+  terminalTargetId: string;
+  terminalId?: string;
+  supportsObservation: boolean;
+  supportsTakeover: boolean;
 }
-export interface SessionHost {
+
+/**
+ * Terminal/session transport contract. Implementations know terminal topology,
+ * persistence and transport lifecycle, but not Pi prompts or QE semantics.
+ */
+export interface TerminalSessionBackend {
+  readonly backendKind: string;
   readonly sessionName: string;
   snapshot(): Promise<HostedSnapshot>;
   createWorkspace(input: {
@@ -76,7 +87,7 @@ export interface SessionHost {
   startAgent(input: {
     paneId: string;
     name: string;
-    kind: "pi";
+    integrationKind: string;
     args: string[];
   }): Promise<HostedAgent>;
   prompt(
@@ -84,11 +95,14 @@ export interface SessionHost {
     text: string,
     options?: { until?: HostedAgentStatus[]; timeoutMs?: number },
   ): Promise<HostedAgent>;
-  wait(
+  /** Observe an actual terminal-agent state transition from the backend. */
+  observeAgentState(
     target: string,
     options?: { until?: HostedAgentStatus[]; timeoutMs?: number },
   ): Promise<HostedAgent>;
-  getAgent(target: string): Promise<HostedAgent>;
-  attachInfo(ref: HostedExecutionRef): AttachDescriptor;
+  /** Inspect the backend's current authoritative terminal-agent state. */
+  inspectAgentState(target: string): Promise<HostedAgent>;
+  sendKeys(target: string, keys: string[]): Promise<void>;
+  attachment(ref: HostedExecutionRef): TerminalAttachmentDescriptor;
   disconnect(): void;
 }

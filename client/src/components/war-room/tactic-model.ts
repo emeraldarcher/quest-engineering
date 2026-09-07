@@ -168,8 +168,24 @@ export function makeUntil(body: TacticNode, classKey = ""): UntilNode {
       value: "accepted",
     },
     otherwise,
-    max_remediations: 2,
+    max_remediations: 3,
   };
+}
+
+export function isReviewRemediationUntil(node: UntilNode): boolean {
+  const checkNames = entries(node.check)
+    .filter((entry) => entry.node.type === "step")
+    .map((entry) => (entry.node as StepNode).name.toLocaleLowerCase());
+  const remediationNames = entries(node.otherwise)
+    .filter((entry) => entry.node.type === "step")
+    .map((entry) => (entry.node as StepNode).name.toLocaleLowerCase());
+  return (
+    node.condition.artifact.type === "verdict" &&
+    checkNames.some((name) => name.includes("review")) &&
+    remediationNames.some(
+      (name) => name.includes("repair") || name.includes("remediat"),
+    )
+  );
 }
 
 export function entries(
@@ -420,6 +436,14 @@ export function localDraftIssues(draft: TacticDraft): string[] {
           issues.push(
             `${entry.node.name || "A Step"} has an unnamed artifact.`,
           );
+    } else if (entry.node.type === "until") {
+      if (
+        !Number.isInteger(entry.node.max_remediations) ||
+        entry.node.max_remediations < 1
+      )
+        issues.push(
+          "Maximum remediation iterations must be a positive whole number.",
+        );
     } else if (
       (entry.node.type === "sequence" || entry.node.type === "parallel") &&
       entry.node.children.length === 0

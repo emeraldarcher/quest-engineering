@@ -23,6 +23,7 @@ import {
   generatedLocalKey,
   generatedTacticKey,
   insertAfter,
+  isReviewRemediationUntil,
   localDraftIssues,
   makeStep,
   makeUntil,
@@ -783,7 +784,8 @@ function humanizeKey(value: string): string {
           <label for="condition-field">Field</label><input id="condition-field" value={until.condition.field} on:input={(event) => setSelectedNode({ ...until, condition: { ...until.condition, field: event.currentTarget.value } })} />
           <label for="condition-value-type">Value type</label><select id="condition-value-type" value={conditionValueType(until.condition.value)} on:change={(event) => setSelectedNode({ ...until, condition: { ...until.condition, value: conditionValueForType(event.currentTarget.value) } })}><option value="string">Text</option><option value="number">Number</option><option value="boolean">True / false</option><option value="null">No value</option></select>
           <label for="condition-value">Accepted value</label>{#if typeof until.condition.value === "boolean"}<select id="condition-value" value={String(until.condition.value)} on:change={(event) => setSelectedNode({ ...until, condition: { ...until.condition, value: event.currentTarget.value === "true" } })}><option value="true">True</option><option value="false">False</option></select>{:else if until.condition.value === null}<input id="condition-value" value="No value" readonly />{:else}<input id="condition-value" type={typeof until.condition.value === "number" ? "number" : "text"} value={until.condition.value} on:input={(event) => setSelectedNode({ ...until, condition: { ...until.condition, value: typeof until.condition.value === "number" ? Number(event.currentTarget.value) : event.currentTarget.value } })} />{/if}
-          <label for="max-remediations">Maximum remediations</label><input id="max-remediations" type="number" min="1" value={until.max_remediations} on:input={(event) => setSelectedNode({ ...until, max_remediations: Number(event.currentTarget.value) })} /><p class="field-help">{until.max_remediations} {until.max_remediations === 1 ? "repair" : "repairs"} means the check can run up to {until.max_remediations + 1} times.</p>
+          {@const reviewRemediation = isReviewRemediationUntil(until)}
+          <label for="max-remediations">{reviewRemediation ? "Maximum repairs" : "Maximum iterations"}</label><input id="max-remediations" type="number" min="1" step="1" required value={until.max_remediations} on:input={(event) => setSelectedNode({ ...until, max_remediations: Number(event.currentTarget.value) })} /><p class="field-help">{until.max_remediations} {reviewRemediation ? until.max_remediations === 1 ? "repair" : "repairs" : until.max_remediations === 1 ? "remediation iteration" : "remediation iterations"} means the initial check may be followed by exactly that many remediation opportunities and up to {until.max_remediations + 1} total checks.</p>
         {:else if selectedNode.type === "use"}
           {@const use = selectedNode as TacticUseNode}
           {@const target = referencedTactic(use)}

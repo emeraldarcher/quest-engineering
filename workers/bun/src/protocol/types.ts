@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 4 as const;
+export const WORKER_PROTOCOL_VERSION = 5 as const;
 
 export type JsonValue =
   | string
@@ -63,6 +63,17 @@ export interface ResolvedExecution {
 }
 
 /** v4 wire message plus normalized identity aliases used by durable internals. */
+export interface OperationalRecoveryExecution {
+  epoch_number: number;
+  attempt_in_epoch: number;
+  attempt_allowance: number | null;
+  authorization_kind: "initial" | "human";
+  continuation_mode: "fresh" | "retained";
+  retained_lineage_id: string | null;
+  source_attempt_id: string | null;
+  request_id: string | null;
+}
+
 export interface ExecuteAction {
   type: "execute_action";
   protocol_version: typeof WORKER_PROTOCOL_VERSION;
@@ -78,6 +89,7 @@ export interface ExecuteAction {
   declared_outputs: string[];
   context_requirement: { selector: "fresh" | "continue_from"; value: null };
   context_lineage_occurrence_id: string | null;
+  operational_recovery?: OperationalRecoveryExecution;
 }
 
 export type DispatchState =
@@ -87,6 +99,71 @@ export type DispatchState =
   | "failed"
   | "uncertain";
 export type LocalDispatchState = DispatchState;
+
+export interface ReconcileSession {
+  session_id: string;
+  action_id: string;
+  run_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  member_key: string;
+  harness_kind: string;
+  harness_display_name: string;
+  state:
+    | "starting"
+    | "running"
+    | "waiting_for_human"
+    | "recovering"
+    | "retained"
+    | "closed"
+    | "unavailable";
+  capabilities: {
+    can_attach_terminal: boolean;
+    can_send_input: boolean;
+    can_interrupt: boolean;
+    can_detect_attention: boolean;
+    can_resume: boolean;
+    can_observe_structured_events: boolean;
+    structured_confirmation: boolean;
+    structured_text_response: boolean;
+    structured_choice_response: boolean;
+    structured_multiline_response: boolean;
+    native_prompt_control: boolean;
+    conversational_takeover: boolean;
+    automation_resume: boolean;
+  };
+  terminal: {
+    attachment_mode: "local_native_terminal";
+    backend_kind: string;
+    terminal_session_id: string;
+    terminal_target_id: string;
+    terminal_id?: string;
+    supports_observation: boolean;
+    supports_takeover: boolean;
+  } | null;
+  provider_session_id: string | null;
+  attention: {
+    attention_id: string;
+    category: string;
+    message: string;
+    requested_at: string;
+    interaction?: {
+      kind: string;
+      control_state: string;
+      resume_command?: string;
+    };
+  } | null;
+  intervention: {
+    attention_id: string;
+    kind: "conversational_intervention";
+    state: "intervention_pending" | "resuming_automation" | "resumed";
+    requested_at: string;
+    handed_back_at?: string;
+    automation_resumed_at?: string;
+  } | null;
+  started_at: string;
+  last_activity_at: string;
+}
 
 export interface ReconcileDispatch {
   action_id: string;
@@ -115,6 +192,7 @@ export interface WorkerCapabilities {
     | "run_worktree_retention_v1"
     | "run_worktree_cleanup_v1"
     | "workspace_binding_status_v1"
+    | "live_execution_sessions_v1"
   >;
   workspace_bindings: Array<{
     binding_id: string;

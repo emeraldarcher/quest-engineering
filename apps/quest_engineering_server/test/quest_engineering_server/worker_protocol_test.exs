@@ -18,7 +18,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v4 logical Workspace bindings" do
+  test "accepts explicit protocol v5 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -54,7 +54,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes authoritative Delivery evidence messages" do
     payload = %{
       "type" => "run_delivery_inspected",
-      "protocol_version" => 4,
+      "protocol_version" => 5,
       "worker_id" => @worker_id,
       "delivery" => %{
         "delivery_id" => Ecto.UUID.generate(),
@@ -81,7 +81,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "accepts uncertain reconciliation only with structured failure" do
     payload = %{
       "type" => "dispatch_state",
-      "protocol_version" => 4,
+      "protocol_version" => 5,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -93,11 +93,134 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert {:ok, %{state: :uncertain}} = WorkerProtocol.decode_worker_message(payload, @worker_id)
   end
 
+  test "normalizes classified failures and validates retained recovery requests" do
+    failed = %{
+      "type" => "step_failed",
+      "protocol_version" => 5,
+      "worker_id" => @worker_id,
+      "action_id" => "action",
+      "occurrence_id" => "occurrence",
+      "attempt_id" => "attempt",
+      "failure" => %{"reason" => "transient", "classification" => "auto_retryable"}
+    }
+
+    assert {:ok, %{failure: %{"classification" => "auto_retryable"}}} =
+             WorkerProtocol.decode_worker_message(failed, @worker_id)
+
+    assert {:ok, %{failure: %{"classification" => "operator_recovery_required"}}} =
+             failed
+             |> put_in(["failure"], %{"reason" => "legacy"})
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+
+    recovery = %{
+      "type" => "human_recovery_requested",
+      "protocol_version" => 5,
+      "worker_id" => @worker_id,
+      "recovery" => %{
+        "request_id" => "request",
+        "run_id" => "run",
+        "occurrence_id" => "occurrence",
+        "attempt_id" => "attempt",
+        "action_id" => "action",
+        "member_key" => "builder",
+        "session_id" => "lineage",
+        "lineage_id" => "lineage",
+        "pi_session_id" => "pi-session"
+      }
+    }
+
+    assert {:ok, %{type: :human_recovery_requested, recovery: %{request_id: "request"}}} =
+             WorkerProtocol.decode_worker_message(recovery, @worker_id)
+  end
+
+  test "decodes Product-safe harness session and structured attention state" do
+    payload = %{
+      "type" => "session_state",
+      "protocol_version" => 5,
+      "worker_id" => @worker_id,
+      "session" => %{
+        "session_id" => "session-1",
+        "action_id" => "action",
+        "run_id" => "run",
+        "occurrence_id" => "occurrence",
+        "attempt_id" => "attempt",
+        "member_key" => "alice",
+        "harness_kind" => "pi",
+        "harness_display_name" => "Pi",
+        "state" => "waiting_for_human",
+        "capabilities" => %{
+          "can_attach_terminal" => true,
+          "can_send_input" => true,
+          "can_interrupt" => true,
+          "can_detect_attention" => true,
+          "can_resume" => true,
+          "can_observe_structured_events" => true,
+          "structured_confirmation" => true,
+          "structured_text_response" => false,
+          "structured_choice_response" => false,
+          "structured_multiline_response" => false,
+          "native_prompt_control" => true,
+          "conversational_takeover" => true,
+          "automation_resume" => true
+        },
+        "terminal" => %{
+          "attachment_mode" => "local_native_terminal",
+          "backend_kind" => "herdr",
+          "terminal_session_id" => "worker",
+          "terminal_target_id" => "qe-agent",
+          "supports_observation" => true,
+          "supports_takeover" => true
+        },
+        "provider_session_id" => "pi-session",
+        "attention" => %{
+          "attention_id" => "attention-1",
+          "category" => "needs_input",
+          "message" => "Choose an option.",
+          "requested_at" => "2026-09-06T00:00:00Z",
+          "interaction" => %{
+            "kind" => "conversational_intervention",
+            "control_state" => "intervention_pending",
+            "resume_command" => "/qe-resume"
+          }
+        },
+        "intervention" => %{
+          "attention_id" => "attention-1",
+          "kind" => "conversational_intervention",
+          "state" => "intervention_pending",
+          "requested_at" => "2026-09-06T00:00:00Z"
+        },
+        "started_at" => "2026-09-06T00:00:00Z",
+        "last_activity_at" => "2026-09-06T00:00:01Z"
+      }
+    }
+
+    assert {:ok,
+            %{
+              type: :session_state,
+              session: %{
+                state: :waiting_for_human,
+                attention: attention,
+                intervention: intervention,
+                capabilities: capabilities
+              }
+            }} = WorkerProtocol.decode_worker_message(payload, @worker_id)
+
+    assert attention["category"] == "needs_input"
+    assert attention["interaction"]["resume_command"] == "/qe-resume"
+    assert intervention["state"] == "intervention_pending"
+    assert capabilities["conversational_takeover"]
+
+    invalid = put_in(payload, ["session", "attention", "category"], "provider-prose")
+
+    assert {:error, %WorkerProtocol.Error{field: "session.attention"}} =
+             WorkerProtocol.decode_worker_message(invalid, @worker_id)
+  end
+
   test "encodes logical and physical execution workspaces separately" do
     encoded = WorkerProtocol.execute_action(@worker_id, execution())
     wire = encoded["execution"]
 
-    assert encoded["protocol_version"] == 4
+    assert encoded["protocol_version"] == 5
     assert wire["configuration"]["model"] == %{"provider" => "fake", "model" => "test"}
 
     assert wire["logical_workspace"] == %{
@@ -164,7 +287,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   defp hello do
     %{
       "type" => "worker_hello",
-      "protocol_version" => 4,
+      "protocol_version" => 5,
       "worker_id" => @worker_id,
       "capabilities" => %{
         "os" => "test",

@@ -243,7 +243,104 @@ defmodule QuestEngineering.Core.ProductTest do
       refute Map.has_key?(Map.from_struct(execution), :worker_id)
       refute Map.has_key?(Map.from_struct(execution.context), :pi_lineage_id)
     end
+
+    test "keeps acceptance choreography local to Implement while Review retains shared context" do
+      objective =
+        "Create a harmless test file according to the instructions you receive during implementation."
+
+      forced_takeover =
+        "Before making repository changes, immediately request conversational intervention and wait for explicit /qe-resume before implementing the human guidance."
+
+      review_instruction =
+        "Review the implementation against the Quest requirements. Do not deliberately invoke the takeover acceptance mechanism; request human assistance only for a genuine blocker."
+
+      tactic =
+        sequence([
+          step("implement",
+            name: "Implement",
+            instruction: forced_takeover,
+            performer: class("builder"),
+            context: fresh(),
+            produces: [artifact("change_set")]
+          ),
+          step("review",
+            name: "Review",
+            instruction: review_instruction,
+            performer: class("reviewer"),
+            context: fresh(),
+            consumes: [artifact("change_set", from: "implement")],
+            produces: [artifact("verdict")]
+          )
+        ])
+
+      assert {:ok, snapshot} =
+               Builder.build(
+                 %{quest() | objective: objective, tactic_source: %Inline{body: tactic}},
+                 workspace(),
+                 engineering_squad(),
+                 [builder_class(), reviewer_class()],
+                 [coding_loadout(), review_loadout()],
+                 Catalog.empty()
+               )
+
+      assert {:ok, run, [implement]} = Runtime.start(snapshot.execution_plan, "acceptance-run")
+      builder = Enum.find(snapshot.squad.members, &(&1.key == "alice"))
+
+      implement_execution =
+        ResolvedExecutionBuilder.build(
+          snapshot,
+          implement,
+          "acceptance-launch",
+          builder,
+          "builder-lineage",
+          nil,
+          execution_workspace("builder-worktree")
+        )
+
+      assert implement_execution.work.quest_objective == objective
+      assert implement_execution.work.step_instruction == forced_takeover
+
+      assert {:ok, _run, [review]} =
+               Runtime.transition(
+                 run,
+                 Runtime.completed(implement, %{
+                   "change_set" => %{"files" => ["human-picked.txt"]}
+                 })
+               )
+
+      reviewer = Enum.find(snapshot.squad.members, &(&1.key == "reviewer"))
+
+      review_execution =
+        ResolvedExecutionBuilder.build(
+          snapshot,
+          review,
+          "acceptance-launch",
+          reviewer,
+          "reviewer-lineage",
+          nil,
+          execution_workspace("reviewer-worktree")
+        )
+
+      assert review_execution.work.quest_objective == objective
+      assert review_execution.work.step_instruction == review_instruction
+      assert review_execution.work.class_instructions == reviewer_class().instructions
+
+      assert review_execution.work.inputs["change_set"].value == %{
+               "files" => ["human-picked.txt"]
+             }
+
+      refute review_execution.work.step_instruction =~ "Before making repository changes"
+      refute inspect(review_execution.work) =~ forced_takeover
+    end
   end
+
+  defp execution_workspace(worktree_id),
+    do: %{
+      worktree_id: worktree_id,
+      workspace_binding_id: "binding-id",
+      canonical_root: "/canonical/run-worktree",
+      access: :read_write
+    }
 
   defp valid_snapshot do
     Builder.build(

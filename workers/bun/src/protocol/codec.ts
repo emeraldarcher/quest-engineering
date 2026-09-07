@@ -43,6 +43,13 @@ export function decodeExecuteAction(
     declared_outputs: work.declared_outputs,
     context_requirement: { selector: execution.context.mode, value: null },
     context_lineage_occurrence_id: execution.context.source_occurrence_id,
+    ...(payload.operational_recovery === undefined
+      ? {}
+      : {
+          operational_recovery: decodeOperationalRecovery(
+            payload.operational_recovery,
+          ),
+        }),
   };
 }
 
@@ -198,6 +205,51 @@ function decodeExecution(value: unknown): ResolvedExecution {
   };
 }
 
+function decodeOperationalRecovery(
+  value: unknown,
+): NonNullable<ExecuteAction["operational_recovery"]> {
+  const recovery = record(value, "operational_recovery");
+  return {
+    epoch_number: nonNegativeInteger(
+      recovery.epoch_number,
+      "operational_recovery.epoch_number",
+    ),
+    attempt_in_epoch: positiveInteger(
+      recovery.attempt_in_epoch,
+      "operational_recovery.attempt_in_epoch",
+    ),
+    attempt_allowance:
+      recovery.attempt_allowance === null
+        ? null
+        : positiveInteger(
+            recovery.attempt_allowance,
+            "operational_recovery.attempt_allowance",
+          ),
+    authorization_kind: oneOf(
+      recovery.authorization_kind,
+      ["initial", "human"] as const,
+      "operational_recovery.authorization_kind",
+    ),
+    continuation_mode: oneOf(
+      recovery.continuation_mode,
+      ["fresh", "retained"] as const,
+      "operational_recovery.continuation_mode",
+    ),
+    retained_lineage_id: nullableString(
+      recovery.retained_lineage_id,
+      "operational_recovery.retained_lineage_id",
+    ),
+    source_attempt_id: nullableString(
+      recovery.source_attempt_id,
+      "operational_recovery.source_attempt_id",
+    ),
+    request_id: nullableString(
+      recovery.request_id,
+      "operational_recovery.request_id",
+    ),
+  };
+}
+
 function decodeArtifact(value: unknown, field: string): ArtifactInstance {
   const artifact = record(value, field);
   if (!isJsonValue(artifact.value))
@@ -226,6 +278,16 @@ function string(value: unknown, field: string): string {
 function nullableString(value: unknown, field: string): string | null {
   if (value === null) return null;
   return string(value, field);
+}
+function positiveInteger(value: unknown, field: string): number {
+  if (!Number.isInteger(value) || Number(value) <= 0)
+    throw new ProtocolDecodeError(field, "must be a positive integer");
+  return Number(value);
+}
+function nonNegativeInteger(value: unknown, field: string): number {
+  if (!Number.isInteger(value) || Number(value) < 0)
+    throw new ProtocolDecodeError(field, "must be a non-negative integer");
+  return Number(value);
 }
 function uniqueStrings(value: unknown, field: string): string[] {
   if (!Array.isArray(value))

@@ -9,12 +9,16 @@ import {
 import { get } from "svelte/store";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ApiClient } from "../src/api/client";
-import type { RunProjection } from "../src/api/contracts";
+import type { HumanAttention, RunProjection } from "../src/api/contracts";
 import WorkYardWindow from "../src/components/work-yard/WorkYardWindow.svelte";
 import { type ClientFixture, createFixture } from "../src/fixtures/fixtures";
+import * as liveSessionPlatform from "../src/platform/live-session";
 import { createAppStore } from "../src/state/app-store";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 beforeEach(() => {
   HTMLDialogElement.prototype.showModal = function showModal() {
     this.setAttribute("open", "");
@@ -122,6 +126,268 @@ test("Overview is concise and separates execution, Delivery, Quest, and workspac
     document.querySelector<HTMLDetailsElement>("details.technical")?.open,
   ).toBe(false);
   expect(screen.queryByText(/Duration/)).toBeNull();
+});
+
+test("shows concurrent live sessions, waiting attention, exact open and takeover actions", async () => {
+  vi.spyOn(liveSessionPlatform, "canOpenLocalLiveSession").mockReturnValue(
+    true,
+  );
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const [first, second] = run.steps;
+  if (!first?.attempt || !second?.attempt)
+    throw new Error("Expected concurrent Step attempts");
+  first.session = harnessSession("session-a", "running", null);
+  second.session = harnessSession("session-b", "waiting_for_human", {
+    attention_id: "attention-b",
+    category: "needs_permission",
+    message: "Permission required to continue.",
+    requested_at: "2026-09-06T00:00:00Z",
+  });
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  const open = vi.spyOn(store, "openLiveSession").mockResolvedValue(true);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(screen.getByRole("heading", { name: "Live Session" })).toBeTruthy();
+  expect(screen.getByText(/Permission required to continue\./)).toBeTruthy();
+  expect(screen.getByText("Waiting for you")).toBeTruthy();
+  const cards = document.querySelectorAll(".session-list article");
+  expect(cards).toHaveLength(2);
+  const waitingCard = cards[1] as HTMLElement;
+  await fireEvent.click(
+    within(waitingCard).getByRole("button", { name: "Take Control" }),
+  );
+  expect(open).toHaveBeenCalledWith(
+    run.id,
+    second.attempt.id,
+    second.session,
+    "takeover",
+  );
+  const runningCard = cards[0] as HTMLElement;
+  expect(
+    within(runningCard).queryByRole("button", { name: "Take Control" }),
+  ).toBeNull();
+  await fireEvent.click(
+    within(runningCard).getByRole("button", { name: "Open Session" }),
+  );
+  expect(open).toHaveBeenCalledWith(
+    run.id,
+    first.attempt.id,
+    first.session,
+    "observe",
+  );
+});
+
+test("shows conversational human control and the explicit hand-back command", async () => {
+  vi.spyOn(liveSessionPlatform, "canOpenLocalLiveSession").mockReturnValue(
+    true,
+  );
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step) throw new Error("Expected Step");
+  step.session = harnessSession("session-conversation", "waiting_for_human", {
+    attention_id: "attention-conversation",
+    category: "needs_input",
+    message: "Choose a filename with Pi.",
+    requested_at: "2026-09-06T00:00:00Z",
+    interaction: {
+      kind: "conversational_intervention",
+      control_state: "human_control",
+      resume_command: "/qe-resume",
+    },
+  });
+  step.session.events = [
+    {
+      id: "event-human-control",
+      type: "local_session_opened",
+      attention_id: "attention-conversation",
+      metadata: { mode: "takeover", human_control_started: true },
+      occurred_at: "2026-09-06T00:01:00Z",
+    },
+  ];
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(screen.getByText("Human controlling session")).toBeTruthy();
+  expect(document.body.textContent).toContain(
+    "Use normal Pi chat for as many turns as needed",
+  );
+  expect(document.body.textContent).toContain("/qe-resume");
+  await fireEvent.click(screen.getByText("Session history"));
+  expect(screen.getByText(/Human control started/)).toBeTruthy();
+});
+
+test("retained sessions are inspectable without being presented as live", () => {
+  vi.spyOn(liveSessionPlatform, "canOpenLocalLiveSession").mockReturnValue(
+    true,
+  );
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step) throw new Error("Expected Step");
+  step.session = harnessSession("session-retained", "retained", null);
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+  expect(screen.getByText("Session retained")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Inspect Session" })).toBeTruthy();
+});
+
+test("failed retained execution distinguishes inspection, Help & Retry, and fresh recovery", async () => {
+  vi.spyOn(liveSessionPlatform, "canOpenLocalLiveSession").mockReturnValue(
+    true,
+  );
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step) throw new Error("Expected Step");
+  step.state = "failed";
+  const initialAttempt = step.attempt;
+  if (!initialAttempt) throw new Error("Expected Attempt");
+  initialAttempt.state = "failed";
+  initialAttempt.operational = {
+    recovery_epoch: 0,
+    recovery_kind: "initial",
+    attempt_in_epoch: 1,
+    attempt_allowance: 2,
+    policy_source: "configured",
+    continuation_mode: "fresh",
+    recovery_authorized_at: "2026-09-06T00:00:00Z",
+  };
+  const recoveryAttempt = {
+    ...initialAttempt,
+    id: "recovery-attempt-2",
+    number: 2,
+    retry_of_attempt_id: initialAttempt.id,
+    operational: {
+      ...initialAttempt.operational,
+      recovery_epoch: 1,
+      recovery_kind: "human" as const,
+      continuation_mode: "retained" as const,
+    },
+  };
+  step.attempt = recoveryAttempt;
+  step.attempts = [initialAttempt, recoveryAttempt];
+  step.session = harnessSession("session-failed-retained", "retained", null);
+  step.recovery = {
+    can_retry: false,
+    can_mark_failed: false,
+    can_human_retry: true,
+    can_retry_fresh: true,
+    retained_session_available: true,
+    classification: "operator_recovery_required",
+    message: "Authentication requires human recovery.",
+  };
+  run.issues = [{ code: "step_failed", message: step.recovery.message }];
+  run.operational_recovery = [
+    {
+      id: "recovery-1",
+      occurrence_id: step.occurrence_id,
+      epoch_number: 1,
+      authorization_kind: "human",
+      attempt_allowance: 2,
+      policy_source: "configured",
+      continuation_mode: "retained",
+      authorized_at: "2026-09-06T00:00:00Z",
+      attempts_scheduled: 1,
+    },
+  ];
+  run.semantic_remediation = [
+    {
+      region_occurrence_id: "region-1",
+      semantic_region_id: "review-loop",
+      remediations_completed: 2,
+      maximum_remediations: 3,
+      status: "remediating",
+      review_shaped: true,
+    },
+  ];
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(screen.getByRole("button", { name: "Inspect Session" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Help & Retry" })).toBeTruthy();
+  expect(document.body.textContent).toContain("/qe-retry");
+  expect(screen.queryByRole("button", { name: "Take Control" })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Retry with fresh session" }),
+  ).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
+  expect(document.body.textContent).toContain("2 of 3 repairs used");
+  expect(document.body.textContent).toContain(
+    "Human recovery 1 · Fresh allowance: 2",
+  );
+  expect(document.body.textContent).toContain(
+    "Human recovery 1 · Attempt 1 of 2",
+  );
+});
+
+test("an unavailable Worker is explicit without an attach action", () => {
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step) throw new Error("Expected Step");
+  step.session = harnessSession("session-offline", "unavailable", null);
+  step.session.worker.state = "disconnected";
+  step.session.attachment.available = false;
+  step.session.attachment.reason = "worker_offline";
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(document.body.textContent).toContain(
+    "Session unavailable · Worker offline",
+  );
+  expect(screen.queryByRole("button", { name: "Open Session" })).toBeNull();
+});
+
+test("web clients show the hosting Worker without pretending to attach", () => {
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step) throw new Error("Expected Step");
+  step.session = harnessSession("session-remote", "running", null);
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+  expect(document.body.textContent).toContain(
+    "Live session available on local-worker. Browser attachment is unavailable.",
+  );
+  expect(screen.queryByRole("button", { name: "Open Session" })).toBeNull();
 });
 
 test("Timeline uses snapshot Member names and current attempt without inventing history", async () => {
@@ -375,6 +641,50 @@ test("artifact selection returns to list state when the artifact disappears", as
     await screen.findByRole("heading", { name: "Select an artifact" }),
   ).toBeTruthy();
 });
+
+function harnessSession(
+  id: string,
+  state: "running" | "waiting_for_human" | "unavailable" | "retained",
+  attention: HumanAttention | null,
+): NonNullable<RunProjection["steps"][number]["session"]> {
+  return {
+    id,
+    harness: { kind: "pi", display_name: "Pi" },
+    worker: {
+      id: "local-worker",
+      display_name: "local-worker",
+      state: "connected",
+    },
+    state,
+    capabilities: {
+      can_attach_terminal: true,
+      can_send_input: true,
+      can_interrupt: true,
+      can_detect_attention: true,
+      can_resume: true,
+      can_observe_structured_events: true,
+      structured_confirmation: true,
+      structured_text_response: false,
+      structured_choice_response: false,
+      structured_multiline_response: false,
+      native_prompt_control: true,
+      conversational_takeover: true,
+      automation_resume: true,
+    },
+    attachment: {
+      mode: "local_native_terminal",
+      available: true,
+      reason: null,
+      can_observe: true,
+      can_takeover: state === "waiting_for_human",
+      can_recover: state === "retained",
+    },
+    attention,
+    started_at: "2026-09-06T00:00:00Z",
+    last_activity_at: "2026-09-06T00:00:01Z",
+    events: [],
+  };
+}
 
 function requiredRun(value: ClientFixture): RunProjection {
   const run = value.runs["run-mini-test"];

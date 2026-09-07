@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-notification": "2.3.3",
     "@tauri-apps/plugin-opener": "2.5.3",
     "phoenix": "1.8.1",
     "pixi.js": "8.14.3",

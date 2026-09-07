@@ -17,6 +17,8 @@ const {
   product: productStore,
   selectedBuilding: selectedBuildingStore,
   activeCrew: activeCrewStore,
+  liveAttentions: liveAttentionsStore,
+  attentionNotifications: attentionNotificationsStore,
   loading: loadingStore,
   error: errorStore,
   realtimeStatus: realtimeStatusStore,
@@ -203,9 +205,23 @@ async function openQuestRun(runId: string) {
     {product}
     realtimeStatus={$realtimeStatusStore}
     serverReachable={$serverReachableStore}
+    liveAttentionCount={$liveAttentionsStore.length}
   />
   {#if $loadingStore}<div class="notice">Loading Product data…</div>{/if}
   {#if $errorStore && $selectedBuildingStore !== "quest-board"}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}</div>{/if}
+
+  <div class="attention-toasts" aria-live="assertive">
+    {#each $attentionNotificationsStore as attention (attention.attentionId)}
+      <article class="attention-toast" role="alert">
+        <button class="toast-dismiss" aria-label="Dismiss notification" on:click={() => store.dismissAttention(attention.attentionId)}>×</button>
+        <span class="toast-kicker">Live session needs attention</span>
+        <strong>{attention.memberName} needs your help</strong>
+        <p>{attention.questTitle} <span aria-hidden="true">·</span> {attention.stepName}</p>
+        <small>{attention.harnessName} is waiting: {attention.message}</small>
+        <button class="toast-open" on:click={() => store.focusAttention(attention, true)}>Open Session</button>
+      </article>
+    {/each}
+  </div>
 
   {#if showOnboarding && starterStatus}<StarterCrewOnboarding {store} {product} status={starterStatus} scene={onboardingScene} onAddProject={addOnboardingProject} onOpenProjects={() => selectBuilding("gatehouse")} onNavigate={navigateFromOnboarding} onDismiss={() => (onboardingDismissed = true)} onCompleted={() => (starterCompletionVisible = true)} />{/if}
 
@@ -235,6 +251,14 @@ async function openQuestRun(runId: string) {
   button { background: #2a2942; border: 2px solid #aea47e; box-shadow: inset 0 0 0 1px #120e23; color: #fff1a9; cursor: pointer; padding: .4rem .65rem; font: inherit; }
   button:hover, button:focus-visible { background: #24505f; outline: 2px solid #6dba79; outline-offset: 1px; }
   .notice, .error { position: relative; z-index: 7; margin: .7rem; padding: .6rem; background: #27394aee; }
+  .attention-toasts { position:absolute; z-index:12; top:4.2rem; right:1rem; display:grid; gap:.65rem; width:min(23rem,calc(100vw - 2rem)); }
+  .attention-toast { position:relative; display:grid; gap:.25rem; padding:.85rem 1rem; color:#4b332a; background:#fff0cf; border:2px solid #c77a50; border-left:6px solid #ad4f43; border-radius:10px; box-shadow:0 8px 24px #23170f66; }
+  .attention-toast strong { font:700 1.05rem Georgia,serif; }
+  .attention-toast p,.attention-toast small { margin:0; }
+  .attention-toast small { color:#705449; }
+  .toast-kicker { color:#9b493f; font-size:.68rem; font-weight:850; letter-spacing:.06em; text-transform:uppercase; }
+  .toast-dismiss { position:absolute; top:.3rem; right:.35rem; padding:.05rem .35rem; color:#775348; background:transparent; border:0; box-shadow:none; }
+  .toast-open { justify-self:start; margin-top:.35rem; color:#fff8e8; background:#316d68; border-color:#214c49; border-radius:6px; font-weight:800; }
   .error { color: #ffd174; border: 2px solid #a05b58; }
   .window-close { position: absolute; z-index: 9; top: 4.55rem; right: 1.3rem; padding: .1rem .5rem; font-size: 1.2rem; }
 </style>

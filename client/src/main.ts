@@ -21,7 +21,10 @@ if (import.meta.env.DEV && query.get("spike") === "sunnyside") {
     ? (await import("./fixtures/fixtures")).createFixture(query.get("fixture"))
     : null;
   const store = createAppStore(
-    new ApiClient({ httpBaseUrl: clientConfig.httpBaseUrl }),
+    new ApiClient({
+      httpBaseUrl: clientConfig.httpBaseUrl,
+      localTauriClient: clientConfig.localTauriClient,
+    }),
     clientConfig.socketUrl,
     fixture,
   );

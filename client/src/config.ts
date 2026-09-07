@@ -12,4 +12,5 @@ const socketUrl = import.meta.env.VITE_QE_SOCKET_URL ?? defaultSocketUrl;
 export const clientConfig = {
   httpBaseUrl: httpBaseUrl.replace(/\/$/, ""),
   socketUrl,
+  localTauriClient: desktop,
 };

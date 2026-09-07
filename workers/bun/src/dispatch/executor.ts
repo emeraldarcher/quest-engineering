@@ -1,9 +1,11 @@
 import type { JsonValue, ReconcileDispatch } from "../protocol/types.ts";
 import type {
-  AgentProvider,
-  ProviderPreparedExecution,
+  AgentHarness,
+  HarnessEvent,
+  HarnessPreparedExecution,
 } from "../providers/types.ts";
-import type { AttachDescriptor } from "../session-host/types.ts";
+import { OperationalExecutionError } from "../providers/types.ts";
+import type { TerminalAttachmentDescriptor } from "../session-host/types.ts";
 import type {
   DispatchRecord,
   DispatchRegistry,
@@ -14,14 +16,19 @@ export type StateReporter = (
   dispatch: ReconcileDispatch,
   terminalMessage: "step_completed" | "step_failed" | "dispatch_state",
 ) => Promise<boolean>;
+export type SessionReporter = (
+  dispatch: DispatchRecord,
+  lineage: ProviderLineage,
+) => Promise<boolean>;
 
 export class DispatchExecutor {
   private readonly active = new Map<string, Promise<void>>();
 
   constructor(
     readonly registry: DispatchRegistry,
-    private readonly provider: AgentProvider,
+    private readonly harness: AgentHarness,
     private readonly report: StateReporter,
+    private readonly reportSession: SessionReporter = async () => false,
   ) {}
 
   accept(action: Parameters<DispatchRegistry["accept"]>[0]) {
@@ -40,7 +47,7 @@ export class DispatchExecutor {
 
   async recoverAll(): Promise<void> {
     try {
-      for (const candidate of await this.provider.discoverAdoptionCandidates()) {
+      for (const candidate of await this.harness.discoverAdoptionCandidates()) {
         this.registry.adopt(candidate);
       }
     } catch (error) {
@@ -48,29 +55,39 @@ export class DispatchExecutor {
       return;
     }
     for (const dispatch of this.registry.list()) {
-      if (dispatch.state === "completed") {
+      if (["completed", "failed"].includes(dispatch.state)) {
         const lineage = dispatch.lineageId
           ? this.registry.getLineage(dispatch.lineageId)
           : null;
-        if (lineage) await this.provider.clearActiveMetadata(dispatch, lineage);
+        if (lineage) {
+          await this.harness.clearActiveMetadata(dispatch, lineage);
+          const inspection = await this.harness.inspect(lineage);
+          const current = this.registry.updateSession(
+            lineage.lineageId,
+            inspection.state === "unavailable" ? "unavailable" : "retained",
+            null,
+            inspection.lastActivityAt,
+            inspection.intervention,
+          );
+          await this.reportSession(dispatch, current);
+        }
         continue;
       }
-      if (dispatch.state === "failed") continue;
       await this.recoverOne(dispatch);
     }
   }
 
-  attachInfo(actionId: string): AttachDescriptor {
+  attachment(actionId: string): TerminalAttachmentDescriptor {
     const dispatch = this.registry.get(actionId);
     if (!dispatch.lineageId)
-      throw new Error(`Dispatch ${actionId} has no provider lineage.`);
-    return this.provider.attachInfo(
+      throw new Error(`Dispatch ${actionId} has no harness session.`);
+    return this.harness.attachment(
       this.registry.getLineage(dispatch.lineageId),
     );
   }
 
   disconnect(): void {
-    this.provider.disconnect();
+    this.harness.disconnect();
   }
 
   private async execute(actionId: string): Promise<void> {
@@ -86,13 +103,21 @@ export class DispatchExecutor {
 
     try {
       let lineage: ProviderLineage;
-      let execution: ProviderPreparedExecution;
-      if (dispatch.action.execution.context.mode === "fresh") {
+      let execution: HarnessPreparedExecution;
+      if (
+        dispatch.action.operational_recovery?.continuation_mode ===
+          "retained" &&
+        dispatch.lineageId
+      ) {
+        lineage = this.registry.getLineage(dispatch.lineageId);
+        this.registry.occupy(lineage.lineageId, actionId);
+        execution = await this.harness.continue(dispatch, lineage);
+      } else if (dispatch.action.execution.context.mode === "fresh") {
         if (!dispatch.lineageId)
           throw new Error("Fresh dispatch has no provider lineage.");
         lineage = this.registry.getLineage(dispatch.lineageId);
         this.registry.occupy(lineage.lineageId, actionId);
-        execution = await this.provider.prepareFresh(dispatch, lineage);
+        execution = await this.harness.start(dispatch, lineage);
       } else if (dispatch.action.execution.context.mode === "continue_from") {
         const occurrenceId = dispatch.action.context_lineage_occurrence_id;
         if (!occurrenceId)
@@ -102,7 +127,7 @@ export class DispatchExecutor {
         lineage = this.registry.resolveContinuation(dispatch.action);
         dispatch = this.registry.assignLineage(actionId, lineage.lineageId);
         this.registry.occupy(lineage.lineageId, actionId);
-        execution = await this.provider.prepareContinuation(dispatch, lineage);
+        execution = await this.harness.continue(dispatch, lineage);
       } else {
         throw new Error(
           `Unsupported context requirement: ${dispatch.action.execution.context.mode}`,
@@ -122,25 +147,22 @@ export class DispatchExecutor {
           ? { nativeSession: execution.ref.nativeSession }
           : {}),
       });
-      lineage = this.registry.getLineage(lineage.lineageId);
+      lineage = this.registry.updateSession(
+        lineage.lineageId,
+        "starting",
+        null,
+      );
+      await this.reportSession(dispatch, lineage);
       this.registry.markPromptIntent(actionId);
       dispatch = this.registry.get(actionId);
-      const outputs = await this.provider.submitAndCollect(
+      const outputs = await this.harness.sendInputAndCollect(
         dispatch,
         { ...execution, lineage },
-        () => {
-          this.registry.markRunning(actionId);
-          void this.report(
-            this.registry
-              .reconcilePayloads()
-              .find((item) => item.action_id === actionId) as ReconcileDispatch,
-            "dispatch_state",
-          );
-        },
+        (event) => this.handleHarnessEvent(actionId, lineage.lineageId, event),
       );
       dispatch = this.registry.complete(actionId, outputs);
       // The completion transaction above clears physical occupancy before any network send.
-      await this.provider.clearActiveMetadata(
+      await this.harness.clearActiveMetadata(
         dispatch,
         this.registry.getLineage(lineage.lineageId),
       );
@@ -156,7 +178,7 @@ export class DispatchExecutor {
           isUncertain(current, error),
         );
         if (dispatch.lineageId && dispatch.state !== "uncertain")
-          await this.provider.clearActiveMetadata(
+          await this.harness.clearActiveMetadata(
             dispatch,
             this.registry.getLineage(dispatch.lineageId),
           );
@@ -202,7 +224,7 @@ export class DispatchExecutor {
           "Prompt may have been submitted but no agent reference was persisted.",
         );
       }
-      const recovered = await this.provider.recover(lineage);
+      const recovered = await this.harness.recover(lineage);
       if (!recovered.found || !recovered.agent)
         throw new Error(recovered.detail);
       if (["working", "blocked", "unknown"].includes(recovered.agent.status)) {
@@ -222,38 +244,46 @@ export class DispatchExecutor {
         return;
       }
       try {
-        const outputs = await this.provider.waitAndCollect(
+        const outputs = await this.harness.waitAndCollect(
           dispatch,
           lineage,
           recovered.agent,
+          (event) =>
+            this.handleHarnessEvent(
+              dispatch.action.action_id,
+              lineage.lineageId,
+              event,
+            ),
         );
         const completed = this.registry.complete(
           dispatch.action.action_id,
           outputs,
         );
-        await this.provider.clearActiveMetadata(
+        await this.harness.clearActiveMetadata(
           completed,
           this.registry.getLineage(lineage.lineageId),
         );
         await this.reportCompletion(completed);
       } catch (error) {
         if (!dispatch.promptIntentAt) {
-          const execution = await this.provider.prepareContinuation(
-            dispatch,
-            lineage,
-          );
+          const execution = await this.harness.continue(dispatch, lineage);
           this.registry.occupy(lineage.lineageId, dispatch.action.action_id);
           this.registry.markPromptIntent(dispatch.action.action_id);
-          const outputs = await this.provider.submitAndCollect(
+          const outputs = await this.harness.sendInputAndCollect(
             dispatch,
             execution,
-            () => this.registry.markRunning(dispatch.action.action_id),
+            (event) =>
+              this.handleHarnessEvent(
+                dispatch.action.action_id,
+                lineage.lineageId,
+                event,
+              ),
           );
           const completed = this.registry.complete(
             dispatch.action.action_id,
             outputs,
           );
-          await this.provider.clearActiveMetadata(
+          await this.harness.clearActiveMetadata(
             completed,
             this.registry.getLineage(lineage.lineageId),
           );
@@ -270,7 +300,7 @@ export class DispatchExecutor {
         true,
       );
       if (failed.lineageId && failed.state !== "uncertain")
-        await this.provider.clearActiveMetadata(
+        await this.harness.clearActiveMetadata(
           failed,
           this.registry.getLineage(failed.lineageId),
         );
@@ -281,19 +311,25 @@ export class DispatchExecutor {
   private async observeRecovered(
     dispatch: DispatchRecord,
     lineage: ProviderLineage,
-    agent: NonNullable<Awaited<ReturnType<AgentProvider["recover"]>>["agent"]>,
+    agent: NonNullable<Awaited<ReturnType<AgentHarness["recover"]>>["agent"]>,
   ): Promise<void> {
     try {
-      const outputs = await this.provider.waitAndCollect(
+      const outputs = await this.harness.waitAndCollect(
         dispatch,
         lineage,
         agent,
+        (event) =>
+          this.handleHarnessEvent(
+            dispatch.action.action_id,
+            lineage.lineageId,
+            event,
+          ),
       );
       const completed = this.registry.complete(
         dispatch.action.action_id,
         outputs,
       );
-      await this.provider.clearActiveMetadata(
+      await this.harness.clearActiveMetadata(
         completed,
         this.registry.getLineage(lineage.lineageId),
       );
@@ -305,7 +341,7 @@ export class DispatchExecutor {
         true,
       );
       if (failed.state !== "uncertain")
-        await this.provider.clearActiveMetadata(
+        await this.harness.clearActiveMetadata(
           failed,
           this.registry.getLineage(lineage.lineageId),
         );
@@ -313,10 +349,38 @@ export class DispatchExecutor {
     }
   }
 
+  private handleHarnessEvent(
+    actionId: string,
+    lineageId: string,
+    event: HarnessEvent,
+  ): void {
+    const inspection = event.inspection;
+    const lineage = this.registry.updateSession(
+      lineageId,
+      inspection.state,
+      inspection.attention,
+      inspection.lastActivityAt,
+      inspection.intervention,
+    );
+    if (event.type === "running") {
+      this.registry.markRunning(actionId);
+      void this.report(
+        payload(this.registry.get(actionId), "running"),
+        "dispatch_state",
+      );
+    }
+    void this.reportSession(this.registry.get(actionId), lineage);
+  }
+
   private async reportRunning(dispatch: DispatchRecord): Promise<void> {
     await this.report(payload(dispatch, "running"), "dispatch_state");
   }
   private async reportCompletion(dispatch: DispatchRecord): Promise<void> {
+    if (dispatch.lineageId)
+      await this.reportSession(
+        dispatch,
+        this.registry.getLineage(dispatch.lineageId),
+      );
     const acknowledged = await this.report(
       payload(dispatch, "completed"),
       "step_completed",
@@ -325,6 +389,11 @@ export class DispatchExecutor {
       this.registry.acknowledgeServerCompletion(dispatch.action.action_id);
   }
   private async reportFailure(dispatch: DispatchRecord): Promise<void> {
+    if (dispatch.lineageId)
+      await this.reportSession(
+        dispatch,
+        this.registry.getLineage(dispatch.lineageId),
+      );
     if (dispatch.state === "uncertain")
       await this.report(payload(dispatch, "uncertain"), "dispatch_state");
     else await this.report(payload(dispatch, "failed"), "step_failed");
@@ -351,8 +420,27 @@ function payload(
 function failureValue(error: unknown): Record<string, JsonValue> {
   return {
     reason: "provider_execution_failed",
+    classification: operationalFailureClassification(error),
     message: error instanceof Error ? error.message : String(error),
   };
+}
+function operationalFailureClassification(error: unknown) {
+  if (error instanceof OperationalExecutionError) return error.classification;
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code: unknown }).code)
+      : null;
+  if (["timeout", "shell_not_ready", "agent_not_ready"].includes(code ?? ""))
+    return "auto_retryable" as const;
+  if (
+    [
+      "provenance_mismatch",
+      "ownership_mismatch",
+      "incompatible_continuation_configuration",
+    ].includes(code ?? "")
+  )
+    return "terminal_not_recoverable" as const;
+  return "operator_recovery_required" as const;
 }
 function isUncertain(dispatch: DispatchRecord, _error: unknown): boolean {
   return Boolean(dispatch.promptIntentAt && dispatch.state !== "completed");
