@@ -184,13 +184,20 @@ defmodule QuestEngineering.ServerWeb.Api do
 
   defp semantic_steps(values, origins) when is_list(values) do
     values
-    |> Enum.filter(&is_binary/1)
+    |> Enum.flat_map(fn
+      value when is_binary(value) -> [value]
+      %QuestEngineering.Core.Tactics.ArtifactRef{producer: producer} -> [producer]
+      _ -> []
+    end)
     |> Enum.map(&semantic_step(&1, origins))
   end
 
   defp semantic_steps(_values, _origins), do: nil
 
   defp semantic_step(nil, _origins), do: nil
+
+  defp semantic_step(%QuestEngineering.Core.Tactics.ArtifactRef{producer: producer}, origins),
+    do: semantic_step(producer, origins)
 
   defp semantic_step(key, origins) when is_binary(key) do
     case Map.get(origins, key) do
@@ -234,10 +241,15 @@ defmodule QuestEngineering.ServerWeb.Api do
   defp maybe(map, _key, nil), do: map
   defp maybe(map, key, value), do: Map.put(map, key, value)
 
+  defp safe(%QuestEngineering.Core.Tactics.ArtifactRef{} = value), do: Map.from_struct(value)
+
+  defp safe(value) when is_map(value),
+    do: Map.new(value, fn {key, nested} -> {key, safe(nested)} end)
+
+  defp safe(value) when is_list(value), do: Enum.map(value, &safe/1)
+
   defp safe(value)
-       when is_map(value) or is_list(value) or is_binary(value) or is_number(value) or
-              is_boolean(value) or is_nil(value),
-       do: value
+       when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value), do: value
 
   defp safe(_), do: %{}
 end

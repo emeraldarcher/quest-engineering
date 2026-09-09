@@ -33,16 +33,20 @@ defmodule QuestEngineering.Server.RuntimeFixtures do
             performer: class("reviewer"),
             context: fresh(),
             consumes: ["change_set"],
-            produces: ["verdict"]
+            produces: [
+              output("verdict", "review_verdict",
+                review: review("implementation_acceptance", "change_set")
+              )
+            ]
           ),
-        condition: equals(field(artifact("verdict"), "status"), "accepted"),
+        condition: equals(field(ref("review", "verdict"), "status"), "accepted"),
         otherwise:
           work("repair",
             instruction:
               "Address the rejected verdict by changing qe-pressure.txt to contain exactly version 1 followed by a newline, preserving the existing implementation lineage, then produce an updated change_set.",
             performer: same_as("implement"),
             context: continue_from("implement"),
-            consumes: ["change_set", "verdict"],
+            consumes: [input("change_set", "change_set"), input("verdict", "review_verdict")],
             produces: ["change_set"]
           ),
         max_remediations: max_remediations
@@ -51,7 +55,14 @@ defmodule QuestEngineering.Server.RuntimeFixtures do
 
     tactic =
       if Keyword.get(options, :publish, false) do
-        sequence(children ++ [work("publish", consumes: ["change_set", "verdict"])])
+        sequence(
+          children ++
+            [
+              work("publish",
+                consumes: [input("change_set", "change_set"), input("verdict", "review_verdict")]
+              )
+            ]
+        )
       else
         sequence(children)
       end
@@ -106,6 +117,21 @@ defmodule QuestEngineering.Server.RuntimeFixtures do
       instruction: "Execute test step #{key}.",
       performer: class("builder")
     ]
+
+    options =
+      options
+      |> Keyword.update(:consumes, [], fn values ->
+        Enum.map(values, fn
+          value when is_binary(value) -> input(value, value)
+          value -> value
+        end)
+      end)
+      |> Keyword.update(:produces, [], fn values ->
+        Enum.map(values, fn
+          value when is_binary(value) -> output(value, value)
+          value -> value
+        end)
+      end)
 
     step(key, Keyword.merge(defaults, options))
   end

@@ -40,7 +40,7 @@ export function decodeExecuteAction(
     semantic_step_key: identity.semantic_step_key,
     instruction: work.step_instruction,
     inputs: work.inputs,
-    declared_outputs: work.declared_outputs,
+    declared_outputs: work.declared_outputs.map((output) => output.name),
     context_requirement: { selector: execution.context.mode, value: null },
     context_lineage_occurrence_id: execution.context.source_occurrence_id,
     ...(payload.operational_recovery === undefined
@@ -79,7 +79,7 @@ function decodeExecution(value: unknown): ResolvedExecution {
       decodeArtifact(artifact, `execution.work.inputs.${key}`),
     ]),
   );
-  const declaredOutputs = uniqueStrings(
+  const declaredOutputs = decodeOutputDeclarations(
     work.declared_outputs,
     "execution.work.declared_outputs",
   );
@@ -157,6 +157,10 @@ function decodeExecution(value: unknown): ResolvedExecution {
       ),
       inputs: decodedInputs,
       declared_outputs: declaredOutputs,
+      acceptance_contract: decodeAcceptanceContract(
+        work.acceptance_contract,
+        declaredOutputs,
+      ),
     },
     configuration: {
       model: {
@@ -202,6 +206,38 @@ function decodeExecution(value: unknown): ResolvedExecution {
         "execution.context.logical_lineage_id",
       ),
     },
+  };
+}
+
+function decodeAcceptanceContract(
+  value: unknown,
+  declaredOutputs: ResolvedExecution["work"]["declared_outputs"],
+): NonNullable<ResolvedExecution["work"]["acceptance_contract"]> | null {
+  if (value == null) return null;
+  const contract = record(value, "execution.work.acceptance_contract");
+  const output = string(
+    contract.output,
+    "execution.work.acceptance_contract.output",
+  );
+  if (!declaredOutputs.some((declaration) => declaration.name === output))
+    throw new ProtocolDecodeError(
+      "execution.work.acceptance_contract.output",
+      "must name a declared output slot",
+    );
+  return {
+    output,
+    gate_key: string(
+      contract.gate_key,
+      "execution.work.acceptance_contract.gate_key",
+    ),
+    subject_kind: string(
+      contract.subject_kind,
+      "execution.work.acceptance_contract.subject_kind",
+    ),
+    subject_artifact_id: string(
+      contract.subject_artifact_id,
+      "execution.work.acceptance_contract.subject_artifact_id",
+    ),
   };
 }
 
@@ -256,12 +292,31 @@ function decodeArtifact(value: unknown, field: string): ArtifactInstance {
     throw new ProtocolDecodeError(`${field}.value`, "must be JSON-compatible");
   return {
     id: string(artifact.id, `${field}.id`),
-    type: string(artifact.type, `${field}.type`),
+    kind: string(artifact.kind, `${field}.kind`),
+    output_name: string(artifact.output_name, `${field}.output_name`),
     producer_occurrence_id: string(
       artifact.producer_occurrence_id,
       `${field}.producer_occurrence_id`,
     ),
     value: artifact.value,
+    version:
+      artifact.version == null
+        ? null
+        : positiveInteger(artifact.version, `${field}.version`),
+    supersedes_artifact_id: optionalNullableString(
+      artifact.supersedes_artifact_id,
+      `${field}.supersedes_artifact_id`,
+    ),
+    content_hash: optionalNullableString(
+      artifact.content_hash,
+      `${field}.content_hash`,
+    ),
+    media_type: optionalNullableString(
+      artifact.media_type,
+      `${field}.media_type`,
+    ),
+    filename: optionalNullableString(artifact.filename, `${field}.filename`),
+    title: optionalNullableString(artifact.title, `${field}.title`),
   };
 }
 
@@ -279,6 +334,10 @@ function nullableString(value: unknown, field: string): string | null {
   if (value === null) return null;
   return string(value, field);
 }
+function optionalNullableString(value: unknown, field: string): string | null {
+  if (value == null) return null;
+  return string(value, field);
+}
 function positiveInteger(value: unknown, field: string): number {
   if (!Number.isInteger(value) || Number(value) <= 0)
     throw new ProtocolDecodeError(field, "must be a positive integer");
@@ -289,6 +348,24 @@ function nonNegativeInteger(value: unknown, field: string): number {
     throw new ProtocolDecodeError(field, "must be a non-negative integer");
   return Number(value);
 }
+function decodeOutputDeclarations(
+  value: unknown,
+  field: string,
+): ResolvedExecution["work"]["declared_outputs"] {
+  if (!Array.isArray(value))
+    throw new ProtocolDecodeError(field, "must be an array");
+  const outputs = value.map((item, index) => {
+    const output = record(item, `${field}.${index}`);
+    return {
+      name: string(output.name, `${field}.${index}.name`),
+      kind: string(output.kind, `${field}.${index}.kind`),
+    };
+  });
+  if (new Set(outputs.map((output) => output.name)).size !== outputs.length)
+    throw new ProtocolDecodeError(field, "must contain unique output names");
+  return outputs;
+}
+
 function uniqueStrings(value: unknown, field: string): string[] {
   if (!Array.isArray(value))
     throw new ProtocolDecodeError(field, "must be an array");

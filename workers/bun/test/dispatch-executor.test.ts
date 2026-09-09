@@ -57,12 +57,13 @@ function reviewAction(id = "review-action") {
         inputs: {
           change_set: {
             id: "change-set-1",
-            type: "change_set",
+            kind: "change_set",
+            output_name: "input",
             producer_occurrence_id: "occurrence-1",
             value: { files: ["human-picked.txt"] },
           },
         },
-        declared_outputs: ["verdict"],
+        declared_outputs: [{ name: "verdict", kind: "review_verdict" }],
       },
       context: {
         mode: "fresh",

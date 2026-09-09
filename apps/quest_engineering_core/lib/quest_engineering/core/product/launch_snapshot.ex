@@ -176,7 +176,7 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
   alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.Tactics.PerformerRequirement
 
-  @schema_version 3
+  @schema_version 4
 
   @spec build(Quest.t(), Workspace.t(), Squad.t(), [Class.t()], [Loadout.t()], Catalog.t()) ::
           {:ok, LaunchSnapshot.t()} | {:error, [ValidationError.t()]}
@@ -197,7 +197,7 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
 
     with [] <- errors,
          {:ok, resolution} <- TacticResolver.resolve(quest.tactic_source, catalog),
-         {:ok, plan} <- compile(resolution.tactic),
+         {:ok, plan} <- compile(resolution),
          [] <- satisfiability_errors(plan, squad, classes) do
       {:ok, snapshot(quest, workspace, squad, classes, loadouts, resolution, plan)}
     else

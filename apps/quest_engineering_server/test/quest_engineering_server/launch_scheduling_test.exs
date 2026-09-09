@@ -451,9 +451,9 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
             name: "Review",
             performer: class("reviewer"),
             instruction: "Review.",
-            produces: [artifact("verdict")]
+            produces: [output("verdict", "check_result")]
           ),
-        condition: equals(field(artifact("verdict", from: "review"), "status"), "accepted"),
+        condition: equals(field(ref("review", "verdict"), "status"), "accepted"),
         otherwise:
           step("repair",
             name: "Repair",
@@ -519,15 +519,15 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
           performer: class("builder"),
           context: fresh(),
           instruction: forced_takeover,
-          produces: [artifact("change_set")]
+          produces: [output("change_set", "change_set")]
         ),
         step("review",
           name: "Review",
           performer: class("reviewer"),
           context: fresh(),
           instruction: review_instruction,
-          consumes: [artifact("change_set", from: "implement")],
-          produces: [artifact("verdict")]
+          consumes: [input("change_set", "change_set", from: ref("implement", "change_set"))],
+          produces: [output("verdict", "check_result")]
         )
       ])
 

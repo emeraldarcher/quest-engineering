@@ -2,10 +2,15 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
   use QuestEngineering.Server.DataCase, async: false
 
   import Kernel, except: [use: 2]
-  import QuestEngineering.Core.Product.TacticAuthoring, only: [use: 2]
+  import QuestEngineering.Core.Product.TacticAuthoring, only: [use: 2, use: 3]
   import QuestEngineering.Core.Tactics
 
+  alias QuestEngineering.Core.Product.AcceptedArtifactSource
   alias QuestEngineering.Core.Product.ModelRef
+  alias QuestEngineering.Core.Product.TacticInputBinding
+  alias QuestEngineering.Core.Product.TacticInputPort
+  alias QuestEngineering.Core.Product.TacticInterface
+  alias QuestEngineering.Core.Product.TacticOutputPort
   alias QuestEngineering.Core.Product.TacticPreview.Error, as: PreviewError
   alias QuestEngineering.Core.Product.TacticSource
   alias QuestEngineering.Server.Persistence.ProductTactic
@@ -21,10 +26,8 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
     assert {:ok, resolution} = TacticLibrary.resolve_definition(child.id)
     assert resolution.tactic.key == "implement"
 
-    assert {:error, %PreviewError{stage: :compilation, errors: errors}} =
-             TacticLibrary.preview_definition(child.id)
-
-    assert Enum.all?(errors, &(&1.type == :missing_artifact))
+    assert {:ok, child_preview} = TacticLibrary.preview_definition(child.id)
+    assert hd(child_preview.execution_plan.artifact_bindings).producer == ref("$inputs", "plan")
 
     assert {:ok, parent} =
              TacticLibrary.create(%{
@@ -36,9 +39,11 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
                      name: "Plan",
                      instruction: "Plan.",
                      performer: class("builder"),
-                     produces: ["plan"]
+                     produces: [output("plan", "plan")]
                    ),
-                   use("implementation", child.id)
+                   use("implementation", child.id, [
+                     %TacticInputBinding{input: "plan", source: ref("plan", "plan")}
+                   ])
                  ])
              })
 
@@ -190,6 +195,25 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
     assert new_snapshot.tactic.instruction == "Changed work."
   end
 
+  test "interface codec round-trips typed ports and accepted-subject exports" do
+    interface = %TacticInterface{
+      inputs: [
+        %TacticInputPort{key: "plan", label: "Quest Plan", kind: "quest_plan", required: false}
+      ],
+      outputs: [
+        %TacticOutputPort{
+          key: "accepted_plan",
+          label: "Accepted Quest Plan",
+          kind: "quest_plan",
+          source: %AcceptedArtifactSource{gate_key: "plan_acceptance"}
+        }
+      ]
+    }
+
+    assert {:ok, ^interface} =
+             interface |> TacticCodec.encode_interface() |> TacticCodec.decode_interface()
+  end
+
   test "authoring codec explicitly round-trips Use values" do
     value = use("backend", Ecto.UUID.generate())
     encoded = TacticCodec.encode(value)
@@ -207,9 +231,12 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
           name: "Implement",
           instruction: "Implement from the parent plan.",
           performer: class("builder"),
-          consumes: ["plan"],
-          produces: ["change-set"]
-        )
+          consumes: [input("plan", "plan", from: ref("$inputs", "plan"))],
+          produces: [output("change_set", "change_set")]
+        ),
+      interface: %TacticInterface{
+        inputs: [%TacticInputPort{key: "plan", label: "Plan", kind: "plan", required: true}]
+      }
     }
   end
 

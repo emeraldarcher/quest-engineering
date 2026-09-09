@@ -1,37 +1,41 @@
 defmodule QuestEngineering.Core.ExecutionPlan do
-  @moduledoc """
-  Deterministic static output of semantic tactic compilation.
-
-  Ordinary dependencies remain static and acyclic. Dynamic check/remediate
-  repetition is retained in `control_regions`; it is never lowered to graph
-  cycles. Dependencies may address a control-region reference, whose completion
-  (rather than any one repeated step execution) gates following static work.
-  """
+  @moduledoc "Deterministic static execution specification with named, typed artifact bindings."
 
   alias QuestEngineering.Core.ExecutionPlan.ArtifactBinding
   alias QuestEngineering.Core.ExecutionPlan.ControlDependency
   alias QuestEngineering.Core.ExecutionPlan.Step
+  alias QuestEngineering.Core.ExecutionPlan.TacticOutput
   alias QuestEngineering.Core.ExecutionPlan.UntilRegion
 
   @enforce_keys [:steps, :control_dependencies, :artifact_bindings, :control_regions]
-  defstruct [:steps, :control_dependencies, :artifact_bindings, :control_regions]
+  defstruct [
+    :steps,
+    :control_dependencies,
+    :artifact_bindings,
+    :control_regions,
+    tactic_outputs: []
+  ]
 
   @type t :: %__MODULE__{
           steps: [Step.t()],
           control_dependencies: [ControlDependency.t()],
           artifact_bindings: [ArtifactBinding.t()],
-          control_regions: [UntilRegion.t()]
+          control_regions: [UntilRegion.t()],
+          tactic_outputs: [TacticOutput.t()]
         }
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.Step do
-  @moduledoc "Static executable step metadata retained in a compiled plan."
+  @moduledoc "Static executable Step metadata."
+  alias QuestEngineering.Core.Tactics.{
+    ArtifactInput,
+    ArtifactOutput,
+    ContextRequirement,
+    PerformerRequirement
+  }
 
-  alias QuestEngineering.Core.Tactics.ContextRequirement
-  alias QuestEngineering.Core.Tactics.PerformerRequirement
-
-  @enforce_keys [:key, :name, :instruction, :performer, :context, :produces]
-  defstruct [:key, :name, :instruction, :performer, :context, :produces]
+  @enforce_keys [:key, :name, :instruction, :performer, :context, :consumes, :produces]
+  defstruct [:key, :name, :instruction, :performer, :context, :consumes, :produces]
 
   @type t :: %__MODULE__{
           key: String.t(),
@@ -39,65 +43,60 @@ defmodule QuestEngineering.Core.ExecutionPlan.Step do
           instruction: String.t(),
           performer: PerformerRequirement.t(),
           context: ContextRequirement.t(),
-          produces: [String.t()]
+          consumes: [ArtifactInput.t()],
+          produces: [ArtifactOutput.t()]
         }
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.ControlRegionReference do
-  @moduledoc "A deterministic static dependency endpoint for a dynamic control region."
-
+  @moduledoc false
   @enforce_keys [:id]
   defstruct [:id]
-
   @type t :: %__MODULE__{id: String.t()}
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.ControlDependency do
-  @moduledoc "A static ordering requirement between steps or a control-region boundary."
-
+  @moduledoc false
   alias QuestEngineering.Core.ExecutionPlan.ControlRegionReference
-
   @enforce_keys [:prerequisite, :dependent]
   defstruct [:prerequisite, :dependent]
-
   @type endpoint :: String.t() | ControlRegionReference.t()
   @type t :: %__MODULE__{prerequisite: endpoint(), dependent: endpoint()}
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.UntilOutput do
-  @moduledoc "A dynamic artifact value exposed when an Until region completes."
-
-  @enforce_keys [:region, :type, :kind, :producer]
-  defstruct [:region, :type, :kind, :producer]
+  @moduledoc "An existing artifact reference exposed when an Until completes."
+  @enforce_keys [:region, :name, :kind, :source_kind, :producer]
+  defstruct [:region, :name, :kind, :source_kind, :producer]
 
   @type t :: %__MODULE__{
           region: String.t(),
-          type: String.t(),
-          kind: :check | :carried,
-          producer: String.t() | t() | nil
+          name: String.t(),
+          kind: String.t(),
+          source_kind: :check | :carried,
+          producer: QuestEngineering.Core.Tactics.ArtifactRef.t() | t() | nil
         }
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.ArtifactBinding do
-  @moduledoc "A resolved fixed input source outside loop-carried region inputs."
-
+  @moduledoc "A resolved exact source for one named Step input."
   alias QuestEngineering.Core.ExecutionPlan.UntilOutput
-
-  @enforce_keys [:consumer, :type, :producer]
-  defstruct [:consumer, :type, :producer]
-
+  alias QuestEngineering.Core.Tactics.ArtifactRef
+  @enforce_keys [:consumer, :input, :kind, :producer]
+  defstruct [:consumer, :input, :kind, :producer, :required]
+  @type producer :: ArtifactRef.t() | UntilOutput.t()
   @type t :: %__MODULE__{
           consumer: String.t(),
-          type: String.t(),
-          producer: String.t() | UntilOutput.t()
+          input: String.t(),
+          kind: String.t(),
+          producer: producer(),
+          required: boolean()
         }
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.ControlSubtree do
-  @moduledoc "Static shape of one phase nested in a dynamic control region."
-
+  @moduledoc false
   alias QuestEngineering.Core.ExecutionPlan.ControlDependency
-
   @enforce_keys [:entries, :exits, :step_keys, :control_dependencies, :control_regions]
   defstruct [:entries, :exits, :step_keys, :control_dependencies, :control_regions]
 
@@ -111,80 +110,81 @@ defmodule QuestEngineering.Core.ExecutionPlan.ControlSubtree do
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.ConditionBinding do
-  @moduledoc "The check-local producer bound to an Until condition."
-
-  @enforce_keys [:artifact_type, :producer, :field, :operator, :value]
-  defstruct [:artifact_type, :producer, :field, :operator, :value]
-
+  @moduledoc "The exact check-local output evaluated by an Until."
+  alias QuestEngineering.Core.Tactics.ArtifactRef
+  @enforce_keys [:kind, :producer, :field, :operator, :value]
+  defstruct [:kind, :producer, :field, :operator, :value]
   @type literal :: String.t() | integer() | float() | boolean() | nil
   @type t :: %__MODULE__{
-          artifact_type: String.t(),
-          producer: String.t(),
+          kind: String.t(),
+          producer: ArtifactRef.t(),
           field: String.t(),
           operator: :equals,
           value: literal()
         }
 end
 
-defmodule QuestEngineering.Core.ExecutionPlan.RegionArtifactBinding do
-  @moduledoc "A phase input read from an Until region's current carried value."
+defmodule QuestEngineering.Core.ExecutionPlan.InputEndpoint do
+  @moduledoc false
+  @enforce_keys [:step, :input]
+  defstruct [:step, :input]
+  @type t :: %__MODULE__{step: String.t(), input: String.t()}
+end
 
-  @enforce_keys [:consumer, :type, :phase, :source]
-  defstruct [:consumer, :type, :phase, :source]
+defmodule QuestEngineering.Core.ExecutionPlan.RegionArtifactBinding do
+  @moduledoc "A named phase input read from the current loop-carried artifact."
+  @enforce_keys [:consumer, :input, :kind, :phase, :source]
+  defstruct [:consumer, :input, :kind, :phase, :source]
 
   @type t :: %__MODULE__{
           consumer: String.t(),
-          type: String.t(),
+          input: String.t(),
+          kind: String.t(),
           phase: :check | :otherwise,
           source: :current
         }
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.ArtifactCarry do
-  @moduledoc "A semantic artifact value evolved by an Until remediation."
-
-  alias QuestEngineering.Core.ExecutionPlan.UntilOutput
+  @moduledoc "One semantic artifact kind evolved by an Until remediation."
+  alias QuestEngineering.Core.ExecutionPlan.{InputEndpoint, UntilOutput}
+  alias QuestEngineering.Core.Tactics.ArtifactRef
 
   @enforce_keys [
-    :type,
+    :kind,
     :initial_producer,
     :remediation_producer,
     :check_consumers,
     :otherwise_consumers
   ]
   defstruct [
-    :type,
+    :kind,
     :initial_producer,
     :remediation_producer,
     :check_consumers,
     :otherwise_consumers
   ]
 
-  @type producer :: String.t() | UntilOutput.t()
+  @type producer :: ArtifactRef.t() | UntilOutput.t()
   @type t :: %__MODULE__{
-          type: String.t(),
+          kind: String.t(),
           initial_producer: producer(),
           remediation_producer: producer(),
-          check_consumers: [String.t()],
-          otherwise_consumers: [String.t()]
+          check_consumers: [InputEndpoint.t()],
+          otherwise_consumers: [InputEndpoint.t()]
         }
 end
 
 defmodule QuestEngineering.Core.ExecutionPlan.UntilRegion do
-  @moduledoc """
-  Compiled check-first bounded repetition.
+  @moduledoc "Compiled check-first bounded semantic remediation."
+  alias QuestEngineering.Core.ExecutionPlan.{
+    ArtifactCarry,
+    ConditionBinding,
+    ControlSubtree,
+    RegionArtifactBinding,
+    UntilOutput
+  }
 
-  A future runtime enters `check`, evaluates `condition_binding`, completes on
-  equality, or runs `otherwise` while remediation budget remains. The model
-  records exhaustion at the boundary (the budget can be depleted while the
-  condition is unsatisfied) but deliberately assigns no runtime failure policy.
-  """
-
-  alias QuestEngineering.Core.ExecutionPlan.ArtifactCarry
-  alias QuestEngineering.Core.ExecutionPlan.ConditionBinding
-  alias QuestEngineering.Core.ExecutionPlan.ControlSubtree
-  alias QuestEngineering.Core.ExecutionPlan.RegionArtifactBinding
-  alias QuestEngineering.Core.ExecutionPlan.UntilOutput
   alias QuestEngineering.Core.Tactics.Condition
 
   @enforce_keys [
@@ -209,7 +209,9 @@ defmodule QuestEngineering.Core.ExecutionPlan.UntilRegion do
     :max_remediations,
     :artifact_bindings,
     :artifact_carries,
-    :outputs
+    :outputs,
+    :acceptance_gate_key,
+    :acceptance_subject_kind
   ]
 
   @type t :: %__MODULE__{
@@ -222,6 +224,23 @@ defmodule QuestEngineering.Core.ExecutionPlan.UntilRegion do
           max_remediations: pos_integer(),
           artifact_bindings: [RegionArtifactBinding.t()],
           artifact_carries: [ArtifactCarry.t()],
-          outputs: [UntilOutput.t()]
+          outputs: [UntilOutput.t()],
+          acceptance_gate_key: String.t() | nil,
+          acceptance_subject_kind: String.t() | nil
+        }
+end
+
+defmodule QuestEngineering.Core.ExecutionPlan.TacticOutput do
+  @moduledoc "A declared root Tactic export mapped to an existing immutable artifact source."
+  alias QuestEngineering.Core.ExecutionPlan.UntilOutput
+  alias QuestEngineering.Core.Tactics.ArtifactRef
+  @enforce_keys [:key, :label, :kind, :producer]
+  defstruct [:key, :label, :kind, :producer]
+
+  @type t :: %__MODULE__{
+          key: String.t(),
+          label: String.t(),
+          kind: String.t(),
+          producer: ArtifactRef.t() | UntilOutput.t()
         }
 end

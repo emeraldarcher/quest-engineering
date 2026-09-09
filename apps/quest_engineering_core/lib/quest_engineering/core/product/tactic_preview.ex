@@ -48,7 +48,7 @@ defmodule QuestEngineering.Core.Product.TacticPreview do
   end
 
   defp compile(resolution) do
-    case Compiler.compile(resolution.tactic) do
+    case Compiler.compile_for_definition(resolution) do
       {:ok, plan} ->
         {:ok,
          %Result{

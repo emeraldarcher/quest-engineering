@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 5 as const;
+export const WORKER_PROTOCOL_VERSION = 6 as const;
 
 export type JsonValue =
   | string
@@ -10,9 +10,28 @@ export type JsonValue =
 
 export interface ArtifactInstance {
   id: string;
-  type: string;
+  kind: string;
+  output_name?: string;
   producer_occurrence_id: string;
   value: JsonValue;
+  version?: number | null;
+  supersedes_artifact_id?: string | null;
+  content_hash?: string | null;
+  media_type?: string | null;
+  filename?: string | null;
+  title?: string | null;
+}
+
+export interface ArtifactOutputDeclaration {
+  name: string;
+  kind: string;
+}
+
+export interface AcceptanceContract {
+  output: string;
+  gate_key: string;
+  subject_kind: string;
+  subject_artifact_id: string;
 }
 
 export type Reasoning = "low" | "medium" | "high";
@@ -38,7 +57,8 @@ export interface ResolvedExecution {
     class_instructions: string;
     step_instruction: string;
     inputs: Record<string, ArtifactInstance>;
-    declared_outputs: string[];
+    declared_outputs: ArtifactOutputDeclaration[];
+    acceptance_contract?: AcceptanceContract | null;
   };
   configuration: {
     model: { provider: string; model: string };
@@ -62,7 +82,7 @@ export interface ResolvedExecution {
   };
 }
 
-/** v4 wire message plus normalized identity aliases used by durable internals. */
+/** v6 wire message plus normalized identity aliases used by durable internals. */
 export interface OperationalRecoveryExecution {
   epoch_number: number;
   attempt_in_epoch: number;

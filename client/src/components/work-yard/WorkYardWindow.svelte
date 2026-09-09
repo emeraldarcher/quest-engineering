@@ -17,15 +17,18 @@ import {
   artifactPreview,
   artifactProducer,
   artifactTypeLabel,
+  acceptedPlan,
   canCleanUp,
   canRunAgain,
   currentReviewResult,
   deliveryPresentation,
   diagnosticPresentation,
+  documentContent,
   executionPresentation,
   formatLaunchTime,
   friendlyArtifact,
   humanize,
+  implementationPlanInput,
   latestReviewArtifact,
   questPresentation,
   runProgress,
@@ -91,6 +94,7 @@ $: workspace = run
   : null;
 $: questStatus = run ? questPresentation(run, quest) : null;
 $: reviewResult = run ? currentReviewResult(run) : null;
+$: currentAcceptedPlan = run ? acceptedPlan(run) : null;
 $: uncertainStep = run?.steps.find((step) => step.recovery !== null) ?? null;
 $: sessionSteps = uniqueSessionSteps(run?.steps ?? []);
 $: localAttachAvailable = canOpenLocalLiveSession();
@@ -158,6 +162,24 @@ onMount(async () => {
 async function selectRun(id: string) {
   if (id === run?.id) return;
   await store.selectRun(id);
+}
+
+function planHistoryFor(artifactId: string) {
+  return run?.planning?.history.find((entry) => entry.artifact_id === artifactId) ?? null;
+}
+
+function planFindings(artifactId: string): string | null {
+  const findings = planHistoryFor(artifactId)?.findings;
+  if (typeof findings === "string") return findings;
+  if (Array.isArray(findings) && findings.every((item) => typeof item === "string"))
+    return findings.map((item) => `• ${item}`).join("\n");
+  return findings == null ? null : JSON.stringify(findings, null, 2);
+}
+
+function planReviewer(artifactId: string): string | null {
+  const verdictId = planHistoryFor(artifactId)?.verdict_artifact_id;
+  const verdict = verdictId ? run?.artifacts.find((item) => item.id === verdictId) : null;
+  return verdict && run ? artifactProducer(verdict, run.steps) : null;
 }
 
 function selectMember(member: SnapshotMember) {
@@ -512,6 +534,10 @@ function attemptOutput(attempt: RunAttempt): string {
                 </section>
               {/if}
 
+              {#if currentAcceptedPlan}
+                <section class="accepted-plan-summary"><div><span class="eyebrow">Accepted plan</span><h3>{currentAcceptedPlan.title ?? "Quest Plan"}{currentAcceptedPlan.version ? ` v${currentAcceptedPlan.version}` : ""}</h3><p>The implementation is bound to this exact immutable specification.</p></div><button on:click={() => { tab = "artifacts"; void selectArtifact(currentAcceptedPlan); }}>View Plan</button></section>
+              {/if}
+
               <div class="overview-grid">
                 <section class="overview-section team-section">
                   <span class="eyebrow">Team</span>
@@ -552,7 +578,7 @@ function attemptOutput(attempt: RunAttempt): string {
             <section class="timeline-section" aria-labelledby="timeline-title">
               <div class="section-heading"><div><span class="eyebrow">Semantic Step occurrences</span><h3 id="timeline-title">Timeline</h3></div><span>{run.step_counts.completed} of {totalSteps(run.step_counts)} completed</span></div>
               {#each run.semantic_remediation ?? [] as remediation}
-                <p class="authority-note"><strong>{remediation.review_shaped ? "Review / remediation" : "Bounded iteration"}</strong> · {remediation.remediations_completed} of {remediation.maximum_remediations} {remediation.review_shaped ? "repairs" : "remediations"} used{remediation.status === "exhausted" ? " · Allowance exhausted" : ""}</p>
+                <p class="authority-note"><strong>{remediation.remediation_kind === "plan_revision" ? "Plan review / revision" : remediation.remediation_kind === "implementation_repair" || remediation.review_shaped ? "Code review / repair" : "Bounded iteration"}</strong> · {remediation.remediations_completed} of {remediation.maximum_remediations} {remediation.remediation_kind === "plan_revision" ? "plan revisions" : remediation.remediation_kind === "implementation_repair" || remediation.review_shaped ? "repairs" : "remediations"} used{remediation.status === "exhausted" ? " · Allowance exhausted" : ""}</p>
               {/each}
               {#each (run.operational_recovery ?? []).filter((epoch) => epoch.authorization_kind === "human") as epoch}
                 <p class="authority-note"><strong>Human recovery {epoch.epoch_number}</strong> · Fresh allowance: {epoch.attempt_allowance ?? "historical policy unknown"}{epoch.attempts_scheduled === 0 ? " · Authorized, waiting for scheduling resources" : ` · ${epoch.attempts_scheduled} ${epoch.attempts_scheduled === 1 ? "Attempt" : "Attempts"} scheduled`}</p>
@@ -566,6 +592,9 @@ function attemptOutput(attempt: RunAttempt): string {
                     <div class="timeline-copy">
                       <div class="timeline-title"><h4>{stepDisplayName(run.steps, index)}</h4><span class="tone-text-{stepStatus.tone}">{outcome ?? stepStatus.label}{#if step.attempt && step.attempt.number > 1} · Attempt {step.attempt.number}{/if}</span></div>
                       {#if step.member}<p><strong>{step.member.name}</strong> · {step.member.class.name} <span aria-hidden="true">·</span> {step.member.loadout.name}</p>{/if}
+                      {#if implementationPlanInput(step, run.artifacts)}
+                        <p class="based-on"><strong>Based on:</strong> {implementationPlanInput(step, run.artifacts)?.title ?? "Quest Plan"}{implementationPlanInput(step, run.artifacts)?.version ? ` v${implementationPlanInput(step, run.artifacts)?.version}` : ""}{implementationPlanInput(step, run.artifacts)?.id && planReviewer(implementationPlanInput(step, run.artifacts)?.id ?? "") ? ` · Accepted by ${planReviewer(implementationPlanInput(step, run.artifacts)?.id ?? "")}` : ""}</p>
+                      {/if}
                       {#if step.issue}<p class="step-issue">{step.issue.message}</p>{/if}
                       {#if step.session}<p class="step-session"><strong>{step.session.harness.display_name}</strong> · {sessionControlLabel(step)} · {step.session.worker.display_name}</p>{/if}
                       {#if step.inputs.length || step.outputs.length}
@@ -604,7 +633,7 @@ function attemptOutput(attempt: RunAttempt): string {
                     {#each run.artifacts as item}
                       <button class:selected={selectedArtifactId === item.id} on:click={() => selectArtifact(item)}>
                         <span class="artifact-glyph" aria-hidden="true">◇</span>
-                        <span><strong>{artifactTypeLabel(item.type)}</strong><small>{artifactPreview(item)}</small><em>{artifactProducer(item, run.steps)}</em></span>
+                        <span><strong>{item.title ?? artifactTypeLabel(item.type)}{item.type === "quest_plan" && item.version ? ` v${item.version}` : ""}</strong><small>{artifactPreview(item)}{#if item.type === "quest_plan"}{planHistoryFor(item.id)?.status ? ` · ${humanize(planHistoryFor(item.id)?.status ?? "")}` : " · Awaiting review"}{/if}</small><em>{artifactProducer(item, run.steps)}</em></span>
                       </button>
                     {/each}
                   </div>
@@ -612,10 +641,15 @@ function attemptOutput(attempt: RunAttempt): string {
                     {#if artifactLoading}<p class="detail-placeholder">Loading artifact…</p>
                     {:else if selectedArtifact}
                       <span class="eyebrow">Artifact detail</span>
-                      <h3>{artifactTypeLabel(selectedArtifact.type)}</h3>
+                      <h3>{selectedArtifact.title ?? artifactTypeLabel(selectedArtifact.type)}{selectedArtifact.type === "quest_plan" && selectedArtifact.version ? ` v${selectedArtifact.version}` : ""}</h3>
                       <p class="provenance">Produced by {artifactProducer(selectedArtifact, run.steps)}</p>
+                      {#if selectedArtifact.type === "quest_plan"}
+                        <p class="plan-status tone-text-{planHistoryFor(selectedArtifactId ?? "")?.status === "accepted" ? "success" : planHistoryFor(selectedArtifactId ?? "")?.status === "rejected" ? "danger" : "neutral"}"><strong>{planHistoryFor(selectedArtifactId ?? "")?.status ? humanize(planHistoryFor(selectedArtifactId ?? "")?.status ?? "") : "Awaiting review"}</strong>{planReviewer(selectedArtifactId ?? "") ? ` · Reviewed by ${planReviewer(selectedArtifactId ?? "")}` : ""}</p>
+                      {/if}
                       {#if selectedArtifact.type === "change_set"}<p class="authority-note"><strong>Agent-reported output.</strong> Delivery uses separate Worker and repository evidence for publishing.</p>{/if}
-                      {#if friendlyArtifact(selectedArtifact).length}
+                      {#if planFindings(selectedArtifactId ?? "")}<aside class="plan-findings"><strong>Review findings</strong><pre>{planFindings(selectedArtifactId ?? "")}</pre></aside>{/if}
+                      {#if documentContent(selectedArtifact)}<article class="document-view"><pre>{documentContent(selectedArtifact)}</pre></article>{/if}
+                      {#if !documentContent(selectedArtifact) && friendlyArtifact(selectedArtifact).length}
                         <dl class="artifact-fields">
                           {#each friendlyArtifact(selectedArtifact) as field}<div><dt>{field.label}</dt><dd>{field.value}</dd></div>{/each}
                         </dl>
@@ -745,6 +779,9 @@ function attemptOutput(attempt: RunAttempt): string {
   .session-copy blockquote { color:#7b443b; font-style:italic; }
   .session-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
   .step-session { padding:.3rem .45rem; background:#e8f2df; border-radius:5px; }
+  .accepted-plan-summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; padding: .9rem 1rem; background: #edf6e7; border: 1px solid #9fb995; border-radius: 9px; }
+  .accepted-plan-summary h3, .accepted-plan-summary p { margin: .15rem 0; }
+  .accepted-plan-summary button { flex: 0 0 auto; }
   .overview-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(15rem, .75fr); gap: 1rem; }
   .overview-section { min-width: 0; padding: .95rem; background: #fff9e9; border: 1px solid #d8bd91; border-radius: 10px; }
   .overview-section > h3 { margin-bottom: .65rem; }
@@ -796,6 +833,12 @@ function attemptOutput(attempt: RunAttempt): string {
   .artifact-glyph { color: var(--app-teal); font-size: 1.3rem; }
   .artifact-detail { min-width: 0; padding: 1rem; background: #fff9e9; }
   .artifact-detail .provenance { margin: .2rem 0 1rem; color: var(--app-muted); font-size: .8rem; }
+  .plan-status { padding: .5rem .65rem; background: #f2ead3; border-radius: 6px; }
+  .plan-findings { margin: .7rem 0; padding: .65rem; color: #6f4238; background: #f8e1d5; border-left: 4px solid #b76857; }
+  .plan-findings pre { margin: .35rem 0 0; white-space: pre-wrap; font: inherit; }
+  .document-view { margin: .8rem 0; padding: 1rem; background: #fffdf7; border: 1px solid #dbc7a4; border-radius: 8px; }
+  .document-view pre { margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #293b39; font: 400 .9rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .based-on { padding: .3rem .5rem; background: #eef5e7; border-left: 3px solid #668a6f; }
   .detail-placeholder { display: grid; min-height: 18rem; place-items: center; align-content: center; color: var(--app-muted); text-align: center; }
   .detail-placeholder span { color: var(--app-teal); font-size: 2rem; }
   .detail-placeholder h3 { margin: .45rem 0 .15rem; }

@@ -11,6 +11,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Core.ResolvedExecution.Performer
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
+  alias QuestEngineering.Core.Tactics.ArtifactOutput
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
@@ -18,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v5 logical Workspace bindings" do
+  test "accepts explicit protocol v6 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -54,7 +55,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes authoritative Delivery evidence messages" do
     payload = %{
       "type" => "run_delivery_inspected",
-      "protocol_version" => 5,
+      "protocol_version" => 6,
       "worker_id" => @worker_id,
       "delivery" => %{
         "delivery_id" => Ecto.UUID.generate(),
@@ -81,7 +82,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "accepts uncertain reconciliation only with structured failure" do
     payload = %{
       "type" => "dispatch_state",
-      "protocol_version" => 5,
+      "protocol_version" => 6,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -96,7 +97,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "normalizes classified failures and validates retained recovery requests" do
     failed = %{
       "type" => "step_failed",
-      "protocol_version" => 5,
+      "protocol_version" => 6,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -114,7 +115,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     recovery = %{
       "type" => "human_recovery_requested",
-      "protocol_version" => 5,
+      "protocol_version" => 6,
       "worker_id" => @worker_id,
       "recovery" => %{
         "request_id" => "request",
@@ -136,7 +137,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes Product-safe harness session and structured attention state" do
     payload = %{
       "type" => "session_state",
-      "protocol_version" => 5,
+      "protocol_version" => 6,
       "worker_id" => @worker_id,
       "session" => %{
         "session_id" => "session-1",
@@ -220,7 +221,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     encoded = WorkerProtocol.execute_action(@worker_id, execution())
     wire = encoded["execution"]
 
-    assert encoded["protocol_version"] == 5
+    assert encoded["protocol_version"] == 6
     assert wire["configuration"]["model"] == %{"provider" => "fake", "model" => "test"}
 
     assert wire["logical_workspace"] == %{
@@ -257,12 +258,13 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         inputs: %{
           "plan" => %ArtifactInstance{
             id: "artifact",
-            type: "plan",
+            kind: "quest_plan",
+            output_name: "plan",
             producer_occurrence_id: "plan-occurrence",
             value: %{"summary" => "ship"}
           }
         },
-        declared_outputs: ["change_set"]
+        declared_outputs: [%ArtifactOutput{name: "change_set", kind: "change_set"}]
       },
       configuration: %Configuration{
         model: %ModelRef{provider: "fake", model: "test"},
@@ -287,7 +289,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   defp hello do
     %{
       "type" => "worker_hello",
-      "protocol_version" => 5,
+      "protocol_version" => 6,
       "worker_id" => @worker_id,
       "capabilities" => %{
         "os" => "test",

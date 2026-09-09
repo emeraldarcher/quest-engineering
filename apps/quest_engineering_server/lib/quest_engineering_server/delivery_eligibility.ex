@@ -1,47 +1,34 @@
 defmodule QuestEngineering.Server.DeliveryEligibility do
-  @moduledoc """
-  Server-side semantic acceptance gate for post-Run Delivery.
-
-  A Tactic declares review gating by producing a `verdict` artifact. Such a Run
-  is eligible only when the latest completed verdict-producing semantic
-  occurrence emitted a valid structured accepted verdict.
-  """
+  @moduledoc "Delivery requires exact implementation acceptance of the exact Change Set being published."
 
   alias QuestEngineering.Core.ReviewVerdict
   alias QuestEngineering.Core.Runtime.Run
   alias QuestEngineering.Server.RuntimeStore
 
+  @publication_subject "change_set"
+  @publication_gate "implementation_acceptance"
   @type status :: :not_required | :accepted | :rejected | :missing | :invalid
-  @type assessment :: %{
-          required: boolean(),
-          status: status(),
-          occurrence_id: String.t() | nil,
-          attempt_id: String.t() | nil,
-          artifact_id: String.t() | nil
-        }
 
-  @spec assess(Run.t()) :: assessment()
+  @spec assess(Run.t()) :: map()
   def assess(%Run{} = run) do
-    review_keys =
-      run.plan.steps
-      |> Enum.filter(&("verdict" in &1.produces))
-      |> MapSet.new(& &1.key)
+    contracts = implementation_contracts(run)
 
-    if MapSet.size(review_keys) == 0 do
-      assessment(false, :not_required)
-    else
-      assess_latest_verdict(run, review_keys)
+    change_set_work? =
+      Enum.any?(run.plan.steps, fn step ->
+        Enum.any?(step.produces, &(&1.kind == @publication_subject))
+      end)
+
+    cond do
+      not change_set_work? -> assessment(false, :not_required)
+      contracts == [] -> assessment(true, :missing)
+      true -> assess_latest(run, contracts)
     end
   end
 
-  @spec check(String.t()) :: {:ok, assessment()} | {:error, assessment() | term()}
   def check(run_id) when is_binary(run_id) do
-    with {:ok, %{run: run}} <- RuntimeStore.fetch_run(run_id) do
-      check(run)
-    end
+    with {:ok, %{run: run}} <- RuntimeStore.fetch_run(run_id), do: check(run)
   end
 
-  @spec check(Run.t()) :: {:ok, assessment()} | {:error, assessment()}
   def check(%Run{status: :completed} = run) do
     case assess(run) do
       %{status: status} = value when status in [:not_required, :accepted] -> {:ok, value}
@@ -51,32 +38,46 @@ defmodule QuestEngineering.Server.DeliveryEligibility do
 
   def check(%Run{} = run), do: {:error, assess(run)}
 
-  @spec issue(assessment()) :: %{code: String.t(), message: String.t(), details: map()}
-  def issue(%{status: :rejected} = value) do
-    %{
+  def issue(%{status: :rejected} = value),
+    do: %{
       code: "acceptance_not_satisfied",
-      message: "The latest completed review rejected the implementation.",
+      message: "The exact Change Set required for Delivery was rejected.",
       details: details(value)
     }
-  end
 
-  def issue(%{status: :invalid} = value) do
-    %{
+  def issue(%{status: :invalid} = value),
+    do: %{
       code: "acceptance_not_satisfied",
-      message: "The latest completed review did not produce a valid structured verdict.",
+      message:
+        "The Review Verdict did not match the exact Change Set and Implementation Acceptance gate.",
       details: details(value)
     }
-  end
 
-  def issue(value) do
-    %{
+  def issue(value),
+    do: %{
       code: "acceptance_not_satisfied",
-      message: "Required semantic review acceptance was not produced.",
+      message: "Implementation Acceptance for the exact Change Set was not produced.",
       details: details(value)
     }
+
+  defp implementation_contracts(run) do
+    run.plan.steps
+    |> Enum.flat_map(fn step ->
+      Enum.flat_map(step.produces, fn
+        %{
+          name: output,
+          kind: "review_verdict",
+          review: %{gate_key: @publication_gate, subject_input: input}
+        } ->
+          [%{step: step.key, output: output, subject_input: input}]
+
+        _ ->
+          []
+      end)
+    end)
   end
 
-  defp assess_latest_verdict(run, review_keys) do
+  defp assess_latest(run, contracts) do
     occurrence =
       run.occurrence_order
       |> Enum.reverse()
@@ -86,8 +87,11 @@ defmodule QuestEngineering.Server.DeliveryEligibility do
           false
 
         value ->
-          MapSet.member?(review_keys, value.semantic_step_key) and
-            Map.has_key?(value.output_artifact_ids, "verdict")
+          Enum.any?(
+            contracts,
+            &(&1.step == value.semantic_step_key and
+                Map.has_key?(value.output_artifact_ids, &1.output))
+          )
       end)
 
     case occurrence do
@@ -95,33 +99,50 @@ defmodule QuestEngineering.Server.DeliveryEligibility do
         assessment(true, :missing)
 
       occurrence ->
-        artifact_id = Map.fetch!(occurrence.output_artifact_ids, "verdict")
+        contract =
+          Enum.find(
+            contracts,
+            &(&1.step == occurrence.semantic_step_key and
+                Map.has_key?(occurrence.output_artifact_ids, &1.output))
+          )
+
+        artifact_id = Map.fetch!(occurrence.output_artifact_ids, contract.output)
+        subject_id = Map.get(occurrence.input_artifact_ids, contract.subject_input)
         artifact = Map.get(run.artifacts, artifact_id)
-
-        status =
-          case artifact && ReviewVerdict.status(artifact.value) do
-            {:ok, "accepted"} -> :accepted
-            {:ok, "rejected"} -> :rejected
-            _ -> :invalid
-          end
-
+        status = verdict_status(artifact, subject_id)
         assessment(true, status, occurrence.current_attempt_id, occurrence.id, artifact_id)
     end
   end
 
-  defp assessment(required, status, attempt_id \\ nil, occurrence_id \\ nil, artifact_id \\ nil) do
-    %{
+  defp verdict_status(%{kind: "review_verdict", value: value}, subject_id) do
+    cond do
+      ReviewVerdict.accepted_for?(value, @publication_gate, @publication_subject, subject_id) ->
+        :accepted
+
+      ReviewVerdict.status(value) == {:ok, "rejected"} and value["gate_key"] == @publication_gate and
+        value["subject_kind"] == @publication_subject and
+          value["subject_artifact_id"] == subject_id ->
+        :rejected
+
+      true ->
+        :invalid
+    end
+  end
+
+  defp verdict_status(_, _), do: :invalid
+
+  defp assessment(required, status, attempt_id \\ nil, occurrence_id \\ nil, artifact_id \\ nil),
+    do: %{
       required: required,
       status: status,
       occurrence_id: occurrence_id,
       attempt_id: attempt_id,
       artifact_id: artifact_id
     }
-  end
 
-  defp details(value) do
-    value
-    |> Map.take([:status, :occurrence_id, :attempt_id])
-    |> Map.update!(:status, &Atom.to_string/1)
-  end
+  defp details(value),
+    do:
+      value
+      |> Map.take([:status, :occurrence_id, :attempt_id])
+      |> Map.update!(:status, &Atom.to_string/1)
 end

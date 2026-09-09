@@ -73,8 +73,9 @@ const tactic = await api.createTactic({
     performer: { selector: "class", value: builder.key },
     context: { selector: "fresh", value: null },
     consumes: [],
-    produces: [{ type: "result", source: null }],
+    produces: [{ name: "result", kind: "result", review: null }],
   },
+  interface: { inputs: [], outputs: [] },
 });
 const quest = await api.createQuest({
   title: "Client realtime smoke",

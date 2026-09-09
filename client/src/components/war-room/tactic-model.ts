@@ -4,9 +4,20 @@ import {
   productKeyBase,
 } from "../management/management-key";
 
-export interface ArtifactDraft {
-  type: string;
-  source: string | null;
+export interface ArtifactRefDraft {
+  producer: string;
+  output: string;
+}
+export interface ArtifactInputDraft {
+  name: string;
+  kind: string;
+  source: ArtifactRefDraft | null;
+  required: boolean;
+}
+export interface ArtifactOutputDraft {
+  name: string;
+  kind: string;
+  review: { gate_key: string; subject_input: string } | null;
 }
 export interface StepNode {
   type: "step";
@@ -17,8 +28,8 @@ export interface StepNode {
   context:
     | { selector: "fresh"; value: null }
     | { selector: "continue_from"; value: string };
-  consumes: ArtifactDraft[];
-  produces: ArtifactDraft[];
+  consumes: ArtifactInputDraft[];
+  produces: ArtifactOutputDraft[];
 }
 export interface SequenceNode {
   type: "sequence";
@@ -32,7 +43,7 @@ export interface UntilNode {
   type: "until";
   check: TacticNode;
   condition: {
-    artifact: ArtifactDraft;
+    source: ArtifactRefDraft;
     field: string;
     operator: "equals";
     value: string | number | boolean | null;
@@ -44,6 +55,7 @@ export interface TacticUseNode {
   type: "use";
   instance_key: string;
   tactic_definition_id: string;
+  input_bindings: Array<{ input: string; source: ArtifactRefDraft }>;
 }
 export type TacticNode =
   | StepNode
@@ -58,6 +70,7 @@ export interface TacticDraft {
   name: string;
   description: string;
   body: TacticNode;
+  interface: Tactic["interface"];
 }
 export interface NodeEntry {
   node: TacticNode;
@@ -73,6 +86,9 @@ export function draftFromTactic(tactic: Tactic): TacticDraft {
     name: tactic.name,
     description: tactic.description,
     body: cloneNode(tactic.body as unknown as TacticNode),
+    interface: JSON.parse(
+      JSON.stringify(tactic.interface),
+    ) as Tactic["interface"],
   };
 }
 
@@ -83,6 +99,7 @@ export function emptyDraft(existingKeys: Iterable<string>): TacticDraft {
     name: "",
     description: "",
     body: { type: "sequence", children: [] },
+    interface: { inputs: [], outputs: [] },
   };
 }
 
@@ -148,13 +165,14 @@ export function makeUse(tactic: Tactic, body: TacticNode): TacticUseNode {
     type: "use",
     instance_key: generatedLocalKey(tactic.name, body, "tactic"),
     tactic_definition_id: tactic.id,
+    input_bindings: [],
   };
 }
 
 export function makeUntil(body: TacticNode, classKey = ""): UntilNode {
   const check = makeStep("Check", body, classKey);
   check.instruction = "Check whether the work is accepted.";
-  check.produces = [{ type: "verdict", source: null }];
+  check.produces = [{ name: "result", kind: "check_result", review: null }];
   const withCheck: SequenceNode = { type: "sequence", children: [check] };
   const otherwise = makeStep("Remediate", withCheck, classKey);
   otherwise.instruction = "Address the requested changes.";
@@ -162,7 +180,7 @@ export function makeUntil(body: TacticNode, classKey = ""): UntilNode {
     type: "until",
     check,
     condition: {
-      artifact: { type: "verdict", source: check.key },
+      source: { producer: check.key, output: "result" },
       field: "status",
       operator: "equals",
       value: "accepted",
@@ -172,20 +190,93 @@ export function makeUntil(body: TacticNode, classKey = ""): UntilNode {
   };
 }
 
-export function isReviewRemediationUntil(node: UntilNode): boolean {
-  const checkNames = entries(node.check)
-    .filter((entry) => entry.node.type === "step")
-    .map((entry) => (entry.node as StepNode).name.toLocaleLowerCase());
-  const remediationNames = entries(node.otherwise)
-    .filter((entry) => entry.node.type === "step")
-    .map((entry) => (entry.node as StepNode).name.toLocaleLowerCase());
-  return (
-    node.condition.artifact.type === "verdict" &&
-    checkNames.some((name) => name.includes("review")) &&
-    remediationNames.some(
-      (name) => name.includes("repair") || name.includes("remediat"),
-    )
+export type RemediationKind =
+  | "plan_revision"
+  | "implementation_repair"
+  | "generic";
+
+export function remediationKind(node: UntilNode): RemediationKind {
+  const check = steps(node.check);
+  const otherwise = steps(node.otherwise);
+  const conditionOutput = check
+    .find((step) => step.key === node.condition.source.producer)
+    ?.produces.find((output) => output.name === node.condition.source.output);
+  const gate = conditionOutput?.review?.gate_key;
+  const planShaped =
+    gate === "plan_acceptance" ||
+    (check.some((step) =>
+      step.consumes.some((item) => item.kind === "quest_plan"),
+    ) &&
+      otherwise.some((step) =>
+        step.produces.some((item) => item.kind === "quest_plan"),
+      ));
+  if (planShaped) return "plan_revision";
+
+  const reviewShaped = conditionOutput?.kind === "review_verdict";
+  const changeSetShaped =
+    check.some((step) =>
+      step.consumes.some((item) => item.kind === "change_set"),
+    ) ||
+    otherwise.some((step) =>
+      step.produces.some((item) => item.kind === "change_set"),
+    );
+  const names = [...check, ...otherwise].map((step) =>
+    step.name.toLocaleLowerCase(),
   );
+  if (
+    reviewShaped &&
+    (changeSetShaped || names.some((name) => name.includes("repair")))
+  )
+    return "implementation_repair";
+  return "generic";
+}
+
+export function isPlanRevisionUntil(node: UntilNode): boolean {
+  return remediationKind(node) === "plan_revision";
+}
+
+export function isReviewRemediationUntil(node: UntilNode): boolean {
+  return remediationKind(node) === "implementation_repair";
+}
+
+export const BUILT_IN_ARTIFACT_KINDS = [
+  "quest_plan",
+  "change_set",
+  "review_verdict",
+] as const;
+
+export function artifactTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    quest_plan: "Quest Plan",
+    change_set: "Change Set",
+    review_verdict: "Review Verdict",
+  };
+  const known = labels[type];
+  if (known) return known;
+  const words = type.replaceAll("_", " ").replaceAll("-", " ").trim();
+  return words
+    ? words.replace(/\b\w/g, (letter) => letter.toLocaleUpperCase())
+    : "Artifact";
+}
+
+export function artifactContractLabel(
+  step: Pick<StepNode, "name">,
+  artifact: ArtifactInputDraft | ArtifactOutputDraft,
+  direction: "consumes" | "produces",
+): string {
+  const name = step.name.toLocaleLowerCase();
+  if (artifact.kind === "quest_plan" && direction === "consumes") {
+    if (name.includes("implement")) return "Accepted Quest Plan";
+    return "Current Quest Plan";
+  }
+  if (artifact.kind === "quest_plan" && direction === "produces")
+    return name.includes("revis") ? "Updated Quest Plan" : "Quest Plan";
+  if (artifact.kind === "review_verdict" && direction === "consumes")
+    return "Latest rejected Review Verdict";
+  if (artifact.kind === "review_verdict") return "Review Verdict";
+  if (artifact.kind === "change_set" && direction === "consumes")
+    return "Current Change Set";
+  return artifactTypeLabel(artifact.kind);
 }
 
 export function entries(
@@ -431,11 +522,16 @@ export function localDraftIssues(draft: TacticDraft): string[] {
         issues.push(
           `${entry.node.name || "A Step"} needs a performer requirement.`,
         );
-      for (const artifact of [...entry.node.consumes, ...entry.node.produces])
-        if (!artifact.type.trim())
+      for (const artifact of [...entry.node.consumes, ...entry.node.produces]) {
+        if (!artifact.name.trim())
           issues.push(
-            `${entry.node.name || "A Step"} has an unnamed artifact.`,
+            `${entry.node.name || "A Step"} has an unnamed artifact slot.`,
           );
+        if (!artifact.kind.trim())
+          issues.push(
+            `${entry.node.name || "A Step"} has an artifact without a type.`,
+          );
+      }
     } else if (entry.node.type === "until") {
       if (
         !Number.isInteger(entry.node.max_remediations) ||
@@ -455,6 +551,26 @@ export function localDraftIssues(draft: TacticDraft): string[] {
       );
     }
   }
+  for (const port of draft.interface.inputs) {
+    if (!port.key.trim() || !port.label.trim() || !port.kind.trim())
+      issues.push("Every Tactic input needs a key, name, and artifact type.");
+  }
+  for (const port of draft.interface.outputs) {
+    if (!port.key.trim() || !port.label.trim() || !port.kind.trim())
+      issues.push("Every Tactic output needs a key, name, and artifact type.");
+    if (
+      port.source.type === "binding" &&
+      (!port.source.binding.producer || !port.source.binding.output)
+    )
+      issues.push(
+        `${port.label || "A Tactic output"} needs a specific internal output.`,
+      );
+  }
+  const portKeys = [...draft.interface.inputs, ...draft.interface.outputs].map(
+    (port) => port.key,
+  );
+  if (new Set(portKeys).size !== portKeys.length)
+    issues.push("Tactic interface port keys must be unique.");
   return [...new Set(issues)];
 }
 

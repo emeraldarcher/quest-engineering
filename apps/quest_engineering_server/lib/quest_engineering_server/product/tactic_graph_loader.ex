@@ -99,17 +99,18 @@ defmodule QuestEngineering.Server.Product.TacticGraphLoader do
 
   @spec definition_from_row(term()) :: {:ok, TacticDefinition.t()} | {:error, Error.t()}
   def definition_from_row(row) do
-    case TacticCodec.decode(row.body) do
-      {:ok, body} ->
-        {:ok,
-         %TacticDefinition{
-           id: row.id,
-           key: row.key,
-           name: row.name,
-           description: row.description,
-           body: body
-         }}
-
+    with {:ok, body} <- TacticCodec.decode(row.body),
+         {:ok, interface} <- TacticCodec.decode_interface(row.interface) do
+      {:ok,
+       %TacticDefinition{
+         id: row.id,
+         key: row.key,
+         name: row.name,
+         description: row.description,
+         body: body,
+         interface: interface
+       }}
+    else
       {:error, codec_error} ->
         {:error,
          %Error{

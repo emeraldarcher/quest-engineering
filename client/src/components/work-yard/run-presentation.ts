@@ -173,6 +173,11 @@ const diagnosticCopy: Record<string, { title: string; description: string }> = {
     description:
       "Delivery is blocked until the latest completed semantic Review explicitly accepts the implementation.",
   },
+  plan_review_exhausted: {
+    title: "Plan revisions were exhausted",
+    description:
+      "The plan was not accepted within the authored revision limit, so implementation and Delivery did not start.",
+  },
   review_exhausted: {
     title: "Review remediation was exhausted",
     description:
@@ -345,7 +350,9 @@ export function latestReviewArtifact(
 ): ArtifactSummary | null {
   for (const step of [...steps].reverse()) {
     if (step.state !== "completed") continue;
-    const reference = step.outputs.find((output) => output.type === "verdict");
+    const reference = step.outputs.find(
+      (output) => output.type === "review_verdict",
+    );
     if (!reference) continue;
     const artifact = artifacts.find(
       (item) => item.id === reference.artifact_id,
@@ -392,7 +399,7 @@ export function stepResult(
   artifacts: ArtifactSummary[],
 ): string | null {
   for (const reference of step.outputs) {
-    if (reference.type !== "verdict") continue;
+    if (reference.type !== "review_verdict") continue;
     const artifact = artifacts.find(
       (item) => item.id === reference.artifact_id,
     );
@@ -412,6 +419,8 @@ export function stepResult(
 
 export function artifactTypeLabel(type: string): string {
   if (type === "change_set") return "Reported change set";
+  if (type === "quest_plan") return "Quest Plan";
+  if (type === "review_verdict") return "Review Verdict";
   return humanize(type);
 }
 
@@ -421,6 +430,10 @@ export function artifactPreview(summary: ArtifactSummary): string {
     return String(preview ?? "Value available");
   if (preview.kind === "review_verdict" && typeof preview.status === "string")
     return humanize(preview.status);
+  if (preview.kind === "document") {
+    const version = summary.version ? ` v${summary.version}` : "";
+    return `${summary.filename ?? "Document"}${version}`;
+  }
   if (preview.kind === "scalar")
     return typeof preview.value === "string"
       ? humanize(preview.value)
@@ -432,12 +445,37 @@ export function artifactPreview(summary: ArtifactSummary): string {
       : "Value available";
 }
 
+export function documentContent(detail: ArtifactDetail): string | null {
+  if (
+    detail.value &&
+    typeof detail.value === "object" &&
+    !Array.isArray(detail.value) &&
+    detail.value.kind === "document" &&
+    typeof detail.value.content === "string"
+  )
+    return detail.value.content;
+  return null;
+}
+
+export function acceptedPlan(run: RunProjection): ArtifactSummary | null {
+  return run.planning?.accepted_plan ?? null;
+}
+
+export function implementationPlanInput(
+  step: RunStep,
+  artifacts: ArtifactSummary[],
+): ArtifactSummary | null {
+  const reference = step.inputs.find((input) => input.type === "quest_plan");
+  return reference
+    ? (artifacts.find((artifact) => artifact.id === reference.artifact_id) ??
+        null)
+    : null;
+}
+
 export function friendlyArtifact(detail: ArtifactDetail): Array<{
   label: string;
   value: string;
 }> {
-  if (detail.type === "verdict" && typeof detail.value === "string")
-    return [{ label: "Verdict", value: humanize(detail.value) }];
   if (
     !detail.value ||
     typeof detail.value !== "object" ||

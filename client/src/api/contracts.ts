@@ -69,12 +69,35 @@ export interface Squad {
   members: SquadMember[];
   archived_at: string | null;
 }
+export interface ArtifactRefContract {
+  producer: string;
+  output: string;
+}
+export interface TacticInputPortContract {
+  key: string;
+  label: string;
+  kind: string;
+  required: boolean;
+}
+export interface TacticOutputPortContract {
+  key: string;
+  label: string;
+  kind: string;
+  source:
+    | { type: "binding"; binding: ArtifactRefContract }
+    | { type: "accepted_subject"; gate_key: string };
+}
+export interface TacticInterfaceContract {
+  inputs: TacticInputPortContract[];
+  outputs: TacticOutputPortContract[];
+}
 export interface Tactic {
   id: string;
   key: string;
   name: string;
   description: string;
   body: JsonValue;
+  interface: TacticInterfaceContract;
   archived_at: string | null;
 }
 export interface SemanticStepIdentity {
@@ -89,6 +112,7 @@ export interface SemanticStepIdentity {
 }
 export interface SemanticArtifactBinding {
   artifact_type: string;
+  input_name: string;
   consumer: SemanticStepIdentity;
   selection: "inferred" | "explicit";
   source:
@@ -219,6 +243,7 @@ export interface SnapshotMember {
   loadout: { id: string; key: string; name: string };
 }
 export interface ArtifactRef {
+  name: string;
   type: string;
   artifact_id: string;
 }
@@ -377,6 +402,12 @@ export interface ArtifactSummary {
   type: string;
   producer_occurrence_id: string;
   producer_attempt_id: string | null;
+  version?: number | null;
+  supersedes_artifact_id?: string | null;
+  content_hash?: string | null;
+  media_type?: string | null;
+  filename?: string | null;
+  title?: string | null;
   preview: JsonValue;
 }
 export interface DeliveryProjection {
@@ -429,6 +460,17 @@ export interface RunProjection {
   squad: { id: string; key: string; name: string; members: SnapshotMember[] };
   steps: RunStep[];
   artifacts: ArtifactSummary[];
+  planning?: {
+    accepted_plan: ArtifactSummary | null;
+    history: Array<{
+      artifact_id: string;
+      version: number;
+      status: "accepted" | "rejected" | null;
+      verdict_artifact_id: string | null;
+      findings: JsonValue;
+      supersedes_artifact_id: string | null;
+    }>;
+  };
   operational_recovery?: Array<{
     id: string;
     occurrence_id: string;
@@ -447,6 +489,9 @@ export interface RunProjection {
     maximum_remediations: number;
     status: string;
     review_shaped: boolean;
+    acceptance_gate_key?: string | null;
+    acceptance_subject_kind?: string | null;
+    remediation_kind?: "plan_revision" | "implementation_repair" | "generic";
   }>;
   review_gate: {
     required: boolean;

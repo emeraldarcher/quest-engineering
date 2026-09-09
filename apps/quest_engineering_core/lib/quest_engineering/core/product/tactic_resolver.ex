@@ -67,18 +67,39 @@ defmodule QuestEngineering.Core.Product.TacticResolver.StepOrigin do
         }
 end
 
+defmodule QuestEngineering.Core.Product.ResolvedTacticUse do
+  @moduledoc "A resolved lexical child boundary; the compiler exposes only declared exports."
+
+  @enforce_keys [
+    :instance_key,
+    :tactic_definition_id,
+    :body,
+    :input_ports,
+    :input_bindings,
+    :output_ports
+  ]
+  defstruct [
+    :instance_key,
+    :tactic_definition_id,
+    :body,
+    :input_ports,
+    :input_bindings,
+    :output_ports
+  ]
+end
+
 defmodule QuestEngineering.Core.Product.TacticResolver.Resolution do
   @moduledoc "A fully expanded semantic Tactic plus non-execution provenance."
 
   alias QuestEngineering.Core.Product.TacticProvenance
   alias QuestEngineering.Core.Product.TacticResolver.StepOrigin
-  alias QuestEngineering.Core.Tactics
 
-  @enforce_keys [:tactic, :provenance, :step_origins]
-  defstruct [:tactic, :provenance, :step_origins]
+  @enforce_keys [:tactic, :interface, :provenance, :step_origins]
+  defstruct [:tactic, :interface, :provenance, :step_origins]
 
   @type t :: %__MODULE__{
-          tactic: Tactics.t(),
+          tactic: term(),
+          interface: QuestEngineering.Core.Product.TacticInterface.t(),
           provenance: TacticProvenance.t(),
           step_origins: %{optional(String.t()) => StepOrigin.t()}
         }
@@ -87,8 +108,13 @@ end
 defmodule QuestEngineering.Core.Product.TacticResolver do
   @moduledoc "Pure deterministic expansion of authoring Uses into a plain semantic Tactic."
 
+  alias QuestEngineering.Core.Product.AcceptedArtifactSource
+  alias QuestEngineering.Core.Product.ResolvedTacticUse
   alias QuestEngineering.Core.Product.TacticAuthoring
   alias QuestEngineering.Core.Product.TacticDefinition
+  alias QuestEngineering.Core.Product.TacticInputBinding
+  alias QuestEngineering.Core.Product.TacticInterface
+  alias QuestEngineering.Core.Product.TacticOutputPort
   alias QuestEngineering.Core.Product.TacticProvenance
   alias QuestEngineering.Core.Product.TacticProvenance.Occurrence
   alias QuestEngineering.Core.Product.TacticProvenance.Root
@@ -100,7 +126,8 @@ defmodule QuestEngineering.Core.Product.TacticResolver do
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Core.Product.TacticUse
-  alias QuestEngineering.Core.Tactics.Artifact
+  alias QuestEngineering.Core.Tactics.ArtifactInput
+  alias QuestEngineering.Core.Tactics.ArtifactRef
   alias QuestEngineering.Core.Tactics.Condition
   alias QuestEngineering.Core.Tactics.ContextRequirement
   alias QuestEngineering.Core.Tactics.Parallel
@@ -119,7 +146,7 @@ defmodule QuestEngineering.Core.Product.TacticResolver do
     state = state(catalog, limits)
 
     case expand_scope(body, [], ["inline"], nil, [], 0, state) do
-      {:ok, tactic, resolved} -> success(tactic, root, resolved)
+      {:ok, tactic, resolved} -> success(tactic, %TacticInterface{}, root, resolved)
       {:error, error} -> {:error, [error]}
     end
   end
@@ -146,7 +173,7 @@ defmodule QuestEngineering.Core.Product.TacticResolver do
           |> add_occurrence([], definition)
 
         case expand_scope(definition.body, [], ["body"], identity, [identity], 0, state) do
-          {:ok, tactic, resolved} -> success(tactic, root, resolved)
+          {:ok, tactic, resolved} -> success(tactic, definition.interface, root, resolved)
           {:error, error} -> {:error, [error]}
         end
 
@@ -190,8 +217,7 @@ defmodule QuestEngineering.Core.Product.TacticResolver do
         | key: resolved_key,
           performer: rewrite_performer(step.performer, prefix),
           context: rewrite_context(step.context, prefix),
-          consumes: rewrite_artifacts(step.consumes, prefix),
-          produces: rewrite_artifacts(step.produces, prefix)
+          consumes: rewrite_inputs(step.consumes, prefix)
       }
 
       origin = %StepOrigin{
@@ -266,15 +292,31 @@ defmodule QuestEngineering.Core.Product.TacticResolver do
       identity = identity(definition)
       next_state = add_occurrence(state, instance_path, definition)
 
-      expand_scope(
-        definition.body,
-        instance_path,
-        child_path,
-        definition,
-        active ++ [identity],
-        next_depth,
-        next_state
-      )
+      case expand_scope(
+             definition.body,
+             instance_path,
+             child_path,
+             definition,
+             active ++ [identity],
+             next_depth,
+             next_state
+           ) do
+        {:ok, body, resolved} ->
+          resolved_use = %ResolvedTacticUse{
+            instance_key: Enum.join(instance_path, "/"),
+            tactic_definition_id: definition.id,
+            body: body,
+            input_ports: definition.interface.inputs,
+            input_bindings: Enum.map(use.input_bindings, &rewrite_binding(&1, prefix)),
+            output_ports:
+              Enum.map(definition.interface.outputs, &rewrite_output_port(&1, instance_path))
+          }
+
+          {:ok, resolved_use, resolved}
+
+        {:error, error} ->
+          {:error, error}
+      end
     else
       {:error, error} -> {:error, error}
     end
@@ -426,20 +468,35 @@ defmodule QuestEngineering.Core.Product.TacticResolver do
 
   defp rewrite_context(requirement, _prefix), do: requirement
 
-  defp rewrite_artifacts(artifacts, prefix) when is_list(artifacts),
-    do: Enum.map(artifacts, &rewrite_artifact(&1, prefix))
+  defp rewrite_inputs(inputs, prefix) when is_list(inputs),
+    do: Enum.map(inputs, &rewrite_input(&1, prefix))
 
-  defp rewrite_artifacts(artifacts, _prefix), do: artifacts
+  defp rewrite_inputs(inputs, _prefix), do: inputs
 
-  defp rewrite_artifact(%Artifact{source: source} = artifact, prefix) when is_binary(source),
-    do: %{artifact | source: scoped_key(prefix, source)}
+  defp rewrite_input(%ArtifactInput{source: %ArtifactRef{} = source} = input, prefix),
+    do: %{input | source: rewrite_ref(source, prefix)}
 
-  defp rewrite_artifact(artifact, _prefix), do: artifact
+  defp rewrite_input(input, _prefix), do: input
 
-  defp rewrite_condition(%Condition{artifact: artifact} = condition, prefix),
-    do: %{condition | artifact: rewrite_artifact(artifact, prefix)}
+  defp rewrite_condition(%Condition{source: %ArtifactRef{} = source} = condition, prefix),
+    do: %{condition | source: rewrite_ref(source, prefix)}
 
   defp rewrite_condition(condition, _prefix), do: condition
+
+  defp rewrite_ref(%ArtifactRef{producer: "$inputs"} = source, prefix),
+    do: %{source | producer: scoped_key(prefix, "$inputs")}
+
+  defp rewrite_ref(%ArtifactRef{producer: producer} = source, prefix),
+    do: %{source | producer: scoped_key(prefix, producer)}
+
+  defp rewrite_binding(%TacticInputBinding{source: source} = binding, prefix),
+    do: %{binding | source: rewrite_ref(source, prefix)}
+
+  defp rewrite_output_port(%TacticOutputPort{source: %ArtifactRef{} = source} = port, prefix),
+    do: %{port | source: rewrite_ref(source, prefix)}
+
+  defp rewrite_output_port(%TacticOutputPort{source: %AcceptedArtifactSource{}} = port, _prefix),
+    do: port
 
   defp scoped_key([], local_key), do: local_key
   defp scoped_key(prefix, local_key), do: Enum.join(prefix ++ [local_key], "/")
@@ -467,13 +524,21 @@ defmodule QuestEngineering.Core.Product.TacticResolver do
 
   defp put_origin(state, key, origin), do: %{state | origins: Map.put(state.origins, key, origin)}
 
-  defp success(tactic, root, state) do
+  defp success(tactic, interface, root, state) do
     provenance = %TacticProvenance{
       root: root,
       definitions: Enum.reverse(state.occurrences)
     }
 
-    {:ok, %Resolution{tactic: tactic, provenance: provenance, step_origins: state.origins}}
+    interface = %{interface | outputs: Enum.map(interface.outputs, &rewrite_output_port(&1, []))}
+
+    {:ok,
+     %Resolution{
+       tactic: tactic,
+       interface: interface,
+       provenance: provenance,
+       step_origins: state.origins
+     }}
   end
 
   defp identity(%TacticDefinition{} = definition),

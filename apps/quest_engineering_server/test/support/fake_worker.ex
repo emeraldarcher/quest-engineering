@@ -197,7 +197,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         options
         |> Keyword.get(:capabilities, default_capabilities())
         |> Map.put_new("workspace_bindings", []),
-      protocol_version: Keyword.get(options, :protocol_version, 5),
+      protocol_version: Keyword.get(options, :protocol_version, 6),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),

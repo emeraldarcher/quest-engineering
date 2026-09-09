@@ -2,16 +2,18 @@ defmodule QuestEngineering.Core.Product.TacticDefinition do
   @moduledoc "A mutable named Product definition containing reusable Tactic authoring data."
 
   alias QuestEngineering.Core.Product.TacticAuthoring
+  alias QuestEngineering.Core.Product.TacticInterface
 
   @enforce_keys [:id, :key, :name, :description, :body]
-  defstruct [:id, :key, :name, :description, :body]
+  defstruct [:id, :key, :name, :description, :body, interface: %TacticInterface{}]
 
   @type t :: %__MODULE__{
           id: String.t(),
           key: String.t(),
           name: String.t(),
           description: String.t(),
-          body: TacticAuthoring.t()
+          body: TacticAuthoring.t(),
+          interface: TacticInterface.t()
         }
 end
 

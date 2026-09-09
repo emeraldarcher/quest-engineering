@@ -94,17 +94,27 @@ defmodule QuestEngineering.Server.ProductApi.Service do
     end
   end
 
-  def preview_tactic_definition(id, payload \\ %{}) do
-    case Map.fetch(payload, "body") do
-      :error ->
-        TacticLibrary.preview_definition(id)
+  def preview_tactic_definition(id, payload \\ %{})
 
-      {:ok, body} ->
-        with {:ok, decoded} <- tactic_body(body) do
-          TacticLibrary.preview_definition(id, %{body: decoded})
-        end
+  def preview_tactic_definition(id, payload)
+      when is_map_key(payload, "body") or is_map_key(payload, "interface") do
+    with {:ok, body} <- tactic_body(Map.get(payload, "body", :absent)),
+         {:ok, interface} <- tactic_interface(Map.get(payload, "interface", :absent)) do
+      attributes = preview_attributes(body, interface)
+      TacticLibrary.preview_definition(id, attributes)
     end
   end
+
+  def preview_tactic_definition(id, _payload), do: TacticLibrary.preview_definition(id)
+
+  defp preview_attributes(body, interface) do
+    %{}
+    |> maybe_put(:body, body)
+    |> maybe_put(:interface, interface)
+  end
+
+  defp maybe_put(attributes, _key, :absent), do: attributes
+  defp maybe_put(attributes, key, value), do: Map.put(attributes, key, value)
 
   def preview_quest(id), do: Repository.preview_launch_snapshot(id)
 
@@ -144,8 +154,13 @@ defmodule QuestEngineering.Server.ProductApi.Service do
 
   defp attributes(:tactic, payload) do
     with {:ok, attributes} <- basic(payload, [:key, :name, :description]),
-         {:ok, body} <- tactic_body(Map.get(payload, "body", Map.get(payload, :body, :absent))) do
-      {:ok, if(body == :absent, do: attributes, else: Map.put(attributes, :body, body))}
+         {:ok, body} <- tactic_body(Map.get(payload, "body", Map.get(payload, :body, :absent))),
+         {:ok, interface} <-
+           tactic_interface(Map.get(payload, "interface", Map.get(payload, :interface, :absent))) do
+      attributes = if(body == :absent, do: attributes, else: Map.put(attributes, :body, body))
+
+      {:ok,
+       if(interface == :absent, do: attributes, else: Map.put(attributes, :interface, interface))}
     end
   end
 
@@ -244,6 +259,15 @@ defmodule QuestEngineering.Server.ProductApi.Service do
     case TacticCodec.decode(value) do
       {:ok, body} -> {:ok, body}
       {:error, error} -> malformed(["body" | error.path], error.reason)
+    end
+  end
+
+  defp tactic_interface(:absent), do: {:ok, :absent}
+
+  defp tactic_interface(value) do
+    case TacticCodec.decode_interface(value) do
+      {:ok, interface} -> {:ok, interface}
+      {:error, error} -> malformed(["interface" | error.path], error.reason)
     end
   end
 

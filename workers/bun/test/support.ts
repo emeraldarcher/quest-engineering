@@ -3,7 +3,7 @@ import type { ExecuteAction } from "../src/protocol/types.ts";
 export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
   const base: ExecuteAction = {
     type: "execute_action",
-    protocol_version: 5,
+    protocol_version: 6,
     worker_id: "worker-test",
     execution: {
       identity: {
@@ -26,7 +26,7 @@ export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
         step_instruction:
           "Implement the supplied plan and produce a change set.",
         inputs: {},
-        declared_outputs: ["change_set"],
+        declared_outputs: [{ name: "change_set", kind: "change_set" }],
       },
       configuration: {
         model: { provider: "fake", model: "test" },
@@ -77,7 +77,9 @@ export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
         ...base.execution.work,
         step_instruction: overrides.instruction ?? base.instruction,
         inputs: overrides.inputs ?? base.inputs,
-        declared_outputs: overrides.declared_outputs ?? base.declared_outputs,
+        declared_outputs: (
+          overrides.declared_outputs ?? base.declared_outputs
+        ).map((name) => ({ name, kind: name })),
       },
       context: {
         ...base.execution.context,
@@ -102,7 +104,9 @@ export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
     merged.semantic_step_key = overrides.execution.identity.semantic_step_key;
     merged.instruction = overrides.execution.work.step_instruction;
     merged.inputs = overrides.execution.work.inputs;
-    merged.declared_outputs = overrides.execution.work.declared_outputs;
+    merged.declared_outputs = overrides.execution.work.declared_outputs.map(
+      (output) => output.name,
+    );
     merged.context_requirement = {
       selector: overrides.execution.context.mode,
       value: null,

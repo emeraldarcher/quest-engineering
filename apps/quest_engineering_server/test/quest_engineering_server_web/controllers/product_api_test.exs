@@ -45,8 +45,8 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
     inferred =
       sequence_body([
-        step_body("implement", produces: ["change_set"]),
-        step_body("review", consumes: [%{type: "change_set", source: nil}])
+        step_body("implement", produces: [output_body("change_set", "change_set")]),
+        step_body("review", consumes: [input_body("change_set", "change_set")])
       ])
 
     inferred_preview = preview_inline(inferred, 200)
@@ -61,8 +61,10 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
     explicit =
       sequence_body([
-        step_body("implement", produces: ["change_set"]),
-        step_body("review", consumes: [%{type: "change_set", source: "implement"}])
+        step_body("implement", produces: [output_body("change_set", "change_set")]),
+        step_body("review",
+          consumes: [input_body("change_set", "change_set", "implement", "change_set")]
+        )
       ])
 
     assert [%{"selection" => "explicit"}] =
@@ -72,15 +74,33 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
       post_json("/api/v1/tactics", %{
         key: "nested-child-http",
         name: "Nested Child",
-        body: step_body("implement", produces: ["change_set"])
+        body: step_body("implement", produces: [output_body("change_set", "change_set")]),
+        interface: %{
+          inputs: [],
+          outputs: [
+            %{
+              key: "change_set",
+              label: "Change Set",
+              kind: "change_set",
+              source: %{type: "binding", binding: %{producer: "implement", output: "change_set"}}
+            }
+          ]
+        }
       })
       |> json_response(201)
       |> get_in(["tactic"])
 
     nested =
       sequence_body([
-        %{type: "use", instance_key: "backend", tactic_definition_id: child["id"]},
-        step_body("review", consumes: [%{type: "change_set", source: nil}])
+        %{
+          type: "use",
+          instance_key: "backend",
+          tactic_definition_id: child["id"],
+          input_bindings: []
+        },
+        step_body("review",
+          consumes: [input_body("change_set", "change_set", "backend", "change_set")]
+        )
       ])
 
     nested_preview = preview_inline(nested, 200)
@@ -105,7 +125,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
   end
 
   test "Tactic preview errors retain safe artifact context and contextual saves remain valid" do
-    missing = step_body("review", consumes: [%{type: "plan", source: nil}])
+    missing = step_body("review", consumes: [input_body("plan", "plan")])
     missing_error = preview_inline(missing, 422)["error"]
     assert missing_error["code"] == "preview_failed"
 
@@ -132,11 +152,11 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
         %{
           type: "parallel",
           children: [
-            step_body("backend", produces: ["change_set"]),
-            step_body("frontend", produces: ["change_set"])
+            step_body("backend", produces: [output_body("change_set", "change_set")]),
+            step_body("frontend", produces: [output_body("change_set", "change_set")])
           ]
         },
-        step_body("review", consumes: [%{type: "change_set", source: nil}])
+        step_body("review", consumes: [input_body("change_set", "change_set")])
       ])
 
     ambiguous_error = preview_inline(ambiguous, 422)["error"]
@@ -153,11 +173,11 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
     invalid_source =
       sequence_body([
-        step_body("implement", produces: ["change_set"]),
+        step_body("implement", produces: [output_body("change_set", "change_set")]),
         step_body("review",
-          consumes: [%{type: "change_set", source: "future"}]
+          consumes: [input_body("change_set", "change_set", "future", "change_set")]
         ),
-        step_body("future", produces: ["change_set"])
+        step_body("future", produces: [output_body("change_set", "change_set")])
       ])
 
     invalid_error = preview_inline(invalid_source, 422)["error"]
@@ -493,7 +513,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
       performer: %{selector: "class", value: "builder"},
       context: %{selector: "fresh", value: nil},
       consumes: Keyword.get(options, :consumes, []),
-      produces: Enum.map(Keyword.get(options, :produces, []), &%{type: &1, source: nil})
+      produces: Keyword.get(options, :produces, [])
     }
   end
 
@@ -502,4 +522,10 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     |> put_req_header("content-type", "application/json")
     |> post(path, body)
   end
+
+  defp output_body(name, kind), do: %{name: name, kind: kind, review: nil}
+  defp input_body(name, kind), do: %{name: name, kind: kind, source: nil, required: true}
+
+  defp input_body(name, kind, producer, output),
+    do: %{name: name, kind: kind, source: %{producer: producer, output: output}, required: true}
 end

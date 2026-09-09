@@ -1,12 +1,17 @@
 defmodule QuestEngineering.Core.Compiler.Validator do
   @moduledoc false
 
+  alias QuestEngineering.Core.ArtifactSemantics
   alias QuestEngineering.Core.CompileError
-  alias QuestEngineering.Core.Tactics.Artifact
+  alias QuestEngineering.Core.Product.ResolvedTacticUse
+  alias QuestEngineering.Core.Tactics.ArtifactInput
+  alias QuestEngineering.Core.Tactics.ArtifactOutput
+  alias QuestEngineering.Core.Tactics.ArtifactRef
   alias QuestEngineering.Core.Tactics.Condition
   alias QuestEngineering.Core.Tactics.ContextRequirement
   alias QuestEngineering.Core.Tactics.Parallel
   alias QuestEngineering.Core.Tactics.PerformerRequirement
+  alias QuestEngineering.Core.Tactics.ReviewContract
   alias QuestEngineering.Core.Tactics.Sequence
   alias QuestEngineering.Core.Tactics.Step
   alias QuestEngineering.Core.Tactics.Until
@@ -36,6 +41,8 @@ defmodule QuestEngineering.Core.Compiler.Validator do
   defp collect(%Parallel{children: children}, path) do
     collect_children(children, path, :parallel)
   end
+
+  defp collect(%ResolvedTacticUse{} = use, path), do: collect(use.body, path ++ [:use])
 
   defp collect(%Until{} = until, path) do
     region = region_id(path)
@@ -116,14 +123,13 @@ defmodule QuestEngineering.Core.Compiler.Validator do
   defp maybe_add(errors, false, _error), do: errors
 
   defp valid_condition?(%Condition{
-         artifact: %Artifact{type: type, source: source},
+         source: %ArtifactRef{producer: producer, output: output},
          field: field,
          operator: :equals,
          value: value
        }) do
-    valid_identifier?(type) and
-      (is_nil(source) or valid_identifier?(source)) and
-      is_binary(field) and field != "" and literal?(value)
+    valid_identifier?(producer) and valid_slot?(output) and is_binary(field) and field != "" and
+      literal?(value)
   end
 
   defp valid_condition?(_condition), do: false
@@ -151,6 +157,36 @@ defmodule QuestEngineering.Core.Compiler.Validator do
     |> validate_context(step, path)
     |> validate_artifacts(step, :consumes)
     |> validate_artifacts(step, :produces)
+    |> validate_review_subjects(step)
+  end
+
+  defp validate_review_subjects(errors, step) do
+    input_names =
+      if is_list(step.consumes),
+        do:
+          Enum.flat_map(step.consumes, fn
+            %ArtifactInput{name: name} -> [name]
+            _ -> []
+          end),
+        else: []
+
+    invalid =
+      if is_list(step.produces),
+        do:
+          Enum.find(step.produces, fn
+            %ArtifactOutput{kind: "review_verdict", review: %ReviewContract{subject_input: input}} ->
+              input not in input_names
+
+            _ ->
+              false
+          end),
+        else: nil
+
+    if invalid,
+      do:
+        errors ++
+          [invalid_structure([], %{reason: :review_subject_input_not_declared, step: step.key})],
+      else: errors
   end
 
   defp require(errors, true, _path, _details), do: errors
@@ -209,31 +245,41 @@ defmodule QuestEngineering.Core.Compiler.Validator do
     end
   end
 
-  defp validate_artifact(%Artifact{type: type, source: source} = artifact, step, :consumes) do
-    if valid_identifier?(type) and (is_nil(source) or valid_identifier?(source)) do
-      []
-    else
-      invalid_artifact(artifact, step, :consumes)
-    end
+  defp validate_artifact(
+         %ArtifactInput{name: name, kind: kind, source: source, required: required} = artifact,
+         step,
+         :consumes
+       ) do
+    if valid_slot?(name) and ArtifactSemantics.valid_kind?(kind) and
+         (is_nil(source) or match?(%ArtifactRef{}, source)) and is_boolean(required),
+       do: [],
+       else: invalid_artifact(artifact, step, :consumes)
   end
 
-  defp validate_artifact(%Artifact{type: type, source: nil} = artifact, step, :produces) do
-    if valid_identifier?(type), do: [], else: invalid_artifact(artifact, step, :produces)
+  defp validate_artifact(
+         %ArtifactOutput{name: name, kind: kind, review: review} = artifact,
+         step,
+         :produces
+       ) do
+    valid =
+      valid_slot?(name) and ArtifactSemantics.valid_kind?(kind) and
+        valid_review_contract?(kind, review)
+
+    if valid, do: [], else: invalid_artifact(artifact, step, :produces)
   end
 
-  defp validate_artifact(%Artifact{source: source}, step, :produces) when not is_nil(source) do
-    [
-      invalid_structure([], %{
-        reason: :artifact_output_cannot_have_source,
-        step: step,
-        source: source
-      })
-    ]
-  end
+  defp validate_artifact(artifact, step, direction),
+    do: invalid_artifact(artifact, step, direction)
 
-  defp validate_artifact(artifact, step, direction) do
-    invalid_artifact(artifact, step, direction)
-  end
+  defp valid_review_contract?("review_verdict", %ReviewContract{
+         gate_key: gate,
+         subject_input: input
+       }),
+       do: valid_slot?(gate) and valid_slot?(input)
+
+  defp valid_review_contract?("review_verdict", _), do: false
+  defp valid_review_contract?(_kind, nil), do: true
+  defp valid_review_contract?(_kind, _review), do: false
 
   defp invalid_artifact(artifact, step, direction) do
     [
@@ -264,7 +310,7 @@ defmodule QuestEngineering.Core.Compiler.Validator do
     case Map.fetch!(step, direction) do
       artifacts when is_list(artifacts) ->
         artifacts
-        |> Enum.flat_map(&valid_artifact_type/1)
+        |> Enum.flat_map(&valid_artifact_name/1)
         |> duplicates()
         |> Enum.map(
           &%CompileError{
@@ -280,11 +326,13 @@ defmodule QuestEngineering.Core.Compiler.Validator do
     end
   end
 
-  defp valid_artifact_type(%Artifact{type: type}) do
-    if valid_identifier?(type), do: [type], else: []
-  end
+  defp valid_artifact_name(%ArtifactInput{name: name}),
+    do: if(valid_slot?(name), do: [name], else: [])
 
-  defp valid_artifact_type(_invalid), do: []
+  defp valid_artifact_name(%ArtifactOutput{name: name}),
+    do: if(valid_slot?(name), do: [name], else: [])
+
+  defp valid_artifact_name(_invalid), do: []
 
   defp affinity_errors(tactic, steps) do
     keys = steps |> Enum.map(& &1.key) |> Enum.filter(&valid_identifier?/1) |> MapSet.new()
@@ -310,6 +358,9 @@ defmodule QuestEngineering.Core.Compiler.Validator do
       {MapSet.union(guaranteed_after, child_after), errors ++ child_errors}
     end)
   end
+
+  defp analyze_affinity(%ResolvedTacticUse{} = use, before, keys),
+    do: analyze_affinity(use.body, before, keys)
 
   defp analyze_affinity(%Until{} = until, before, keys) do
     {check_after, check_errors} = analyze_affinity(until.check, before, keys)
@@ -384,6 +435,9 @@ defmodule QuestEngineering.Core.Compiler.Validator do
     end)
   end
 
+  defp analyze_context(%ResolvedTacticUse{} = use, before, keys, path, region),
+    do: analyze_context(use.body, before, keys, path ++ [:use], region)
+
   defp analyze_context(%Until{} = until, before, keys, path, _parent_region) do
     region = region_id(path)
 
@@ -449,6 +503,9 @@ defmodule QuestEngineering.Core.Compiler.Validator do
   defp append_once(values, value), do: if(value in values, do: values, else: values ++ [value])
 
   defp valid_identifier?(value), do: is_binary(value) and value != ""
+
+  defp valid_slot?(value),
+    do: is_binary(value) and String.match?(value, ~r/\A[a-z][a-z0-9_]{0,63}\z/)
 
   defp invalid_structure(path, details) do
     %CompileError{type: :invalid_structure, details: Map.put(details, :path, path)}

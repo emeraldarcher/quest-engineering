@@ -41,7 +41,8 @@ defmodule QuestEngineering.Server.Product.TacticLibrary do
       key: attributes[:key],
       name: attributes[:name],
       description: Map.get(attributes, :description, ""),
-      body: attributes[:body]
+      body: attributes[:body],
+      interface: Map.get(attributes, :interface, %QuestEngineering.Core.Product.TacticInterface{})
     }
 
     transaction(fn ->
@@ -66,7 +67,8 @@ defmodule QuestEngineering.Server.Product.TacticLibrary do
              key: current.key,
              name: Map.get(attributes, :name, current.name),
              description: Map.get(attributes, :description, current.description),
-             body: Map.get(attributes, :body, current.body)
+             body: Map.get(attributes, :body, current.body),
+             interface: Map.get(attributes, :interface, current.interface)
            },
            :ok <- validate_update(candidate, attributes),
            {:ok, updated} <-
@@ -185,9 +187,13 @@ defmodule QuestEngineering.Server.Product.TacticLibrary do
   @doc "Previews an unsaved body as a side-effect-free override of one active definition."
   @spec preview_definition(String.t(), map()) ::
           {:ok, TacticPreview.Result.t()} | {:error, term()}
-  def preview_definition(id, %{body: body}) when is_binary(id) do
+  def preview_definition(id, attributes) when is_binary(id) and is_map(attributes) do
     with {:ok, current} <- get(id) do
-      preview_definition(%{current | body: body})
+      preview_definition(%{
+        current
+        | body: Map.get(attributes, :body, current.body),
+          interface: Map.get(attributes, :interface, current.interface)
+      })
     end
   end
 
@@ -235,7 +241,7 @@ defmodule QuestEngineering.Server.Product.TacticLibrary do
   # parent composition. Every other semantic compiler error remains a save
   # blocker; missing root artifacts alone are contextual, not malformed.
   defp valid_contextual_semantics(resolution) do
-    case Compiler.compile(resolution.tactic) do
+    case Compiler.compile_for_definition(resolution) do
       {:ok, _plan} ->
         :ok
 
@@ -287,7 +293,8 @@ defmodule QuestEngineering.Server.Product.TacticLibrary do
       key: definition.key,
       name: definition.name,
       description: definition.description,
-      body: TacticCodec.encode(definition.body)
+      body: TacticCodec.encode(definition.body),
+      interface: TacticCodec.encode_interface(definition.interface)
     }
   end
 

@@ -1,25 +1,25 @@
 defmodule QuestEngineering.Core.Tactics.ArtifactField do
-  @moduledoc "A serializable reference to one field of a typed artifact."
+  @moduledoc "A serializable field reference on one exact named artifact output."
 
-  alias QuestEngineering.Core.Tactics.Artifact
+  alias QuestEngineering.Core.Tactics.ArtifactRef
 
-  @enforce_keys [:artifact, :field]
-  defstruct [:artifact, :field]
+  @enforce_keys [:source, :field]
+  defstruct [:source, :field]
 
-  @type t :: %__MODULE__{artifact: Artifact.t(), field: String.t()}
+  @type t :: %__MODULE__{source: ArtifactRef.t(), field: String.t()}
 end
 
 defmodule QuestEngineering.Core.Tactics.Condition do
-  @moduledoc "A deliberately small, data-only artifact-field comparison."
+  @moduledoc "A deliberately small, data-only comparison against an exact output binding."
 
-  alias QuestEngineering.Core.Tactics.Artifact
+  alias QuestEngineering.Core.Tactics.ArtifactRef
 
-  @enforce_keys [:artifact, :field, :operator, :value]
-  defstruct [:artifact, :field, :operator, :value]
+  @enforce_keys [:source, :field, :operator, :value]
+  defstruct [:source, :field, :operator, :value]
 
   @type literal :: String.t() | integer() | float() | boolean() | nil
   @type t :: %__MODULE__{
-          artifact: Artifact.t(),
+          source: ArtifactRef.t(),
           field: String.t(),
           operator: :equals,
           value: literal()

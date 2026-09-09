@@ -27,6 +27,7 @@ import {
   type StepState,
   strings,
   type Tactic,
+  type TacticInterfaceContract,
   type TacticPreview,
   type TacticSource,
   type Workspace,
@@ -77,6 +78,7 @@ export interface TacticInput {
   name?: string;
   description?: string;
   body?: JsonValue;
+  interface?: TacticInterfaceContract;
 }
 
 export class ApiClient {
@@ -298,10 +300,13 @@ export class ApiClient {
     id: string,
     body?: JsonValue,
     signal?: AbortSignal,
+    tacticInterface?: TacticInterfaceContract,
   ) =>
     this.post(
       `/tactics/${id}/preview`,
-      body === undefined ? {} : { body },
+      body === undefined
+        ? {}
+        : { body, ...(tacticInterface ? { interface: tacticInterface } : {}) },
       (value) => decodeTacticPreview(asRecord(value, "preview").preview),
       signal,
     );
@@ -482,6 +487,7 @@ function decodeTactic(value: unknown): Tactic {
     name: asString(x.name, "tactic"),
     description: asString(x.description, "tactic"),
     body: x.body as JsonValue,
+    interface: x.interface as Tactic["interface"],
     archived_at: nullableString(x.archived_at, "tactic"),
   };
 }
@@ -869,6 +875,10 @@ function decodeRun(value: unknown): RunProjection {
     },
     steps: asArray(x.steps, "run steps").map(decodeRunStep),
     artifacts: asArray(x.artifacts, "artifacts").map(decodeArtifactSummary),
+    planning:
+      x.planning === undefined
+        ? { accepted_plan: null, history: [] }
+        : decodePlanning(x.planning),
     operational_recovery:
       x.operational_recovery === undefined
         ? []
@@ -967,6 +977,39 @@ function decodeOperationalRecoveryEpoch(value: unknown) {
   };
 }
 
+function decodePlanning(
+  value: unknown,
+): NonNullable<RunProjection["planning"]> {
+  const planning = asRecord(value, "planning");
+  return {
+    accepted_plan:
+      planning.accepted_plan === null
+        ? null
+        : decodeArtifactSummary(planning.accepted_plan),
+    history: asArray(planning.history, "plan history").map((value) => {
+      const item = asRecord(value, "plan history");
+      const status =
+        item.status === null ? null : asString(item.status, "plan status");
+      if (status !== null && status !== "accepted" && status !== "rejected")
+        throw new Error("Invalid plan status.");
+      return {
+        artifact_id: asString(item.artifact_id, "plan history"),
+        version: asNumber(item.version, "plan history"),
+        status,
+        verdict_artifact_id: nullableString(
+          item.verdict_artifact_id,
+          "plan verdict artifact",
+        ),
+        findings: (item.findings ?? null) as JsonValue,
+        supersedes_artifact_id: nullableString(
+          item.supersedes_artifact_id,
+          "superseded plan artifact",
+        ),
+      };
+    }),
+  };
+}
+
 function decodeSemanticRemediation(value: unknown) {
   const remediation = asRecord(value, "semantic remediation");
   return {
@@ -988,6 +1031,21 @@ function decodeSemanticRemediation(value: unknown) {
     ),
     status: asString(remediation.status, "semantic remediation"),
     review_shaped: asBoolean(remediation.review_shaped, "semantic remediation"),
+    acceptance_gate_key:
+      remediation.acceptance_gate_key == null
+        ? null
+        : asString(remediation.acceptance_gate_key, "acceptance gate"),
+    acceptance_subject_kind:
+      remediation.acceptance_subject_kind == null
+        ? null
+        : asString(remediation.acceptance_subject_kind, "acceptance subject"),
+    remediation_kind:
+      remediation.remediation_kind == null
+        ? "generic"
+        : (asString(remediation.remediation_kind, "remediation kind") as
+            | "plan_revision"
+            | "implementation_repair"
+            | "generic"),
   };
 }
 
@@ -1284,6 +1342,7 @@ function decodeHumanInteraction(value: unknown) {
 function decodeArtifactRef(value: unknown) {
   const x = asRecord(value, "artifact reference");
   return {
+    name: asString(x.name, "artifact reference"),
     type: asString(x.type, "artifact reference"),
     artifact_id: asString(x.artifact_id, "artifact reference"),
   };
@@ -1298,6 +1357,20 @@ function decodeArtifactSummary(value: unknown) {
       x.producer_attempt_id,
       "artifact producer attempt",
     ),
+    version: x.version == null ? null : asNumber(x.version, "artifact version"),
+    supersedes_artifact_id:
+      x.supersedes_artifact_id == null
+        ? null
+        : asString(x.supersedes_artifact_id, "superseded artifact"),
+    content_hash:
+      x.content_hash == null ? null : asString(x.content_hash, "artifact hash"),
+    media_type:
+      x.media_type == null
+        ? null
+        : asString(x.media_type, "artifact media type"),
+    filename:
+      x.filename == null ? null : asString(x.filename, "artifact filename"),
+    title: x.title == null ? null : asString(x.title, "artifact title"),
     preview: x.preview as JsonValue,
   };
 }

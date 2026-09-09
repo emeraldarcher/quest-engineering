@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { Quest, RunProjection, RunStep } from "../../api/contracts";
 import {
+  acceptedPlan,
+  artifactPreview,
   canCleanUp,
   canRunAgain,
   currentReviewResult,
   diagnosticPresentation,
+  documentContent,
+  implementationPlanInput,
   latestReviewArtifact,
   questPresentation,
   stepDisplayName,
@@ -173,18 +177,88 @@ describe("Work Yard operational presentation", () => {
     expect(stepDisplayName(steps, 1)).toBe("Review 2");
   });
 
+  test("accepted immutable Plan is readable and is explicit implementation provenance", () => {
+    const value = run();
+    const plan = {
+      id: "plan-v2",
+      type: "quest_plan",
+      producer_occurrence_id: "revise-plan-1",
+      producer_attempt_id: "revise-plan-1-attempt-1",
+      version: 2,
+      supersedes_artifact_id: "plan-v1",
+      content_hash: "sha256:abc",
+      media_type: "text/markdown",
+      filename: "quest-plan.md",
+      title: "Quest Plan",
+      preview: { kind: "document", filename: "quest-plan.md" },
+    };
+    value.artifacts = [plan];
+    value.planning = {
+      accepted_plan: plan,
+      history: [
+        {
+          artifact_id: plan.id,
+          version: 2,
+          status: "accepted",
+          verdict_artifact_id: "plan-verdict-2",
+          findings: null,
+          supersedes_artifact_id: "plan-v1",
+        },
+      ],
+    };
+    const implement = {
+      occurrence_id: "implement",
+      semantic_step_key: "implement",
+      name: "Implement",
+      instruction: "Implement.",
+      state: "completed" as const,
+      phase: "root",
+      remediation_cycle: null,
+      control_path: [],
+      attempt: null,
+      attempts: [],
+      member: null,
+      performer: {
+        selector: "class",
+        class_key: "builder",
+        source_occurrence_id: null,
+        source_semantic_step_key: null,
+      },
+      context: {
+        mode: "fresh",
+        source_occurrence_id: null,
+        source_semantic_step_key: null,
+      },
+      inputs: [{ name: "plan", type: "quest_plan", artifact_id: plan.id }],
+      outputs: [],
+      issue: null,
+    };
+
+    expect(acceptedPlan(value)?.id).toBe("plan-v2");
+    expect(implementationPlanInput(implement, value.artifacts)?.version).toBe(
+      2,
+    );
+    expect(artifactPreview(plan)).toContain("v2");
+    expect(
+      documentContent({
+        ...plan,
+        value: { kind: "document", content: "# Plan v2" },
+      }),
+    ).toBe("# Plan v2");
+  });
+
   test("latest Review result follows semantic occurrence order, not artifact order", () => {
     const value = run();
     const rejected = {
       id: "verdict-rejected",
-      type: "verdict",
+      type: "review_verdict",
       producer_occurrence_id: "review-1",
       producer_attempt_id: "review-1-attempt-1",
       preview: { kind: "review_verdict", status: "rejected" },
     };
     const accepted = {
       id: "verdict-accepted",
-      type: "verdict",
+      type: "review_verdict",
       producer_occurrence_id: "review-2",
       producer_attempt_id: "review-2-attempt-1",
       preview: { kind: "review_verdict", status: "accepted" },
@@ -213,7 +287,9 @@ describe("Work Yard operational presentation", () => {
         source_semantic_step_key: null,
       },
       inputs: [],
-      outputs: [{ type: "verdict", artifact_id: artifactId }],
+      outputs: [
+        { name: "verdict", type: "review_verdict", artifact_id: artifactId },
+      ],
       issue: null,
     });
     value.steps = [

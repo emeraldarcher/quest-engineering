@@ -97,8 +97,8 @@ test("ambiguous artifacts offer only authoritative server-projected candidates",
   )) as HTMLSelectElement;
   expect(Array.from(source.options).map((option) => option.value)).toEqual([
     "",
-    "backend",
-    "frontend",
+    "backend::change_set",
+    "frontend::change_set",
   ]);
   expect(screen.getByText(/more than one possible producer/)).toBeTruthy();
 });
@@ -145,6 +145,7 @@ test("New Tactic generates an immutable key and persists one complete semantic b
       consumes: [],
       produces: [],
     },
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const create = vi.spyOn(store.api, "createTactic").mockResolvedValue(created);
@@ -243,7 +244,7 @@ test("TacticUse hides IDs, previews nested semantics, and guards referenced navi
   setup("war-room-use", "use");
   expect(
     await screen.findByRole("heading", {
-      name: /Plan & Build|Implement & Review/,
+      name: /Plan & Review|Implement & Review/,
     }),
   ).toBeTruthy();
   expect(screen.queryByText("war-tactic-plan")).toBeNull();
@@ -318,8 +319,8 @@ test("dirty-state Save failure retains the complete structural draft", async () 
     target: { value: "Preserve this complete changed instruction." },
   });
   await fireEvent.click(screen.getByRole("button", { name: "+ Input" }));
-  await fireEvent.input(screen.getByLabelText("Input artifact 1"), {
-    target: { value: "plan" },
+  await fireEvent.change(screen.getByLabelText("Input type 1"), {
+    target: { value: "quest_plan" },
   });
   await fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
   expect(await screen.findByText(/complete draft is still here/)).toBeTruthy();
@@ -327,8 +328,8 @@ test("dirty-state Save failure retains the complete structural draft", async () 
     (screen.getByLabelText("Instruction") as HTMLTextAreaElement).value,
   ).toBe("Preserve this complete changed instruction.");
   expect(
-    (screen.getByLabelText("Input artifact 1") as HTMLInputElement).value,
-  ).toBe("plan");
+    (screen.getByLabelText("Input type 1") as HTMLSelectElement).value,
+  ).toBe("quest_plan");
 });
 
 test("a stale semantic preview cannot overwrite the latest draft result", async () => {

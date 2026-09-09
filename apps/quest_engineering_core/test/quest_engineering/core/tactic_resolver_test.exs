@@ -1,316 +1,378 @@
 defmodule QuestEngineering.Core.TacticResolverTest do
   use ExUnit.Case, async: true
-
   import Kernel, except: [use: 2]
-  import QuestEngineering.Core.Product.TacticAuthoring, only: [use: 2]
+  import QuestEngineering.Core.Product.TacticAuthoring, only: [use: 2, use: 3]
   import QuestEngineering.Core.Tactics
 
   alias QuestEngineering.Core.Compiler
-  alias QuestEngineering.Core.Product.TacticDefinition
+  alias QuestEngineering.Core.Runtime
+
+  alias QuestEngineering.Core.Product.{
+    AcceptedArtifactSource,
+    TacticDefinition,
+    TacticInputBinding,
+    TacticInputPort,
+    TacticInterface,
+    TacticOutputPort
+  }
+
   alias QuestEngineering.Core.Product.TacticResolver
-  alias QuestEngineering.Core.Product.TacticResolver.Catalog
-  alias QuestEngineering.Core.Product.TacticResolver.Limits
+  alias QuestEngineering.Core.Product.TacticResolver.{Catalog, Limits}
   alias QuestEngineering.Core.Product.TacticSource
-  alias QuestEngineering.Core.Product.Validation
-  alias QuestEngineering.Core.Tactics.ContextRequirement
-  alias QuestEngineering.Core.Tactics.PerformerRequirement
 
-  test "scopes one composite and rewrites every current Step-key reference" do
-    definition = implement_review("implement-review-id")
-    source = TacticSource.inline(use("backend", definition.id))
-
-    assert {:ok, resolution} = TacticResolver.resolve(source, catalog([definition]))
-    assert {:ok, plan} = Compiler.compile(resolution.tactic)
-
-    assert Enum.map(plan.steps, & &1.key) == [
-             "backend/implement",
-             "backend/review",
-             "backend/repair"
-           ]
-
-    repair = Enum.find(plan.steps, &(&1.key == "backend/repair"))
-
-    assert repair.performer == %PerformerRequirement{
-             selector: :same_as,
-             value: "backend/implement"
-           }
-
-    assert repair.context == %ContextRequirement{
-             selector: :continue_from,
-             value: "backend/implement"
-           }
-
-    review = resolution.tactic.children |> Enum.at(1) |> Map.fetch!(:check)
-    assert hd(review.consumes).source == "backend/implement"
-    assert Enum.at(resolution.tactic.children, 1).condition.artifact.source == "backend/review"
-  end
-
-  test "the same composite expands twice without collisions or crossed affinity" do
-    definition = implement_review("implement-review-id")
+  test "slash-scoped uses preserve identities while exposing only declared outputs" do
+    child = plan_review("planning-id")
 
     source =
       TacticSource.inline(
-        parallel([
-          use("backend", definition.id),
-          use("frontend", definition.id)
+        sequence([
+          use("planning", child.id),
+          step("consume",
+            name: "Consume",
+            instruction: "Consume.",
+            performer: class("builder"),
+            consumes: [input("plan", "quest_plan", from: ref("planning", "accepted_plan"))]
+          )
         ])
       )
 
-    assert {:ok, first} = TacticResolver.resolve(source, catalog([definition]))
-    assert {:ok, second} = TacticResolver.resolve(source, catalog([definition]))
-    assert first == second
-    assert {:ok, plan} = Compiler.compile(first.tactic)
+    assert {:ok, resolution} = TacticResolver.resolve(source, catalog([child]))
+    assert {:ok, plan} = Compiler.compile(resolution)
 
     assert Enum.map(plan.steps, & &1.key) == [
-             "backend/implement",
-             "backend/review",
-             "backend/repair",
-             "frontend/implement",
-             "frontend/review",
-             "frontend/repair"
+             "planning/plan",
+             "planning/review_plan",
+             "planning/revise_plan",
+             "consume"
            ]
 
-    for prefix <- ["backend", "frontend"] do
-      repair = Enum.find(plan.steps, &(&1.key == "#{prefix}/repair"))
-      assert repair.performer.value == "#{prefix}/implement"
-      assert repair.context.value == "#{prefix}/implement"
-    end
+    [binding] = Enum.filter(plan.artifact_bindings, &(&1.consumer == "consume"))
+    assert binding.kind == "quest_plan"
+
+    assert match?(
+             %QuestEngineering.Core.ExecutionPlan.UntilOutput{source_kind: :carried},
+             binding.producer
+           )
+
+    refute Enum.any?(plan.artifact_bindings, &(&1.producer == ref("planning/plan", "plan")))
   end
 
-  test "nested composites use deterministic instance paths and may consume parent context" do
-    child = contextual_implement_review("implement-review-id")
+  test "two uses produce collision-free scoped exports and ambiguous automatic selection is rejected" do
+    child = plan_review("planning-id")
 
-    feature =
-      definition(
-        "feature-work-id",
-        "feature-work",
+    source =
+      TacticSource.inline(
+        sequence([
+          use("planning_a", child.id),
+          use("planning_b", child.id),
+          step("consume",
+            name: "Consume",
+            instruction: "Consume.",
+            performer: class("builder"),
+            consumes: [input("plan", "quest_plan")]
+          )
+        ])
+      )
+
+    assert {:ok, resolution} = TacticResolver.resolve(source, catalog([child]))
+    assert {:error, errors} = Compiler.compile(resolution)
+    assert Enum.any?(errors, &(&1.type == :ambiguous_artifact))
+  end
+
+  test "required child inputs are explicit and kind checked" do
+    child = required_consumer("consumer-id")
+    missing = TacticSource.inline(use("child", child.id))
+    assert {:ok, resolution} = TacticResolver.resolve(missing, catalog([child]))
+    assert {:error, errors} = Compiler.compile(resolution)
+    assert Enum.any?(errors, &(&1.type == :missing_required_tactic_input))
+
+    mismatch =
+      TacticSource.inline(
+        sequence([
+          step("build",
+            name: "Build",
+            instruction: "Build.",
+            performer: class("builder"),
+            produces: [output("change_set", "change_set")]
+          ),
+          use("child", child.id, [
+            %TacticInputBinding{input: "plan", source: ref("build", "change_set")}
+          ])
+        ])
+      )
+
+    assert {:ok, resolution} = TacticResolver.resolve(mismatch, catalog([child]))
+    assert {:error, errors} = Compiler.compile(resolution)
+    assert Enum.any?(errors, &(&1.type == :incompatible_tactic_input_kind))
+  end
+
+  test "nested uses expose only the immediate child interface" do
+    leaf = plan_review("leaf-id")
+
+    wrapper = %TacticDefinition{
+      id: "wrapper-id",
+      key: "wrapper",
+      name: "Wrapper",
+      description: "",
+      body: use("inner", leaf.id),
+      interface: %TacticInterface{
+        outputs: [
+          %TacticOutputPort{
+            key: "plan",
+            label: "Plan",
+            kind: "quest_plan",
+            source: ref("inner", "accepted_plan")
+          }
+        ]
+      }
+    }
+
+    source =
+      TacticSource.inline(
+        sequence([
+          use("outer", wrapper.id),
+          step("consume",
+            name: "Consume",
+            instruction: "Consume.",
+            performer: class("builder"),
+            consumes: [input("plan", "quest_plan", from: ref("outer", "plan"))]
+          )
+        ])
+      )
+
+    assert {:ok, resolution} = TacticResolver.resolve(source, catalog([leaf, wrapper]))
+    assert {:ok, plan} = Compiler.compile(resolution)
+    assert Enum.any?(plan.artifact_bindings, &(&1.consumer == "consume"))
+    refute Enum.any?(plan.artifact_bindings, &(&1.producer == ref("outer/inner/plan", "plan")))
+  end
+
+  test "composed accepted Quest Plan handoff preserves exact artifact identity, hash, and provenance" do
+    planning = plan_review("planning-id")
+    implementation = implement_review("implementation-id")
+
+    composite = %TacticDefinition{
+      id: "composite-id",
+      key: "plan-implement-review",
+      name: "Plan, Implement & Review",
+      description: "",
+      body:
+        sequence([
+          use("planning", planning.id),
+          use("implementation", implementation.id, [
+            %TacticInputBinding{input: "plan", source: ref("planning", "accepted_plan")}
+          ])
+        ])
+    }
+
+    assert {:ok, resolution} =
+             TacticResolver.resolve(
+               TacticSource.definition(composite.id),
+               catalog([planning, implementation, composite])
+             )
+
+    assert {:ok, plan} = Compiler.compile(resolution)
+    {:ok, run, [action]} = Runtime.start(plan, "composed-handoff")
+
+    {:ok, run, [action]} =
+      Runtime.transition(run, Runtime.completed(action, %{"plan" => "# Plan v1"}))
+
+    {:ok, run, [action]} =
+      Runtime.transition(
+        run,
+        Runtime.completed(action, %{"verdict" => %{"status" => "rejected"}})
+      )
+
+    {:ok, run, [action]} =
+      Runtime.transition(run, Runtime.completed(action, %{"plan" => "# Plan v2"}))
+
+    accepted_plan = action.inputs["plan"]
+
+    {:ok, _run, [implement]} =
+      Runtime.transition(
+        run,
+        Runtime.completed(action, %{"verdict" => %{"status" => "accepted"}})
+      )
+
+    handed_off = implement.inputs["plan"]
+    assert handed_off.id == accepted_plan.id
+    assert handed_off.content_hash == accepted_plan.content_hash
+    assert handed_off.producer_occurrence_id == accepted_plan.producer_occurrence_id
+  end
+
+  test "accepted-subject root export resolves to the exact accepted immutable artifact" do
+    definition = plan_review("planning-id")
+
+    assert {:ok, resolution} =
+             TacticResolver.resolve(TacticSource.definition(definition.id), catalog([definition]))
+
+    assert {:ok, plan} = Compiler.compile(resolution)
+    {:ok, run, [planning]} = Runtime.start(plan, "planning-export")
+
+    {:ok, run, [review]} =
+      Runtime.transition(run, Runtime.completed(planning, %{"plan" => "# Accepted"}))
+
+    subject_id = review.inputs["plan"].id
+
+    {:ok, run, []} =
+      Runtime.transition(
+        run,
+        Runtime.completed(review, %{"verdict" => %{"status" => "accepted"}})
+      )
+
+    assert run.tactic_output_artifact_ids == %{"accepted_plan" => subject_id}
+    assert run.artifacts[subject_id].content_hash == review.inputs["plan"].content_hash
+  end
+
+  test "standalone Implement & Review omits its optional Quest Plan without a synthetic artifact" do
+    definition = implement_review("implementation-id")
+
+    assert {:ok, resolution} =
+             TacticResolver.resolve(TacticSource.definition(definition.id), catalog([definition]))
+
+    assert {:ok, plan} = Compiler.compile(resolution)
+    assert {:ok, run, [implement]} = Runtime.start(plan, "standalone-implementation")
+    assert implement.inputs == %{}
+    assert run.artifacts == %{}
+  end
+
+  test "cycle detection and conservative depth limits remain" do
+    a = %TacticDefinition{id: "a", key: "a", name: "A", description: "", body: use("b", "b")}
+    b = %TacticDefinition{id: "b", key: "b", name: "B", description: "", body: use("a", "a")}
+
+    assert {:error, [%{code: :cyclic_tactic_reference}]} =
+             TacticResolver.resolve(TacticSource.definition(a.id), catalog([a, b]))
+
+    limits = %Limits{Limits.defaults() | max_use_depth: 0}
+
+    assert {:error, [%{code: :resolution_limit_exceeded}]} =
+             TacticResolver.resolve(TacticSource.inline(use("a", a.id)), catalog([a, b]), limits)
+  end
+
+  defp plan_review(id) do
+    %TacticDefinition{
+      id: id,
+      key: "plan-review",
+      name: "Plan & Review",
+      description: "",
+      body:
         sequence([
           step("plan",
             name: "Plan",
             instruction: "Plan.",
             performer: class("planner"),
-            produces: ["plan"]
+            produces: [output("plan", "quest_plan")]
           ),
-          use("implementation", child.id),
-          step("finalize",
-            name: "Finalize",
-            instruction: "Finalize.",
-            performer: class("builder"),
-            consumes: ["verdict"]
+          until(
+            check:
+              step("review_plan",
+                name: "Review Plan",
+                instruction: "Review.",
+                performer: class("reviewer"),
+                consumes: [input("plan", "quest_plan")],
+                produces: [
+                  output("verdict", "review_verdict", review: review("plan_acceptance", "plan"))
+                ]
+              ),
+            condition: equals(field(ref("review_plan", "verdict"), "status"), "accepted"),
+            otherwise:
+              step("revise_plan",
+                name: "Revise Plan",
+                instruction: "Revise.",
+                performer: same_as("plan"),
+                consumes: [input("plan", "quest_plan"), input("verdict", "review_verdict")],
+                produces: [output("plan", "quest_plan")]
+              ),
+            max_remediations: 2
           )
-        ])
-      )
-
-    source = TacticSource.inline(use("backend", feature.id))
-    assert {:ok, resolution} = TacticResolver.resolve(source, catalog([feature, child]))
-    assert {:ok, plan} = Compiler.compile(resolution.tactic)
-
-    assert Enum.map(plan.steps, & &1.key) == [
-             "backend/plan",
-             "backend/implementation/implement",
-             "backend/implementation/review",
-             "backend/finalize"
-           ]
-
-    assert Enum.map(resolution.provenance.definitions, & &1.instance_path) == [
-             ["backend"],
-             ["backend", "implementation"]
-           ]
-  end
-
-  test "leaves ambiguous nested artifact output selection to the compiler" do
-    producer =
-      definition(
-        "producer-id",
-        "producer",
-        step("implement",
-          name: "Implement",
-          instruction: "Implement.",
-          performer: class("builder"),
-          produces: ["change-set"]
-        )
-      )
-
-    source =
-      TacticSource.inline(
-        sequence([
-          parallel([use("backend", producer.id), use("frontend", producer.id)]),
-          step("integrate",
-            name: "Integrate",
-            instruction: "Integrate.",
-            performer: class("builder"),
-            consumes: ["change-set"]
-          )
-        ])
-      )
-
-    assert {:ok, resolution} = TacticResolver.resolve(source, catalog([producer]))
-    assert {:error, errors} = Compiler.compile(resolution.tactic)
-
-    assert [%{type: :ambiguous_artifact, candidate_sources: candidates}] =
-             Enum.filter(errors, &(&1.type == :ambiguous_artifact))
-
-    assert candidates == ["backend/implement", "frontend/implement"]
-  end
-
-  test "detects direct and indirect cycles with definition paths" do
-    direct = definition("a-id", "a", use("self", "a-id"))
-
-    assert {:error, [error]} =
-             TacticResolver.resolve(TacticSource.definition(direct.id), catalog([direct]))
-
-    assert error.code == :cyclic_tactic_reference
-    assert error.definition_path == ["a", "a"]
-
-    a = definition("a-id", "a", use("to-b", "b-id"))
-    b = definition("b-id", "b", use("to-c", "c-id"))
-    c = definition("c-id", "c", use("to-a", "a-id"))
-
-    assert {:error, [error]} =
-             TacticResolver.resolve(TacticSource.definition(a.id), catalog([a, b, c]))
-
-    assert error.code == :cyclic_tactic_reference
-    assert error.definition_path == ["a", "b", "c", "a"]
-  end
-
-  test "rejects missing and archived references distinctly" do
-    parent = definition("parent-id", "parent", use("child", "child-id"))
-
-    assert {:error, [%{code: :missing_tactic_definition}]} =
-             TacticResolver.resolve(TacticSource.definition(parent.id), catalog([parent]))
-
-    child = definition("child-id", "child", simple_step("work"))
-
-    assert {:error, [%{code: :archived_tactic_definition}]} =
-             TacticResolver.resolve(
-               TacticSource.definition(parent.id),
-               catalog([parent, child], [child.id])
-             )
-  end
-
-  test "Step and Use identities share one namespace and deep references are invalid" do
-    duplicate =
-      definition(
-        "duplicate-id",
-        "duplicate",
-        sequence([simple_step("backend"), use("backend", "child-id")])
-      )
-
-    assert {:error, errors} = Validation.validate(duplicate)
-    assert Enum.any?(errors, &(&1.code == :duplicate_local_identity))
-
-    deep =
-      definition(
-        "deep-id",
-        "deep",
-        step("later",
-          name: "Later",
-          instruction: "Later.",
-          performer: same_as("backend/implement")
-        )
-      )
-
-    assert {:error, errors} = Validation.validate(deep)
-    assert Enum.any?(errors, &(&1.code == :invalid_local_step_reference))
-  end
-
-  test "returns structured expansion safety-limit errors" do
-    leaf = definition("leaf-id", "leaf", simple_step("work"))
-    middle = definition("middle-id", "middle", use("nested", leaf.id))
-    root = definition("root-id", "root", use("middle", middle.id))
-    catalog = catalog([root, middle, leaf])
-
-    limits = %Limits{Limits.defaults() | max_use_depth: 1}
-
-    assert {:error, [error]} =
-             TacticResolver.resolve(TacticSource.definition(root.id), catalog, limits)
-
-    assert error.code == :resolution_limit_exceeded
-    assert error.details.limit == :max_use_depth
-
-    limits = %Limits{Limits.defaults() | max_expanded_nodes: 0}
-
-    assert {:error, [%{code: :resolution_limit_exceeded, details: %{limit: :max_expanded_nodes}}]} =
-             TacticResolver.resolve(TacticSource.definition(root.id), catalog, limits)
-
-    limits = %Limits{Limits.defaults() | max_resolved_key_bytes: 8}
-
-    assert {:error,
-            [%{code: :resolution_limit_exceeded, details: %{limit: :max_resolved_key_bytes}}]} =
-             TacticResolver.resolve(TacticSource.definition(root.id), catalog, limits)
+        ]),
+      interface: %TacticInterface{
+        outputs: [
+          %TacticOutputPort{
+            key: "accepted_plan",
+            label: "Accepted Quest Plan",
+            kind: "quest_plan",
+            source: %AcceptedArtifactSource{gate_key: "plan_acceptance"}
+          }
+        ]
+      }
+    }
   end
 
   defp implement_review(id) do
-    definition(
-      id,
-      "implement-review",
-      sequence([
-        step("implement",
-          name: "Implement",
-          instruction: "Implement.",
-          performer: class("builder"),
-          produces: ["change-set"]
-        ),
-        until(
-          check:
-            step("review",
-              name: "Review",
-              instruction: "Review.",
-              performer: class("reviewer"),
-              consumes: [artifact("change-set", from: "implement")],
-              produces: ["verdict"]
-            ),
-          condition: equals(field(artifact("verdict", from: "review"), "accepted"), true),
-          otherwise:
-            step("repair",
-              name: "Repair",
-              instruction: "Repair.",
-              performer: same_as("implement"),
-              context: continue_from("implement"),
-              consumes: ["change-set"],
-              produces: ["change-set"]
-            ),
-          max_remediations: 2
-        )
-      ])
-    )
-  end
-
-  defp contextual_implement_review(id) do
-    definition(
-      id,
-      "implement-review",
-      sequence([
-        step("implement",
-          name: "Implement",
-          instruction: "Implement from plan.",
-          performer: class("builder"),
-          consumes: ["plan"],
-          produces: ["change-set"]
-        ),
-        step("review",
-          name: "Review",
-          instruction: "Review.",
-          performer: class("reviewer"),
-          consumes: [artifact("change-set", from: "implement")],
-          produces: ["verdict"]
-        )
-      ])
-    )
-  end
-
-  defp simple_step(key) do
-    step(key, name: String.capitalize(key), instruction: "Work.", performer: class("builder"))
-  end
-
-  defp definition(id, key, body) do
-    %TacticDefinition{id: id, key: key, name: key, description: "", body: body}
-  end
-
-  defp catalog(definitions, archived_ids \\ []) do
-    %Catalog{
-      definitions: Map.new(definitions, &{&1.id, &1}),
-      archived_ids: MapSet.new(archived_ids)
+    %TacticDefinition{
+      id: id,
+      key: "implement-review",
+      name: "Implement & Review",
+      description: "",
+      body:
+        sequence([
+          step("implement",
+            name: "Implement",
+            instruction: "Implement.",
+            performer: class("builder"),
+            consumes: [input("plan", "quest_plan", from: ref("$inputs", "plan"), required: false)],
+            produces: [output("change_set", "change_set")]
+          ),
+          until(
+            check:
+              step("review",
+                name: "Review",
+                instruction: "Review.",
+                performer: class("reviewer"),
+                consumes: [input("change_set", "change_set")],
+                produces: [
+                  output("verdict", "review_verdict",
+                    review: review("implementation_acceptance", "change_set")
+                  )
+                ]
+              ),
+            condition: equals(field(ref("review", "verdict"), "status"), "accepted"),
+            otherwise:
+              step("repair",
+                name: "Repair",
+                instruction: "Repair.",
+                performer: same_as("implement"),
+                consumes: [input("change_set", "change_set"), input("verdict", "review_verdict")],
+                produces: [output("change_set", "change_set")]
+              ),
+            max_remediations: 3
+          )
+        ]),
+      interface: %TacticInterface{
+        inputs: [
+          %TacticInputPort{key: "plan", label: "Quest Plan", kind: "quest_plan", required: false}
+        ],
+        outputs: [
+          %TacticOutputPort{
+            key: "accepted_change_set",
+            label: "Accepted Change Set",
+            kind: "change_set",
+            source: %AcceptedArtifactSource{gate_key: "implementation_acceptance"}
+          }
+        ]
+      }
     }
   end
+
+  defp required_consumer(id),
+    do: %TacticDefinition{
+      id: id,
+      key: "consumer",
+      name: "Consumer",
+      description: "",
+      body:
+        step("consume",
+          name: "Consume",
+          instruction: "Consume.",
+          performer: class("builder"),
+          consumes: [input("plan", "quest_plan", from: ref("$inputs", "plan"))]
+        ),
+      interface: %TacticInterface{
+        inputs: [
+          %TacticInputPort{key: "plan", label: "Quest Plan", kind: "quest_plan", required: true}
+        ]
+      }
+    }
+
+  defp catalog(definitions), do: %Catalog{definitions: Map.new(definitions, &{&1.id, &1})}
 end

@@ -120,18 +120,18 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
             name: "Review",
             instruction: "Review.",
             performer: class("reviewer"),
-            consumes: [artifact("change_set")],
-            produces: ["verdict"]
+            consumes: [input("change_set", "change_set")],
+            produces: [output("verdict", "check_result")]
           ),
-        condition: equals(field(artifact("verdict", from: "review"), "accepted"), true),
+        condition: equals(field(ref("review", "verdict"), "accepted"), true),
         otherwise:
           step("repair",
             name: "Repair",
             instruction: "Repair.",
             performer: same_as("review"),
             context: continue_from("review"),
-            consumes: [artifact("change_set")],
-            produces: ["change_set"]
+            consumes: [input("change_set", "change_set")],
+            produces: [output("change_set", "change_set")]
           ),
         max_remediations: 2
       )
@@ -198,7 +198,7 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
   test "invalid Tactics produce structured domain errors before persistence" do
     %{squad: squad} = product_fixture(create_quest: false)
 
-    assert {:error, [%{code: :unknown_local_step_reference}]} =
+    assert {:error, [%{code: :unknown_local_reference}]} =
              Products.create_quest(%{
                title: "Invalid",
                objective: "Invalid affinity.",
@@ -308,14 +308,14 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
         name: "Implement",
         instruction: "Implement the requested change.",
         performer: class("builder"),
-        produces: ["change_set"]
+        produces: [output("change_set", "change_set")]
       ),
       step("review",
         name: "Review",
         instruction: "Review the change.",
         performer: class("reviewer"),
-        consumes: [artifact("change_set", from: "implement")],
-        produces: ["verdict"]
+        consumes: [input("change_set", "change_set", from: ref("implement", "change_set"))],
+        produces: [output("verdict", "check_result")]
       )
     ])
   end

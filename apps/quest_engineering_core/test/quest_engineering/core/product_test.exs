@@ -79,7 +79,7 @@ defmodule QuestEngineering.Core.ProductTest do
     test "compiles the embedded Tactic and resolves exact Class and Loadout values" do
       assert {:ok, snapshot} = valid_snapshot()
 
-      assert %LaunchSnapshot{schema_version: 3} = snapshot
+      assert %LaunchSnapshot{schema_version: 4} = snapshot
 
       assert snapshot.quest.objective ==
                "Implement and independently review the requested change."
@@ -209,7 +209,7 @@ defmodule QuestEngineering.Core.ProductTest do
                  Catalog.empty()
                )
 
-      assert Enum.any?(errors, &(&1.code == :unknown_local_step_reference))
+      assert Enum.any?(errors, &(&1.code == :unknown_local_reference))
     end
   end
 
@@ -261,15 +261,15 @@ defmodule QuestEngineering.Core.ProductTest do
             instruction: forced_takeover,
             performer: class("builder"),
             context: fresh(),
-            produces: [artifact("change_set")]
+            produces: [output("change_set", "change_set")]
           ),
           step("review",
             name: "Review",
             instruction: review_instruction,
             performer: class("reviewer"),
             context: fresh(),
-            consumes: [artifact("change_set", from: "implement")],
-            produces: [artifact("verdict")]
+            consumes: [input("change_set", "change_set", from: ref("implement", "change_set"))],
+            produces: [output("verdict", "check_result")]
           )
         ])
 
@@ -446,14 +446,14 @@ defmodule QuestEngineering.Core.ProductTest do
               name: "Implement",
               instruction: "Implement the requested change.",
               performer: class("builder"),
-              produces: ["change_set"]
+              produces: [output("change_set", "change_set")]
             ),
             step("review",
               name: "Review",
               instruction: "Review the current change_set.",
               performer: class("reviewer"),
-              consumes: [artifact("change_set", from: "implement")],
-              produces: ["verdict"]
+              consumes: [input("change_set", "change_set", from: ref("implement", "change_set"))],
+              produces: [output("verdict", "check_result")]
             )
           ])
       }

@@ -1,7 +1,12 @@
 <script lang="ts">
 import type { SemanticArtifactBinding, Tactic } from "../../api/contracts";
 import type { NodePath, TacticNode } from "../war-room/tactic-model";
-import { isReviewRemediationUntil, pathKey } from "../war-room/tactic-model";
+import {
+  artifactContractLabel,
+  isPlanRevisionUntil,
+  isReviewRemediationUntil,
+  pathKey,
+} from "../war-room/tactic-model";
 
 export let node: TacticNode;
 export let bindings: SemanticArtifactBinding[] = [];
@@ -32,20 +37,14 @@ $: reused =
 
 function untilConditionSummary(value: TacticNode): string {
   if (value.type !== "until") return "the check is accepted";
-  const condition = value.condition as unknown as
-    | {
-        artifact?: { type?: unknown };
-        field?: unknown;
-        value?: unknown;
-      }
-    | undefined;
-  const artifact =
-    typeof condition?.artifact?.type === "string"
-      ? condition.artifact.type
-      : "result";
-  const field = typeof condition?.field === "string" ? condition.field : "status";
-  const expected = condition ? JSON.stringify(condition.value) : '"accepted"';
-  return `${artifact}.${field} equals ${expected}`;
+  const producer = value.condition.source.producer;
+  const outputName = value.condition.source.output;
+  const output = value.type === "until"
+    ? (value.check.type === "step" ? value.check.produces : []).find((item) => item.name === outputName)
+    : undefined;
+  if (output?.review?.gate_key === "plan_acceptance") return "Quest Plan is accepted";
+  if (output?.review?.gate_key === "implementation_acceptance") return "Implementation is accepted";
+  return `${producer} → ${outputName}: ${value.condition.field} equals ${JSON.stringify(value.condition.value)}`;
 }
 
 function sourceLabel(binding: SemanticArtifactBinding): string {
@@ -83,10 +82,10 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
     {#if stepProduces.length || stepConsumes.length}
       <div class="artifact-lines">
         {#each stepConsumes as artifact}
-          {@const binding = stepBindings.find((item) => item.artifact_type === artifact.type)}
-          <span><b>Uses</b> {artifact.type}{#if binding}<em>{sourceLabel(binding)}</em>{:else if artifact.source}<em>from {artifact.source}</em>{:else}<em>source automatic</em>{/if}</span>
+          {@const binding = stepBindings.find((item) => item.input_name === artifact.name)}
+          <span><b>Uses</b> {artifactContractLabel(node, artifact, "consumes")}{#if binding}<em>{sourceLabel(binding)}</em>{:else if artifact.source}<em>from {artifact.source.producer} → {artifact.source.output}</em>{:else}<em>source automatic</em>{/if}</span>
         {/each}
-        {#each stepProduces as artifact}<span><b>Produces</b> {artifact.type}</span>{/each}
+        {#each stepProduces as artifact}<span><b>Produces</b> {artifactContractLabel(node, artifact, "produces")}</span>{/each}
       </div>
     {/if}
   </article>
@@ -118,12 +117,14 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
       <div class="condition-copy"><b>Accepted when</b><span>{untilConditionSummary(node)}</span></div>
       <div><span class="phase-label">If not accepted · Remediate</span><svelte:self {bindings} {tactics} node={node.otherwise} path={[...path, "otherwise"]} {selectedPath} {interactive} {onSelect} {compact} /></div>
     </div>
-    {#if typeof node.max_remediations === "number"}<small>{isReviewRemediationUntil(node) ? `Up to ${node.max_remediations} ${node.max_remediations === 1 ? "repair" : "repairs"}` : `Up to ${node.max_remediations} remediation ${node.max_remediations === 1 ? "iteration" : "iterations"}`}; the initial check may be followed by that many remediation opportunities.</small>{/if}
+    {#if typeof node.max_remediations === "number"}<small>{isPlanRevisionUntil(node) ? `Up to ${node.max_remediations} plan ${node.max_remediations === 1 ? "revision" : "revisions"}` : isReviewRemediationUntil(node) ? `Up to ${node.max_remediations} ${node.max_remediations === 1 ? "repair" : "repairs"}` : `Up to ${node.max_remediations} remediation ${node.max_remediations === 1 ? "iteration" : "iterations"}`}; the initial check may be followed by that many remediation opportunities.</small>{/if}
   </section>
 {:else}
   <article class="semantic-node use-node" class:selected={selectedPath === currentPath}>
     <button type="button" class="node-select" disabled={!interactive} on:click={() => onSelect(path)} aria-pressed={interactive ? selectedPath === currentPath : undefined}>
       <span class="node-kind">Reuse tactic</span><strong>{reused?.name ?? "Reusable Tactic unavailable"}</strong><small>{reused?.description ?? "This saved reference is not currently available."}</small>
+      {#if reused?.interface.inputs.length}<em>Uses: {reused.interface.inputs.map((port) => port.label).join(", ")}</em>{/if}
+      {#if reused?.interface.outputs.length}<em>Produces: {reused.interface.outputs.map((port) => port.label).join(", ")}</em>{/if}
       {#if reused?.archived_at}<em class="archived">Archived</em>{/if}
     </button>
   </article>

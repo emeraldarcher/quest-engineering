@@ -4,15 +4,11 @@ defmodule QuestEngineering.Server.StarterCrewTest do
   import QuestEngineering.Core.Tactics
 
   alias QuestEngineering.Core.Product.ModelRef
-  alias QuestEngineering.Core.Product.TacticSource
   alias QuestEngineering.Server.ExecutionOptions
-  alias QuestEngineering.Server.LaunchQuest
-  alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.ProductClass
   alias QuestEngineering.Server.Persistence.ProductLoadout
   alias QuestEngineering.Server.Persistence.ProductSquad
   alias QuestEngineering.Server.Persistence.ProductTactic
-  alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Product.StarterCrew
   alias QuestEngineering.Server.Product.TacticLibrary
@@ -231,46 +227,6 @@ defmodule QuestEngineering.Server.StarterCrewTest do
     assert_counts(2, 2, 1, 1)
   end
 
-  test "an unchanged legacy starter Tactic is upgraded in place" do
-    workspace = compatible_workspace!()
-    assert {:ok, starter} = StarterCrew.create_or_reconcile(workspace.id)
-
-    assert {:ok, legacy} =
-             TacticLibrary.update(starter.tactic.id, %{
-               name: "Implement & Review",
-               description: "A small sequential implementation and independent review tactic.",
-               body: legacy_tactic()
-             })
-
-    assert legacy.body == legacy_tactic()
-
-    assert {:ok, quest} =
-             Products.create_quest(%{
-               title: "Legacy starter snapshot",
-               objective: "Preserve the launched semantics.",
-               workspace_id: workspace.id,
-               squad_id: starter.squad.id,
-               tactic_source: TacticSource.definition(legacy.id)
-             })
-
-    assert {:ok, launched} = LaunchQuest.launch(quest.id)
-    persisted_launch = Repo.get_by!(QuestLaunch, run_id: launched.run_id)
-
-    assert %{state: :recoverable_partial} = StarterCrew.status()
-    assert {:ok, upgraded} = StarterCrew.create_or_reconcile(workspace.id)
-    assert upgraded.tactic.id == starter.tactic.id
-    assert upgraded.tactic.body == canonical_tactic()
-    assert %{state: :complete} = StarterCrew.status()
-
-    assert {:ok, historical_snapshot} =
-             LaunchSnapshotCodec.decode(
-               persisted_launch.snapshot,
-               persisted_launch.snapshot_version
-             )
-
-    assert historical_snapshot.tactic == legacy_tactic()
-  end
-
   test "a conflicting Tactic aborts without overwriting its semantics" do
     compatible_workspace!()
 
@@ -340,7 +296,12 @@ defmodule QuestEngineering.Server.StarterCrewTest do
     workspace = compatible_workspace!()
     assert {:ok, %{tactic: tactic}} = StarterCrew.create_or_reconcile(workspace.id)
 
-    assert tactic.body == canonical_tactic()
+    [implement, review_loop] = tactic.body.children
+    assert [%{name: "plan", kind: "quest_plan", required: false}] = implement.consumes
+    assert [%{key: "plan", kind: "quest_plan", required: false}] = tactic.interface.inputs
+    assert [%{key: "accepted_change_set", kind: "change_set"}] = tactic.interface.outputs
+    assert review_loop.max_remediations == 3
+    assert review_loop.check.produces |> hd() |> Map.fetch!(:kind) == "review_verdict"
   end
 
   defp assert_conflict(type, key) do
@@ -451,59 +412,4 @@ defmodule QuestEngineering.Server.StarterCrewTest do
       tools: ["workspace.filesystem", "workspace.search"],
       workspace_access: :read_only
     }
-
-  defp canonical_tactic do
-    sequence([
-      implementation_step(),
-      until(
-        check:
-          step("review",
-            name: "Review",
-            instruction:
-              "Review the current implementation against the Quest objective. Produce a structured verdict with status \"accepted\" only when the implementation is ready, otherwise status \"rejected\", and include structured findings when useful.",
-            performer: class("reviewer"),
-            context: fresh(),
-            consumes: [artifact("change_set")],
-            produces: [artifact("verdict")]
-          ),
-        condition: equals(field(artifact("verdict", from: "review"), "status"), "accepted"),
-        otherwise:
-          step("repair",
-            name: "Repair",
-            instruction:
-              "Repair the current implementation by addressing the rejected review verdict and produce an updated change set.",
-            performer: same_as("implement"),
-            context: continue_from("implement"),
-            consumes: [artifact("change_set"), artifact("verdict")],
-            produces: [artifact("change_set")]
-          ),
-        max_remediations: 3
-      )
-    ])
-  end
-
-  defp legacy_tactic do
-    sequence([
-      implementation_step(),
-      step("review",
-        name: "Review",
-        instruction: "Review the implementation against the Quest objective.",
-        performer: class("reviewer"),
-        context: fresh(),
-        consumes: [artifact("change_set", from: "implement")],
-        produces: [artifact("verdict")]
-      )
-    ])
-  end
-
-  defp implementation_step do
-    step("implement",
-      name: "Implement",
-      instruction: "Implement the Quest objective.",
-      performer: class("builder"),
-      context: fresh(),
-      consumes: [],
-      produces: [artifact("change_set")]
-    )
-  end
 end

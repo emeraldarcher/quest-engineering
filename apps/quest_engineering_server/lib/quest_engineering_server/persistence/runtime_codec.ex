@@ -15,10 +15,13 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.ExecutionPlan.ControlDependency
   alias QuestEngineering.Core.ExecutionPlan.ControlRegionReference
   alias QuestEngineering.Core.ExecutionPlan.ControlSubtree
+  alias QuestEngineering.Core.ExecutionPlan.InputEndpoint
   alias QuestEngineering.Core.ExecutionPlan.RegionArtifactBinding
   alias QuestEngineering.Core.ExecutionPlan.Step
+  alias QuestEngineering.Core.ExecutionPlan.TacticOutput
   alias QuestEngineering.Core.ExecutionPlan.UntilOutput
   alias QuestEngineering.Core.ExecutionPlan.UntilRegion
+  alias QuestEngineering.Core.Product.AcceptedArtifactSource
   alias QuestEngineering.Core.Product.LaunchSnapshot
   alias QuestEngineering.Core.Product.LaunchSnapshot.ClassSnapshot
   alias QuestEngineering.Core.Product.LaunchSnapshot.LoadoutSnapshot
@@ -27,6 +30,11 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.Product.LaunchSnapshot.SquadSnapshot
   alias QuestEngineering.Core.Product.LaunchSnapshot.WorkspaceSnapshot
   alias QuestEngineering.Core.Product.ModelRef
+  alias QuestEngineering.Core.Product.ResolvedTacticUse
+  alias QuestEngineering.Core.Product.TacticInputBinding
+  alias QuestEngineering.Core.Product.TacticInputPort
+  alias QuestEngineering.Core.Product.TacticInterface
+  alias QuestEngineering.Core.Product.TacticOutputPort
   alias QuestEngineering.Core.Product.TacticProvenance
   alias QuestEngineering.Core.Product.TacticProvenance.Occurrence, as: TacticOccurrence
   alias QuestEngineering.Core.Product.TacticProvenance.Root, as: TacticRoot
@@ -48,17 +56,20 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.Runtime.Run
   alias QuestEngineering.Core.Runtime.Scope
   alias QuestEngineering.Core.Runtime.StepOccurrence
-  alias QuestEngineering.Core.Tactics.Artifact
+  alias QuestEngineering.Core.Tactics.ArtifactInput
+  alias QuestEngineering.Core.Tactics.ArtifactOutput
+  alias QuestEngineering.Core.Tactics.ArtifactRef
   alias QuestEngineering.Core.Tactics.Condition
   alias QuestEngineering.Core.Tactics.ContextRequirement
   alias QuestEngineering.Core.Tactics.Parallel
   alias QuestEngineering.Core.Tactics.PerformerRequirement
+  alias QuestEngineering.Core.Tactics.ReviewContract
   alias QuestEngineering.Core.Tactics.Sequence
   alias QuestEngineering.Core.Tactics.Step, as: TacticStep
   alias QuestEngineering.Core.Tactics.Until
   alias QuestEngineering.Server.Persistence.Error
 
-  @snapshot_version 2
+  @snapshot_version 3
 
   @struct_modules [
     ExecutionPlan,
@@ -73,6 +84,12 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     TacticProvenance,
     TacticOccurrence,
     TacticRoot,
+    AcceptedArtifactSource,
+    ResolvedTacticUse,
+    TacticInputBinding,
+    TacticInputPort,
+    TacticInterface,
+    TacticOutputPort,
     ResolvedExecution,
     Identity,
     Performer,
@@ -87,8 +104,10 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     ControlDependency,
     ControlRegionReference,
     ControlSubtree,
+    InputEndpoint,
     RegionArtifactBinding,
     Step,
+    TacticOutput,
     UntilOutput,
     UntilRegion,
     Action,
@@ -101,8 +120,11 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     Run,
     Scope,
     StepOccurrence,
-    Artifact,
+    ArtifactInput,
+    ArtifactOutput,
+    ArtifactRef,
     Condition,
+    ReviewContract,
     ContextRequirement,
     Parallel,
     PerformerRequirement,

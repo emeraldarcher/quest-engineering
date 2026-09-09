@@ -47,7 +47,7 @@ export default function workspacePermissionExtension(pi: ExtensionAPI) {
         reason: `Tool ${event.toolName} is not permitted by read-only workspace access.`,
         terminate: true,
       };
-    const outside = outsideWorkspace(event.input);
+    const outside = outsideWorkspace(event.input, event.toolName);
     if (outside)
       return {
         block: true,
@@ -79,7 +79,7 @@ export function workspaceAccessAllows(
   return access === "read_write";
 }
 
-function outsideWorkspace(input: unknown): string | null {
+function outsideWorkspace(input: unknown, toolName: string): string | null {
   if (!input || typeof input !== "object") return null;
   const rootValue = process.env.QE_WORKSPACE_ROOT;
   if (!rootValue) return "<missing-workspace-root>";
@@ -90,14 +90,27 @@ function outsideWorkspace(input: unknown): string | null {
     const absolute = isAbsolute(value) ? resolve(value) : resolve(root, value);
     const canonical = existingCanonical(absolute);
     const rel = relative(root, canonical);
-    if (
+    const outside =
       rel === ".." ||
       rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
-      isAbsolute(rel)
-    )
+      isAbsolute(rel);
+    if (outside && !(READ_ONLY.has(toolName) && insideArtifactRoot(canonical)))
       return value;
   }
   return null;
+}
+
+function insideArtifactRoot(path: string): boolean {
+  const configured = process.env.QE_ARTIFACT_ROOT;
+  if (!configured) return false;
+  const root = resolve(configured);
+  const rel = relative(root, path);
+  return (
+    rel === "" ||
+    (rel !== ".." &&
+      !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) &&
+      !isAbsolute(rel))
+  );
 }
 
 function existingCanonical(path: string): string {

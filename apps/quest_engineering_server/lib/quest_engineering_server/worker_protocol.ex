@@ -16,7 +16,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 5
+  @version 6
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @reasoning ~w(low medium high)
@@ -1181,8 +1181,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
         "quest_objective" => work.quest_objective,
         "class_instructions" => work.class_instructions,
         "step_instruction" => work.step_instruction,
-        "inputs" => Map.new(work.inputs, fn {type, value} -> {type, artifact(value)} end),
-        "declared_outputs" => work.declared_outputs
+        "inputs" => Map.new(work.inputs, fn {name, value} -> {name, artifact(value)} end),
+        "declared_outputs" =>
+          Enum.map(work.declared_outputs, &%{"name" => &1.name, "kind" => &1.kind}),
+        "acceptance_contract" => work.acceptance_contract
       },
       "configuration" => %{
         "model" => %{
@@ -1232,9 +1234,16 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp artifact(%ArtifactInstance{} = value) do
     %{
       "id" => value.id,
-      "type" => value.type,
+      "kind" => value.kind,
+      "output_name" => value.output_name,
       "producer_occurrence_id" => value.producer_occurrence_id,
-      "value" => value.value
+      "value" => value.value,
+      "version" => value.version,
+      "supersedes_artifact_id" => value.supersedes_artifact_id,
+      "content_hash" => value.content_hash,
+      "media_type" => value.media_type,
+      "filename" => value.filename,
+      "title" => value.title
     }
   end
 

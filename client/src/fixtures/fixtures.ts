@@ -225,6 +225,7 @@ const tactic: Tactic = {
   name: "Implement and Review",
   description: "A deterministic fixture Tactic.",
   body: {},
+  interface: { inputs: [], outputs: [] },
   archived_at: null,
 };
 
@@ -574,6 +575,10 @@ function workYardStep(
   outputs: Array<{ type: string; artifact_id: string }> = [],
   remediationCycle: number | null = null,
 ): RunStep {
+  const artifactOutputs = outputs.map((output) => ({
+    ...output,
+    name: output.type,
+  }));
   return {
     occurrence_id: id,
     semantic_step_key: semanticKey,
@@ -594,7 +599,7 @@ function workYardStep(
           `attempt-${id}`,
           state === "running" ? 2 : 1,
           state,
-          outputs,
+          artifactOutputs,
         ),
     attempts: ["pending", "waiting"].includes(state)
       ? []
@@ -603,7 +608,7 @@ function workYardStep(
             `attempt-${id}`,
             state === "running" ? 2 : 1,
             state,
-            outputs,
+            artifactOutputs,
           ),
         ],
     member,
@@ -621,7 +626,7 @@ function workYardStep(
         semanticKey === "implement" ? null : "implement",
     },
     inputs: [],
-    outputs,
+    outputs: artifactOutputs,
     issue:
       state === "failed"
         ? {
@@ -644,7 +649,7 @@ function workYardArtifacts(): {
   const values: Array<ArtifactDetail> = [
     {
       id: "artifact-verdict",
-      type: "verdict",
+      type: "review_verdict",
       producer_occurrence_id: "occ-review",
       producer_attempt_id: "attempt-occ-review",
       preview: { kind: "review_verdict", status: "accepted" },
@@ -747,7 +752,12 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
           "Review",
           "completed",
           workYardMira,
-          [{ type: "verdict", artifact_id: "artifact-changes-requested" }],
+          [
+            {
+              type: "review_verdict",
+              artifact_id: "artifact-changes-requested",
+            },
+          ],
           0,
         ),
         workYardStep(
@@ -765,7 +775,7 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
           "Review",
           "completed",
           workYardMira,
-          [{ type: "verdict", artifact_id: "artifact-verdict" }],
+          [{ type: "review_verdict", artifact_id: "artifact-verdict" }],
           1,
         ),
       ]
@@ -786,7 +796,7 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
           workYardMira,
           isRunning
             ? []
-            : [{ type: "verdict", artifact_id: "artifact-verdict" }],
+            : [{ type: "review_verdict", artifact_id: "artifact-verdict" }],
         ),
       ];
   if (isRemediation) {
@@ -813,7 +823,7 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
 
   const rejectedArtifact: ArtifactSummary = {
     id: "artifact-changes-requested",
-    type: "verdict",
+    type: "review_verdict",
     producer_occurrence_id: "occ-review-first",
     producer_attempt_id: "attempt-occ-review-first-2",
     preview: { kind: "review_verdict", status: "rejected" },
@@ -1024,7 +1034,7 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
           performer: { selector: "class", value: "builder" },
           context: { selector: "fresh", value: null },
           consumes: [],
-          produces: [{ type: "change_set", source: null }],
+          produces: [{ name: "change_set", kind: "change_set", review: null }],
         },
         {
           type: "until",
@@ -1035,11 +1045,27 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
             instruction: "Produce a structured accepted or rejected verdict.",
             performer: { selector: "class", value: "reviewer" },
             context: { selector: "fresh", value: null },
-            consumes: [{ type: "change_set", source: null }],
-            produces: [{ type: "verdict", source: null }],
+            consumes: [
+              {
+                name: "change_set",
+                kind: "change_set",
+                source: null,
+                required: true,
+              },
+            ],
+            produces: [
+              {
+                name: "verdict",
+                kind: "review_verdict",
+                review: {
+                  gate_key: "implementation_acceptance",
+                  subject_input: "change_set",
+                },
+              },
+            ],
           },
           condition: {
-            artifact: { type: "verdict", source: "review" },
+            source: { producer: "review", output: "verdict" },
             field: "status",
             operator: "equals",
             value: "accepted",
@@ -1053,15 +1079,28 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
             performer: { selector: "same_as", value: "implement" },
             context: { selector: "continue_from", value: "implement" },
             consumes: [
-              { type: "change_set", source: null },
-              { type: "verdict", source: null },
+              {
+                name: "change_set",
+                kind: "change_set",
+                source: null,
+                required: true,
+              },
+              {
+                name: "verdict",
+                kind: "review_verdict",
+                source: null,
+                required: true,
+              },
             ],
-            produces: [{ type: "change_set", source: null }],
+            produces: [
+              { name: "change_set", kind: "change_set", review: null },
+            ],
           },
           max_remediations: 3,
         },
       ],
     },
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const remediationTactic: Tactic = {
@@ -1484,7 +1523,7 @@ function createStarterFixture(name: FixtureName): ClientFixture {
           performer: { selector: "class", value: "builder" },
           context: { selector: "fresh", value: null },
           consumes: [],
-          produces: [{ type: "change_set", source: null }],
+          produces: [{ name: "change_set", kind: "change_set", review: null }],
         },
         {
           type: "step",
@@ -1493,11 +1532,28 @@ function createStarterFixture(name: FixtureName): ClientFixture {
           instruction: "Review the implementation against the Quest objective.",
           performer: { selector: "class", value: "reviewer" },
           context: { selector: "fresh", value: null },
-          consumes: [{ type: "change_set", source: "implement" }],
-          produces: [{ type: "verdict", source: null }],
+          consumes: [
+            {
+              name: "change_set",
+              kind: "change_set",
+              source: { producer: "implement", output: "change_set" },
+              required: true,
+            },
+          ],
+          produces: [
+            {
+              name: "verdict",
+              kind: "review_verdict",
+              review: {
+                gate_key: "implementation_acceptance",
+                subject_input: "change_set",
+              },
+            },
+          ],
         },
       ],
     },
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const noProject = name === "starter-empty" || name === "starter-project-add";
@@ -1601,8 +1657,23 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     instruction: `${key.replaceAll("-", " ")} the Quest objective.`,
     performer: { selector: "class", value: role },
     context: { selector: "fresh", value: null },
-    consumes: (options.consumes ?? []).map((type) => ({ type, source: null })),
-    produces: (options.produces ?? []).map((type) => ({ type, source: null })),
+    consumes: (options.consumes ?? []).map((kind) => ({
+      name: kind,
+      kind: kind === "verdict" ? "review_verdict" : kind,
+      source: null,
+      required: true,
+    })),
+    produces: (options.produces ?? []).map((name) => ({
+      name,
+      kind: name === "verdict" ? "review_verdict" : name,
+      review:
+        name === "verdict"
+          ? {
+              gate_key: "implementation_acceptance",
+              subject_input: "change_set",
+            }
+          : null,
+    })),
   });
   const implement = stepNode("implement", "builder", {
     produces: ["change_set"],
@@ -1612,7 +1683,9 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
       consumes: ["change_set"],
       produces: ["verdict"],
     }),
-    consumes: [{ type: "change_set", source: null }],
+    consumes: [
+      { name: "change_set", kind: "change_set", source: null, required: true },
+    ],
     instruction: "Review the implementation against the Quest objective.",
   };
   const implementReview: Tactic = {
@@ -1621,13 +1694,34 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     name: "Implement & Review",
     description: "A simple implementation and independent review approach.",
     body: { type: "sequence", children: [implement, review] },
+    interface: {
+      inputs: [
+        {
+          key: "plan",
+          label: "Quest Plan",
+          kind: "quest_plan",
+          required: false,
+        },
+      ],
+      outputs: [
+        {
+          key: "accepted_change_set",
+          label: "Accepted Change Set",
+          kind: "change_set",
+          source: {
+            type: "accepted_subject",
+            gate_key: "implementation_acceptance",
+          },
+        },
+      ],
+    },
     archived_at: null,
   };
   const planning: Tactic = {
     id: "war-tactic-plan",
     key: "plan-and-build",
-    name: "Plan & Build",
-    description: "Plan the work before implementation.",
+    name: "Plan & Review",
+    description: "Create, review, and revise a Quest Plan until accepted.",
     body: {
       type: "sequence",
       children: [
@@ -1636,6 +1730,17 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
           consumes: ["plan"],
           produces: ["change_set"],
         }),
+      ],
+    },
+    interface: {
+      inputs: [],
+      outputs: [
+        {
+          key: "accepted_plan",
+          label: "Accepted Quest Plan",
+          kind: "quest_plan",
+          source: { type: "accepted_subject", gate_key: "plan_acceptance" },
+        },
       ],
     },
     archived_at: null,
@@ -1668,6 +1773,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
         }),
       ],
     },
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const ambiguousTactic: Tactic = {
@@ -1714,7 +1820,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
           type: "until",
           check: review,
           condition: {
-            artifact: { type: "verdict", source: "review" },
+            source: { producer: "review", output: "verdict" },
             field: "status",
             operator: "equals",
             value: "accepted",
@@ -1731,6 +1837,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
         },
       ],
     },
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const contextual: Tactic = {
@@ -1742,6 +1849,17 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
       consumes: ["plan"],
       produces: ["change_set"],
     }),
+    interface: {
+      inputs: [
+        {
+          key: "plan",
+          label: "Quest Plan",
+          kind: "quest_plan",
+          required: false,
+        },
+      ],
+      outputs: [],
+    },
     archived_at: null,
   };
   const composed: Tactic = {
@@ -1756,14 +1874,22 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
           type: "use",
           instance_key: "planning",
           tactic_definition_id: planning.id,
+          input_bindings: [],
         },
         {
           type: "use",
           instance_key: "delivery",
           tactic_definition_id: implementReview.id,
+          input_bindings: [
+            {
+              input: "plan",
+              source: { producer: "planning", output: "accepted_plan" },
+            },
+          ],
         },
       ],
     },
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const archivedClass: ClassDefinition = {
@@ -1778,6 +1904,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     id: "war-tactic-archived-child",
     key: "archived-plan",
     name: "Archived Plan",
+    interface: { inputs: [], outputs: [] },
     archived_at: "2026-09-03T09:00:00Z",
   };
   const archivedUse: Tactic = {
@@ -1789,6 +1916,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
       type: "use",
       instance_key: "planning",
       tactic_definition_id: archivedChild.id,
+      input_bindings: [],
     },
   };
   const classReference: Tactic = {
@@ -1885,6 +2013,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
                   ? [
                       {
                         artifact_type: "change_set",
+                        input_name: "change_set",
                         consumer: {
                           name: "Review",
                           local_key: "review",

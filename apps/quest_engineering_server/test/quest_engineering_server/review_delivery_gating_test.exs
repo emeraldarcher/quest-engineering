@@ -35,7 +35,7 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
   end
 
   test "a technically completed rejected Review cannot create Delivery", %{root: root} do
-    fixture = fixture(legacy_sequence())
+    fixture = fixture(implementation_review_sequence())
     {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
     worker = register_worker(root)
 
@@ -59,7 +59,7 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
              primary_action: "run_again",
              issue: %{
                code: "acceptance_not_satisfied",
-               message: "The latest completed review rejected the implementation."
+               message: "The exact Change Set required for Delivery was rejected."
              }
            }
 
@@ -85,7 +85,7 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
   end
 
   test "an accepted structured verdict makes a completed Run Delivery eligible", %{root: root} do
-    fixture = fixture(legacy_sequence())
+    fixture = fixture(implementation_review_sequence())
     {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
     worker = register_worker(root)
 
@@ -163,7 +163,7 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
              [{1, "uncertain", "retried"}, {2, "completed", nil}]
 
     assert Enum.map(review.attempts, & &1.output_produced) == [false, true]
-    assert [verdict] = Enum.filter(projection.artifacts, &(&1.type == "verdict"))
+    assert [verdict] = Enum.filter(projection.artifacts, &(&1.type == "review_verdict"))
     assert verdict.producer_attempt_id == review_2.execution.identity.attempt_id
     refute Repo.get_by(RunDelivery, run_id: launched.run_id)
   end
@@ -199,15 +199,19 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
     refute Enum.any?(result.transition.run.occurrence_order, &String.ends_with?(&1, "/repair"))
   end
 
-  defp legacy_sequence do
+  defp implementation_review_sequence do
     sequence([
       implement_step(),
       step("review",
         name: "Review",
         instruction: "Produce a structured review verdict.",
         performer: class("reviewer"),
-        consumes: [artifact("change_set")],
-        produces: [artifact("verdict")]
+        consumes: [input("change_set", "change_set")],
+        produces: [
+          output("verdict", "review_verdict",
+            review: review("implementation_acceptance", "change_set")
+          )
+        ]
       )
     ])
   end
@@ -221,18 +225,22 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
             name: "Review",
             instruction: "Produce a structured review verdict.",
             performer: class("reviewer"),
-            consumes: [artifact("change_set")],
-            produces: [artifact("verdict")]
+            consumes: [input("change_set", "change_set")],
+            produces: [
+              output("verdict", "review_verdict",
+                review: review("implementation_acceptance", "change_set")
+              )
+            ]
           ),
-        condition: equals(field(artifact("verdict", from: "review"), "status"), "accepted"),
+        condition: equals(field(ref("review", "verdict"), "status"), "accepted"),
         otherwise:
           step("repair",
             name: "Repair",
             instruction: "Repair using the current change set and rejected verdict.",
             performer: same_as("implement"),
             context: continue_from("implement"),
-            consumes: [artifact("change_set"), artifact("verdict")],
-            produces: [artifact("change_set")]
+            consumes: [input("change_set", "change_set"), input("verdict", "review_verdict")],
+            produces: [output("change_set", "change_set")]
           ),
         max_remediations: max_remediations
       )
@@ -244,7 +252,7 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
       name: "Implement",
       instruction: "Implement.",
       performer: class("builder"),
-      produces: [artifact("change_set")]
+      produces: [output("change_set", "change_set")]
     )
   end
 

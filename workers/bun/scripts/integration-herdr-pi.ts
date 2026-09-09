@@ -249,7 +249,7 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
       : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 5,
+    protocol_version: 6,
     worker_id: config.workerId,
     execution: {
       identity: {
@@ -271,7 +271,10 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
         class_instructions: "Perform the assigned integration work carefully.",
         step_instruction: instruction,
         inputs: overrides.inputs ?? {},
-        declared_outputs: overrides.declared_outputs ?? [],
+        declared_outputs: (overrides.declared_outputs ?? []).map((name) => ({
+          name,
+          kind: name,
+        })),
       },
       configuration: {
         model,
@@ -316,10 +319,11 @@ function splitModel(value: string) {
     model: value.slice(separator + 1),
   };
 }
-function artifact(type: string, occurrence: string, value: JsonValue) {
+function artifact(kind: string, occurrence: string, value: JsonValue) {
   return {
-    id: `${occurrence}/artifact/${type}`,
-    type,
+    id: `${occurrence}/artifact/${kind}`,
+    kind,
+    output_name: "input",
     producer_occurrence_id: occurrence,
     value,
   };

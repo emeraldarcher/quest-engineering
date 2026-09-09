@@ -145,12 +145,13 @@ test("Pi prompt assembly keeps forced takeover local to Implement", () => {
         inputs: {
           change_set: {
             id: "change-set-1",
-            type: "change_set",
+            kind: "change_set",
+            output_name: "input",
             producer_occurrence_id: implement.occurrence_id,
             value: { files: ["human-picked.txt"] },
           },
         },
-        declared_outputs: ["verdict"],
+        declared_outputs: [{ name: "verdict", kind: "review_verdict" }],
       },
       context: {
         mode: "fresh",

@@ -2,10 +2,13 @@ import { expect, test } from "bun:test";
 import type { Tactic } from "../../api/contracts";
 import {
   appendChild,
+  artifactContractLabel,
   asJson,
+  BUILT_IN_ARTIFACT_KINDS,
   emptyDraft,
   generatedLocalKey,
   insertAfter,
+  isPlanRevisionUntil,
   isReviewRemediationUntil,
   localDraftIssues,
   makeStep,
@@ -26,13 +29,36 @@ function sequence(): SequenceNode {
   const empty: SequenceNode = { type: "sequence", children: [] };
   const implement = makeStep("Implement", empty, builder);
   implement.instruction = "Implement.";
-  implement.produces = [{ type: "change_set", source: null }];
+  implement.produces = [
+    { name: "change_set", kind: "change_set", review: null },
+  ];
   const withImplement: SequenceNode = { ...empty, children: [implement] };
   const review = makeStep("Review", withImplement, "reviewer");
   review.instruction = "Review.";
-  review.consumes = [{ type: "change_set", source: implement.key }];
+  review.consumes = [
+    {
+      name: "change_set",
+      kind: "change_set",
+      source: { producer: implement.key, output: "change_set" },
+      required: true,
+    },
+  ];
   return { ...empty, children: [implement, review] };
 }
+
+test("normal artifact suggestions contain kinds, never local output names", () => {
+  expect([...BUILT_IN_ARTIFACT_KINDS]).toEqual([
+    "quest_plan",
+    "change_set",
+    "review_verdict",
+  ]);
+  expect(BUILT_IN_ARTIFACT_KINDS.includes("verdict" as never)).toBe(false);
+  const until = makeUntil(sequence(), builder);
+  expect(until.condition.source).toEqual({
+    producer: until.check.type === "step" ? until.check.key : "",
+    output: "result",
+  });
+});
 
 test("insertion and reorder preserve stable Step keys and semantic references", () => {
   const body = sequence();
@@ -49,7 +75,10 @@ test("insertion and reorder preserve stable Step keys and semantic references", 
     reviewKey,
     publish.key,
   ]);
-  expect(steps(moved)[1]?.consumes[0]?.source).toBe(implementKey);
+  expect(steps(moved)[1]?.consumes[0]?.source).toEqual({
+    producer: implementKey,
+    output: "change_set",
+  });
 });
 
 test("nested insertion and removal manipulate only the local draft", () => {
@@ -89,6 +118,7 @@ test("Step and TacticUse identities share stable collision-safe keys", () => {
     name: "Implement",
     description: "",
     body: asJson(sequence()),
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const use = makeUse(tactic, body);
@@ -105,6 +135,20 @@ test("Until authoring states exact remediation-count semantics", () => {
   if (until.check.type !== "step" || until.otherwise.type !== "step")
     throw new Error("Expected Step phases");
   until.check.name = "Review";
+  until.check.consumes = [
+    { name: "change_set", kind: "change_set", source: null, required: true },
+  ];
+  until.check.produces = [
+    {
+      name: "verdict",
+      kind: "review_verdict",
+      review: {
+        gate_key: "implementation_acceptance",
+        subject_input: "change_set",
+      },
+    },
+  ];
+  until.condition.source = { producer: until.check.key, output: "verdict" };
   until.otherwise.name = "Repair";
   expect(isReviewRemediationUntil(until)).toBe(true);
   const invalid = {
@@ -113,10 +157,52 @@ test("Until authoring states exact remediation-count semantics", () => {
     name: "Invalid Until",
     description: "",
     body: { ...until, max_remediations: 0 },
+    interface: { inputs: [], outputs: [] },
   };
   expect(localDraftIssues(invalid)).toContain(
     "Maximum remediation iterations must be a positive whole number.",
   );
+});
+
+test("plan review loops use document contracts and count plan revisions", () => {
+  const until = makeUntil(sequence(), "plan-reviewer");
+  if (until.check.type !== "step" || until.otherwise.type !== "step")
+    throw new Error("Expected Step phases");
+  until.check.name = "Plan Review";
+  until.check.consumes = [
+    {
+      name: "plan",
+      kind: "quest_plan",
+      source: { producer: "plan", output: "plan" },
+      required: true,
+    },
+  ];
+  until.check.produces = [
+    {
+      name: "verdict",
+      kind: "review_verdict",
+      review: { gate_key: "plan_acceptance", subject_input: "plan" },
+    },
+  ];
+  until.condition.source = { producer: until.check.key, output: "verdict" };
+  until.otherwise.name = "Revise Plan";
+  until.otherwise.produces = [
+    { name: "plan", kind: "quest_plan", review: null },
+  ];
+  until.max_remediations = 2;
+
+  expect(isPlanRevisionUntil(until)).toBe(true);
+  expect(isReviewRemediationUntil(until)).toBe(false);
+  const planInput = until.check.consumes[0];
+  const planOutput = until.otherwise.produces[0];
+  if (!planInput || !planOutput) throw new Error("Expected plan artifacts");
+  expect(artifactContractLabel(until.check, planInput, "consumes")).toBe(
+    "Current Quest Plan",
+  );
+  expect(artifactContractLabel(until.otherwise, planOutput, "produces")).toBe(
+    "Updated Quest Plan",
+  );
+  expect(until.max_remediations + 1).toBe(3);
 });
 
 test("empty and malformed local drafts are guided without compiler inference", () => {
@@ -134,6 +220,7 @@ test("usage counts exact active Quest and nested TacticUse references", () => {
     name: "Target",
     description: "",
     body: asJson(sequence()),
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   const parent: Tactic = {
@@ -145,7 +232,9 @@ test("usage counts exact active Quest and nested TacticUse references", () => {
       type: "use",
       instance_key: "target",
       tactic_definition_id: target.id,
+      input_bindings: [],
     },
+    interface: { inputs: [], outputs: [] },
     archived_at: null,
   };
   expect(

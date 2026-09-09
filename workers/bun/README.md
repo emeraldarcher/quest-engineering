@@ -1,6 +1,6 @@
 # Quest Engineering Bun Worker v0.12
 
-The Bun Worker is the sole filesystem authority for Worker Protocol v5. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
+The Bun Worker is the sole filesystem authority for Worker Protocol v6. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
 
 ## Required configuration
 

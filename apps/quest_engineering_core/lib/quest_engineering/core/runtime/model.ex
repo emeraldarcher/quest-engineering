@@ -36,7 +36,8 @@ defmodule QuestEngineering.Core.Runtime.Run do
     :scope_order,
     :artifacts,
     :artifact_order,
-    :counters
+    :counters,
+    tactic_output_artifact_ids: %{}
   ]
 
   @type status :: :running | :completed | :failed
@@ -60,6 +61,7 @@ defmodule QuestEngineering.Core.Runtime.Run do
           scope_order: [String.t()],
           artifacts: %{optional(String.t()) => ArtifactInstance.t()},
           artifact_order: [String.t()],
+          tactic_output_artifact_ids: %{optional(String.t()) => String.t()},
           counters: counters()
         }
 end
@@ -247,8 +249,20 @@ end
 defmodule QuestEngineering.Core.Runtime.ArtifactInstance do
   @moduledoc "A typed runtime artifact value produced by one completed occurrence."
 
-  @enforce_keys [:id, :type, :producer_occurrence_id, :value]
-  defstruct [:id, :type, :producer_occurrence_id, :value]
+  @enforce_keys [:id, :kind, :output_name, :producer_occurrence_id, :value]
+  defstruct [
+    :id,
+    :kind,
+    :output_name,
+    :producer_occurrence_id,
+    :value,
+    :version,
+    :supersedes_artifact_id,
+    :content_hash,
+    :media_type,
+    :filename,
+    :title
+  ]
 
   @type value ::
           String.t()
@@ -260,9 +274,16 @@ defmodule QuestEngineering.Core.Runtime.ArtifactInstance do
           | %{optional(String.t()) => value()}
   @type t :: %__MODULE__{
           id: String.t(),
-          type: String.t(),
+          kind: String.t(),
+          output_name: String.t(),
           producer_occurrence_id: String.t(),
-          value: value()
+          value: value(),
+          version: pos_integer() | nil,
+          supersedes_artifact_id: String.t() | nil,
+          content_hash: String.t() | nil,
+          media_type: String.t() | nil,
+          filename: String.t() | nil,
+          title: String.t() | nil
         }
 end
 
@@ -310,7 +331,8 @@ defmodule QuestEngineering.Core.Runtime.Action do
     :context_requirement,
     :context_lineage_occurrence_id,
     :inputs,
-    :declared_outputs
+    :declared_outputs,
+    :acceptance_contract
   ]
 
   @type t :: %__MODULE__{
@@ -326,7 +348,8 @@ defmodule QuestEngineering.Core.Runtime.Action do
           context_requirement: ContextRequirement.t(),
           context_lineage_occurrence_id: String.t() | nil,
           inputs: %{optional(String.t()) => ArtifactInstance.t()},
-          declared_outputs: [String.t()]
+          declared_outputs: [String.t()],
+          acceptance_contract: map() | nil
         }
 end
 

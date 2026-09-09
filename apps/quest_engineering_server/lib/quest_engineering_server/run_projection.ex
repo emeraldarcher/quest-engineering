@@ -143,6 +143,7 @@ defmodule QuestEngineering.Server.RunProjection do
         }),
       steps: steps,
       artifacts: artifacts,
+      planning: planning(run, artifacts),
       review_gate: review_gate(review_gate),
       semantic_remediation: semantic_remediation(run),
       operational_recovery: operational_recovery_epochs(epochs, attributions),
@@ -262,7 +263,7 @@ defmodule QuestEngineering.Server.RunProjection do
     dispatch = action && Map.get(execution.dispatch_by_action, action.id)
     state = occurrence_state(occurrence.status, scheduled, dispatch)
     member = if scheduled, do: member(snapshot, scheduled.member_key), else: nil
-    attempts = attempts(occurrence, execution)
+    attempts = attempts(occurrence, execution, run)
     current_attempt = Enum.find(attempts, &(&1.id == occurrence.current_attempt_id))
 
     %{
@@ -280,8 +281,8 @@ defmodule QuestEngineering.Server.RunProjection do
       member: member,
       performer: performer(action, plan_step, run),
       context: context(action, plan_step, run),
-      inputs: artifact_refs(occurrence.input_artifact_ids),
-      outputs: artifact_refs(occurrence.output_artifact_ids),
+      inputs: artifact_refs(occurrence.input_artifact_ids, run),
+      outputs: artifact_refs(occurrence.output_artifact_ids, run),
       issue: issue(state, dispatch),
       recovery: recovery(state, dispatch, current_attempt)
     }
@@ -383,13 +384,13 @@ defmodule QuestEngineering.Server.RunProjection do
     end
   end
 
-  defp attempts(occurrence, execution) do
-    Enum.map(occurrence.attempts, &project_attempt(&1, occurrence, execution))
+  defp attempts(occurrence, execution, run) do
+    Enum.map(occurrence.attempts, &project_attempt(&1, occurrence, execution, run))
   end
 
-  defp project_attempt(attempt, occurrence, execution) do
+  defp project_attempt(attempt, occurrence, execution, run) do
     facts = attempt_execution_facts(attempt, execution)
-    outputs = attempt_outputs(attempt, occurrence)
+    outputs = attempt_outputs(attempt, occurrence, run)
 
     %{
       id: attempt.id,
@@ -559,10 +560,14 @@ defmodule QuestEngineering.Server.RunProjection do
     occurrence_state(attempt.status, scheduled, dispatch)
   end
 
-  defp attempt_outputs(%{id: id}, %{current_attempt_id: id, status: :completed} = occurrence),
-    do: artifact_refs(occurrence.output_artifact_ids)
+  defp attempt_outputs(
+         %{id: id},
+         %{current_attempt_id: id, status: :completed} = occurrence,
+         run
+       ),
+       do: artifact_refs(occurrence.output_artifact_ids, run)
 
-  defp attempt_outputs(_attempt, _occurrence), do: []
+  defp attempt_outputs(_attempt, _occurrence, _run), do: []
 
   defp attempt_resolution(%{failure: %{"code" => "operator_retry_requested"}}), do: "retried"
   defp attempt_resolution(%{failure: %{"code" => "operator_marked_failed"}}), do: "marked_failed"
@@ -593,10 +598,13 @@ defmodule QuestEngineering.Server.RunProjection do
     }
   end
 
-  defp artifact_refs(values) do
+  defp artifact_refs(values, run) do
     values
-    |> Enum.sort_by(fn {type, _id} -> type end)
-    |> Enum.map(fn {type, id} -> %{type: type, artifact_id: public_artifact_id(id)} end)
+    |> Enum.sort_by(fn {name, _id} -> name end)
+    |> Enum.map(fn {name, id} ->
+      artifact = Map.fetch!(run.artifacts, id)
+      %{name: name, type: artifact.kind, artifact_id: public_artifact_id(id)}
+    end)
   end
 
   defp project_artifact(value, run) do
@@ -604,16 +612,45 @@ defmodule QuestEngineering.Server.RunProjection do
 
     %{
       id: public_artifact_id(value.id),
-      type: value.type,
+      type: value.kind,
       producer_occurrence_id: value.producer_occurrence_id,
       producer_attempt_id: occurrence && occurrence.current_attempt_id,
-      preview: artifact_preview(value.type, value.value)
+      version: value.version,
+      supersedes_artifact_id:
+        value.supersedes_artifact_id && public_artifact_id(value.supersedes_artifact_id),
+      content_hash: value.content_hash,
+      media_type: value.media_type,
+      filename: value.filename,
+      title: value.title,
+      preview: artifact_preview(value.kind, value.value)
     }
   end
 
-  defp artifact_preview("verdict", %{"status" => status})
-       when status in ~w(accepted rejected),
-       do: %{kind: "review_verdict", status: status}
+  defp artifact_preview(type, %{"status" => status} = value)
+       when status in ~w(accepted rejected) do
+    if type == "review_verdict" do
+      %{
+        kind: "review_verdict",
+        status: status,
+        gate_key: value["gate_key"],
+        subject_kind: value["subject_kind"],
+        subject_artifact_id:
+          value["subject_artifact_id"] && public_artifact_id(value["subject_artifact_id"]),
+        findings: value["findings"] || value["reasoning"]
+      }
+    else
+      %{kind: "json_summary", summary: "object"}
+    end
+  end
+
+  defp artifact_preview(_type, %{"kind" => "document"} = value),
+    do: %{
+      kind: "document",
+      title: value["title"],
+      filename: value["filename"],
+      media_type: value["media_type"],
+      content_hash: value["content_hash"]
+    }
 
   defp artifact_preview(_type, value)
        when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
@@ -665,12 +702,21 @@ defmodule QuestEngineering.Server.RunProjection do
   end
 
   defp runtime_issue(%{failure: %{type: :until_exhausted}} = run, _review_gate) do
-    message =
-      if review_until_exhausted?(run),
-        do: "Review acceptance was not achieved before the remediation limit was exhausted.",
-        else: "The remediation limit was exhausted before its required condition was satisfied."
+    {code, message} =
+      case exhausted_acceptance_subject(run) do
+        "quest_plan" ->
+          {"plan_review_exhausted",
+           "Plan acceptance was not achieved before the maximum plan revisions were exhausted. Implementation and Delivery did not start."}
 
-    code = if review_until_exhausted?(run), do: "review_exhausted", else: "remediation_exhausted"
+        "change_set" ->
+          {"review_exhausted",
+           "Review acceptance was not achieved before the remediation limit was exhausted."}
+
+        _ ->
+          {"remediation_exhausted",
+           "The remediation limit was exhausted before its required condition was satisfied."}
+      end
+
     [%{code: code, message: message}]
   end
 
@@ -685,10 +731,17 @@ defmodule QuestEngineering.Server.RunProjection do
 
   defp runtime_issue(_run, _review_gate), do: []
 
-  defp review_until_exhausted?(run) do
-    Enum.any?(run.plan.control_regions, fn region ->
-      region.id == run.failure.region_id and region.condition_binding.artifact_type == "verdict"
-    end)
+  defp exhausted_acceptance_subject(run) do
+    case Enum.find(run.plan.control_regions, &(&1.id == run.failure.region_id)) do
+      nil ->
+        nil
+
+      %{acceptance_subject_kind: subject} when is_binary(subject) ->
+        subject
+
+      region ->
+        region.acceptance_subject_kind
+    end
   end
 
   defp operational_recovery_epochs(epochs, attributions) do
@@ -724,9 +777,68 @@ defmodule QuestEngineering.Server.RunProjection do
         remediations_completed: occurrence.remediations_completed,
         maximum_remediations: semantic.max_remediations,
         status: Atom.to_string(occurrence.status),
-        review_shaped: semantic.condition_binding.artifact_type == "verdict"
+        review_shaped: semantic.condition_binding.kind == "review_verdict",
+        acceptance_gate_key: semantic.acceptance_gate_key,
+        acceptance_subject_kind: semantic.acceptance_subject_kind,
+        remediation_kind:
+          case semantic.acceptance_subject_kind do
+            "quest_plan" -> "plan_revision"
+            "change_set" -> "implementation_repair"
+            _ -> "generic"
+          end
       }
     end)
+  end
+
+  defp planning(run, projected_artifacts) do
+    artifacts = Enum.map(run.artifact_order, &Map.fetch!(run.artifacts, &1))
+    plans = Enum.filter(artifacts, &(&1.kind == "quest_plan"))
+    verdicts = Enum.filter(artifacts, &verdict?/1)
+    history = Enum.map(plans, &plan_history(&1, verdicts))
+
+    %{
+      accepted_plan: accepted_plan(history, projected_artifacts),
+      history: history
+    }
+  end
+
+  defp verdict?(artifact) do
+    artifact.kind == "review_verdict" and
+      is_map(artifact.value) and artifact.value["gate_key"] == "plan_acceptance"
+  end
+
+  defp plan_history(plan, verdicts) do
+    verdict = Enum.find(Enum.reverse(verdicts), &verdict_for?(&1, plan.id))
+
+    %{
+      artifact_id: public_artifact_id(plan.id),
+      version: plan.version || 1,
+      status: verdict_field(verdict, "status"),
+      verdict_artifact_id: verdict_id(verdict),
+      findings: verdict_findings(verdict),
+      supersedes_artifact_id: public_optional_id(plan.supersedes_artifact_id)
+    }
+  end
+
+  defp verdict_for?(verdict, plan_id), do: verdict.value["subject_artifact_id"] == plan_id
+  defp verdict_field(nil, _field), do: nil
+  defp verdict_field(verdict, field), do: verdict.value[field]
+  defp verdict_id(nil), do: nil
+  defp verdict_id(verdict), do: public_artifact_id(verdict.id)
+
+  defp verdict_findings(nil), do: nil
+
+  defp verdict_findings(verdict),
+    do: verdict.value["findings"] || verdict.value["reasoning"]
+
+  defp public_optional_id(nil), do: nil
+  defp public_optional_id(id), do: public_artifact_id(id)
+
+  defp accepted_plan(history, artifacts) do
+    case Enum.find(Enum.reverse(history), &(&1.status == "accepted")) do
+      nil -> nil
+      accepted -> Enum.find(artifacts, &(&1.id == accepted.artifact_id))
+    end
   end
 
   defp review_gate(value) do

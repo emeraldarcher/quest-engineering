@@ -4,7 +4,11 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   import Ecto.Query
   import QuestEngineering.Core.Tactics
 
+  alias QuestEngineering.Core.Product.AcceptedArtifactSource
   alias QuestEngineering.Core.Product.ModelRef
+  alias QuestEngineering.Core.Product.TacticInputPort
+  alias QuestEngineering.Core.Product.TacticInterface
+  alias QuestEngineering.Core.Product.TacticOutputPort
   alias QuestEngineering.Server.ExecutionOptions
   alias QuestEngineering.Server.Persistence.ProductClass
   alias QuestEngineering.Server.Persistence.ProductLoadout
@@ -232,9 +236,7 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
         TacticLibrary.create(tactic_attributes())
 
       row ->
-        if legacy_tactic_row?(row),
-          do: TacticLibrary.update(row.id, tactic_attributes()),
-          else: TacticLibrary.get(row.id)
+        TacticLibrary.get(row.id)
     end
   end
 
@@ -412,11 +414,9 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
         {identity, {:conflict, identity}}
 
       row ->
-        cond do
-          tactic_row_matches?(row, tactic_attributes()) -> {identity, :exact_match}
-          legacy_tactic_row?(row) -> {identity, :legacy_match}
-          true -> {identity, {:conflict, identity}}
-        end
+        if tactic_row_matches?(row, tactic_attributes()),
+          do: {identity, :exact_match},
+          else: {identity, {:conflict, identity}}
     end
   end
 
@@ -427,10 +427,15 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
         {:error, _error} -> false
       end
 
-    row.name == attributes.name && row.description == attributes.description && body_matches
-  end
+    interface_matches =
+      case TacticCodec.decode_interface(row.interface) do
+        {:ok, interface} -> interface == attributes.interface
+        {:error, _error} -> false
+      end
 
-  defp legacy_tactic_row?(row), do: tactic_row_matches?(row, legacy_tactic_attributes())
+    row.name == attributes.name && row.description == attributes.description && body_matches &&
+      interface_matches
+  end
 
   defp intrinsic_loadout_matches?(key, row, snapshot) do
     if static_loadout_matches?(key, row) do
@@ -574,72 +579,66 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
       key: @tactic_key,
       name: "Implement & Review",
       description:
-        "Implements, reviews, and performs up to three repairs until review acceptance.",
-      body: canonical_tactic()
-    }
-
-  defp legacy_tactic_attributes,
-    do: %{
-      key: @tactic_key,
-      name: "Implement & Review",
-      description: "A small sequential implementation and independent review tactic.",
-      body: legacy_tactic()
+        "Implements, reviews, and performs up to three repairs until implementation acceptance.",
+      body: canonical_tactic(),
+      interface: %TacticInterface{
+        inputs: [
+          %TacticInputPort{key: "plan", label: "Quest Plan", kind: "quest_plan", required: false}
+        ],
+        outputs: [
+          %TacticOutputPort{
+            key: "accepted_change_set",
+            label: "Accepted Change Set",
+            kind: "change_set",
+            source: %AcceptedArtifactSource{gate_key: "implementation_acceptance"}
+          }
+        ]
+      }
     }
 
   defp canonical_tactic do
     sequence([
       step("implement",
         name: "Implement",
-        instruction: "Implement the Quest objective.",
+        instruction:
+          "Implement the Quest objective, using the approved Quest Plan when supplied.",
         performer: class("builder"),
         context: fresh(),
-        consumes: [],
-        produces: [artifact("change_set")]
+        consumes: [
+          input("plan", "quest_plan", from: ref("$inputs", "plan"), required: false)
+        ],
+        produces: [output("change_set", "change_set")]
       ),
       until(
         check:
           step("review",
             name: "Review",
             instruction:
-              "Review the current implementation against the Quest objective. Produce a structured verdict with status \"accepted\" only when the implementation is ready, otherwise status \"rejected\", and include structured findings when useful.",
+              "Review the exact current Change Set against the Quest objective and produce an accepted or rejected Review Verdict with findings when useful.",
             performer: class("reviewer"),
             context: fresh(),
-            consumes: [artifact("change_set")],
-            produces: [artifact("verdict")]
+            consumes: [input("change_set", "change_set")],
+            produces: [
+              output("verdict", "review_verdict",
+                review: review("implementation_acceptance", "change_set")
+              )
+            ]
           ),
-        condition: equals(field(artifact("verdict", from: "review"), "status"), "accepted"),
+        condition: equals(field(ref("review", "verdict"), "status"), "accepted"),
         otherwise:
           step("repair",
             name: "Repair",
             instruction:
-              "Repair the current implementation by addressing the rejected review verdict and produce an updated change set.",
+              "Repair the current implementation using the rejected Review Verdict and produce a new Change Set.",
             performer: same_as("implement"),
             context: continue_from("implement"),
-            consumes: [artifact("change_set"), artifact("verdict")],
-            produces: [artifact("change_set")]
+            consumes: [
+              input("change_set", "change_set"),
+              input("verdict", "review_verdict")
+            ],
+            produces: [output("change_set", "change_set")]
           ),
         max_remediations: @max_review_remediations
-      )
-    ])
-  end
-
-  defp legacy_tactic do
-    sequence([
-      step("implement",
-        name: "Implement",
-        instruction: "Implement the Quest objective.",
-        performer: class("builder"),
-        context: fresh(),
-        consumes: [],
-        produces: [artifact("change_set")]
-      ),
-      step("review",
-        name: "Review",
-        instruction: "Review the implementation against the Quest objective.",
-        performer: class("reviewer"),
-        context: fresh(),
-        consumes: [artifact("change_set", from: "implement")],
-        produces: [artifact("verdict")]
       )
     ])
   end

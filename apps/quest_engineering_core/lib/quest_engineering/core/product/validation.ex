@@ -10,6 +10,8 @@ end
 defmodule QuestEngineering.Core.Product.Validation do
   @moduledoc "Pure validation for product definitions and their references."
 
+  alias QuestEngineering.Core.ArtifactSemantics
+  alias QuestEngineering.Core.Product.AcceptedArtifactSource
   alias QuestEngineering.Core.Product.Class
   alias QuestEngineering.Core.Product.Loadout
   alias QuestEngineering.Core.Product.Member
@@ -18,10 +20,14 @@ defmodule QuestEngineering.Core.Product.Validation do
   alias QuestEngineering.Core.Product.Squad
   alias QuestEngineering.Core.Product.TacticAuthoring
   alias QuestEngineering.Core.Product.TacticDefinition
+  alias QuestEngineering.Core.Product.TacticInputPort
+  alias QuestEngineering.Core.Product.TacticInterface
+  alias QuestEngineering.Core.Product.TacticOutputPort
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Core.Product.ValidationError
   alias QuestEngineering.Core.Product.Workspace
+  alias QuestEngineering.Core.Tactics.ArtifactRef
 
   @key ~r/\A[a-z][a-z0-9-]{0,63}\z/
   @capability_key ~r/\A[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\z/
@@ -229,7 +235,98 @@ defmodule QuestEngineering.Core.Product.Validation do
     |> require(key?(value.key), :invalid_key, ["key"], %{value: value.key})
     |> require(non_blank?(value.name), :invalid_name, ["name"], %{})
     |> require(text?(value.description), :invalid_description, ["description"], %{})
+    |> then(&(&1 ++ interface_errors(value.interface)))
     |> then(&(&1 ++ TacticAuthoring.validate(value.body, ["body"])))
+  end
+
+  defp interface_errors(%TacticInterface{inputs: inputs, outputs: outputs})
+       when is_list(inputs) and is_list(outputs) do
+    input_errors =
+      inputs
+      |> Enum.with_index()
+      |> Enum.flat_map(fn
+        {%TacticInputPort{} = port, index} ->
+          []
+          |> require(
+            port_key?(port.key),
+            :invalid_tactic_input_key,
+            ["interface", "inputs", index, "key"],
+            %{value: port.key}
+          )
+          |> require(
+            non_blank?(port.label),
+            :invalid_tactic_port_label,
+            ["interface", "inputs", index, "label"],
+            %{}
+          )
+          |> require(
+            ArtifactSemantics.valid_kind?(port.kind),
+            :invalid_artifact_kind,
+            ["interface", "inputs", index, "kind"],
+            %{value: port.kind}
+          )
+          |> require(
+            is_boolean(port.required),
+            :invalid_tactic_input_requirement,
+            ["interface", "inputs", index, "required"],
+            %{value: port.required}
+          )
+
+        {value, index} ->
+          [error(:invalid_tactic_input_port, ["interface", "inputs", index], %{value: value})]
+      end)
+
+    output_errors =
+      outputs
+      |> Enum.with_index()
+      |> Enum.flat_map(fn
+        {%TacticOutputPort{} = port, index} ->
+          []
+          |> require(
+            port_key?(port.key),
+            :invalid_tactic_output_key,
+            ["interface", "outputs", index, "key"],
+            %{value: port.key}
+          )
+          |> require(
+            non_blank?(port.label),
+            :invalid_tactic_port_label,
+            ["interface", "outputs", index, "label"],
+            %{}
+          )
+          |> require(
+            ArtifactSemantics.valid_kind?(port.kind),
+            :invalid_artifact_kind,
+            ["interface", "outputs", index, "kind"],
+            %{value: port.kind}
+          )
+          |> require(
+            match?(%ArtifactRef{}, port.source) or match?(%AcceptedArtifactSource{}, port.source),
+            :invalid_tactic_output_source,
+            ["interface", "outputs", index, "source"],
+            %{value: port.source}
+          )
+
+        {value, index} ->
+          [error(:invalid_tactic_output_port, ["interface", "outputs", index], %{value: value})]
+      end)
+
+    duplicate_port_errors(inputs ++ outputs, "ports") ++ input_errors ++ output_errors
+  end
+
+  defp interface_errors(value),
+    do: [error(:invalid_tactic_interface, ["interface"], %{value: value})]
+
+  defp duplicate_port_errors(ports, direction) do
+    keys =
+      Enum.flat_map(ports, fn
+        %{key: key} -> [key]
+        _ -> []
+      end)
+
+    if Enum.uniq(keys) == keys,
+      do: [],
+      else: [error(:duplicate_tactic_port_key, ["interface", direction], %{})]
   end
 
   defp tactic_source_errors(%Inline{body: body}),
@@ -301,6 +398,9 @@ defmodule QuestEngineering.Core.Product.Validation do
 
   defp opaque_id?(value), do: non_blank?(value)
   defp key?(value), do: is_binary(value) and Regex.match?(@key, value)
+
+  defp port_key?(value),
+    do: is_binary(value) and String.match?(value, ~r/\A[a-z][a-z0-9_]{0,63}\z/)
 
   defp safe_fingerprint?(value) do
     non_blank?(value) and not Regex.match?(~r{://[^/]+@}, value) and

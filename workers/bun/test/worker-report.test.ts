@@ -13,7 +13,7 @@ test("running dispatch state omits terminal fields", () => {
   expect(dispatchReportMessage("worker-1", dispatch, "dispatch_state")).toEqual(
     {
       type: "dispatch_state",
-      protocol_version: 5,
+      protocol_version: 6,
       worker_id: "worker-1",
       action_id: "action-1",
       occurrence_id: "occurrence-1",
@@ -23,7 +23,7 @@ test("running dispatch state omits terminal fields", () => {
   );
 });
 
-test("uncertain dispatch state includes the structured failure required by protocol v5", () => {
+test("uncertain dispatch state includes the structured failure required by protocol v6", () => {
   expect(
     dispatchReportMessage(
       "worker-1",

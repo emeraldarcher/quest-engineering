@@ -1,7 +1,8 @@
 defmodule QuestEngineering.Core.Tactics.Step do
-  @moduledoc "A semantic unit of agent work, with no runtime state."
+  @moduledoc "A semantic unit of agent work with explicitly named, typed artifact slots."
 
-  alias QuestEngineering.Core.Tactics.Artifact
+  alias QuestEngineering.Core.Tactics.ArtifactInput
+  alias QuestEngineering.Core.Tactics.ArtifactOutput
   alias QuestEngineering.Core.Tactics.ContextRequirement
   alias QuestEngineering.Core.Tactics.PerformerRequirement
 
@@ -14,7 +15,7 @@ defmodule QuestEngineering.Core.Tactics.Step do
           instruction: String.t(),
           performer: PerformerRequirement.t(),
           context: ContextRequirement.t(),
-          consumes: [Artifact.t()],
-          produces: [Artifact.t()]
+          consumes: [ArtifactInput.t()],
+          produces: [ArtifactOutput.t()]
         }
 end

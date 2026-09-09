@@ -3,6 +3,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
 
   import Ecto.Query
   alias QuestEngineering.Core.ExecutionPlan.UntilOutput
+  alias QuestEngineering.Core.Product.ResolvedTacticUse
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Core.Tactics.Parallel
@@ -105,6 +106,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
       name: value.name,
       description: value.description,
       body: TacticCodec.encode(value.body),
+      interface: TacticCodec.encode_interface(value.interface),
       archived_at: timestamp(archived_at)
     }
   end
@@ -269,39 +271,35 @@ defmodule QuestEngineering.Server.ProductApi.View do
     fixed =
       Enum.map(preview.execution_plan.artifact_bindings, fn binding ->
         %{
-          artifact_type: binding.type,
+          artifact_type: binding.kind,
+          input_name: binding.input,
           consumer:
             semantic_step(binding.consumer, steps, preview.step_origins, preview.provenance),
           source:
             semantic_artifact_source(
               binding.producer,
-              binding.type,
+              binding.kind,
               preview.execution_plan.control_regions,
               steps,
               preview.step_origins,
               preview.provenance
             ),
-          selection: artifact_selection(binding.consumer, binding.type, steps)
+          selection: artifact_selection(binding.consumer, binding.input, steps)
         }
       end)
 
     carried =
       Enum.flat_map(preview.execution_plan.control_regions, fn region ->
         Enum.map(region.artifact_bindings, fn binding ->
-          carry = Enum.find(region.artifact_carries, &(&1.type == binding.type))
+          carry = Enum.find(region.artifact_carries, &(&1.kind == binding.kind))
 
           %{
-            artifact_type: binding.type,
+            artifact_type: binding.kind,
+            input_name: binding.input,
             consumer:
               semantic_step(binding.consumer, steps, preview.step_origins, preview.provenance),
-            source:
-              remediation_source(
-                carry,
-                steps,
-                preview.step_origins,
-                preview.provenance
-              ),
-            selection: artifact_selection(binding.consumer, binding.type, steps)
+            source: remediation_source(carry, steps, preview.step_origins, preview.provenance),
+            selection: artifact_selection(binding.consumer, binding.input, steps)
           }
         end)
       end)
@@ -310,19 +308,18 @@ defmodule QuestEngineering.Server.ProductApi.View do
   end
 
   defp semantic_artifact_source(
-         producer,
-         _type,
+         %QuestEngineering.Core.Tactics.ArtifactRef{producer: producer},
+         _kind,
          _regions,
          steps,
          origins,
          provenance
-       )
-       when is_binary(producer) do
+       ) do
     %{kind: "step", step: semantic_step(producer, steps, origins, provenance)}
   end
 
   defp semantic_artifact_source(
-         %UntilOutput{kind: :check, producer: producer},
+         %UntilOutput{source_kind: :check, producer: producer},
          type,
          regions,
          steps,
@@ -333,7 +330,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
   end
 
   defp semantic_artifact_source(
-         %UntilOutput{kind: :carried, region: region_id},
+         %UntilOutput{source_kind: :carried, region: region_id},
          type,
          regions,
          steps,
@@ -341,7 +338,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
          provenance
        ) do
     region = Enum.find(regions, &(&1.id == region_id))
-    carry = region && Enum.find(region.artifact_carries, &(&1.type == type))
+    carry = region && Enum.find(region.artifact_carries, &(&1.kind == type))
     remediation_source(carry, steps, origins, provenance)
   end
 
@@ -356,20 +353,25 @@ defmodule QuestEngineering.Server.ProductApi.View do
     }
   end
 
-  defp semantic_producer(value, steps, origins, provenance) when is_binary(value),
-    do: semantic_step(value, steps, origins, provenance)
+  defp semantic_producer(
+         %QuestEngineering.Core.Tactics.ArtifactRef{producer: producer},
+         steps,
+         origins,
+         provenance
+       ),
+       do: semantic_step(producer, steps, origins, provenance)
 
   defp semantic_producer(%UntilOutput{producer: producer}, steps, origins, provenance),
     do: semantic_producer(producer, steps, origins, provenance)
 
   defp semantic_producer(_value, _steps, _origins, _provenance), do: nil
 
-  defp artifact_selection(consumer, type, steps) do
+  defp artifact_selection(consumer, input, steps) do
     case Enum.find(steps, &(&1.key == consumer)) do
       %Step{} = step ->
-        case Enum.find(step.consumes, &(&1.type == type)) do
+        case Enum.find(step.consumes, &(&1.name == input)) do
           %{source: nil} -> "inferred"
-          %{source: source} when is_binary(source) -> "explicit"
+          %{source: %QuestEngineering.Core.Tactics.ArtifactRef{}} -> "explicit"
           _other -> "inferred"
         end
 
@@ -429,6 +431,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
   end
 
   defp semantic_steps(%Step{} = step), do: [step]
+  defp semantic_steps(%ResolvedTacticUse{} = use), do: semantic_steps(use.body)
 
   defp semantic_steps(%Sequence{children: children}),
     do: Enum.flat_map(children, &semantic_steps/1)
@@ -527,7 +530,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
             instruction: step.instruction,
             performer: requirement(step.performer),
             context: requirement(step.context),
-            produces: step.produces
+            produces: Enum.map(step.produces, &%{name: &1.name, kind: &1.kind})
           }
         end),
       dependencies:
@@ -540,11 +543,14 @@ defmodule QuestEngineering.Server.ProductApi.View do
             id: region.id,
             parent_region_id: region.parent_region,
             max_remediations: region.max_remediations,
+            acceptance_gate_key: region.acceptance_gate_key,
+            acceptance_subject_kind: region.acceptance_subject_kind,
             check: subtree(region.check),
             otherwise: subtree(region.otherwise),
             condition: %{
-              artifact_type: region.condition_binding.artifact_type,
-              source_step_key: region.condition_binding.producer,
+              artifact_type: region.condition_binding.kind,
+              source_step_key: region.condition_binding.producer.producer,
+              source_output_name: region.condition_binding.producer.output,
               field: region.condition_binding.field,
               operator: Atom.to_string(region.condition_binding.operator),
               value: region.condition_binding.value

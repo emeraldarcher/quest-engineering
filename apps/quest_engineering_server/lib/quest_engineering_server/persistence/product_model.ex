@@ -218,6 +218,7 @@ defmodule QuestEngineering.Server.Persistence.ProductTactic do
     field :name, :string
     field :description, :string, default: ""
     field :body, :map
+    field :interface, :map, default: %{"inputs" => [], "outputs" => []}
     field :archived_at, :utc_datetime_usec
 
     timestamps(type: :utc_datetime_usec)
@@ -225,15 +226,15 @@ defmodule QuestEngineering.Server.Persistence.ProductTactic do
 
   def create_changeset(attributes) do
     %__MODULE__{}
-    |> cast(attributes, [:id, :key, :name, :description, :body], empty_values: [])
-    |> validate_required([:id, :key, :name, :body])
+    |> cast(attributes, [:id, :key, :name, :description, :body, :interface], empty_values: [])
+    |> validate_required([:id, :key, :name, :body, :interface])
     |> unique_constraint(:key)
   end
 
   def update_changeset(row, attributes) do
     row
-    |> cast(attributes, [:name, :description, :body], empty_values: [])
-    |> validate_required([:name, :body])
+    |> cast(attributes, [:name, :description, :body, :interface], empty_values: [])
+    |> validate_required([:name, :body, :interface])
   end
 end
 

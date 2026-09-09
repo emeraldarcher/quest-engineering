@@ -299,14 +299,14 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
           name: "Plan",
           instruction: "Produce a plan.",
           performer: class(architect_key),
-          produces: ["plan"]
+          produces: [output("plan", "plan")]
         ),
         step("implement",
           name: "Implement",
           instruction: "Implement the plan.",
           performer: class(builder_key),
-          consumes: ["plan"],
-          produces: ["change_set"]
+          consumes: [input("plan", "plan")],
+          produces: [output("change_set", "change_set")]
         ),
         until(
           check:
@@ -314,18 +314,22 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
               name: "Review",
               instruction: "Review the change.",
               performer: class(reviewer_key),
-              consumes: ["change_set"],
-              produces: ["verdict"]
+              consumes: [input("change_set", "change_set")],
+              produces: [
+                output("verdict", "review_verdict",
+                  review: review("implementation_acceptance", "change_set")
+                )
+              ]
             ),
-          condition: equals(field(artifact("verdict"), "status"), "accepted"),
+          condition: equals(field(ref("review", "verdict"), "status"), "accepted"),
           otherwise:
             step("repair",
               name: "Repair",
               instruction: "Repair the rejected change.",
               performer: same_as("implement"),
               context: continue_from("implement"),
-              consumes: ["change_set", "verdict"],
-              produces: ["change_set"]
+              consumes: [input("change_set", "change_set"), input("verdict", "review_verdict")],
+              produces: [output("change_set", "change_set")]
             ),
           max_remediations: 2
         )

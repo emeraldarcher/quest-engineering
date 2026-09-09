@@ -59,7 +59,7 @@ defmodule QuestEngineering.ServerWeb.RunChannelTest do
         name: "Work",
         instruction: "Work.",
         performer: class("builder-channel"),
-        produces: ["result"]
+        produces: [output("result", "result")]
       )
 
     {:ok, quest} =

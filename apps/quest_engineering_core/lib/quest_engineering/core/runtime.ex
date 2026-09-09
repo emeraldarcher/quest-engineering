@@ -13,6 +13,7 @@ defmodule QuestEngineering.Core.Runtime do
   attempt or terminate it as failed.
   """
 
+  alias QuestEngineering.Core.DocumentArtifact
   alias QuestEngineering.Core.ExecutionPlan
   alias QuestEngineering.Core.ExecutionPlan.ArtifactBinding
   alias QuestEngineering.Core.ExecutionPlan.ControlDependency
@@ -22,6 +23,7 @@ defmodule QuestEngineering.Core.Runtime do
   alias QuestEngineering.Core.ExecutionPlan.Step
   alias QuestEngineering.Core.ExecutionPlan.UntilOutput
   alias QuestEngineering.Core.ExecutionPlan.UntilRegion
+  alias QuestEngineering.Core.ReviewVerdict
   alias QuestEngineering.Core.Runtime.Action
   alias QuestEngineering.Core.Runtime.ArtifactInstance
   alias QuestEngineering.Core.Runtime.Error
@@ -33,6 +35,8 @@ defmodule QuestEngineering.Core.Runtime do
   alias QuestEngineering.Core.Runtime.Run
   alias QuestEngineering.Core.Runtime.Scope
   alias QuestEngineering.Core.Runtime.StepOccurrence
+  alias QuestEngineering.Core.Tactics.ArtifactOutput
+  alias QuestEngineering.Core.Tactics.ArtifactRef
   alias QuestEngineering.Core.Tactics.ContextRequirement
   alias QuestEngineering.Core.Tactics.PerformerRequirement
 
@@ -447,7 +451,7 @@ defmodule QuestEngineering.Core.Runtime do
         | status: :dispatched,
           current_attempt_id: attempt_id,
           attempts: [attempt],
-          input_artifact_ids: Map.new(inputs, fn {type, artifact} -> {type, artifact.id} end)
+          input_artifact_ids: Map.new(inputs, fn {input, artifact} -> {input, artifact.id} end)
       }
 
       action = %Action{
@@ -463,7 +467,8 @@ defmodule QuestEngineering.Core.Runtime do
         context_requirement: step.context,
         context_lineage_occurrence_id: resolve_context_lineage(step, scope),
         inputs: inputs,
-        declared_outputs: step.produces
+        declared_outputs: step.produces,
+        acceptance_contract: acceptance_contract(run, occurrence, step, inputs)
       }
 
       {:ok, put_occurrence(run, occurrence), [action]}
@@ -482,7 +487,7 @@ defmodule QuestEngineering.Core.Runtime do
 
     Enum.reduce_while(fixed ++ current, {:ok, %{}}, fn binding, {:ok, inputs} ->
       case resolve_binding(run, scope, occurrence, binding) do
-        {:ok, artifact} -> {:cont, {:ok, Map.put(inputs, binding.type, artifact)}}
+        {:ok, artifact} -> {:cont, {:ok, Map.put(inputs, binding.input, artifact)}}
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
@@ -498,18 +503,18 @@ defmodule QuestEngineering.Core.Runtime do
   end
 
   defp resolve_binding(run, scope, occurrence, %ArtifactBinding{} = binding) do
-    case resolve_source(scope, binding.producer, binding.type) do
+    case resolve_source(scope, binding.producer) do
       {:ok, artifact_id} -> {:ok, Map.fetch!(run.artifacts, artifact_id)}
-      :error -> unresolved_input(run, occurrence, binding.type, binding.producer)
+      :error -> unresolved_input(run, occurrence, binding.kind, binding.producer)
     end
   end
 
   defp resolve_binding(run, _scope, occurrence, %RegionArtifactBinding{} = binding) do
     region_occurrence = Map.fetch!(run.regions, occurrence.region_occurrence_id)
 
-    case Map.fetch(region_occurrence.current_artifacts, binding.type) do
+    case Map.fetch(region_occurrence.current_artifacts, binding.kind) do
       {:ok, artifact_id} -> {:ok, Map.fetch!(run.artifacts, artifact_id)}
-      :error -> unresolved_input(run, occurrence, binding.type, :current)
+      :error -> unresolved_input(run, occurrence, binding.kind, :current)
     end
   end
 
@@ -522,6 +527,27 @@ defmodule QuestEngineering.Core.Runtime do
        artifact_type: type,
        details: %{reason: :unresolved_input, source: source}
      }}
+  end
+
+  defp acceptance_contract(_run, _occurrence, step, inputs) do
+    case Enum.find(step.produces, &match?(%ArtifactOutput{kind: "review_verdict"}, &1)) do
+      %ArtifactOutput{name: output, review: %{gate_key: gate, subject_input: subject_input}} ->
+        case Map.get(inputs, subject_input) do
+          %ArtifactInstance{} = subject ->
+            %{
+              output: output,
+              gate_key: gate,
+              subject_kind: subject.kind,
+              subject_artifact_id: subject.id
+            }
+
+          nil ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
   end
 
   defp resolve_performer_affinity(
@@ -592,15 +618,15 @@ defmodule QuestEngineering.Core.Runtime do
 
   defp initialize_carries(run, scope, region) do
     Enum.reduce_while(region.artifact_carries, {:ok, %{}}, fn carry, {:ok, current} ->
-      case resolve_source(scope, carry.initial_producer, carry.type) do
+      case resolve_source(scope, carry.initial_producer) do
         {:ok, artifact_id} ->
-          {:cont, {:ok, Map.put(current, carry.type, artifact_id)}}
+          {:cont, {:ok, Map.put(current, carry.kind, artifact_id)}}
 
         :error ->
           error = %Error{
             type: :invalid_execution_plan,
             run_id: run.id,
-            artifact_type: carry.type,
+            artifact_type: carry.kind,
             details: %{reason: :unresolved_initial_carry, region: region.id}
           }
 
@@ -658,8 +684,14 @@ defmodule QuestEngineering.Core.Runtime do
     end
   end
 
-  defp handle_scope_completion(run, %Scope{kind: :root}) do
-    {:ok, %{run | status: :completed}, true}
+  defp handle_scope_completion(run, %Scope{kind: :root} = scope) do
+    outputs =
+      Map.new(run.plan.tactic_outputs, fn output ->
+        {:ok, artifact_id} = resolve_source(scope, output.producer)
+        {output.key, artifact_id}
+      end)
+
+    {:ok, %{run | status: :completed, tactic_output_artifact_ids: outputs}, true}
   end
 
   defp handle_scope_completion(run, %Scope{kind: :check} = scope) do
@@ -669,7 +701,7 @@ defmodule QuestEngineering.Core.Runtime do
     with {:ok, artifact_id} <- resolve_condition_artifact(run, scope, semantic_region) do
       artifact = Map.fetch!(run.artifacts, artifact_id)
 
-      if condition_true?(artifact.value, semantic_region.condition_binding) do
+      if condition_true?(run, occurrence, semantic_region, artifact) do
         complete_region(run, occurrence, semantic_region, scope)
       else
         continue_or_exhaust_region(run, occurrence, semantic_region, scope)
@@ -750,15 +782,15 @@ defmodule QuestEngineering.Core.Runtime do
       semantic_region.artifact_carries,
       {:ok, occurrence.current_artifacts},
       fn carry, {:ok, current} ->
-        case resolve_source(scope, carry.remediation_producer, carry.type) do
+        case resolve_source(scope, carry.remediation_producer) do
           {:ok, artifact_id} ->
-            {:cont, {:ok, Map.put(current, carry.type, artifact_id)}}
+            {:cont, {:ok, Map.put(current, carry.kind, artifact_id)}}
 
           :error ->
             error = %Error{
               type: :invalid_execution_plan,
               run_id: run.id,
-              artifact_type: carry.type,
+              artifact_type: carry.kind,
               details: %{reason: :unresolved_remediation_carry, region: semantic_region.id}
             }
 
@@ -794,9 +826,9 @@ defmodule QuestEngineering.Core.Runtime do
   defp resolve_region_outputs(run, occurrence, semantic_region, check_scope) do
     Enum.reduce_while(semantic_region.outputs, {:ok, []}, fn output, {:ok, resolved} ->
       source_result =
-        case output.kind do
-          :check -> resolve_source(check_scope, output.producer, output.type)
-          :carried -> Map.fetch(occurrence.current_artifacts, output.type)
+        case output.source_kind do
+          :check -> resolve_source(check_scope, output.producer)
+          :carried -> Map.fetch(occurrence.current_artifacts, output.kind)
         end
 
       case source_result do
@@ -808,7 +840,7 @@ defmodule QuestEngineering.Core.Runtime do
           error = %Error{
             type: :invalid_execution_plan,
             run_id: run.id,
-            artifact_type: output.type,
+            artifact_type: output.kind,
             details: %{reason: :unresolved_until_output, region: semantic_region.id}
           }
 
@@ -820,7 +852,7 @@ defmodule QuestEngineering.Core.Runtime do
   defp resolve_condition_artifact(run, scope, region) do
     binding = region.condition_binding
 
-    case resolve_step_or_nested_output(scope, binding.producer, binding.artifact_type) do
+    case resolve_step_or_nested_output(scope, binding.producer) do
       {:ok, artifact_id} ->
         {:ok, artifact_id}
 
@@ -829,30 +861,36 @@ defmodule QuestEngineering.Core.Runtime do
          %Error{
            type: :invalid_execution_plan,
            run_id: run.id,
-           artifact_type: binding.artifact_type,
+           artifact_type: binding.kind,
            details: %{reason: :unresolved_condition_artifact, region: region.id}
          }}
     end
   end
 
-  defp resolve_step_or_nested_output(scope, producer, type) do
-    case get_in(scope.step_artifacts, [producer, type]) do
-      nil ->
-        scope.region_outputs
-        |> Enum.find(fn resolved ->
-          resolved.output.type == type and source_step_key(resolved.output) == producer
-        end)
-        |> case do
-          nil -> :error
-          resolved -> {:ok, resolved.artifact_id}
-        end
+  defp resolve_step_or_nested_output(scope, %ArtifactRef{} = producer),
+    do: resolve_source(scope, producer)
 
-      artifact_id ->
-        {:ok, artifact_id}
+  defp condition_true?(
+         _run,
+         occurrence,
+         %{acceptance_gate_key: gate, acceptance_subject_kind: subject} = region,
+         artifact
+       )
+       when is_binary(gate) and is_binary(subject) do
+    case Map.fetch(occurrence.current_artifacts, subject) do
+      {:ok, subject_id} ->
+        ReviewVerdict.accepted_for?(artifact.value, gate, subject, subject_id) and
+          field_condition_true?(artifact.value, region.condition_binding)
+
+      :error ->
+        false
     end
   end
 
-  defp condition_true?(value, %{operator: :equals, field: field, value: expected})
+  defp condition_true?(_run, _occurrence, region, artifact),
+    do: field_condition_true?(artifact.value, region.condition_binding)
+
+  defp field_condition_true?(value, %{operator: :equals, field: field, value: expected})
        when is_map(value) do
     case Map.fetch(value, field) do
       {:ok, actual} -> actual == expected
@@ -860,7 +898,7 @@ defmodule QuestEngineering.Core.Runtime do
     end
   end
 
-  defp condition_true?(_value, _binding), do: false
+  defp field_condition_true?(_value, _binding), do: false
 
   defp retry_occurrence(run, occurrence, step) do
     attempt_number = Enum.max([0 | Enum.map(occurrence.attempts, & &1.number)]) + 1
@@ -903,7 +941,8 @@ defmodule QuestEngineering.Core.Runtime do
       context_requirement: step.context,
       context_lineage_occurrence_id: resolve_context_lineage(step, scope),
       inputs: inputs,
-      declared_outputs: step.produces
+      declared_outputs: step.produces,
+      acceptance_contract: acceptance_contract(run, occurrence, step, inputs)
     }
 
     {:ok, put_occurrence(run, occurrence), [action]}
@@ -932,20 +971,51 @@ defmodule QuestEngineering.Core.Runtime do
   end
 
   defp complete_occurrence(run, occurrence, step, outputs) do
-    {run, output_artifact_ids} =
-      Enum.reduce(step.produces, {run, %{}}, fn type, {current_run, artifact_ids} ->
-        {artifact_id, current_run} = next_artifact_id(current_run, type)
-
-        artifact = %ArtifactInstance{
-          id: artifact_id,
-          type: type,
-          producer_occurrence_id: occurrence.id,
-          value: Map.fetch!(outputs, type)
-        }
-
-        {put_artifact(current_run, artifact), Map.put(artifact_ids, type, artifact_id)}
+    inputs =
+      Map.new(occurrence.input_artifact_ids, fn {type, artifact_id} ->
+        {type, Map.fetch!(run.artifacts, artifact_id)}
       end)
 
+    contract = acceptance_contract(run, occurrence, step, inputs)
+
+    case persist_outputs(run, occurrence, step.produces, outputs, contract) do
+      {:ok, run, output_artifact_ids} ->
+        finish_occurrence(run, occurrence, output_artifact_ids)
+
+      {:error, _error} = error ->
+        error
+    end
+  end
+
+  defp persist_outputs(run, occurrence, declarations, outputs, contract) do
+    Enum.reduce_while(declarations, {:ok, run, %{}}, fn output, accumulator ->
+      persist_output(accumulator, occurrence, output, Map.fetch!(outputs, output.name), contract)
+    end)
+  end
+
+  defp persist_output({:ok, run, artifact_ids}, occurrence, output, value, contract) do
+    case build_artifact(run, occurrence, output, value, contract) do
+      {:ok, next_run, artifact} ->
+        {:cont,
+         {:ok, put_artifact(next_run, artifact), Map.put(artifact_ids, output.name, artifact.id)}}
+
+      {:error, reason} ->
+        {:halt, {:error, invalid_artifact_error(run, occurrence, output.name, reason)}}
+    end
+  end
+
+  defp invalid_artifact_error(run, occurrence, type, reason) do
+    %Error{
+      type: :invalid_artifact_value,
+      run_id: run.id,
+      occurrence_id: occurrence.id,
+      attempt_id: occurrence.current_attempt_id,
+      artifact_type: type,
+      details: %{reason: reason}
+    }
+  end
+
+  defp finish_occurrence(run, occurrence, output_artifact_ids) do
     attempts =
       Enum.map(occurrence.attempts, fn
         %ExecutionAttempt{id: id} = attempt when id == occurrence.current_attempt_id ->
@@ -974,6 +1044,65 @@ defmodule QuestEngineering.Core.Runtime do
 
     {:ok, put_scope(run, scope)}
   end
+
+  defp build_artifact(run, occurrence, output, supplied_value, contract) do
+    scoped_value = scope_verdict(supplied_value, output.name, contract)
+
+    with :ok <- validate_typed_artifact(output.kind, scoped_value),
+         {:ok, value, document} <- DocumentArtifact.normalize(output.kind, scoped_value) do
+      {artifact_id, run} = next_artifact_id(run, output.name)
+      previous = previous_artifact(run, occurrence, output.kind)
+      {version, supersedes} = document_lineage(document, previous)
+
+      artifact = %ArtifactInstance{
+        id: artifact_id,
+        kind: output.kind,
+        output_name: output.name,
+        producer_occurrence_id: occurrence.id,
+        value: value,
+        version: version,
+        supersedes_artifact_id: supersedes,
+        content_hash: document_metadata(document, :content_hash),
+        media_type: document_metadata(document, :media_type),
+        filename: document_metadata(document, :filename),
+        title: document_metadata(document, :title)
+      }
+
+      {:ok, run, artifact}
+    end
+  end
+
+  defp validate_typed_artifact("review_verdict", value),
+    do: if(ReviewVerdict.valid?(value), do: :ok, else: {:error, :invalid_review_verdict})
+
+  defp validate_typed_artifact(_kind, _value), do: :ok
+
+  defp scope_verdict(value, output, %{output: output} = contract) do
+    ReviewVerdict.scope(
+      value,
+      contract.gate_key,
+      contract.subject_kind,
+      contract.subject_artifact_id
+    )
+  end
+
+  defp scope_verdict(value, _output, _contract), do: value
+
+  defp previous_artifact(run, occurrence, kind) do
+    occurrence.input_artifact_ids
+    |> Map.values()
+    |> Enum.map(&Map.get(run.artifacts, &1))
+    |> Enum.find(&(&1 && &1.kind == kind))
+  end
+
+  defp document_lineage(nil, _previous), do: {nil, nil}
+  defp document_lineage(_document, nil), do: {1, nil}
+
+  defp document_lineage(_document, previous),
+    do: {(previous.version || 0) + 1, previous.id}
+
+  defp document_metadata(nil, _field), do: nil
+  defp document_metadata(document, field), do: Map.fetch!(document, field)
 
   defp fetch_completable_occurrence(run, event) do
     case Map.fetch(run.occurrences, event.occurrence_id) do
@@ -1026,7 +1155,7 @@ defmodule QuestEngineering.Core.Runtime do
   end
 
   defp validate_outputs(step, event, run_id) when is_map(event.outputs) do
-    declared = MapSet.new(step.produces)
+    declared = step.produces |> Enum.map(& &1.name) |> MapSet.new()
     submitted = MapSet.new(Map.keys(event.outputs))
     missing = declared |> MapSet.difference(submitted) |> MapSet.to_list() |> Enum.sort()
     undeclared = submitted |> MapSet.difference(declared) |> MapSet.to_list() |> Enum.sort()
@@ -1059,7 +1188,7 @@ defmodule QuestEngineering.Core.Runtime do
          }}
 
       true ->
-        validate_artifact_values(event, step.produces, run_id)
+        validate_artifact_values(event, Enum.map(step.produces, & &1.name), run_id)
     end
   end
 
@@ -1105,14 +1234,24 @@ defmodule QuestEngineering.Core.Runtime do
 
   defp artifact_value?(_value), do: false
 
-  defp resolve_source(scope, producer, type) when is_binary(producer) do
-    case get_in(scope.step_artifacts, [producer, type]) do
-      nil -> :error
-      artifact_id -> {:ok, artifact_id}
+  defp resolve_source(scope, %ArtifactRef{producer: producer, output: output}) do
+    case get_in(scope.step_artifacts, [producer, output]) do
+      nil ->
+        scope.region_outputs
+        |> Enum.find(fn resolved ->
+          source_ref(resolved.output) == %ArtifactRef{producer: producer, output: output}
+        end)
+        |> case do
+          nil -> :error
+          resolved -> {:ok, resolved.artifact_id}
+        end
+
+      artifact_id ->
+        {:ok, artifact_id}
     end
   end
 
-  defp resolve_source(scope, %UntilOutput{} = output, _type) do
+  defp resolve_source(scope, %UntilOutput{} = output) do
     scope.region_outputs
     |> Enum.find(&(&1.output == output))
     |> case do
@@ -1121,13 +1260,13 @@ defmodule QuestEngineering.Core.Runtime do
     end
   end
 
-  defp source_step_key(%UntilOutput{kind: :check, producer: producer}) when is_binary(producer),
+  defp source_ref(%UntilOutput{source_kind: :check, producer: %ArtifactRef{} = producer}),
     do: producer
 
-  defp source_step_key(%UntilOutput{kind: :check, producer: %UntilOutput{} = producer}),
-    do: source_step_key(producer)
+  defp source_ref(%UntilOutput{source_kind: :check, producer: %UntilOutput{} = producer}),
+    do: source_ref(producer)
 
-  defp source_step_key(%UntilOutput{kind: :carried}), do: nil
+  defp source_ref(%UntilOutput{source_kind: :carried}), do: nil
 
   defp fetch_step(plan, key) do
     case Enum.find(plan.steps, &(&1.key == key)) do

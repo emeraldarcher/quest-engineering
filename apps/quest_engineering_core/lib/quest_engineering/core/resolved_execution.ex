@@ -87,7 +87,8 @@ defmodule QuestEngineering.Core.ResolvedExecution.Work do
     :class_instructions,
     :step_instruction,
     :inputs,
-    :declared_outputs
+    :declared_outputs,
+    :acceptance_contract
   ]
 
   @type t :: %__MODULE__{
@@ -95,7 +96,8 @@ defmodule QuestEngineering.Core.ResolvedExecution.Work do
           class_instructions: String.t(),
           step_instruction: String.t(),
           inputs: %{optional(String.t()) => QuestEngineering.Core.Runtime.ArtifactInstance.t()},
-          declared_outputs: [String.t()]
+          declared_outputs: [QuestEngineering.Core.Tactics.ArtifactOutput.t()],
+          acceptance_contract: map() | nil
         }
 end
 
@@ -207,7 +209,8 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
         class_instructions: member.class.instructions,
         step_instruction: action.instruction,
         inputs: action.inputs,
-        declared_outputs: action.declared_outputs
+        declared_outputs: action.declared_outputs,
+        acceptance_contract: action.acceptance_contract
       },
       configuration: %Configuration{
         model: member.loadout.model,

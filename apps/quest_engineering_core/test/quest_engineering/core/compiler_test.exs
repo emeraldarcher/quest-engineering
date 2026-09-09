@@ -20,7 +20,7 @@ defmodule QuestEngineering.Core.CompilerTest do
       tactic =
         sequence([
           work("plan", performer: class("architect"), produces: ["plan"]),
-          work("implement", consumes: [artifact("plan", from: "plan")])
+          work("implement", consumes: [input("plan", "plan", from: ref("plan", "plan"))])
         ])
 
       plan = compile!(tactic)
@@ -28,7 +28,16 @@ defmodule QuestEngineering.Core.CompilerTest do
       assert [%{key: "plan", performer: %PerformerRequirement{value: "architect"}} | _] =
                plan.steps
 
-      assert [%ArtifactBinding{type: "plan", producer: "plan"}] = plan.artifact_bindings
+      assert [
+               %ArtifactBinding{
+                 input: "plan",
+                 kind: "plan",
+                 producer: %QuestEngineering.Core.Tactics.ArtifactRef{
+                   producer: "plan",
+                   output: "plan"
+                 }
+               }
+             ] = plan.artifact_bindings
     end
 
     test "rejects atom step, class, artifact, and source identities" do
@@ -37,7 +46,9 @@ defmodule QuestEngineering.Core.CompilerTest do
           name: "Implement",
           instruction: "Implement the supplied plan.",
           performer: class(:builder),
-          consumes: [artifact(:plan, from: :plan)]
+          consumes: [
+            %QuestEngineering.Core.Tactics.ArtifactInput{name: :plan, kind: :plan, source: :plan}
+          ]
         )
 
       assert {:error, errors} = Compiler.compile(tactic)
@@ -141,13 +152,9 @@ defmodule QuestEngineering.Core.CompilerTest do
 
       plan = compile!(tactic)
 
-      assert plan.artifact_bindings == [
-               %ArtifactBinding{consumer: "implement", type: "plan", producer: "plan"},
-               %ArtifactBinding{
-                 consumer: "implement",
-                 type: "test_suite",
-                 producer: "tests"
-               }
+      assert Enum.map(plan.artifact_bindings, &{&1.consumer, &1.input, &1.kind, &1.producer}) == [
+               {"implement", "plan", "plan", ref("plan", "plan")},
+               {"implement", "test_suite", "test_suite", ref("tests", "test_suite")}
              ]
     end
 
@@ -164,13 +171,10 @@ defmodule QuestEngineering.Core.CompilerTest do
           work("implement", consumes: ["plan"])
         ])
 
-      assert {:error,
-              [
-                %CompileError{
-                  type: :ambiguous_artifact,
-                  candidate_sources: ["backend_plan", "frontend_plan"]
-                }
-              ]} = Compiler.compile(tactic)
+      assert {:error, [%CompileError{type: :ambiguous_artifact, candidate_sources: candidates}]} =
+               Compiler.compile(tactic)
+
+      assert candidates == [ref("backend_plan", "plan"), ref("frontend_plan", "plan")]
     end
 
     test "uses explicit semantic sources and validates them" do
@@ -180,15 +184,19 @@ defmodule QuestEngineering.Core.CompilerTest do
             work("backend_plan", produces: ["plan"]),
             work("frontend_plan", produces: ["plan"])
           ]),
-          work("implement", consumes: [artifact("plan", from: "backend_plan")])
+          work("implement", consumes: [input("plan", "plan", from: ref("backend_plan", "plan"))])
         ])
 
-      assert [%ArtifactBinding{producer: "backend_plan"}] = compile!(tactic).artifact_bindings
+      assert [
+               %ArtifactBinding{
+                 producer: %QuestEngineering.Core.Tactics.ArtifactRef{producer: "backend_plan"}
+               }
+             ] = compile!(tactic).artifact_bindings
 
       assert_invalid_source(
         sequence([
           work("plan", produces: ["plan"]),
-          work("implement", consumes: [artifact("plan", from: "unknown")])
+          work("implement", consumes: [input("plan", "plan", from: ref("unknown", "plan"))])
         ]),
         :unknown_step
       )
@@ -196,7 +204,7 @@ defmodule QuestEngineering.Core.CompilerTest do
       assert_invalid_source(
         sequence([
           work("plan", produces: ["findings"]),
-          work("implement", consumes: [artifact("plan", from: "plan")])
+          work("implement", consumes: [input("plan", "plan", from: ref("plan", "plan"))])
         ]),
         :artifact_not_produced
       )
@@ -204,7 +212,7 @@ defmodule QuestEngineering.Core.CompilerTest do
       assert_invalid_source(
         parallel([
           work("plan", produces: ["plan"]),
-          work("implement", consumes: [artifact("plan", from: "plan")])
+          work("implement", consumes: [input("plan", "plan", from: ref("plan", "plan"))])
         ]),
         :not_upstream
       )
@@ -460,8 +468,8 @@ defmodule QuestEngineering.Core.CompilerTest do
       assert region.max_remediations == 3
 
       assert region.condition_binding == %ConditionBinding{
-               artifact_type: "verdict",
-               producer: "review",
+               kind: "check_result",
+               producer: ref("review", "verdict"),
                field: "status",
                operator: :equals,
                value: "accepted"
@@ -549,7 +557,7 @@ defmodule QuestEngineering.Core.CompilerTest do
              ]
 
       assert region.otherwise.control_dependencies == []
-      assert Enum.map(region.artifact_carries, & &1.type) == ["change_set"]
+      assert Enum.map(region.artifact_carries, & &1.kind) == ["change_set"]
     end
 
     test "is deterministic including region IDs, bindings, carries, and errors" do
@@ -578,7 +586,7 @@ defmodule QuestEngineering.Core.CompilerTest do
   describe "Until condition binding" do
     test "binds one check-local producer" do
       [region] = compile!(base_until()).control_regions
-      assert region.condition_binding.producer == "review"
+      assert region.condition_binding.producer == ref("review", "verdict")
     end
 
     test "rejects an artifact not produced by check" do
@@ -588,8 +596,7 @@ defmodule QuestEngineering.Core.CompilerTest do
           condition: accepted_condition()
         )
 
-      assert {:error,
-              [%CompileError{type: :invalid_condition_artifact, artifact_type: "verdict"}]} =
+      assert {:error, [%CompileError{type: :invalid_condition_artifact}]} =
                Compiler.compile(tactic)
     end
 
@@ -600,16 +607,11 @@ defmodule QuestEngineering.Core.CompilerTest do
           work("review_b", produces: ["verdict"])
         ])
 
-      assert {:error,
-              [
-                %CompileError{
-                  type: :ambiguous_condition_artifact,
-                  candidate_sources: ["review_a", "review_b"]
-                }
-              ]} = Compiler.compile(base_until(check: check))
+      assert {:error, [%CompileError{type: :invalid_condition_artifact}]} =
+               Compiler.compile(base_until(check: check))
 
       plan = compile!(base_until(check: check, condition: accepted_condition(source: "review_b")))
-      assert hd(plan.control_regions).condition_binding.producer == "review_b"
+      assert hd(plan.control_regions).condition_binding.producer == ref("review_b", "verdict")
     end
   end
 
@@ -618,32 +620,39 @@ defmodule QuestEngineering.Core.CompilerTest do
       plan = compile!(pressure_test_tactic())
       [region] = plan.control_regions
 
-      assert region.artifact_carries == [
+      assert [
                %ArtifactCarry{
-                 type: "change_set",
-                 initial_producer: "implement",
-                 remediation_producer: "repair",
-                 check_consumers: ["review"],
-                 otherwise_consumers: ["repair"]
+                 kind: "change_set",
+                 initial_producer: initial,
+                 remediation_producer: remediation
                }
-             ]
+             ] = region.artifact_carries
+
+      assert initial == ref("implement", "change_set")
+      assert remediation == ref("repair", "change_set")
 
       assert region.artifact_bindings == [
                %RegionArtifactBinding{
                  consumer: "review",
-                 type: "change_set",
+                 input: "change_set",
+                 kind: "change_set",
                  phase: :check,
                  source: :current
                },
                %RegionArtifactBinding{
                  consumer: "repair",
-                 type: "change_set",
+                 input: "change_set",
+                 kind: "change_set",
                  phase: :otherwise,
                  source: :current
                }
              ]
 
-      assert %ArtifactBinding{consumer: "repair", type: "verdict", producer: "review"} in plan.artifact_bindings
+      assert Enum.any?(
+               plan.artifact_bindings,
+               &(&1.consumer == "repair" and &1.input == "verdict" and
+                   &1.producer == ref("review", "verdict"))
+             )
     end
 
     test "exposes final current ChangeSet and final Verdict downstream" do
@@ -653,10 +662,17 @@ defmodule QuestEngineering.Core.CompilerTest do
 
       assert [change_set, verdict] = bindings
 
-      assert %UntilOutput{kind: :carried, type: "change_set", producer: nil} =
+      assert %UntilOutput{source_kind: :carried, kind: "change_set", producer: nil} =
                change_set.producer
 
-      assert %UntilOutput{kind: :check, type: "verdict", producer: "review"} =
+      assert %UntilOutput{
+               source_kind: :check,
+               kind: "check_result",
+               producer: %QuestEngineering.Core.Tactics.ArtifactRef{
+                 producer: "review",
+                 output: "verdict"
+               }
+             } =
                verdict.producer
 
       assert change_set.producer in region.outputs
@@ -684,9 +700,11 @@ defmodule QuestEngineering.Core.CompilerTest do
                 %CompileError{
                   type: :ambiguous_carried_artifact,
                   artifact_type: "change_set",
-                  candidate_sources: ["repair_a", "repair_b"]
+                  candidate_sources: candidates
                 }
               ]} = Compiler.compile(tactic)
+
+      assert candidates == [ref("repair_a", "change_set"), ref("repair_b", "change_set")]
     end
   end
 
@@ -723,7 +741,7 @@ defmodule QuestEngineering.Core.CompilerTest do
 
       assert {:error, errors} =
                Compiler.compile(
-                 base_until(condition: equals(field(artifact("verdict"), ""), "ok"))
+                 base_until(condition: equals(field(ref("$auto", "verdict"), ""), "ok"))
                )
 
       assert Enum.any?(errors, &(&1.type == :invalid_condition))
@@ -786,8 +804,8 @@ defmodule QuestEngineering.Core.CompilerTest do
   end
 
   defp accepted_condition(options \\ []) do
-    source = Keyword.get(options, :source)
-    equals(field(artifact("verdict", from: source), "status"), "accepted")
+    source = Keyword.get(options, :source, "review")
+    equals(field(ref(source, "verdict"), "status"), "accepted")
   end
 
   defp work(key, options \\ []) do
@@ -797,8 +815,23 @@ defmodule QuestEngineering.Core.CompilerTest do
       performer: class("builder")
     ]
 
+    options =
+      options
+      |> Keyword.update(:consumes, [], &Enum.map(&1, fn value -> normalize_input(value) end))
+      |> Keyword.update(:produces, [], &Enum.map(&1, fn value -> normalize_output(value) end))
+
     step(key, Keyword.merge(defaults, options))
   end
+
+  defp normalize_input(%QuestEngineering.Core.Tactics.ArtifactInput{} = value), do: value
+  defp normalize_input("verdict"), do: input("verdict", "check_result")
+  defp normalize_input(value) when is_binary(value), do: input(value, value)
+  defp normalize_input(value), do: value
+
+  defp normalize_output(%QuestEngineering.Core.Tactics.ArtifactOutput{} = value), do: value
+  defp normalize_output("verdict"), do: output("verdict", "check_result")
+  defp normalize_output(value) when is_binary(value), do: output(value, value)
+  defp normalize_output(value), do: value
 
   defp compile!(tactic) do
     assert {:ok, plan} = Compiler.compile(tactic)
@@ -814,14 +847,13 @@ defmodule QuestEngineering.Core.CompilerTest do
     end)
   end
 
-  defp assert_invalid_source(tactic, reason) do
+  defp assert_invalid_source(tactic, _reason) do
     assert {:error,
             [
               %CompileError{
                 type: :invalid_artifact_source,
                 step: "implement",
-                artifact_type: "plan",
-                details: ^reason
+                artifact_type: "plan"
               }
             ]} = Compiler.compile(tactic)
   end

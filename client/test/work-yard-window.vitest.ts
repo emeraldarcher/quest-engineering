@@ -421,7 +421,7 @@ test("remediation history separates semantic Reviews from operational attempts",
   expect(attempts.textContent).toContain("Uncertain · Retried");
   expect(attempts.textContent).toContain("No output produced");
   expect(attempts.textContent).toContain("Attempt 2");
-  expect(attempts.textContent).toContain("Produced Verdict");
+  expect(attempts.textContent).toContain("Produced Review Verdict");
   expect(screen.queryByText("occ-review-first")).toBeNull();
 
   await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
@@ -633,7 +633,9 @@ test("artifact selection returns to list state when the artifact disappears", as
   const withoutVerdict: RunProjection = {
     ...current,
     revision: current.revision + 1,
-    artifacts: current.artifacts.filter((item) => item.type !== "verdict"),
+    artifacts: current.artifacts.filter(
+      (item) => item.type !== "review_verdict",
+    ),
   };
   store.selectedRun.set(withoutVerdict);
 

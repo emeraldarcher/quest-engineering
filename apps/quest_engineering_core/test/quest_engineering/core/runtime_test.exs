@@ -70,7 +70,7 @@ defmodule QuestEngineering.Core.RuntimeTest do
 
           {:ok, run, []} = complete(run, integrate, %{"result" => %{"status" => "done"}})
           assert run.status == :completed
-          run.artifacts |> Map.values() |> Enum.find(&(&1.type == "result")) |> Map.fetch!(:value)
+          run.artifacts |> Map.values() |> Enum.find(&(&1.kind == "result")) |> Map.fetch!(:value)
         end
 
       assert results == [%{"status" => "done"}, %{"status" => "done"}]
@@ -284,7 +284,7 @@ defmodule QuestEngineering.Core.RuntimeTest do
       verdicts =
         completed.artifact_order
         |> Enum.map(&Map.fetch!(completed.artifacts, &1))
-        |> Enum.filter(&(&1.type == "verdict"))
+        |> Enum.filter(&(&1.kind == "check_result"))
 
       assert Enum.map(verdicts, & &1.value["status"]) == ~w(rejected rejected accepted)
 
@@ -307,7 +307,9 @@ defmodule QuestEngineering.Core.RuntimeTest do
       assert review_2.occurrence_id == review_1.occurrence_id
       assert semantic_occurrences(retried, "repair") == []
 
-      refute Enum.any?(retried.artifacts, fn {_id, artifact} -> artifact.type == "verdict" end)
+      refute Enum.any?(retried.artifacts, fn {_id, artifact} ->
+               artifact.kind == "check_result"
+             end)
 
       assert {:ok, accepted, []} =
                complete(retried, review_2, %{"verdict" => %{"status" => "accepted"}})
@@ -568,7 +570,7 @@ defmodule QuestEngineering.Core.RuntimeTest do
   defp pressure_tactic(options \\ []) do
     children = [
       work("plan",
-        instruction: "Analyze the available inputs and produce an implementation plan.",
+        instruction: "Analyze the available inputs and produce a plan.",
         performer: class("architect"),
         context: fresh(),
         produces: ["plan"]
@@ -611,10 +613,7 @@ defmodule QuestEngineering.Core.RuntimeTest do
   end
 
   defp accepted_condition(options \\ []) do
-    equals(
-      field(artifact("verdict", from: Keyword.get(options, :source)), "status"),
-      "accepted"
-    )
+    equals(field(ref(Keyword.get(options, :source, "review"), "verdict"), "status"), "accepted")
   end
 
   defp work(key, options \\ []) do
@@ -624,8 +623,20 @@ defmodule QuestEngineering.Core.RuntimeTest do
       performer: class("builder")
     ]
 
+    options =
+      options
+      |> Keyword.update(:consumes, [], &Enum.map(&1, fn value -> normalize_input(value) end))
+      |> Keyword.update(:produces, [], &Enum.map(&1, fn value -> normalize_output(value) end))
+
     step(key, Keyword.merge(defaults, options))
   end
+
+  defp normalize_input("verdict"), do: input("verdict", "check_result")
+  defp normalize_input(value) when is_binary(value), do: input(value, value)
+  defp normalize_input(value), do: value
+  defp normalize_output("verdict"), do: output("verdict", "check_result")
+  defp normalize_output(value) when is_binary(value), do: output(value, value)
+  defp normalize_output(value), do: value
 
   defp compile!(tactic) do
     assert {:ok, plan} = Compiler.compile(tactic)
