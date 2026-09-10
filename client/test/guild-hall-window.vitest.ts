@@ -154,6 +154,35 @@ test("opens in read mode with informative selectable Class cards", () => {
   expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
 });
 
+test("long Class instructions scroll independently while actions remain available", () => {
+  const longBuilder = {
+    ...builder,
+    instructions: Array.from(
+      { length: 80 },
+      (_, index) =>
+        `Instruction ${index + 1}: perform this responsibility carefully.`,
+    ).join("\n"),
+  };
+  renderGuild(fakeStore(), {
+    ...product,
+    classes: [longBuilder, reviewer],
+    classCatalog: [longBuilder, reviewer],
+  });
+
+  const scrollRegion = screen.getByRole("region", {
+    name: "Builder details",
+  });
+  const edit = screen.getByRole("button", { name: "Edit" });
+  const archive = screen.getByRole("button", { name: "Archive" });
+
+  expect(scrollRegion.tabIndex).toBe(0);
+  expect(scrollRegion.classList.contains("class-detail-scroll")).toBe(true);
+  expect(scrollRegion.contains(edit)).toBe(false);
+  expect(scrollRegion.contains(archive)).toBe(false);
+  expect(scrollRegion.parentElement?.contains(edit)).toBe(true);
+  expect(scrollRegion.parentElement?.contains(archive)).toBe(true);
+});
+
 test("Class cards support keyboard focus and native keyboard selection", async () => {
   renderGuild();
   const card = screen.getByRole("button", {

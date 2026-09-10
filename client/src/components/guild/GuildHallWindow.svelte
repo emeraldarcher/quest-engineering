@@ -451,25 +451,33 @@ async function archiveClass() {
         </form>
       {:else if selectedClass}
         <article class="class-detail">
-          <span class="eyebrow">Class · Behavioral role</span>
-          <h2>{selectedClass.name}</h2>
-          <p class="detail-description">{selectedClass.description || "No description has been added yet."}</p>
-          <p class="detail-usage">{usageLabel(selectedUsage)}</p>
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (scrollable details must be keyboard reachable) -->
+          <div
+            class="class-detail-scroll"
+            role="region"
+            aria-label={`${selectedClass.name} details`}
+            tabindex="0"
+          >
+            <span class="eyebrow">Class · Behavioral role</span>
+            <h2>{selectedClass.name}</h2>
+            <p class="detail-description">{selectedClass.description || "No description has been added yet."}</p>
+            <p class="detail-usage">{usageLabel(selectedUsage)}</p>
 
-          <section class="instructions-panel" aria-labelledby="instructions-title">
-            <div class="instructions-heading">
-              <span aria-hidden="true">✦</span>
-              <h3 id="instructions-title">Instructions</h3>
-            </div>
-            <p>{selectedClass.instructions}</p>
-          </section>
+            <section class="instructions-panel" aria-labelledby="instructions-title">
+              <div class="instructions-heading">
+                <span aria-hidden="true">✦</span>
+                <h3 id="instructions-title">Instructions</h3>
+              </div>
+              <p>{selectedClass.instructions}</p>
+            </section>
 
-          <details class="advanced" bind:open={advancedOpen}>
-            <summary>Advanced</summary>
-            <dl>
-              <div><dt>Class key</dt><dd><code>{selectedClass.key}</code><small>Immutable</small></dd></div>
-            </dl>
-          </details>
+            <details class="advanced" bind:open={advancedOpen}>
+              <summary>Advanced</summary>
+              <dl>
+                <div><dt>Class key</dt><dd><code>{selectedClass.key}</code><small>Immutable</small></dd></div>
+              </dl>
+            </details>
+          </div>
 
           <footer class="detail-actions">
             <button class="secondary" type="button" on:click={() => startEdit(selectedClass)}>Edit</button>
@@ -528,16 +536,23 @@ async function archiveClass() {
 </aside>
 
 <style>
+  .guild-window {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: min(50rem, calc(100vh - 5.4rem));
+  }
   .window-body {
     display: grid;
     grid-template-columns: minmax(17rem, 0.68fr) minmax(29rem, 1.32fr);
-    min-height: 34rem;
-    max-height: calc(100vh - 10.4rem);
+    min-height: 0;
+    overflow: hidden;
   }
   .class-browser,
   .class-content {
+    min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
+    scrollbar-gutter: stable;
   }
   .class-browser {
     padding: 1.15rem;
@@ -651,8 +666,19 @@ async function archiveClass() {
     line-height: 1.45;
   }
   .class-detail {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    height: 100%;
+    min-height: 0;
     padding: 0;
     border: 0;
+  }
+  .class-detail-scroll {
+    min-height: 0;
+    padding-right: 0.45rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
   }
   .detail-description {
     max-width: 38rem;
@@ -738,7 +764,10 @@ async function archiveClass() {
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    margin-top: 1.25rem;
+    margin-top: 0.85rem;
+    padding-top: 0.85rem;
+    background: var(--app-cream);
+    border-top: 1px solid #d7c5a5;
   }
   .destructive-link {
     min-height: auto;
@@ -821,7 +850,6 @@ async function archiveClass() {
   @media (max-width: 1000px) {
     .window-body {
       grid-template-columns: minmax(15rem, 0.7fr) minmax(22rem, 1.3fr);
-      max-height: calc(100vh - 10.3rem);
     }
     .class-content {
       padding: 1.25rem 1.35rem;
@@ -834,6 +862,9 @@ async function archiveClass() {
     .window-body {
       display: block;
       overflow: auto;
+    }
+    .guild-window {
+      height: calc(100vh - 5.4rem);
     }
     .class-browser,
     .class-content {
