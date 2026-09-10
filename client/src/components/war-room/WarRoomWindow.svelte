@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onDestroy, onMount, tick } from "svelte";
 import "../management/management-window.css";
+import "./war-room.css";
 import type { AppStore, ProductState } from "../../state/app-store";
 import {
   ApiError,
@@ -11,18 +12,20 @@ import {
   type TacticPreview,
 } from "../../api/contracts";
 import SemanticNode from "../tactics/SemanticNode.svelte";
+import TacticHeader from "./TacticHeader.svelte";
+import TacticInterfaceEditor from "./TacticInterfaceEditor.svelte";
+import TacticInterfaceSummary from "./TacticInterfaceSummary.svelte";
+import TacticTreeToolbar from "./TacticTreeToolbar.svelte";
 import {
   appendChild,
   asJson,
   artifactTypeLabel,
   BUILT_IN_ARTIFACT_KINDS,
-  cloneDraft,
   displayNodeName,
   draftFromTactic,
   draftSignature,
   emptyDraft,
   entries,
-  generatedLocalKey,
   generatedTacticKey,
   insertAfter,
   artifactContractLabel,
@@ -37,9 +40,11 @@ import {
   moveOut,
   nodeAt,
   pathKey,
-  removeNode,
+  referencedOutputsForRemoval,
+  removeNodeWithSelection,
   replaceNode,
   steps,
+  subtreeSize,
   type ArtifactInputDraft,
   type ArtifactOutputDraft,
   type ArtifactRefDraft,
@@ -63,6 +68,7 @@ export let scene: string | null = null;
 type Mode = "detail" | "create" | "edit";
 type PreviewState = "idle" | "loading" | "valid" | "context" | "attention" | "unavailable";
 type PendingAction = (() => void) | null;
+type InspectorView = "node" | "interface" | "details";
 
 let windowElement: HTMLElement;
 let mode: Mode = "detail";
@@ -86,7 +92,11 @@ let dirtyKeep: HTMLButtonElement;
 let archiveDialog: HTMLDialogElement;
 let archiveCancel: HTMLButtonElement;
 let archiveTrigger: HTMLButtonElement;
+let removeDialog: HTMLDialogElement;
+let removeCancel: HTMLButtonElement;
 let pendingAction: PendingAction = null;
+let pendingRemoval: { name: string; count: number; references: string[] } | null = null;
+let inspectorView: InspectorView = "node";
 let nestedPreviewOpen = false;
 let advancedOpen = false;
 let inspectorAdvanced = false;
@@ -107,6 +117,13 @@ $: usage = selectedTactic
 $: localIssues = mode === "create" || mode === "edit" ? localDraftIssues(draft) : [];
 $: previewBindings = preview?.artifact_bindings ?? [];
 $: contextualDetails = contextualArtifacts(previewFailure);
+$: hasTreeSelection = Boolean(
+  selectedNode && !(draft.body.type === "sequence" && !draft.body.children.length),
+);
+$: canMoveUp = Boolean(selectedNode && moveNode(draft.body, selectedPath, -1).body !== draft.body);
+$: canMoveDown = Boolean(selectedNode && moveNode(draft.body, selectedPath, 1).body !== draft.body);
+$: canMoveInto = Boolean(selectedNode && moveIntoPrevious(draft.body, selectedPath).body !== draft.body);
+$: canMoveOut = Boolean(selectedNode && moveOut(draft.body, selectedPath).body !== draft.body);
 onMount(async () => {
   rememberedSelection = store.fixture
     ? null
@@ -208,9 +225,18 @@ function applyScene() {
       artifacts: firstPath((node) => node.type === "step" && node.key === "review"),
       ambiguous: firstPath((node) => node.type === "step" && node.key === "review"),
       use: firstPath((node) => node.type === "use"),
+      "use-delivery": firstPath(
+        (node) =>
+          node.type === "use" &&
+          tacticCatalog.find((item) => item.id === node.tactic_definition_id)?.key ===
+            "implement-and-review",
+      ),
+      "nested-use": firstPath((node) => node.type === "use"),
     };
     selectedPath = scenePath[scene] ?? [];
+    inspectorView = scene === "interface" ? "interface" : scene === "details" ? "details" : "node";
     inspectorAdvanced = scene === "step-advanced" || scene === "affinity" || scene === "context";
+    nestedPreviewOpen = scene === "nested-use";
     if (scene === "dirty") {
       draft = { ...draft, description: `${draft.description} Updated plan.` };
       void tick().then(() => requestTransition(() => {}));
@@ -241,6 +267,7 @@ function startCreate() {
     previewFailure = null;
     previewState = "idle";
     localIssue = "";
+    inspectorView = "details";
     void tick().then(() => windowElement?.querySelector<HTMLInputElement>("#tactic-name")?.focus());
   });
 }
@@ -255,6 +282,7 @@ function startEdit(tactic: Tactic) {
     localIssue = "";
     advancedOpen = false;
     inspectorAdvanced = false;
+    inspectorView = "node";
     void runDraftPreview();
   });
 }
@@ -273,6 +301,7 @@ function clearEditorState() {
   nestedPreviewOpen = false;
   previewFailure = null;
   previewState = "idle";
+  inspectorView = "node";
 }
 
 function updateDraftName(value: string) {
@@ -330,7 +359,15 @@ function addNode(kind: "step" | "sequence" | "parallel" | "until" | "use") {
       : [1];
   }
   draft = { ...draft };
+  inspectorView = "node";
   schedulePreview();
+  if (kind === "use") void tick().then(autoBindSelectedUse);
+}
+
+function selectNode(path: NodePath) {
+  selectedPath = path;
+  inspectorView = "node";
+  nestedPreviewOpen = false;
 }
 
 function moveSelected(direction: -1 | 1) {
@@ -358,13 +395,42 @@ function unnestSelected() {
 }
 
 function removeSelected() {
-  const name = selectedNode ? displayNodeName(selectedNode, tacticCatalog) : "this item";
-  if (!confirm(`Remove ${name}? References are preserved and preview will show anything that now needs attention.`))
+  if (!selectedNode) return;
+  const count = subtreeSize(selectedNode);
+  const references = referencedOutputsForRemoval(draft, selectedPath);
+  const needsWarning = count > 1 || references.length > 0;
+  if (!needsWarning) {
+    performRemoval();
     return;
-  draft.body = removeNode(draft.body, selectedPath);
-  selectedPath = selectedPath.slice(0, -1);
+  }
+  pendingRemoval = {
+    name: displayNodeName(selectedNode, tacticCatalog),
+    count,
+    references,
+  };
+  removeDialog.showModal();
+  void tick().then(() => removeCancel?.focus());
+}
+
+function performRemoval() {
+  const result = removeNodeWithSelection(draft.body, selectedPath);
+  if (!result.removed) {
+    localIssue = "That item could not be removed from its current composition.";
+    return;
+  }
+  draft.body = result.body;
+  selectedPath = result.path;
   draft = { ...draft };
+  inspectorView = "node";
+  nestedPreviewOpen = false;
+  pendingRemoval = null;
+  removeDialog?.close();
   schedulePreview();
+}
+
+function closeRemove() {
+  pendingRemoval = null;
+  removeDialog.close();
 }
 
 function addArtifact(direction: "consumes" | "produces") {
@@ -409,7 +475,7 @@ function artifactSourceCandidates(kind: string): Array<{ ref: ArtifactRefDraft; 
   const selectedIndex = all.findIndex((entry) => entry.node === selectedNode);
   const upstream = selectedIndex < 0 ? all : all.slice(0, selectedIndex);
   const stepOutputs = upstream.flatMap(({ node }) => node.type === "step"
-    ? node.produces.filter((output) => output.kind === kind).map((output) => ({ ref: { producer: node.key, output: output.name }, label: `${node.name} → ${humanizeKey(output.name)}` }))
+    ? node.produces.filter((output) => output.kind === kind).map((output) => ({ ref: { producer: node.key, output: output.name }, label: `${node.name} → ${artifactContractLabel(node, output, "produces")}` }))
     : []);
   const useOutputs = upstream.flatMap(({ node }) => {
     if (node.type !== "use") return [];
@@ -422,7 +488,7 @@ function artifactSourceCandidates(kind: string): Array<{ ref: ArtifactRefDraft; 
 
 function interfaceOutputCandidates(kind: string): Array<{ ref: ArtifactRefDraft; label: string }> {
   return entries(draft.body).flatMap(({node}) => {
-    if (node.type === "step") return node.produces.filter((output) => output.kind === kind).map((output) => ({ref:{producer:node.key,output:output.name},label:`${node.name} → ${humanizeKey(output.name)}`}));
+    if (node.type === "step") return node.produces.filter((output) => output.kind === kind).map((output) => ({ref:{producer:node.key,output:output.name},label:`${node.name} → ${artifactContractLabel(node, output, "produces")}`}));
     if (node.type === "use") {
       const tactic = tacticCatalog.find((item) => item.id === node.tactic_definition_id);
       return (tactic?.interface.outputs ?? []).filter((output) => output.kind === kind).map((output) => ({ref:{producer:node.instance_key,output:output.key},label:`${tactic?.name ?? "Reusable Tactic"} → ${output.label}`}));
@@ -445,25 +511,74 @@ function commonOutputName(kind: string): string {
   return "result";
 }
 
-function nextPortKey(base: string): string {
-  const existing = new Set([...draft.interface.inputs, ...draft.interface.outputs].map((port) => port.key));
-  let key = base;
-  let suffix = 2;
-  while (existing.has(key)) key = `${base}_${suffix++}`;
-  return key;
+function updateInterface(value: Tactic["interface"]) {
+  draft = { ...draft, interface: value };
+  schedulePreview();
 }
-function addInterfaceInput() {
-  draft.interface.inputs = [...draft.interface.inputs, { key: nextPortKey("input"), label: "Input", kind: "", required: false }];
-  draft = { ...draft };
+
+function interfaceInputUses(key: string): string[] {
+  return entries(draft.body).flatMap(({ node }) =>
+    node.type === "step"
+      ? node.consumes.flatMap((input) =>
+          input.source?.producer === "$inputs" && input.source.output === key
+            ? [`${node.name} → ${humanizeKey(input.name)}`]
+            : [],
+        )
+      : [],
+  );
 }
-function addInterfaceOutput() {
-  draft.interface.outputs = [...draft.interface.outputs, { key: nextPortKey("result"), label: "Result", kind: "", source: { type: "binding", binding: { producer: "", output: "" } } }];
-  draft = { ...draft };
+
+function acceptedSubjectCandidates(kind: string): Array<{ gateKey: string; label: string }> {
+  const candidates = entries(draft.body).flatMap(({ node }) => {
+    if (node.type !== "step") return [];
+    return node.produces.flatMap((output) => {
+      if (!output.review) return [];
+      const subject = node.consumes.find(
+        (input) => input.name === output.review?.subject_input,
+      );
+      return subject?.kind === kind
+        ? [{ gateKey: output.review.gate_key, label: gateLabel(output.review.gate_key) }]
+        : [];
+    });
+  });
+  return candidates.filter(
+    (candidate, index) =>
+      candidates.findIndex((item) => item.gateKey === candidate.gateKey) === index,
+  );
+}
+
+function gateLabel(gateKey: string): string {
+  if (gateKey === "plan_acceptance") return "Plan Acceptance";
+  if (gateKey === "implementation_acceptance") return "Implementation Acceptance";
+  return humanizeKey(gateKey);
 }
 function updateUseBinding(use: TacticUseNode, input: string, value: string) {
   const source = parseRef(value);
   const others = use.input_bindings.filter((binding) => binding.input !== input);
   setSelectedNode({ ...use, input_bindings: source ? [...others, { input, source }] : others });
+}
+function updateUseTarget(use: TacticUseNode, tacticDefinitionId: string) {
+  setSelectedNode({ ...use, tactic_definition_id: tacticDefinitionId, input_bindings: [] });
+  void tick().then(autoBindSelectedUse);
+}
+function autoBindSelectedUse() {
+  if (selectedNode?.type !== "use") return;
+  const target = referencedTactic(selectedNode);
+  if (!target) return;
+  const suggested = target.interface.inputs.flatMap((port) => {
+    const candidates = artifactSourceCandidates(port.kind);
+    return candidates.length === 1
+      ? [{ input: port.key, source: candidates[0]!.ref }]
+      : [];
+  });
+  if (!suggested.length) return;
+  const existingInputs = new Set(selectedNode.input_bindings.map((binding) => binding.input));
+  const additions = suggested.filter((binding) => !existingInputs.has(binding.input));
+  if (additions.length)
+    setSelectedNode({
+      ...selectedNode,
+      input_bindings: [...selectedNode.input_bindings, ...additions],
+    });
 }
 function useBinding(use: TacticUseNode, input: string): string {
   return refValue(use.input_bindings.find((binding) => binding.input === input)?.source ?? null);
@@ -810,7 +925,7 @@ function humanizeKey(value: string): string {
             {#if localIssue}<div class="friendly-error" role="alert">{localIssue}</div>{/if}
             <section class="validation-banner tone-{validationLabel().tone}" aria-live="polite"><strong>{validationLabel().label}</strong><span>{validationLabel().description}</span></section>
             {#if previewState === "context"}<section class="context-warning"><strong>Requires surrounding context</strong><p>This Tactic can still be saved and reused. The flow that uses it must provide:</p><ul>{#each contextualDetails as item}<li><code>{item.artifact}</code>{item.step ? ` · expected by ${humanizeKey(item.step)}` : ""}</li>{/each}</ul></section>{/if}
-            {#if selectedTactic.interface.inputs.length || selectedTactic.interface.outputs.length}<section class="interface-summary"><h3>Tactic Interface</h3>{#if selectedTactic.interface.inputs.length}<strong>Inputs</strong>{#each selectedTactic.interface.inputs as port}<p>{port.label} · {artifactTypeLabel(port.kind)} · {port.required ? "Required" : "Optional"}</p>{/each}{/if}{#if selectedTactic.interface.outputs.length}<strong>Outputs</strong>{#each selectedTactic.interface.outputs as port}<p>{port.label} · {artifactTypeLabel(port.kind)}</p>{/each}{/if}</section>{/if}
+            <TacticInterfaceSummary value={selectedTactic.interface} />
             <section class="read-flow" aria-labelledby="semantic-flow-title"><div class="section-heading"><div><span class="eyebrow">Semantic flow</span><h3 id="semantic-flow-title">What the crew will do</h3></div></div><SemanticNode node={(preview?.resolved_tactic ?? selectedTactic.body) as unknown as TacticNode} bindings={previewBindings} tactics={tacticCatalog} /></section>
             <section class="usage-panel"><div><span class="eyebrow">Usage</span><h3>{usage.quests ? `Used by ${usage.quests} active ${usage.quests === 1 ? "Quest" : "Quests"}` : "Not used by an active Quest"}</h3>{#if usage.tactics}<p>Reused by {usage.tactics} active {usage.tactics === 1 ? "Tactic" : "Tactics"}.</p>{/if}</div><button class="text-action" type="button" on:click={onOpenQuestBoard}>Open Quest Board</button></section>
             <details class="advanced-read" bind:open={advancedOpen}><summary>Advanced</summary><dl><dt>Tactic key</dt><dd><code>{selectedTactic.key}</code></dd></dl></details>
@@ -820,20 +935,40 @@ function humanizeKey(value: string): string {
       </section>
     {:else}
       <section class="flow-editor" aria-label="Tactic flow editor">
-        <header class="editor-heading"><div><span class="eyebrow">{mode === "create" ? "New Tactic" : "Edit Tactic"}</span><h2>{draft.name || "Untitled Tactic"}</h2></div><div class="preview-state tone-{validationLabel().tone}" role="status"><strong>{validationLabel().label}</strong><small>{previewState === "loading" ? "Server preview" : "Semantic check"}</small></div></header>
+        <div class="editor-top">
+        <TacticHeader name={draft.name} description={draft.description} {mode} status={validationLabel()} onEditDetails={() => (inspectorView = "details")} onEditInterface={() => (inspectorView = "interface")} />
+        <TacticInterfaceSummary value={draft.interface} onEdit={() => (inspectorView = "interface")} />
         {#if localIssue}<div class="friendly-error" role="alert">{localIssue}</div>{/if}
         {#if usage.quests && mode === "edit"}<p class="future-run-note">Changes affect future Runs used by {usage.quests} active {usage.quests === 1 ? "Quest" : "Quests"}. Existing Runs keep the Tactic captured when they launched.</p>{/if}
-        <fieldset class="metadata-fields"><legend>Tactic</legend><label for="tactic-name">Name</label><input id="tactic-name" value={draft.name} on:input={(event) => updateDraftName(event.currentTarget.value)} placeholder="Implement & Review" /><label for="tactic-description">Description</label><textarea id="tactic-description" value={draft.description} on:input={(event) => (draft = { ...draft, description: event.currentTarget.value })} placeholder="Describe when this approach is useful."></textarea></fieldset>
-        <fieldset class="interface-editor"><legend>Tactic Interface</legend><div class="inspector-section-title"><h3>Inputs</h3><button type="button" on:click={addInterfaceInput}>+ Add Input</button></div>{#each draft.interface.inputs as port, index}<div class="port-row"><input aria-label="Input key" value={port.key} on:input={(event) => { port.key = event.currentTarget.value; draft = {...draft}; }} /><input aria-label="Input label" value={port.label} on:input={(event) => { port.label = event.currentTarget.value; draft = {...draft}; }} /><select aria-label="Input type" value={port.kind} on:change={(event) => { port.kind = event.currentTarget.value; draft = {...draft}; }}><option value="">Choose type…</option>{#each BUILT_IN_ARTIFACT_KINDS as kind}<option value={kind}>{artifactTypeLabel(kind)}</option>{/each}{#if port.kind && !isBuiltInKind(port.kind)}<option value={port.kind}>{artifactTypeLabel(port.kind)}</option>{/if}</select><label><input type="checkbox" checked={port.required} on:change={(event) => { port.required = event.currentTarget.checked; draft = {...draft}; }} /> Required</label><button type="button" aria-label="Remove Tactic input" on:click={() => { draft.interface.inputs = draft.interface.inputs.filter((_, i) => i !== index); draft = {...draft}; }}>×</button></div>{/each}<div class="inspector-section-title"><h3>Outputs</h3><button type="button" on:click={addInterfaceOutput}>+ Export Output</button></div>{#each draft.interface.outputs as port, index}<div class="port-row"><input aria-label="Output key" value={port.key} on:input={(event) => { port.key = event.currentTarget.value; draft = {...draft}; }} /><input aria-label="Output label" value={port.label} on:input={(event) => { port.label = event.currentTarget.value; draft = {...draft}; }} /><select aria-label="Output type" value={port.kind} on:change={(event) => { port.kind = event.currentTarget.value; draft = {...draft}; }}><option value="">Choose type…</option>{#each BUILT_IN_ARTIFACT_KINDS as kind}<option value={kind}>{artifactTypeLabel(kind)}</option>{/each}{#if port.kind && !isBuiltInKind(port.kind)}<option value={port.kind}>{artifactTypeLabel(port.kind)}</option>{/if}</select><select aria-label="Output source type" value={port.source.type} on:change={(event) => { port.source = event.currentTarget.value === "accepted_subject" ? {type:"accepted_subject", gate_key: port.kind === "quest_plan" ? "plan_acceptance" : "implementation_acceptance"} : {type:"binding", binding:{producer:"",output:""}}; draft = {...draft}; }}><option value="accepted_subject">Acceptance → Accepted Subject</option><option value="binding">Internal Output</option></select>{#if port.source.type === "binding"}<select aria-label="Exported internal output" value={refValue(port.source.binding)} on:change={(event) => { const binding = parseRef(event.currentTarget.value); if (binding) port.source = {type:"binding",binding}; draft = {...draft}; }}><option value="">Choose internal output…</option>{#each interfaceOutputCandidates(port.kind) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select>{/if}<button type="button" aria-label="Remove Tactic output" on:click={() => { draft.interface.outputs = draft.interface.outputs.filter((_, i) => i !== index); draft = {...draft}; }}>×</button></div>{/each}</fieldset>
-        <div class="canvas-toolbar"><div><button type="button" on:click={() => addNode("step")}>+ Step</button><button type="button" on:click={() => addNode("sequence")}>+ Sequence</button><button type="button" on:click={() => addNode("parallel")}>+ Parallel</button><button type="button" on:click={() => addNode("until")}>+ Repeat until…</button><button type="button" on:click={() => addNode("use")}>+ Reuse tactic</button></div>{#if selectedNode}<div><button aria-label="Move selected item up" type="button" on:click={() => moveSelected(-1)}>↑ Move up</button><button aria-label="Move selected item down" type="button" on:click={() => moveSelected(1)}>↓ Move down</button><button aria-label="Move selected item into previous group" type="button" on:click={nestSelected}>→ Move into</button><button aria-label="Move selected item out of group" type="button" on:click={unnestSelected}>← Move out</button><button class="remove-node" type="button" on:click={removeSelected}>Remove</button></div>{/if}</div>
-        <div class="flow-canvas"><SemanticNode node={draft.body} bindings={previewBindings} tactics={tacticCatalog} interactive selectedPath={selectedNodePath} onSelect={(path) => (selectedPath = path)} /></div>
+        </div>
+        <TacticTreeToolbar hasSelection={hasTreeSelection} {canMoveUp} {canMoveDown} {canMoveInto} {canMoveOut} onAdd={addNode} onMove={moveSelected} onMoveInto={nestSelected} onMoveOut={unnestSelected} onRemove={removeSelected} />
+        <div class="flow-canvas">
+          {#if draft.body.type === "sequence" && !draft.body.children.length}
+            <div class="canvas-empty"><div class="empty-seal" aria-hidden="true">✦</div><h3>No steps yet</h3><p>Build the crew's approach to this Quest.</p><button class="primary" type="button" on:click={() => addNode("step")}>+ Add first Step</button></div>
+          {:else}
+            <SemanticNode node={draft.body} bindings={previewBindings} tactics={tacticCatalog} interactive selectedPath={selectedNodePath} onSelect={selectNode} />
+          {/if}
+        </div>
+        <div class="editor-bottom">
         {#if previewState === "context"}<section class="context-warning compact-warning"><strong>Requires surrounding context</strong><ul>{#each contextualDetails as item}<li><code>{item.artifact}</code>{item.step ? ` · ${humanizeKey(item.step)}` : ""}</li>{/each}</ul><small>This does not block saving a reusable Tactic.</small></section>{/if}
         {#if previewState === "attention"}<section class="validation-issues" role="alert"><strong>{friendlyPreviewIssue(previewFailure)}</strong>{#each previewFailure?.details ?? [] as issue}<small><code>{issue.code}</code></small>{/each}</section>{/if}
         <footer class="editor-actions"><button class="secondary" type="button" on:click={cancelEdit}>Cancel</button><button class="primary" type="button" disabled={busy || localIssues.length > 0} on:click={saveTactic}>{busy ? "Saving…" : mode === "create" ? "Create Tactic" : "Save Changes"}</button></footer>
+        </div>
       </section>
 
-      <aside class="node-inspector" aria-label="Selected semantic item inspector">
-        {#if !selectedNode}<div class="inspector-empty"><h2>Select an item</h2><p>Choose a Step or composition on the plan to edit it.</p></div>
+      <aside class="node-inspector" aria-label="Tactic inspector">
+        {#if inspectorView === "details"}
+          <header><span class="eyebrow">Tactic</span><h2>Details</h2><p>Name this reusable approach. You can return to the tree at any time.</p></header>
+          <div class="inspector-fields">
+            <label for="tactic-name">Name</label><input id="tactic-name" value={draft.name} on:input={(event) => updateDraftName(event.currentTarget.value)} placeholder="Plan & Review" />
+            <label for="tactic-description">Description</label><textarea id="tactic-description" value={draft.description} on:input={(event) => (draft = { ...draft, description: event.currentTarget.value })} placeholder="Describe when this approach is useful."></textarea>
+          </div>
+          <details class="inspector-advanced"><summary>Advanced</summary><label for="tactic-key">Stable Tactic key</label><input id="tactic-key" value={draft.key} readonly /></details>
+          {#if selectedNode}<button class="inspector-return" type="button" on:click={() => (inspectorView = "node")}>Return to selected item</button>{/if}
+        {:else if inspectorView === "interface"}
+          <TacticInterfaceEditor value={draft.interface} outputCandidates={interfaceOutputCandidates} acceptedCandidates={acceptedSubjectCandidates} inputUses={interfaceInputUses} onChange={updateInterface} />
+          {#if selectedNode}<button class="inspector-return" type="button" on:click={() => (inspectorView = "node")}>Return to selected item</button>{/if}
+        {:else if !selectedNode}<div class="inspector-empty"><h2>Select an item</h2><p>Choose a Step or composition on the plan to edit it.</p><button type="button" on:click={() => (inspectorView = "interface")}>Edit Tactic Interface</button></div>
         {:else if selectedNode.type === "step"}
           {@const step = selectedNode as StepNode}
           <header><span class="eyebrow">Step details</span><h2>{step.name || "New Step"}</h2><p>What happens, who performs it, what it needs, and what it produces.</p></header>
@@ -849,6 +984,7 @@ function humanizeKey(value: string): string {
         {:else if selectedNode.type === "until"}
           {@const until = selectedNode as UntilNode}
           <header><span class="eyebrow">Bounded remediation</span><h2>Repeat until accepted</h2><p>The check runs first. If it is not accepted, remediation runs before checking again.</p></header>
+          <div class="until-summary"><div><span>Review step</span><strong>{nodeLabel(until.check)}</strong></div><div><span>Otherwise</span><strong>{nodeLabel(until.otherwise)}</strong></div></div>
           <label for="condition-source">Condition</label><select id="condition-source" value={refValue(until.condition.source)} on:change={(event) => { const source = parseRef(event.currentTarget.value); if (source) setSelectedNode({ ...until, condition: { ...until.condition, source } }); }}><option value="">Choose a produced output…</option>{#each conditionCandidates(until) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select>
           {@const semanticCondition = conditionCandidates(until).find((candidate) => refValue(candidate.ref) === refValue(until.condition.source))?.output.review}
           {#if semanticCondition}<p class="field-help"><strong>{semanticCondition.gate_key === "plan_acceptance" ? "Until Quest Plan is accepted" : "Until Implementation is accepted"}</strong><br />The Review Verdict is scoped to the exact reviewed artifact and {semanticCondition.gate_key === "plan_acceptance" ? "Plan Acceptance" : "Implementation Acceptance"}.</p>{/if}
@@ -863,9 +999,9 @@ function humanizeKey(value: string): string {
           {@const use = selectedNode as TacticUseNode}
           {@const target = referencedTactic(use)}
           <header><span class="eyebrow">Reusable composition</span><h2>{target?.name ?? "Tactic unavailable"}</h2><p>Use another reusable semantic flow here.</p></header>
-          <label for="reuse-tactic">Tactic</label><select id="reuse-tactic" value={use.tactic_definition_id} on:change={(event) => setSelectedNode({ ...use, tactic_definition_id: event.currentTarget.value, input_bindings: [] })}>{#each activeTactics.filter((item) => item.id !== draft.id) as tactic}<option value={tactic.id}>{tactic.name}</option>{/each}{#if target?.archived_at}<option value={target.id}>{target.name} · Archived</option>{/if}</select>
+          <label for="reuse-tactic">Tactic</label><select id="reuse-tactic" value={use.tactic_definition_id} on:change={(event) => updateUseTarget(use, event.currentTarget.value)}>{#each activeTactics.filter((item) => item.id !== draft.id) as tactic}<option value={tactic.id}>{tactic.name}</option>{/each}{#if target?.archived_at}<option value={target.id}>{target.name} · Archived</option>{/if}</select>
           {#if target?.archived_at}<p class="archived-warning">This reference is archived and will not resolve for a future Run.</p>{/if}
-          {#if target}<section class="artifact-editor"><h3>Inputs</h3>{#each target.interface.inputs as port}<span class="field-label">{port.label} · {artifactTypeLabel(port.kind)}{port.required ? " · Required" : " · Optional"}</span><select aria-label={`Binding for ${port.label}`} value={useBinding(use, port.key)} on:change={(event) => updateUseBinding(use, port.key, event.currentTarget.value)}><option value="">{port.required ? "Choose an upstream artifact…" : "No input"}</option>{#each artifactSourceCandidates(port.kind) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select>{/each}<h3>Outputs</h3>{#each target.interface.outputs as port}<p><strong>{port.label}</strong> · {artifactTypeLabel(port.kind)}</p>{/each}</section>{/if}
+          {#if target}<section class="artifact-editor use-contract"><div class="inspector-section-title"><h3>Inputs</h3></div>{#each target.interface.inputs as port}<div class="use-port"><div><strong>{port.label}</strong><small>{artifactTypeLabel(port.kind)} · {port.required ? "Required" : "Optional"}</small></div><label>Source<select aria-label={`Binding for ${port.label}`} value={useBinding(use, port.key)} on:change={(event) => updateUseBinding(use, port.key, event.currentTarget.value)}><option value="">{port.required ? "Choose an upstream artifact…" : "Not connected · Optional"}</option>{#each artifactSourceCandidates(port.kind) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select></label>{#if !artifactSourceCandidates(port.kind).length}<p>Create a compatible upstream output before connecting this input.</p>{/if}</div>{:else}<p class="contract-empty">Inputs · None</p>{/each}<div class="inspector-section-title output-title"><h3>Outputs</h3></div>{#each target.interface.outputs as port}<div class="use-output"><strong>{port.label}</strong><span>{artifactTypeLabel(port.kind)}</span></div>{:else}<p class="contract-empty">Outputs · None</p>{/each}</section>{/if}
           <div class="use-actions"><button type="button" on:click={() => (nestedPreviewOpen = !nestedPreviewOpen)}>{nestedPreviewOpen ? "Hide Preview" : "Preview ▸"}</button><button type="button" disabled={!target} on:click={() => openReferenced(use)}>Open Tactic</button></div>
           {#if nestedPreviewOpen && target}<div class="nested-preview"><SemanticNode node={target.body as unknown as TacticNode} bindings={[]} tactics={tacticCatalog} compact /></div>{/if}
           <details><summary>Advanced</summary><label for="instance-key">Stable instance key</label><input id="instance-key" value={use.instance_key} readonly /></details>
@@ -880,9 +1016,6 @@ function humanizeKey(value: string): string {
   </div>
 
   {#if selectedTactic}<dialog bind:this={archiveDialog} on:cancel|preventDefault={closeArchive} aria-labelledby="archive-tactic-title"><div class="dialog-card"><span class="dialog-icon" aria-hidden="true">!</span><h2 id="archive-tactic-title">Archive {selectedTactic.name}?</h2><p>Existing Run history is unaffected.</p><p>{usage.quests || usage.tactics ? `This definition is still referenced by ${usage.quests} active ${usage.quests === 1 ? "Quest" : "Quests"} and ${usage.tactics} active ${usage.tactics === 1 ? "Tactic" : "Tactics"}. Those references may need to be updated before future Runs can launch.` : "It will no longer be available for new reusable selections."}</p><div class="action-row"><button class="secondary" bind:this={archiveCancel} type="button" on:click={closeArchive}>Cancel</button><button class="destructive" type="button" disabled={busy} on:click={confirmArchive}>{busy ? "Archiving…" : "Archive Tactic"}</button></div></div></dialog>{/if}
+  <dialog bind:this={removeDialog} on:cancel|preventDefault={closeRemove} aria-labelledby="remove-node-title"><div class="dialog-card"><span class="dialog-icon" aria-hidden="true">!</span><h2 id="remove-node-title">Remove {pendingRemoval?.name ?? "item"}?</h2>{#if (pendingRemoval?.count ?? 0) > 1}<p>This also removes {pendingRemoval!.count - 1} nested {(pendingRemoval!.count - 1) === 1 ? "item" : "items"}.</p>{/if}{#if pendingRemoval?.references.length}<p>The removal will leave {pendingRemoval.references.length === 1 ? "this reference" : "these references"} incomplete: {pendingRemoval.references.join(", ")}.</p>{/if}<p>The draft will remain open so validation can guide repairs.</p><div class="action-row"><button class="secondary" bind:this={removeCancel} type="button" on:click={closeRemove}>Keep item</button><button class="destructive" type="button" on:click={performRemoval}>Remove subtree</button></div></div></dialog>
   <dialog bind:this={dirtyDialog} on:cancel|preventDefault={keepEditing} aria-labelledby="dirty-tactic-title"><div class="dialog-card"><span class="dialog-icon amber" aria-hidden="true">✎</span><h2 id="dirty-tactic-title">Save your Tactic changes?</h2><p>You have unsaved semantic-flow changes. Save them before leaving, keep editing, or discard this complete draft.</p><div class="dirty-actions"><button class="secondary" bind:this={dirtyKeep} type="button" on:click={keepEditing}>Keep Editing</button><button class="secondary" type="button" on:click={discardAndContinue}>Discard</button><button class="primary" type="button" disabled={busy} on:click={saveAndContinue}>{busy ? "Saving…" : mode === "create" ? "Create Tactic" : "Save Changes"}</button></div></div></dialog>
 </aside>
-
-<style>
-.interface-editor,.interface-summary{display:grid;gap:.5rem;padding:.65rem .7rem;background:#f6e6c4;border:1px solid #c49b6d;border-radius:8px}.port-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:.4rem;align-items:center}.port-row>button{padding:.35rem}.interface-summary p{margin:.1rem 0}.war-room-window{width:min(86rem,calc(100vw - 1.5rem));height:min(50rem,calc(100vh - 4.5rem))}.war-layout{display:grid;grid-template-columns:minmax(15rem,27%) minmax(0,1fr);height:calc(100% - 5rem);min-height:0}.war-layout.editing{grid-template-columns:minmax(13rem,20%) minmax(25rem,1fr) minmax(18rem,24%)}.tactic-browser{min-width:0;padding:1rem;overflow:hidden;background:linear-gradient(155deg,#e8d0a0,#d4ae73);border-right:2px solid #a87a4e}.browser-heading,.section-heading,.detail-actions,.editor-actions,.inspector-section-title,.header-actions,.editor-heading,.detail-hero,.usage-panel{display:flex;align-items:center;gap:.75rem}.header-actions{flex:0 0 auto!important;margin-left:auto}.browser-heading h2,.section-heading h3{margin:.05rem 0 0;color:var(--app-ink);font:700 1.2rem Georgia,serif}.count-seal{display:grid;place-items:center;width:2rem;height:2rem;margin-left:auto;color:#fff8e9;background:var(--app-teal);border:2px solid #f7e2b7;border-radius:50%;font-weight:800}.search-field{display:block;margin:.7rem 0}.tactic-list{display:grid;align-content:start;gap:.55rem;max-height:calc(100% - 3.5rem);padding:.2rem;overflow:auto}.tactic-card{display:grid;gap:.25rem;width:100%;min-height:4.2rem;padding:.7rem .8rem;color:var(--app-ink);text-align:left;background:#fff1cc;border:1px solid #af8757;box-shadow:0 2px 5px #72503522}.tactic-card small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tactic-card.selected{background:#fffaf0;border-color:#3f746d;box-shadow:0 0 0 2px #4c817966,0 4px 10px #72503533}.tactic-detail,.flow-editor,.node-inspector{min-width:0;min-height:0;overflow:auto;color:var(--app-ink);background:linear-gradient(145deg,#fff3d2,#f2dba8)}.tactic-detail{padding:1.25rem 1.4rem}.detail-hero{align-items:flex-start;padding-bottom:1rem;border-bottom:1px solid #c59a68}.detail-hero>div{min-width:0;flex:1}.detail-hero h2,.editor-heading h2,.node-inspector h2{margin:.12rem 0;color:#293b39;font:700 2rem Georgia,serif}.detail-hero p{margin:.25rem 0;color:#65726e}.status-chip{padding:.35rem .65rem;border-radius:999px;font-size:.75rem;font-weight:800}.tone-success{background:#d7ebd1;color:#2f6543}.tone-warning{background:#f3dfaa;color:#74541f}.tone-danger{background:#f5cec3;color:#8a443d}.tone-active{background:#cde4df;color:#315f5c}.tone-neutral{background:#e7e2d2;color:#576864}.validation-banner{display:flex;gap:.6rem;align-items:baseline;margin:1rem 0;padding:.7rem .85rem;border-left:5px solid currentColor;border-radius:7px}.validation-banner span{color:#606c68}.read-flow{display:grid;gap:.65rem;margin:1rem 0;padding:1rem;background:#f5e6bf;border:1px solid #c69b67;border-radius:10px}.usage-panel{justify-content:space-between;margin:1rem 0;padding:.9rem 1rem;background:#fff9e9;border:1px solid #c8a171;border-radius:8px}.usage-panel h3{margin:.15rem 0;font:700 1.05rem Georgia,serif}.usage-panel p{margin:.2rem 0}.advanced-read{margin:1rem 0;padding:.65rem;border-top:1px solid #c59a68}.advanced-read dl{display:grid;grid-template-columns:auto 1fr;gap:.4rem}.detail-actions{justify-content:space-between;padding-top:1rem;border-top:1px solid #c59a68}.flow-editor{display:grid;grid-template-rows:auto auto auto minmax(15rem,1fr) auto auto;gap:.65rem;padding:.85rem 1rem}.editor-heading{justify-content:space-between}.editor-heading h2{font-size:1.45rem}.preview-state{display:grid;padding:.4rem .55rem;border-radius:7px;text-align:right}.preview-state small{color:inherit}.future-run-note{margin:0;padding:.55rem .7rem;background:#e1eddc;border-left:4px solid #568467;font-size:.78rem}.metadata-fields{display:grid;grid-template-columns:auto minmax(10rem,1fr);gap:.35rem .6rem;padding:.55rem .7rem;border:1px solid #c49b6d;border-radius:8px}.metadata-fields legend{font-weight:800}.metadata-fields textarea{min-height:3.2rem}.canvas-toolbar{display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap}.canvas-toolbar>div{display:flex;gap:.35rem;flex-wrap:wrap}.canvas-toolbar button{padding:.35rem .5rem;color:#365e59;background:#fff8e8;border:1px solid #9e8060;box-shadow:none;font-size:.74rem}.canvas-toolbar .remove-node{color:#934a43}.flow-canvas{min-height:0;padding:.8rem;overflow:auto;background:linear-gradient(#d8bd87 1px,transparent 1px),linear-gradient(90deg,#d8bd87 1px,transparent 1px),#efd8aa;background-size:24px 24px;border:2px solid #9d7149;border-radius:10px;box-shadow:inset 0 0 18px #6e492c25}.editor-actions{justify-content:flex-end;padding-top:.5rem;border-top:1px solid #bd9463}.node-inspector{padding:1rem;border-left:2px solid #a87a4e;background:#fff8e7}.node-inspector header{padding-bottom:.7rem;border-bottom:1px solid #d0ae80}.node-inspector h2{font-size:1.35rem}.node-inspector header p{color:#68736d;font-size:.78rem}.inspector-fields{display:grid;gap:.35rem;margin-top:.8rem}.inspector-fields>label,.node-inspector>label,.node-inspector details>label{display:block;margin:.45rem 0 0;color:#42504e;font-size:.72rem;font-weight:850;letter-spacing:.02em}.node-inspector input:not([type=radio]),.node-inspector select,.node-inspector textarea{box-sizing:border-box;width:100%;min-height:2.55rem;padding:.55rem .65rem;color:#293b39;background:#fffdf6;border:1px solid #b7956b;border-radius:7px;box-shadow:inset 0 1px 2px #69492e12}.node-inspector input[readonly]{color:#65706b;background:#eee4ce}.node-inspector textarea{min-height:7rem;resize:vertical;line-height:1.4}.inspector-fields .field-help{margin:.15rem 0 0;border-left:3px solid #6f9587;border-radius:0 6px 6px 0}.artifact-editor{margin-top:.75rem;padding:.7rem;background:#f6e6c4;border:1px solid #cfad7d;border-radius:10px}.inspector-section-title{justify-content:space-between}.inspector-section-title h3{margin:0;color:#314442;font:700 1rem Georgia,serif}.inspector-section-title button{min-height:2rem!important;padding:.28rem .55rem!important;color:#3f6c65;background:#fffaf0;border:1px solid #aa8b67;box-shadow:none;font-size:.75rem}.artifact-contract-label{margin:.65rem .15rem -.35rem;color:#315f58;font-size:.78rem;font-weight:800}.artifact-row{display:grid;grid-template-columns:minmax(0,1fr) 2.35rem;gap:.4rem;margin-top:.55rem;padding:.5rem;background:#fff9eb;border:1px solid #d2b386;border-radius:8px}.artifact-row select{grid-column:1/-1;grid-row:2}.artifact-row>button{grid-column:2;grid-row:1;width:2.35rem;min-height:2.35rem!important;padding:0!important;color:#8b4e48;background:#fffdf6;border:1px solid #c8a77b;box-shadow:none}.artifact-row.output{grid-template-columns:minmax(0,1fr) 2.35rem}.resolved-binding{display:block;margin:.3rem .15rem 0;color:#3d6e66;font-size:.72rem}.inspector-advanced{margin-top:.75rem;padding:.65rem .7rem;background:#f6e6c4;border:1px solid #cfad7d;border-radius:9px}.inspector-advanced>summary{cursor:pointer;color:#344b48;font-weight:750}.inspector-advanced fieldset{display:grid;gap:.4rem;margin:.7rem 0;padding:.6rem;background:#fff9eb;border:1px solid #d1b184;border-radius:7px}.inspector-advanced label{font-size:.76rem}.reference-summary,.field-help,.archived-warning{padding:.45rem .55rem;background:#f3e7c8;font-size:.75rem}.archived-warning{color:#8d453f;background:#f5d4ca}.container-summary{display:flex;align-items:baseline;gap:.4rem;margin:1rem 0;padding:1rem;background:#f5e7c6;border:1px solid #c7a475}.container-summary strong{font:700 2rem Georgia,serif}.inspector-add{width:100%}.use-actions{display:flex;gap:.4rem;margin:.8rem 0}.nested-preview{max-height:16rem;padding:.5rem;overflow:auto;background:#f0ddb5;border:1px solid #b88d5b}.context-warning,.validation-issues{margin:.7rem 0;padding:.75rem .85rem;background:#fff0c9;border-left:5px solid #c28a35;border-radius:7px}.context-warning p{margin:.25rem 0}.context-warning li{margin:.25rem 0}.context-warning code{color:#5b5547}.compact-warning{margin:0}.validation-issues{display:grid;gap:.25rem;background:#f8d8cf;border-color:#c45f55}.friendly-error{padding:.65rem .75rem;color:#873f3b;background:#f7d4ca;border-left:5px solid #bd5e56}.empty-state{display:grid;place-items:center;align-content:center;height:100%;text-align:center}.empty-state p{max-width:35rem}.empty-seal{font-size:2rem}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}@media(max-width:1050px){.war-layout.editing{grid-template-columns:9.5rem minmax(0,1fr) 15rem}.war-room-window{width:calc(100vw - 1rem)}.tactic-card small{display:none}.canvas-toolbar{flex-wrap:nowrap;overflow-x:auto;padding-bottom:.2rem}.canvas-toolbar>div{flex-wrap:nowrap}.canvas-toolbar button{white-space:nowrap}}@media(max-width:760px){.war-room-window{inset:.4rem;width:calc(100vw - .8rem);height:calc(100vh - .8rem)}.war-layout,.war-layout.editing{grid-template-columns:1fr;grid-template-rows:auto minmax(18rem,1fr) auto}.tactic-browser{max-height:8rem;padding:.55rem;border-right:0;border-bottom:2px solid #a87a4e}.browser-heading{display:none}.tactic-list{display:flex;max-height:7rem;overflow:auto}.tactic-card{min-width:12rem}.node-inspector{max-height:42vh;border-left:0;border-top:2px solid #a87a4e}.metadata-fields{grid-template-columns:1fr}.flow-editor{padding:.65rem}.canvas-toolbar>div:last-child{display:none}}
-</style>

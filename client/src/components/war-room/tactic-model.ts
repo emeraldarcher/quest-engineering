@@ -143,6 +143,51 @@ export function generatedLocalKey(
   return availableProductKey(name, localIdentities(body), fallback);
 }
 
+export function portKeyBase(
+  label: string,
+  kind: string,
+  direction: "input" | "output",
+  acceptedSubject = false,
+): string {
+  if (kind === "quest_plan")
+    return direction === "output" && acceptedSubject ? "accepted_plan" : "plan";
+  if (kind === "change_set")
+    return direction === "output" && acceptedSubject
+      ? "accepted_change_set"
+      : "change_set";
+  if (kind === "review_verdict") return "verdict";
+  const normalized = label
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const prefixed = /^[a-z]/.test(normalized)
+    ? normalized
+    : `${direction}_${normalized}`;
+  return (prefixed || direction).slice(0, 64).replace(/_+$/, "");
+}
+
+export function generatedPortKey(
+  label: string,
+  kind: string,
+  direction: "input" | "output",
+  existingKeys: Iterable<string>,
+  acceptedSubject = false,
+): string {
+  const existing = new Set(existingKeys);
+  const base = portKeyBase(label, kind, direction, acceptedSubject);
+  if (!existing.has(base)) return base;
+  let suffix = 2;
+  while (suffix < 10_000) {
+    const ending = `_${suffix}`;
+    const candidate = `${base.slice(0, 64 - ending.length).replace(/_+$/, "")}${ending}`;
+    if (!existing.has(candidate)) return candidate;
+    suffix += 1;
+  }
+  throw new Error("Unable to derive an available Tactic port key.");
+}
+
 export function makeStep(
   name: string,
   body: TacticNode,
@@ -383,20 +428,111 @@ export function insertAfter(
 }
 
 export function removeNode(root: TacticNode, path: NodePath): TacticNode {
-  if (!path.length) return { type: "sequence", children: [] };
+  return removeNodeWithSelection(root, path).body;
+}
+
+export function removeNodeWithSelection(
+  root: TacticNode,
+  path: NodePath,
+): { body: TacticNode; path: NodePath; removed: boolean } {
+  if (!path.length)
+    return {
+      body: { type: "sequence", children: [] },
+      path: [],
+      removed: true,
+    };
+
   const parentPath = path.slice(0, -1);
-  const index = path.at(-1);
+  const part = path.at(-1);
   const parent = nodeAt(root, parentPath);
+  if (!parent) return { body: root, path, removed: false };
+
+  if ((part === "check" || part === "otherwise") && parent.type === "until") {
+    return {
+      body: replaceNode(root, parentPath, {
+        ...parent,
+        [part]: { type: "sequence", children: [] },
+      }),
+      path: parentPath,
+      removed: true,
+    };
+  }
+
   if (
-    typeof index !== "number" ||
-    !parent ||
+    typeof part !== "number" ||
     (parent.type !== "sequence" && parent.type !== "parallel")
   )
-    return root;
-  const children = parent.children.filter(
-    (_, childIndex) => childIndex !== index,
+    return { body: root, path, removed: false };
+
+  const children = parent.children.filter((_, index) => index !== part);
+  const body = replaceNode(root, parentPath, { ...parent, children });
+  if (!children.length) return { body, path: parentPath, removed: true };
+  return {
+    body,
+    path: [...parentPath, Math.min(part, children.length - 1)],
+    removed: true,
+  };
+}
+
+export function subtreeSize(node: TacticNode): number {
+  return entries(node).length;
+}
+
+export function referencedOutputsForRemoval(
+  draft: TacticDraft,
+  path: NodePath,
+): string[] {
+  const selected = nodeAt(draft.body, path);
+  if (!selected) return [];
+  const removedNodes = entries(selected).map(({ node }) => node);
+  const producers = new Set(
+    removedNodes.flatMap((node) =>
+      node.type === "step"
+        ? [node.key]
+        : node.type === "use"
+          ? [node.instance_key]
+          : [],
+    ),
   );
-  return replaceNode(root, parentPath, { ...parent, children });
+  const removedGates = new Set(
+    removedNodes.flatMap((node) =>
+      node.type === "step"
+        ? node.produces.flatMap((output) =>
+            output.review ? [output.review.gate_key] : [],
+          )
+        : [],
+    ),
+  );
+  const references: string[] = [];
+  for (const { node } of entries(draft.body)) {
+    if (removedNodes.includes(node)) continue;
+    if (node.type === "step") {
+      for (const input of node.consumes) {
+        if (input.source && producers.has(input.source.producer))
+          references.push(`${node.name} → ${artifactTypeLabel(input.kind)}`);
+      }
+    } else if (node.type === "use") {
+      for (const binding of node.input_bindings) {
+        if (producers.has(binding.source.producer))
+          references.push(`${displayNodeName(node, [])} → ${binding.input}`);
+      }
+    } else if (
+      node.type === "until" &&
+      producers.has(node.condition.source.producer)
+    ) {
+      references.push("Repeat until condition");
+    }
+  }
+  for (const output of draft.interface.outputs) {
+    if (
+      (output.source.type === "binding" &&
+        producers.has(output.source.binding.producer)) ||
+      (output.source.type === "accepted_subject" &&
+        removedGates.has(output.source.gate_key))
+    )
+      references.push(`Tactic output → ${output.label}`);
+  }
+  return [...new Set(references)];
 }
 
 export function moveNode(
@@ -566,6 +702,66 @@ export function localDraftIssues(draft: TacticDraft): string[] {
         `${port.label || "A Tactic output"} needs a specific internal output.`,
       );
   }
+
+  const producers = new Map<string, Set<string> | null>();
+  const gates = new Set<string>();
+  for (const { node } of entries(draft.body)) {
+    if (node.type === "step") {
+      producers.set(
+        node.key,
+        new Set(node.produces.map((output) => output.name)),
+      );
+      for (const output of node.produces) {
+        if (output.review) gates.add(output.review.gate_key);
+      }
+    } else if (node.type === "use") {
+      producers.set(node.instance_key, null);
+    }
+  }
+  const validReference = (reference: ArtifactRefDraft): boolean => {
+    if (reference.producer === "$inputs")
+      return draft.interface.inputs.some(
+        (port) => port.key === reference.output,
+      );
+    const outputs = producers.get(reference.producer);
+    return outputs === null || Boolean(outputs?.has(reference.output));
+  };
+  for (const { node } of entries(draft.body)) {
+    if (node.type === "step") {
+      for (const input of node.consumes) {
+        if (input.source && !validReference(input.source))
+          issues.push(
+            `${node.name} has an input connected to a removed output.`,
+          );
+      }
+    } else if (node.type === "use") {
+      for (const binding of node.input_bindings) {
+        if (!validReference(binding.source))
+          issues.push(
+            "A reused Tactic input is connected to a removed output.",
+          );
+      }
+    } else if (
+      node.type === "until" &&
+      !validReference(node.condition.source)
+    ) {
+      issues.push("A Repeat until condition uses a removed output.");
+    }
+  }
+  for (const port of draft.interface.outputs) {
+    if (port.source.type === "binding" && !validReference(port.source.binding))
+      issues.push(
+        `${port.label || "A Tactic output"} exports a removed output.`,
+      );
+    if (
+      port.source.type === "accepted_subject" &&
+      !gates.has(port.source.gate_key)
+    )
+      issues.push(
+        `${port.label || "A Tactic output"} uses an unavailable acceptance gate.`,
+      );
+  }
+
   const portKeys = [...draft.interface.inputs, ...draft.interface.outputs].map(
     (port) => port.key,
   );

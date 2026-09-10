@@ -7,6 +7,7 @@ import {
   BUILT_IN_ARTIFACT_KINDS,
   emptyDraft,
   generatedLocalKey,
+  generatedPortKey,
   insertAfter,
   isPlanRevisionUntil,
   isReviewRemediationUntil,
@@ -17,9 +18,13 @@ import {
   moveIntoPrevious,
   moveNode,
   moveOut,
+  referencedOutputsForRemoval,
   removeNode,
+  removeNodeWithSelection,
   type SequenceNode,
   steps,
+  subtreeSize,
+  type TacticNode,
   usageFor,
 } from "./tactic-model";
 
@@ -108,6 +113,167 @@ test("keyboard movement can move into and out of semantic groups", () => {
   const unnested = moveOut(nested.body, nested.path);
   expect(unnested.path).toEqual([1]);
   expect(steps(unnested.body)[0]?.key).toBe("implement");
+});
+
+test("move up and down preserve every semantic node type", () => {
+  const base = sequence();
+  const target: Tactic = {
+    id: "move-target",
+    key: "move-target",
+    name: "Move Target",
+    description: "",
+    body: asJson(base),
+    interface: { inputs: [], outputs: [] },
+    archived_at: null,
+  };
+  const first = base.children[0];
+  const second = base.children[1];
+  if (!first || !second) throw new Error("Expected sequence children");
+  const nodes: TacticNode[] = [
+    first,
+    { type: "sequence", children: [second] },
+    { type: "parallel", children: [makeStep("Branch", base, builder)] },
+    makeUntil(base, builder),
+    makeUse(target, base),
+  ];
+  const root: SequenceNode = { type: "sequence", children: nodes };
+  for (const [index, node] of nodes.entries()) {
+    if (index > 0) {
+      const moved = moveNode(root, [index], -1);
+      expect(moved.path).toEqual([index - 1]);
+      expect(
+        moved.body.type === "sequence" && moved.body.children[index - 1],
+      ).toEqual(node);
+    }
+    if (index < nodes.length - 1) {
+      const moved = moveNode(root, [index], 1);
+      expect(moved.path).toEqual([index + 1]);
+      expect(
+        moved.body.type === "sequence" && moved.body.children[index + 1],
+      ).toEqual(node);
+    }
+  }
+});
+
+test("interface port keys are generated from friendly names with canonical concise conventions", () => {
+  expect(generatedPortKey("Quest Plan", "quest_plan", "input", [])).toBe(
+    "plan",
+  );
+  expect(
+    generatedPortKey("Accepted Quest Plan", "quest_plan", "output", [], true),
+  ).toBe("accepted_plan");
+  expect(
+    generatedPortKey(
+      "Accepted Change Set",
+      "change_set",
+      "output",
+      ["accepted_change_set"],
+      true,
+    ),
+  ).toBe("accepted_change_set_2");
+  expect(generatedPortKey("QA Report", "qa_report", "output", [])).toBe(
+    "qa_report",
+  );
+});
+
+test("removal supports every semantic position and chooses a useful next selection", () => {
+  const body = sequence();
+  const until = makeUntil(body, builder);
+  const target: Tactic = {
+    id: "child",
+    key: "child",
+    name: "Child",
+    description: "",
+    body: asJson(body),
+    interface: { inputs: [], outputs: [] },
+    archived_at: null,
+  };
+  const use = makeUse(target, body);
+  const first = body.children[0];
+  const second = body.children[1];
+  if (!first || !second) throw new Error("Expected sequence children");
+  const root: SequenceNode = {
+    type: "sequence",
+    children: [first, until, use, second],
+  };
+
+  const stepRemoval = removeNodeWithSelection(root, [0]);
+  expect(stepRemoval.removed).toBe(true);
+  expect(stepRemoval.path).toEqual([0]);
+  expect(
+    stepRemoval.body.type === "sequence" && stepRemoval.body.children[0]?.type,
+  ).toBe("until");
+
+  const untilRemoval = removeNodeWithSelection(root, [1]);
+  expect(
+    untilRemoval.body.type === "sequence" &&
+      untilRemoval.body.children.some((node) => node.type === "until"),
+  ).toBe(false);
+
+  const useRemoval = removeNodeWithSelection(root, [2]);
+  expect(
+    useRemoval.body.type === "sequence" &&
+      useRemoval.body.children.some((node) => node.type === "use"),
+  ).toBe(false);
+
+  const checkRemoval = removeNodeWithSelection(root, [1, "check"]);
+  expect(checkRemoval.path).toEqual([1]);
+  const changedUntil =
+    checkRemoval.body.type === "sequence"
+      ? checkRemoval.body.children[1]
+      : null;
+  expect(changedUntil?.type === "until" && changedUntil.check).toEqual({
+    type: "sequence",
+    children: [],
+  });
+
+  const emptyContainer: SequenceNode = { type: "sequence", children: [] };
+  const nestedRoot: SequenceNode = {
+    type: "sequence",
+    children: [emptyContainer],
+  };
+  expect(removeNodeWithSelection(nestedRoot, [0]).body).toEqual({
+    type: "sequence",
+    children: [],
+  });
+  expect(subtreeSize(until)).toBe(3);
+});
+
+test("removal impact reports exact bindings and interface exports without changing them", () => {
+  const body = sequence();
+  const draft = {
+    id: null,
+    key: "delivery",
+    name: "Delivery",
+    description: "",
+    body,
+    interface: {
+      inputs: [],
+      outputs: [
+        {
+          key: "change_set",
+          label: "Change Set",
+          kind: "change_set",
+          source: {
+            type: "binding" as const,
+            binding: { producer: "implement", output: "change_set" },
+          },
+        },
+      ],
+    },
+  };
+  expect(referencedOutputsForRemoval(draft, [0])).toEqual([
+    "Review → Change Set",
+    "Tactic output → Change Set",
+  ]);
+  expect(draft.interface.outputs[0]?.source).toEqual({
+    type: "binding",
+    binding: { producer: "implement", output: "change_set" },
+  });
+  const removed = { ...draft, body: removeNode(draft.body, [0]) };
+  expect(localDraftIssues(removed)).toContain(
+    "Change Set exports a removed output.",
+  );
 });
 
 test("Step and TacticUse identities share stable collision-safe keys", () => {

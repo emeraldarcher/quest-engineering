@@ -13,6 +13,7 @@ const output = values.out;
 const width = Number(values.width ?? 1440);
 const height = Number(values.height ?? 900);
 const dpr = Number(values.dpr ?? 1);
+const assertLayout = values.assertLayout === "true";
 if (!url || !output || ![1, 2].includes(dpr))
   throw new Error(
     "Usage: capture-scene --url=<fixture URL> --out=<repo PNG> [--width=1440 --height=900 --dpr=1]",
@@ -41,6 +42,13 @@ interface CdpResponse {
 interface CanvasCapture {
   data: string;
   rect: { width: number; height: number };
+}
+interface LayoutCheck {
+  viewportWidth: number;
+  documentWidth: number;
+  editorWidth: number | null;
+  canvasHeight: number | null;
+  interfaceOverflow: boolean;
 }
 class Cdp {
   private id = 0;
@@ -145,6 +153,32 @@ async function captureDom(port: number, path: string) {
     await Bun.sleep(2500);
     const cdp = await Cdp.connect(port);
     await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    if (assertLayout) {
+      const result = await cdp.send("Runtime.evaluate", {
+        expression: `(()=>{const editor=document.querySelector('.flow-editor');const canvas=document.querySelector('.flow-canvas');const cards=[...document.querySelectorAll('.port-card')];return {viewportWidth:innerWidth,documentWidth:document.documentElement.scrollWidth,editorWidth:editor?.getBoundingClientRect().width??null,canvasHeight:canvas?.getBoundingClientRect().height??null,interfaceOverflow:cards.some(card=>card.scrollWidth>card.clientWidth+1)}})()`,
+        returnByValue: true,
+      });
+      const layout = result.result?.result?.value as LayoutCheck | undefined;
+      if (!layout) throw new Error("Layout measurements were unavailable.");
+      if (layout.documentWidth > layout.viewportWidth + 1)
+        throw new Error(
+          `Document overflowed horizontally: ${layout.documentWidth}px > ${layout.viewportWidth}px.`,
+        );
+      if (layout.interfaceOverflow)
+        throw new Error(
+          "A Tactic interface port card overflowed horizontally.",
+        );
+      if (layout.editorWidth !== null && layout.editorWidth < 340)
+        throw new Error(`Tactic editor collapsed to ${layout.editorWidth}px.`);
+      if (layout.canvasHeight !== null && layout.canvasHeight < 180)
+        throw new Error(
+          `Tactic tree canvas collapsed to ${layout.canvasHeight}px.`,
+        );
+      console.log(
+        `layout ${layout.viewportWidth}px: editor=${layout.editorWidth ?? "n/a"}px canvas=${layout.canvasHeight ?? "n/a"}px document=${layout.documentWidth}px`,
+      );
+    }
     await cdp.send("Emulation.setDefaultBackgroundColorOverride", {
       color: { r: 0, g: 0, b: 0, a: 0 },
     });

@@ -3,12 +3,15 @@ import type { SemanticArtifactBinding, Tactic } from "../../api/contracts";
 import type { NodePath, TacticNode } from "../war-room/tactic-model";
 import {
   artifactContractLabel,
+  displayNodeName,
+  entries,
   isPlanRevisionUntil,
   isReviewRemediationUntil,
   pathKey,
 } from "../war-room/tactic-model";
 
 export let node: TacticNode;
+export let root: TacticNode = node;
 export let bindings: SemanticArtifactBinding[] = [];
 export let tactics: Tactic[] = [];
 export let path: NodePath = [];
@@ -17,6 +20,7 @@ export let interactive = false;
 export let onSelect: (path: NodePath) => void = () => {};
 export let compact = false;
 
+$: if (!path.length) root = node;
 $: currentPath = pathKey(path);
 $: stepConsumes =
   node.type === "step" && Array.isArray(node.consumes) ? node.consumes : [];
@@ -45,6 +49,31 @@ function untilConditionSummary(value: TacticNode): string {
   if (output?.review?.gate_key === "plan_acceptance") return "Quest Plan is accepted";
   if (output?.review?.gate_key === "implementation_acceptance") return "Implementation is accepted";
   return `${producer} → ${outputName}: ${value.condition.field} equals ${JSON.stringify(value.condition.value)}`;
+}
+
+function authoredSourceLabel(producer: string, output: string): string {
+  if (producer === "$inputs") return `Tactic Input → ${friendlyKey(output)}`;
+  const source = entries(root).find(({ node: candidate }) =>
+    candidate.type === "step"
+      ? candidate.key === producer || producer.endsWith(`/${candidate.key}`)
+      : candidate.type === "use" &&
+        (candidate.instance_key === producer || producer.endsWith(`/${candidate.instance_key}`)),
+  )?.node;
+  if (!source) return "selected upstream output";
+  if (source.type === "step") {
+    const artifact = source.produces.find((item) => item.name === output);
+    return `${source.name} → ${artifact ? artifactContractLabel(source, artifact, "produces") : friendlyKey(output)}`;
+  }
+  if (source.type === "use") {
+    const tactic = tactics.find((item) => item.id === source.tactic_definition_id);
+    const port = tactic?.interface.outputs.find((item) => item.key === output);
+    return `${displayNodeName(source, tactics)} → ${port?.label ?? friendlyKey(output)}`;
+  }
+  return "selected upstream output";
+}
+
+function friendlyKey(value: string): string {
+  return value.replaceAll("_", " ").replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 
 function sourceLabel(binding: SemanticArtifactBinding): string {
@@ -83,7 +112,7 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
       <div class="artifact-lines">
         {#each stepConsumes as artifact}
           {@const binding = stepBindings.find((item) => item.input_name === artifact.name)}
-          <span><b>Uses</b> {artifactContractLabel(node, artifact, "consumes")}{#if binding}<em>{sourceLabel(binding)}</em>{:else if artifact.source}<em>from {artifact.source.producer} → {artifact.source.output}</em>{:else}<em>source automatic</em>{/if}</span>
+          <span><b>Uses</b> {artifactContractLabel(node, artifact, "consumes")}{#if binding}<em>{sourceLabel(binding)}</em>{:else if artifact.source}<em>from {authoredSourceLabel(artifact.source.producer, artifact.source.output)}</em>{:else}<em>source automatic</em>{/if}</span>
         {/each}
         {#each stepProduces as artifact}<span><b>Produces</b> {artifactContractLabel(node, artifact, "produces")}</span>{/each}
       </div>
@@ -93,7 +122,7 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
   <section class="semantic-container sequence" class:selected={selectedPath === currentPath}>
     {#if interactive}<button class="container-label" type="button" on:click={() => onSelect(path)} aria-pressed={selectedPath === currentPath}>Then · Sequence</button>{/if}
     {#each node.children as child, index}
-      <svelte:self {bindings} {tactics} node={child} path={[...path, index]} {selectedPath} {interactive} {onSelect} {compact} />
+      <svelte:self {bindings} {tactics} {root} node={child} path={[...path, index]} {selectedPath} {interactive} {onSelect} {compact} />
       {#if index < node.children.length - 1}<span class="flow-arrow" aria-hidden="true">↓</span>{/if}
     {:else}
       <button class="empty-flow" type="button" disabled={!interactive} on:click={() => onSelect(path)}>+ Add the first item</button>
@@ -104,7 +133,7 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
     <button class="container-label" type="button" disabled={!interactive} on:click={() => onSelect(path)} aria-pressed={interactive ? selectedPath === currentPath : undefined}>At the same time</button>
     <div class="parallel-branches">
       {#each node.children as child, index}
-        <div class="parallel-branch"><span>Branch {index + 1}</span><svelte:self {bindings} {tactics} node={child} path={[...path, index]} {selectedPath} {interactive} {onSelect} {compact} /></div>
+        <div class="parallel-branch"><span>Branch {index + 1}</span><svelte:self {bindings} {tactics} {root} node={child} path={[...path, index]} {selectedPath} {interactive} {onSelect} {compact} /></div>
       {:else}<p class="empty-flow">Add a parallel branch.</p>{/each}
     </div>
     <span class="flow-arrow" aria-hidden="true">↓</span><small class="continue-label">Continue when every branch is complete</small>
@@ -113,9 +142,9 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
   <section class="semantic-container until" class:selected={selectedPath === currentPath}>
     <button class="container-label" type="button" disabled={!interactive} on:click={() => onSelect(path)} aria-pressed={interactive ? selectedPath === currentPath : undefined}>Repeat until…</button>
     <div class="until-grid">
-      <div><span class="phase-label">Check</span><svelte:self {bindings} {tactics} node={node.check} path={[...path, "check"]} {selectedPath} {interactive} {onSelect} {compact} /></div>
+      <div><span class="phase-label">Check</span><svelte:self {bindings} {tactics} {root} node={node.check} path={[...path, "check"]} {selectedPath} {interactive} {onSelect} {compact} /></div>
       <div class="condition-copy"><b>Accepted when</b><span>{untilConditionSummary(node)}</span></div>
-      <div><span class="phase-label">If not accepted · Remediate</span><svelte:self {bindings} {tactics} node={node.otherwise} path={[...path, "otherwise"]} {selectedPath} {interactive} {onSelect} {compact} /></div>
+      <div><span class="phase-label">If not accepted · Remediate</span><svelte:self {bindings} {tactics} {root} node={node.otherwise} path={[...path, "otherwise"]} {selectedPath} {interactive} {onSelect} {compact} /></div>
     </div>
     {#if typeof node.max_remediations === "number"}<small>{isPlanRevisionUntil(node) ? `Up to ${node.max_remediations} plan ${node.max_remediations === 1 ? "revision" : "revisions"}` : isReviewRemediationUntil(node) ? `Up to ${node.max_remediations} ${node.max_remediations === 1 ? "repair" : "repairs"}` : `Up to ${node.max_remediations} remediation ${node.max_remediations === 1 ? "iteration" : "iterations"}`}; the initial check may be followed by that many remediation opportunities.</small>{/if}
   </section>

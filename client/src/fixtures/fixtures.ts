@@ -85,6 +85,7 @@ export const fixtureNames = [
   "quest-board-dirty",
   "war-room-empty",
   "war-room-detail",
+  "war-room-plan-interface",
   "war-room-new",
   "war-room-step",
   "war-room-step-advanced",
@@ -1659,13 +1660,23 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     context: { selector: "fresh", value: null },
     consumes: (options.consumes ?? []).map((kind) => ({
       name: kind,
-      kind: kind === "verdict" ? "review_verdict" : kind,
+      kind:
+        kind === "verdict"
+          ? "review_verdict"
+          : kind === "plan"
+            ? "quest_plan"
+            : kind,
       source: null,
       required: true,
     })),
     produces: (options.produces ?? []).map((name) => ({
       name,
-      kind: name === "verdict" ? "review_verdict" : name,
+      kind:
+        name === "verdict"
+          ? "review_verdict"
+          : name === "plan"
+            ? "quest_plan"
+            : name,
       review:
         name === "verdict"
           ? {
@@ -1675,9 +1686,17 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
           : null,
     })),
   });
-  const implement = stepNode("implement", "builder", {
-    produces: ["change_set"],
-  });
+  const implement = {
+    ...stepNode("implement", "builder", { produces: ["change_set"] }),
+    consumes: [
+      {
+        name: "plan",
+        kind: "quest_plan",
+        source: { producer: "$inputs", output: "plan" },
+        required: false,
+      },
+    ],
+  };
   const review = {
     ...stepNode("review", "reviewer", {
       consumes: ["change_set"],
@@ -1717,19 +1736,64 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     },
     archived_at: null,
   };
+  const plan = stepNode("plan", "builder", { produces: ["plan"] });
+  const reviewPlan = {
+    ...stepNode("review-plan", "reviewer", {
+      consumes: ["plan"],
+      produces: ["verdict"],
+    }),
+    consumes: [
+      {
+        name: "plan",
+        kind: "quest_plan",
+        source: { producer: "plan", output: "plan" },
+        required: true,
+      },
+    ],
+    produces: [
+      {
+        name: "verdict",
+        kind: "review_verdict",
+        review: { gate_key: "plan_acceptance", subject_input: "plan" },
+      },
+    ],
+  };
+  const revisePlan = {
+    ...stepNode("revise-plan", "builder", {
+      consumes: ["plan", "verdict"],
+      produces: ["plan"],
+    }),
+    consumes: [
+      { name: "plan", kind: "quest_plan", source: null, required: true },
+      {
+        name: "verdict",
+        kind: "review_verdict",
+        source: { producer: "review-plan", output: "verdict" },
+        required: true,
+      },
+    ],
+  };
   const planning: Tactic = {
     id: "war-tactic-plan",
-    key: "plan-and-build",
+    key: "plan-and-review",
     name: "Plan & Review",
     description: "Create, review, and revise a Quest Plan until accepted.",
     body: {
       type: "sequence",
       children: [
-        stepNode("plan", "builder", { produces: ["plan"] }),
-        stepNode("build", "builder", {
-          consumes: ["plan"],
-          produces: ["change_set"],
-        }),
+        plan,
+        {
+          type: "until",
+          check: reviewPlan,
+          condition: {
+            source: { producer: "review-plan", output: "verdict" },
+            field: "status",
+            operator: "equals",
+            value: "accepted",
+          },
+          otherwise: revisePlan,
+          max_remediations: 2,
+        },
       ],
     },
     interface: {
@@ -1815,7 +1879,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     body: {
       type: "sequence",
       children: [
-        implement,
+        { ...implement, consumes: [] },
         {
           type: "until",
           check: review,
@@ -1927,27 +1991,29 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     body: stepNode("audit", "auditor", { produces: ["verdict"] }),
   };
   const selected =
-    name === "war-room-parallel"
-      ? parallelTactic
-      : name === "war-room-ambiguous"
-        ? ambiguousTactic
-        : name === "war-room-invalid"
-          ? invalidTactic
-          : [
-                "war-room-until",
-                "war-room-affinity",
-                "war-room-context",
-              ].includes(name)
-            ? remediation
-            : name === "war-room-contextual"
-              ? contextual
-              : name === "war-room-use" || name === "war-room-nested-use"
-                ? composed
-                : name === "war-room-archived-class"
-                  ? classReference
-                  : name === "war-room-archived-use"
-                    ? archivedUse
-                    : implementReview;
+    name === "war-room-plan-interface"
+      ? planning
+      : name === "war-room-parallel"
+        ? parallelTactic
+        : name === "war-room-ambiguous"
+          ? ambiguousTactic
+          : name === "war-room-invalid"
+            ? invalidTactic
+            : [
+                  "war-room-until",
+                  "war-room-affinity",
+                  "war-room-context",
+                ].includes(name)
+              ? remediation
+              : name === "war-room-contextual"
+                ? contextual
+                : name === "war-room-use" || name === "war-room-nested-use"
+                  ? composed
+                  : name === "war-room-archived-class"
+                    ? classReference
+                    : name === "war-room-archived-use"
+                      ? archivedUse
+                      : implementReview;
   const active = [
     selected,
     implementReview,
