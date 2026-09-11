@@ -3,9 +3,12 @@ import type { Tactic } from "../../api/contracts";
 import {
   appendChild,
   artifactContractLabel,
+  artifactSourcesFor,
   asJson,
   BUILT_IN_ARTIFACT_KINDS,
+  draftValidationIssues,
   emptyDraft,
+  generatedArtifactName,
   generatedLocalKey,
   generatedPortKey,
   insertAfter,
@@ -21,6 +24,7 @@ import {
   referencedOutputsForRemoval,
   removeNode,
   removeNodeWithSelection,
+  renameArtifactOutputReferences,
   type SequenceNode,
   steps,
   subtreeSize,
@@ -61,7 +65,16 @@ test("normal artifact suggestions contain kinds, never local output names", () =
   const until = makeUntil(sequence(), builder);
   expect(until.condition.source).toEqual({
     producer: until.check.type === "step" ? until.check.key : "",
-    output: "result",
+    output: "verdict",
+  });
+  if (until.check.type !== "step") throw new Error("Expected Review Step");
+  expect(until.check.produces[0]).toMatchObject({
+    name: "verdict",
+    kind: "review_verdict",
+    review: {
+      gate_key: "implementation_acceptance",
+      subject_input: "current_change_set",
+    },
   });
 });
 
@@ -272,7 +285,7 @@ test("removal impact reports exact bindings and interface exports without changi
   });
   const removed = { ...draft, body: removeNode(draft.body, [0]) };
   expect(localDraftIssues(removed)).toContain(
-    "Change Set exports a removed output.",
+    "Change Set needs an export source.",
   );
 });
 
@@ -297,7 +310,7 @@ test("Until authoring states exact remediation-count semantics", () => {
   expect(until.max_remediations).toBe(3);
   expect(until.max_remediations + 1).toBe(4);
   expect(until.condition.operator).toBe("equals");
-  expect(isReviewRemediationUntil(until)).toBe(false);
+  expect(isReviewRemediationUntil(until)).toBe(true);
   if (until.check.type !== "step" || until.otherwise.type !== "step")
     throw new Error("Expected Step phases");
   until.check.name = "Review";
@@ -369,6 +382,214 @@ test("plan review loops use document contracts and count plan revisions", () => 
     "Updated Quest Plan",
   );
   expect(until.max_remediations + 1).toBe(3);
+});
+
+test("Plan review defaults persist an explicit gate, loop carry, feedback, and accepted export", () => {
+  const empty: SequenceNode = { type: "sequence", children: [] };
+  const plan = makeStep("Plan", empty, "planner");
+  plan.instruction = "Create a Quest Plan.";
+  plan.produces = [{ name: "plan", kind: "quest_plan", review: null }];
+  const beforeLoop: SequenceNode = { type: "sequence", children: [plan] };
+  const until = makeUntil(beforeLoop, "plan-reviewer");
+  if (until.check.type !== "step" || until.otherwise.type !== "step")
+    throw new Error("Expected Step phases");
+  const draft = {
+    id: null,
+    key: "plan-review",
+    name: "Plan & Review",
+    description: "",
+    body: { type: "sequence" as const, children: [plan, until] },
+    interface: {
+      inputs: [],
+      outputs: [
+        {
+          key: "accepted_plan",
+          label: "Accepted Quest Plan",
+          kind: "quest_plan",
+          source: {
+            type: "accepted_subject" as const,
+            gate_key: "plan_acceptance",
+          },
+        },
+      ],
+    },
+  };
+
+  expect(until.check.name).toBe("Review Plan");
+  expect(until.check.consumes).toEqual([
+    {
+      name: "current_plan",
+      kind: "quest_plan",
+      source: { producer: "plan", output: "plan" },
+      required: true,
+    },
+  ]);
+  expect(until.check.produces[0]?.review).toEqual({
+    gate_key: "plan_acceptance",
+    subject_input: "current_plan",
+  });
+  expect(until.otherwise.consumes).toEqual([
+    {
+      name: "current_plan",
+      kind: "quest_plan",
+      source: { producer: "plan", output: "plan" },
+      required: true,
+    },
+    {
+      name: "review_feedback",
+      kind: "review_verdict",
+      source: { producer: "review-plan", output: "verdict" },
+      required: true,
+    },
+  ]);
+  expect(until.otherwise.produces[0]).toMatchObject({
+    name: "plan",
+    kind: "quest_plan",
+  });
+  expect(draftValidationIssues(draft)).toEqual([]);
+  expect(
+    artifactSourcesFor(draft, [], [1, "check"], "quest_plan")[0]?.label,
+  ).toBe("Current Quest Plan");
+  const remediationSources = artifactSourcesFor(draft, [], [1, "otherwise"]);
+  expect(remediationSources.map((candidate) => candidate.label)).toContain(
+    "Current Quest Plan",
+  );
+  expect(remediationSources.map((candidate) => candidate.label)).toContain(
+    "Latest rejected Plan Review",
+  );
+});
+
+test("draft validation identifies each reproduced semantic wiring failure", () => {
+  const empty: SequenceNode = { type: "sequence", children: [] };
+  const plan = makeStep("Plan", empty, "planner");
+  plan.instruction = "Plan.";
+  plan.produces = [{ name: "plan", kind: "quest_plan", review: null }];
+  const review = makeStep("Review Plan", empty, "reviewer");
+  review.instruction = "Review.";
+  review.consumes = [
+    { name: "current_plan", kind: "", source: null, required: true },
+  ];
+  review.produces = [
+    {
+      name: "verdict",
+      kind: "review_verdict",
+      review: {
+        gate_key: "implementation_acceptance",
+        subject_input: "current_plan",
+      },
+    },
+  ];
+  const remediate = makeStep("Remediate", empty, "planner");
+  remediate.instruction = "Revise.";
+  remediate.consumes = [
+    { name: "current_plan", kind: "", source: null, required: true },
+    { name: "review_feedback", kind: "", source: null, required: true },
+  ];
+  remediate.produces = [{ name: "plan", kind: "", review: null }];
+  const draft = {
+    id: null,
+    key: "plan-review",
+    name: "Plan & Review",
+    description: "",
+    body: {
+      type: "sequence" as const,
+      children: [
+        plan,
+        {
+          type: "until" as const,
+          check: review,
+          condition: {
+            source: { producer: review.key, output: "verdict" },
+            field: "status",
+            operator: "equals" as const,
+            value: "accepted",
+          },
+          otherwise: remediate,
+          max_remediations: 2,
+        },
+      ],
+    },
+    interface: {
+      inputs: [],
+      outputs: [
+        {
+          key: "accepted_plan",
+          label: "Accepted Quest Plan",
+          kind: "quest_plan",
+          source: {
+            type: "binding" as const,
+            binding: { producer: "", output: "" },
+          },
+        },
+      ],
+    },
+  };
+  const messages = draftValidationIssues(draft).map((issue) => issue.message);
+  expect(messages).toContain(
+    "Review Plan → Current Quest Plan needs an artifact type.",
+  );
+  expect(messages).toContain(
+    "Remediate → Current Quest Plan needs an artifact type.",
+  );
+  expect(messages).toContain(
+    "Remediate → Review Feedback needs an artifact type.",
+  );
+  expect(messages).toContain("Remediate → Quest Plan needs an artifact type.");
+  expect(messages).toContain("Accepted Quest Plan needs an export source.");
+});
+
+test("renaming a Review output preserves its exact condition and export references", () => {
+  const until = makeUntil({ type: "sequence", children: [] }, builder);
+  if (until.check.type !== "step") throw new Error("Expected Check Step");
+  const draft = {
+    id: null,
+    key: "generic-review",
+    name: "Generic Review",
+    description: "",
+    body: until,
+    interface: {
+      inputs: [],
+      outputs: [
+        {
+          key: "result",
+          label: "Result",
+          kind: "review_verdict",
+          source: {
+            type: "binding" as const,
+            binding: { producer: until.check.key, output: "result" },
+          },
+        },
+      ],
+    },
+  };
+  const renamed = renameArtifactOutputReferences(
+    draft,
+    until.check.key,
+    "result",
+    "verdict",
+  );
+  expect(
+    renamed.body.type === "until" && renamed.body.condition.source,
+  ).toEqual({
+    producer: until.check.key,
+    output: "verdict",
+  });
+  expect(renamed.interface.outputs[0]?.source).toEqual({
+    type: "binding",
+    binding: { producer: until.check.key, output: "verdict" },
+  });
+});
+
+test("friendly artifact names generate stable Step slots", () => {
+  expect(
+    generatedArtifactName("Current Quest Plan", "quest_plan", "input", []),
+  ).toBe("current_plan");
+  expect(
+    generatedArtifactName("Review Feedback", "review_verdict", "input", []),
+  ).toBe("review_feedback");
+  expect(generatedArtifactName("Quest Plan", "quest_plan", "output", [])).toBe(
+    "plan",
+  );
 });
 
 test("empty and malformed local drafts are guided without compiler inference", () => {

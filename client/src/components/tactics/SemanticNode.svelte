@@ -1,6 +1,10 @@
 <script lang="ts">
 import type { SemanticArtifactBinding, Tactic } from "../../api/contracts";
-import type { NodePath, TacticNode } from "../war-room/tactic-model";
+import type {
+  ArtifactInputDraft,
+  NodePath,
+  TacticNode,
+} from "../war-room/tactic-model";
 import {
   artifactContractLabel,
   displayNodeName,
@@ -43,9 +47,16 @@ function untilConditionSummary(value: TacticNode): string {
   if (value.type !== "until") return "the check is accepted";
   const producer = value.condition.source.producer;
   const outputName = value.condition.source.output;
-  const output = value.type === "until"
-    ? (value.check.type === "step" ? value.check.produces : []).find((item) => item.name === outputName)
-    : undefined;
+  const reviewStep = entries(value.check)
+    .map((entry) => entry.node)
+    .find(
+      (candidate) =>
+        candidate.type === "step" && candidate.key === producer,
+    );
+  const output =
+    reviewStep?.type === "step"
+      ? reviewStep.produces.find((item) => item.name === outputName)
+      : undefined;
   if (output?.review?.gate_key === "plan_acceptance") return "Quest Plan is accepted";
   if (output?.review?.gate_key === "implementation_acceptance") return "Implementation is accepted";
   return `${producer} → ${outputName}: ${value.condition.field} equals ${JSON.stringify(value.condition.value)}`;
@@ -70,6 +81,37 @@ function authoredSourceLabel(producer: string, output: string): string {
     return `${displayNodeName(source, tactics)} → ${port?.label ?? friendlyKey(output)}`;
   }
   return "selected upstream output";
+}
+
+function semanticInputSource(
+  artifact: ArtifactInputDraft,
+): string | null {
+  const inCheck = path.includes("check");
+  const inRemediation = path.includes("otherwise");
+  if ((inCheck || inRemediation) && artifact.kind === "quest_plan")
+    return "Current Quest Plan";
+  if ((inCheck || inRemediation) && artifact.kind === "change_set")
+    return "Current Change Set";
+  if (inRemediation && artifact.kind === "review_verdict") {
+    const sourceStep = entries(root)
+      .map((entry) => entry.node)
+      .find(
+        (candidate) =>
+          candidate.type === "step" &&
+          candidate.key === artifact.source?.producer,
+      );
+    const sourceOutput =
+      sourceStep?.type === "step"
+        ? sourceStep.produces.find(
+            (output) => output.name === artifact.source?.output,
+          )
+        : null;
+    if (sourceOutput?.review?.gate_key === "plan_acceptance")
+      return "Latest rejected Plan Review";
+    if (sourceOutput?.review?.gate_key === "implementation_acceptance")
+      return "Latest rejected Implementation Review";
+  }
+  return null;
 }
 
 function friendlyKey(value: string): string {
@@ -112,7 +154,7 @@ function sourceLabel(binding: SemanticArtifactBinding): string {
       <div class="artifact-lines">
         {#each stepConsumes as artifact}
           {@const binding = stepBindings.find((item) => item.input_name === artifact.name)}
-          <span><b>Uses</b> {artifactContractLabel(node, artifact, "consumes")}{#if binding}<em>{sourceLabel(binding)}</em>{:else if artifact.source}<em>from {authoredSourceLabel(artifact.source.producer, artifact.source.output)}</em>{:else}<em>source automatic</em>{/if}</span>
+          <span><b>Uses</b> {artifactContractLabel(node, artifact, "consumes")}{#if binding}<em>{sourceLabel(binding)}</em>{:else if semanticInputSource(artifact)}<em>{semanticInputSource(artifact)}</em>{:else if artifact.source}<em>from {authoredSourceLabel(artifact.source.producer, artifact.source.output)}</em>{:else}<em>source automatic</em>{/if}</span>
         {/each}
         {#each stepProduces as artifact}<span><b>Produces</b> {artifactContractLabel(node, artifact, "produces")}</span>{/each}
       </div>

@@ -23,6 +23,7 @@
     "screenshots:quest-board-ux": "bun run scripts/capture-quest-board-ux.ts",
     "screenshots:war-room-ux": "bun run scripts/capture-war-room-ux.ts",
     "screenshots:war-room-interface-ux": "bun run scripts/capture-war-room-interface-ux.ts",
+    "screenshots:war-room-semantic-wiring-ux": "bun run scripts/capture-war-room-semantic-wiring-ux.ts",
     "screenshots:town-hud-ux": "bun run scripts/capture-town-hud-ux.ts",
     "screenshots:crew-checkpoint-c": "bun run scripts/capture-crew-checkpoint-c.ts",
     "screenshots:crew-polish-ux": "bun run scripts/capture-crew-polish-ux.ts",

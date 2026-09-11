@@ -156,7 +156,7 @@ async function captureDom(port: number, path: string) {
     await cdp.send("Runtime.enable");
     if (assertLayout) {
       const result = await cdp.send("Runtime.evaluate", {
-        expression: `(()=>{const editor=document.querySelector('.flow-editor');const canvas=document.querySelector('.flow-canvas');const cards=[...document.querySelectorAll('.port-card')];return {viewportWidth:innerWidth,documentWidth:document.documentElement.scrollWidth,editorWidth:editor?.getBoundingClientRect().width??null,canvasHeight:canvas?.getBoundingClientRect().height??null,interfaceOverflow:cards.some(card=>card.scrollWidth>card.clientWidth+1)}})()`,
+        expression: `(()=>{const editor=document.querySelector('.flow-editor');const canvas=document.querySelector('.flow-canvas');const cards=[...document.querySelectorAll('.port-card,.artifact-card,.review-contract,.use-port')];return {viewportWidth:innerWidth,documentWidth:document.documentElement.scrollWidth,editorWidth:editor?.getBoundingClientRect().width??null,canvasHeight:canvas?.getBoundingClientRect().height??null,interfaceOverflow:cards.some(card=>card.scrollWidth>card.clientWidth+1)}})()`,
         returnByValue: true,
       });
       const layout = result.result?.result?.value as LayoutCheck | undefined;

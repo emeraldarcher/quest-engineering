@@ -12,6 +12,8 @@ import {
   type TacticPreview,
 } from "../../api/contracts";
 import SemanticNode from "../tactics/SemanticNode.svelte";
+import DraftValidationSummary from "./DraftValidationSummary.svelte";
+import StepContractEditor from "./StepContractEditor.svelte";
 import TacticHeader from "./TacticHeader.svelte";
 import TacticInterfaceEditor from "./TacticInterfaceEditor.svelte";
 import TacticInterfaceSummary from "./TacticInterfaceSummary.svelte";
@@ -19,8 +21,8 @@ import TacticTreeToolbar from "./TacticTreeToolbar.svelte";
 import {
   appendChild,
   asJson,
+  artifactSourcesFor,
   artifactTypeLabel,
-  BUILT_IN_ARTIFACT_KINDS,
   displayNodeName,
   draftFromTactic,
   draftSignature,
@@ -31,7 +33,8 @@ import {
   artifactContractLabel,
   isPlanRevisionUntil,
   isReviewRemediationUntil,
-  localDraftIssues,
+  draftValidationIssues,
+  generatedArtifactName,
   makeStep,
   makeUntil,
   makeUse,
@@ -42,12 +45,14 @@ import {
   pathKey,
   referencedOutputsForRemoval,
   removeNodeWithSelection,
+  renameArtifactOutputReferences,
   replaceNode,
   steps,
   subtreeSize,
-  type ArtifactInputDraft,
   type ArtifactOutputDraft,
   type ArtifactRefDraft,
+  type ArtifactSourceCandidate,
+  type DraftValidationIssue,
   type NodePath,
   type ParallelNode,
   type SequenceNode,
@@ -69,6 +74,8 @@ type Mode = "detail" | "create" | "edit";
 type PreviewState = "idle" | "loading" | "valid" | "context" | "attention" | "unavailable";
 type PendingAction = (() => void) | null;
 type InspectorView = "node" | "interface" | "details";
+const draftValidationMessage =
+  "Complete the highlighted Tactic fields before saving.";
 
 let windowElement: HTMLElement;
 let mode: Mode = "detail";
@@ -114,7 +121,12 @@ $: dirty = (mode === "create" || mode === "edit") && draftSignature(draft) !== b
 $: usage = selectedTactic
   ? usageFor(selectedTactic.id, product.tactics, product.quests)
   : { quests: 0, tactics: 0 };
-$: localIssues = mode === "create" || mode === "edit" ? localDraftIssues(draft) : [];
+$: validationIssues =
+  mode === "create" || mode === "edit"
+    ? draftValidationIssues(draft, tacticCatalog)
+    : [];
+$: if (!validationIssues.length && localIssue === draftValidationMessage)
+  localIssue = "";
 $: previewBindings = preview?.artifact_bindings ?? [];
 $: contextualDetails = contextualArtifacts(previewFailure);
 $: hasTreeSelection = Boolean(
@@ -232,9 +244,85 @@ function applyScene() {
             "implement-and-review",
       ),
       "nested-use": firstPath((node) => node.type === "use"),
+      "wiring-invalid-input": firstPath(
+        (node) => node.type === "step" && node.key === "review-plan",
+      ),
+      "wiring-plan-input": firstPath(
+        (node) => node.type === "step" && node.key === "review-plan",
+      ),
+      "wiring-review-contract": firstPath(
+        (node) => node.type === "step" && node.key === "review-plan",
+      ),
+      "wiring-plan-condition": firstPath((node) => node.type === "until"),
+      "wiring-remediate": firstPath(
+        (node) => node.type === "step" && node.key === "revise-plan",
+      ),
+      "wiring-current-plan": firstPath(
+        (node) => node.type === "step" && node.key === "revise-plan",
+      ),
+      "wiring-rejected-review": firstPath(
+        (node) => node.type === "step" && node.key === "revise-plan",
+      ),
+      "wiring-valid-plan": [],
+      "wiring-invalid-summary": firstPath(
+        (node) => node.type === "step" && node.key === "revise-plan",
+      ),
+      "wiring-parent-binding": firstPath(
+        (node) =>
+          node.type === "use" &&
+          tacticCatalog.find((item) => item.id === node.tactic_definition_id)?.key ===
+            "implement-and-review",
+      ),
     };
     selectedPath = scenePath[scene] ?? [];
-    inspectorView = scene === "interface" ? "interface" : scene === "details" ? "details" : "node";
+    inspectorView = ["interface", "wiring-accepted-export", "wiring-internal-export"].includes(scene)
+      ? "interface"
+      : scene === "details"
+        ? "details"
+        : "node";
+    if (scene === "wiring-invalid-input") {
+      const review = nodeAt(draft.body, selectedPath);
+      if (review?.type === "step" && review.consumes[0]) {
+        review.consumes[0] = { ...review.consumes[0], kind: "" };
+        draft = { ...draft };
+      }
+    }
+    if (scene === "wiring-invalid-summary") {
+      const remediate = nodeAt(draft.body, selectedPath);
+      if (remediate?.type === "step" && remediate.consumes[1]) {
+        remediate.consumes[1] = { ...remediate.consumes[1], kind: "" };
+        draft = { ...draft };
+      }
+    }
+    if (scene === "wiring-internal-export" && draft.interface.outputs[0]) {
+      draft.interface.outputs[0] = {
+        ...draft.interface.outputs[0],
+        source: {
+          type: "binding",
+          binding: { producer: "plan", output: "plan" },
+        },
+      };
+      draft = { ...draft };
+    }
+    if (
+      [
+        "wiring-review-contract",
+        "wiring-remediate",
+        "wiring-rejected-review",
+      ].includes(scene)
+    )
+      void tick().then(() => {
+        const cards = windowElement?.querySelectorAll<HTMLElement>(
+          ".node-inspector .artifact-card",
+        );
+        const target =
+          scene === "wiring-review-contract"
+            ? cards?.[1]
+            : scene === "wiring-rejected-review"
+              ? cards?.[1]
+              : cards?.[0];
+        target?.scrollIntoView({ block: "center" });
+      });
     inspectorAdvanced = scene === "step-advanced" || scene === "affinity" || scene === "context";
     nestedPreviewOpen = scene === "nested-use";
     if (scene === "dirty") {
@@ -327,7 +415,12 @@ function addNode(kind: "step" | "sequence" | "parallel" | "until" | "use") {
     const interim: SequenceNode = { type: "sequence", children: [first] };
     const second = makeStep("Second Branch", interim, firstClass);
     node = { type: "parallel", children: [first, second] };
-  } else if (kind === "until") node = makeUntil(draft.body, firstClass);
+  } else if (kind === "until") {
+    const reviewer = classCatalog.find(
+      (item) => !item.archived_at && /review/i.test(`${item.key} ${item.name}`),
+    );
+    node = makeUntil(draft.body, reviewer?.key ?? firstClass);
+  }
   else {
     const target = activeTactics.find((item) => item.id !== draft.id);
     if (!target) {
@@ -433,34 +526,44 @@ function closeRemove() {
   removeDialog.close();
 }
 
-function addArtifact(direction: "consumes" | "produces") {
+function changeSelectedOutput(index: number, next: ArtifactOutputDraft) {
   if (selectedNode?.type !== "step") return;
-  const artifact = direction === "consumes"
-    ? { name: "input", kind: "", source: null, required: true } satisfies ArtifactInputDraft
-    : { name: "result", kind: "", review: null } satisfies ArtifactOutputDraft;
-  setSelectedNode({ ...selectedNode, [direction]: [...selectedNode[direction], artifact] });
+  const previous = selectedNode.produces[index];
+  if (!previous) return;
+  const rewritten =
+    previous.name === next.name
+      ? draft
+      : renameArtifactOutputReferences(
+          draft,
+          selectedNode.key,
+          previous.name,
+          next.name,
+        );
+  const rewrittenStep = nodeAt(rewritten.body, selectedPath);
+  if (rewrittenStep?.type !== "step") return;
+  rewrittenStep.produces = rewrittenStep.produces.map((item, current) =>
+    current === index ? next : item,
+  );
+  draft = {
+    ...rewritten,
+    body: replaceNode(rewritten.body, selectedPath, rewrittenStep),
+  };
+  schedulePreview();
 }
 
-function updateInput(index: number, patch: Partial<ArtifactInputDraft>) {
+function renameSelectedOutput(index: number, label: string) {
   if (selectedNode?.type !== "step") return;
-  setSelectedNode({ ...selectedNode, consumes: selectedNode.consumes.map((artifact, i) => i === index ? { ...artifact, ...patch } : artifact) });
-}
-function selectInputSource(index: number, artifact: ArtifactInputDraft, value: string) {
-  const source = parseRef(value);
-  const port = source?.producer === "$inputs" ? draft.interface.inputs.find((input) => input.key === source.output) : null;
-  updateInput(index, { source, required: port ? port.required : artifact.required });
-}
-function updateOutput(index: number, patch: Partial<ArtifactOutputDraft>) {
-  if (selectedNode?.type !== "step") return;
-  setSelectedNode({ ...selectedNode, produces: selectedNode.produces.map((artifact, i) => i === index ? { ...artifact, ...patch } : artifact) });
-}
-
-function removeArtifact(direction: "consumes" | "produces", index: number) {
-  if (selectedNode?.type !== "step") return;
-  setSelectedNode({
-    ...selectedNode,
-    [direction]: selectedNode[direction].filter((_, artifactIndex) => artifactIndex !== index),
-  });
+  const output = selectedNode.produces[index];
+  if (!output) return;
+  const name = generatedArtifactName(
+    label,
+    output.kind,
+    "output",
+    selectedNode.produces
+      .filter((_, current) => current !== index)
+      .map((item) => item.name),
+  );
+  changeSelectedOutput(index, { ...output, name });
 }
 
 function refValue(source: ArtifactRefDraft | null): string {
@@ -470,20 +573,13 @@ function parseRef(value: string): ArtifactRefDraft | null {
   const split = value.lastIndexOf("::");
   return split > 0 ? { producer: value.slice(0, split), output: value.slice(split + 2) } : null;
 }
-function artifactSourceCandidates(kind: string): Array<{ ref: ArtifactRefDraft; label: string }> {
-  const all = entries(draft.body);
-  const selectedIndex = all.findIndex((entry) => entry.node === selectedNode);
-  const upstream = selectedIndex < 0 ? all : all.slice(0, selectedIndex);
-  const stepOutputs = upstream.flatMap(({ node }) => node.type === "step"
-    ? node.produces.filter((output) => output.kind === kind).map((output) => ({ ref: { producer: node.key, output: output.name }, label: `${node.name} → ${artifactContractLabel(node, output, "produces")}` }))
-    : []);
-  const useOutputs = upstream.flatMap(({ node }) => {
-    if (node.type !== "use") return [];
-    const tactic = tacticCatalog.find((item) => item.id === node.tactic_definition_id);
-    return (tactic?.interface.outputs ?? []).filter((output) => output.kind === kind).map((output) => ({ ref: { producer: node.instance_key, output: output.key }, label: `${tactic?.name ?? "Reusable Tactic"} → ${output.label}` }));
-  });
-  const parentInputs = draft.interface.inputs.filter((input) => input.kind === kind).map((input) => ({ ref: { producer: "$inputs", output: input.key }, label: `Tactic Input → ${input.label}` }));
-  return [...parentInputs, ...stepOutputs, ...useOutputs];
+function artifactSourceCandidates(kind: string): ArtifactSourceCandidate[] {
+  return artifactSourcesFor(
+    draft,
+    tacticCatalog,
+    selectedPath,
+    kind,
+  );
 }
 
 function interfaceOutputCandidates(kind: string): Array<{ ref: ArtifactRefDraft; label: string }> {
@@ -497,18 +593,44 @@ function interfaceOutputCandidates(kind: string): Array<{ ref: ArtifactRefDraft;
   });
 }
 
-function conditionCandidates(until: UntilNode): Array<{ ref: ArtifactRefDraft; label: string; output: ArtifactOutputDraft }> {
-  return steps(until.check).flatMap((step) => step.produces.map((output) => ({ ref: { producer: step.key, output: output.name }, label: `${step.name} → ${humanizeKey(output.name)}`, output })));
+function conditionCandidates(until: UntilNode): Array<{ ref: ArtifactRefDraft; label: string; output: ArtifactOutputDraft; step: StepNode }> {
+  return steps(until.check).flatMap((step) =>
+    step.produces.map((output) => ({
+      ref: { producer: step.key, output: output.name },
+      label: `${step.name} → ${humanizeKey(output.name)}`,
+      output,
+      step,
+    })),
+  );
+}
+function semanticCondition(until: UntilNode) {
+  const candidate = conditionCandidates(until).find(
+    (item) => refValue(item.ref) === refValue(until.condition.source),
+  );
+  return candidate?.output.kind === "review_verdict" && candidate.output.review
+    ? candidate
+    : null;
+}
+function acceptedConditionLabel(output: ArtifactOutputDraft): string {
+  if (output.review?.gate_key === "plan_acceptance")
+    return "Quest Plan is accepted";
+  if (output.review?.gate_key === "implementation_acceptance")
+    return "Implementation is accepted";
+  return "The reviewed artifact is accepted";
 }
 
-function isBuiltInKind(kind: string): boolean {
-  return (BUILT_IN_ARTIFACT_KINDS as readonly string[]).includes(kind);
-}
-function commonOutputName(kind: string): string {
-  if (kind === "quest_plan") return "plan";
-  if (kind === "review_verdict") return "verdict";
-  if (kind === "change_set") return "change_set";
-  return "result";
+function selectValidationIssue(issue: DraftValidationIssue) {
+  inspectorView = issue.view;
+  if (issue.path) selectedPath = issue.path;
+  void tick().then(() => {
+    const selector =
+      issue.view === "details"
+        ? "#tactic-name"
+        : issue.view === "interface"
+          ? ".port-card.incomplete-card select, .port-card.incomplete-card input"
+          : ".node-inspector .incomplete, .node-inspector input, .node-inspector select";
+    windowElement?.querySelector<HTMLElement>(selector)?.focus();
+  });
 }
 
 function updateInterface(value: Tactic["interface"]) {
@@ -690,9 +812,10 @@ async function previewPersisted(tactic: Tactic | null = selectedTactic) {
 
 async function saveTactic(): Promise<boolean> {
   if (busy) return false;
-  const issues = localDraftIssues(draft);
+  const issues = draftValidationIssues(draft, tacticCatalog);
   if (issues.length) {
-    localIssue = issues[0] ?? "Complete this Tactic before saving.";
+    localIssue = draftValidationMessage;
+    selectValidationIssue(issues[0]!);
     return false;
   }
   busy = true;
@@ -809,6 +932,12 @@ async function confirmArchive() {
 }
 
 function validationLabel(): { label: string; description: string; tone: string } {
+  if ((mode === "create" || mode === "edit") && validationIssues.length)
+    return {
+      label: "Needs attention",
+      description: `${validationIssues.length} ${validationIssues.length === 1 ? "thing needs" : "things need"} attention before saving.`,
+      tone: "danger",
+    };
   if (previewState === "loading") return { label: "Checking…", description: "Checking this semantic flow.", tone: "active" };
   if (previewState === "valid") return { label: "Valid", description: "This semantic flow resolves successfully.", tone: "success" };
   if (previewState === "context") return { label: "Requires context", description: "This reusable Tactic expects artifacts from the flow that uses it. It can still be saved and reused.", tone: "warning" };
@@ -951,8 +1080,9 @@ function humanizeKey(value: string): string {
         </div>
         <div class="editor-bottom">
         {#if previewState === "context"}<section class="context-warning compact-warning"><strong>Requires surrounding context</strong><ul>{#each contextualDetails as item}<li><code>{item.artifact}</code>{item.step ? ` · ${humanizeKey(item.step)}` : ""}</li>{/each}</ul><small>This does not block saving a reusable Tactic.</small></section>{/if}
-        {#if previewState === "attention"}<section class="validation-issues" role="alert"><strong>{friendlyPreviewIssue(previewFailure)}</strong>{#each previewFailure?.details ?? [] as issue}<small><code>{issue.code}</code></small>{/each}</section>{/if}
-        <footer class="editor-actions"><button class="secondary" type="button" on:click={cancelEdit}>Cancel</button><button class="primary" type="button" disabled={busy || localIssues.length > 0} on:click={saveTactic}>{busy ? "Saving…" : mode === "create" ? "Create Tactic" : "Save Changes"}</button></footer>
+        {#if previewState === "attention"}<section class="validation-issues" role="alert"><strong>{friendlyPreviewIssue(previewFailure)}</strong></section>{/if}
+        <DraftValidationSummary issues={validationIssues} mode={mode === "create" ? "create" : "edit"} onSelect={selectValidationIssue} />
+        <footer class="editor-actions"><button class="secondary" type="button" on:click={cancelEdit}>Cancel</button><button class="primary" type="button" disabled={busy} on:click={saveTactic}>{busy ? "Saving…" : mode === "create" ? "Create Tactic" : "Save Changes"}</button></footer>
         </div>
       </section>
 
@@ -978,17 +1108,33 @@ function humanizeKey(value: string): string {
           {#if step.performer.selector === "class"}<select id="step-class" value={step.performer.value} on:change={(event) => setSelectedNode({ ...step, performer: { selector: "class", value: event.currentTarget.value } })}>{#each classCatalog.filter((item) => !item.archived_at || item.key === step.performer.value) as role}<option value={role.key}>{role.name}{role.archived_at ? " · Archived" : ""}</option>{/each}</select>{#if classForKey(step.performer.value)}<p class="field-help"><strong>{classForKey(step.performer.value)?.name}</strong> · {classForKey(step.performer.value)?.description}</p>{/if}{#if classForKey(step.performer.value)?.archived_at}<p class="archived-warning">This Tactic preserves an archived Class reference. Choose an active Class for future use.</p>{/if}{:else}<div class="reference-summary">Same Member as {humanizeKey(step.performer.value)}</div>{/if}
           <label for="step-instruction">Instruction</label><textarea id="step-instruction" value={step.instruction} on:input={(event) => setSelectedNode({ ...step, instruction: event.currentTarget.value })} placeholder="Implement the Quest objective."></textarea>
           </div>
-          <section class="artifact-editor"><div class="inspector-section-title"><h3>Uses</h3><button type="button" on:click={() => addArtifact("consumes")}>+ Input</button></div>{#each step.consumes as artifact, index}<div class="artifact-contract-label">{artifactContractLabel(step, artifact, "consumes")}</div><div class="artifact-row"><select aria-label={`Input type ${index + 1}`} value={artifact.kind} on:change={(event) => updateInput(index, { kind: event.currentTarget.value })}><option value="">Choose type…</option>{#each BUILT_IN_ARTIFACT_KINDS as kind}<option value={kind}>{artifactTypeLabel(kind)}</option>{/each}{#if artifact.kind && !isBuiltInKind(artifact.kind)}<option value={artifact.kind}>{artifactTypeLabel(artifact.kind)}</option>{/if}</select><select aria-label={`Source for ${artifact.name || `input ${index + 1}`}`} value={refValue(artifact.source)} on:change={(event) => selectInputSource(index, artifact, event.currentTarget.value)}><option value="">Automatic · only compatible value</option>{#each artifactSourceCandidates(artifact.kind) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select><button aria-label={`Remove input ${artifact.name || index + 1}`} type="button" on:click={() => removeArtifact("consumes", index)}>×</button></div><details><summary>Advanced</summary><span class="field-label">Input slot</span><input value={artifact.name} on:input={(event) => updateInput(index, {name:event.currentTarget.value})} /><span class="field-label">Custom artifact kind</span><input aria-label={`Custom input kind ${index + 1}`} value={artifact.kind} on:input={(event) => updateInput(index, {kind:event.currentTarget.value})} /><label><input type="checkbox" checked={!artifact.required} on:change={(event) => updateInput(index, {required:!event.currentTarget.checked})} /> Omit when unavailable</label></details>{@const resolvedBinding = previewBindings.find((binding) => binding.consumer.local_key === step.key && binding.input_name === artifact.name)}{#if resolvedBinding}<small class="resolved-binding">Resolved: {resolvedBinding.source.kind === "step" ? resolvedBinding.source.step.name ?? humanizeKey(resolvedBinding.source.step.local_key) : "current loop-carried value"}</small>{/if}{/each}</section>
-          <section class="artifact-editor"><div class="inspector-section-title"><h3>Produces</h3><button type="button" on:click={() => addArtifact("produces")}>+ Output</button></div>{#each step.produces as artifact, index}<div class="artifact-contract-label">{humanizeKey(artifact.name)} · {artifactContractLabel(step, artifact, "produces")}</div><div class="artifact-row output"><select aria-label={`Output type ${index + 1}`} value={artifact.kind} on:change={(event) => updateOutput(index, { kind: event.currentTarget.value, name: artifact.name === "result" ? commonOutputName(event.currentTarget.value) : artifact.name, review: event.currentTarget.value === "review_verdict" ? (artifact.review ?? {gate_key:"implementation_acceptance",subject_input:step.consumes[0]?.name ?? "subject"}) : null })}><option value="">Choose type…</option>{#each BUILT_IN_ARTIFACT_KINDS as kind}<option value={kind}>{artifactTypeLabel(kind)}</option>{/each}{#if artifact.kind && !isBuiltInKind(artifact.kind)}<option value={artifact.kind}>{artifactTypeLabel(artifact.kind)}</option>{/if}</select><button aria-label={`Remove output ${artifact.name || index + 1}`} type="button" on:click={() => removeArtifact("produces", index)}>×</button></div><details><summary>Advanced</summary><span class="field-label">Output slot</span><input value={artifact.name} on:input={(event) => updateOutput(index, {name:event.currentTarget.value})} /><span class="field-label">Custom artifact kind</span><input aria-label={`Custom output kind ${index + 1}`} value={artifact.kind} on:input={(event) => updateOutput(index, {kind:event.currentTarget.value})} />{#if artifact.review}<span class="field-label">Acceptance gate</span><select value={artifact.review.gate_key} on:change={(event) => updateOutput(index, {review:{...artifact.review!,gate_key:event.currentTarget.value}})}><option value="plan_acceptance">Plan Acceptance</option><option value="implementation_acceptance">Implementation Acceptance</option></select><span class="field-label">Reviewed input</span><select value={artifact.review.subject_input} on:change={(event) => updateOutput(index, {review:{...artifact.review!,subject_input:event.currentTarget.value}})}>{#each step.consumes as input}<option value={input.name}>{humanizeKey(input.name)}</option>{/each}</select>{/if}</details>{/each}</section>
+          <StepContractEditor
+            {step}
+            candidates={artifactSourceCandidates}
+            resolvedBindings={previewBindings.filter((binding) => binding.consumer.local_key === step.key)}
+            onChange={setSelectedNode}
+            onChangeOutput={changeSelectedOutput}
+            onRenameOutput={renameSelectedOutput}
+          />
           <details class="inspector-advanced" bind:open={inspectorAdvanced}><summary>Advanced</summary><fieldset><legend>Performer</legend><label><input type="radio" checked={step.performer.selector === "class"} on:change={() => setSelectedNode({ ...step, performer: { selector: "class", value: classCatalog.find((item) => !item.archived_at)?.key ?? "" } })} /> Any Member with this Class</label><label><input type="radio" checked={step.performer.selector === "same_as"} on:change={() => setSelectedNode({ ...step, performer: { selector: "same_as", value: steps(draft.body).find((item) => item.key !== step.key)?.key ?? "" } })} /> Same Member as</label>{#if step.performer.selector === "same_as"}<select aria-label="Same performer Step" value={step.performer.value} on:change={(event) => setSelectedNode({ ...step, performer: { selector: "same_as", value: event.currentTarget.value } })}>{#each steps(draft.body).filter((item) => item.key !== step.key) as candidate}<option value={candidate.key}>{candidate.name}</option>{/each}</select>{/if}</fieldset><fieldset><legend>Working context</legend><label><input type="radio" checked={step.context.selector === "fresh"} on:change={() => setSelectedNode({ ...step, context: { selector: "fresh", value: null } })} /> Fresh context</label><label><input type="radio" checked={step.context.selector === "continue_from"} on:change={() => setSelectedNode({ ...step, context: { selector: "continue_from", value: steps(draft.body).find((item) => item.key !== step.key)?.key ?? "" } })} /> Continue context from</label>{#if step.context.selector === "continue_from"}<select aria-label="Context source Step" value={step.context.value} on:change={(event) => setSelectedNode({ ...step, context: { selector: "continue_from", value: event.currentTarget.value } })}>{#each steps(draft.body).filter((item) => item.key !== step.key) as candidate}<option value={candidate.key}>{candidate.name}</option>{/each}</select>{/if}</fieldset><label for="step-key">Stable Step key</label><input id="step-key" value={step.key} readonly /></details>
         {:else if selectedNode.type === "until"}
           {@const until = selectedNode as UntilNode}
           <header><span class="eyebrow">Bounded remediation</span><h2>Repeat until accepted</h2><p>The check runs first. If it is not accepted, remediation runs before checking again.</p></header>
           <div class="until-summary"><div><span>Review step</span><strong>{nodeLabel(until.check)}</strong></div><div><span>Otherwise</span><strong>{nodeLabel(until.otherwise)}</strong></div></div>
-          <label for="condition-source">Condition</label><select id="condition-source" value={refValue(until.condition.source)} on:change={(event) => { const source = parseRef(event.currentTarget.value); if (source) setSelectedNode({ ...until, condition: { ...until.condition, source } }); }}><option value="">Choose a produced output…</option>{#each conditionCandidates(until) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select>
-          {@const semanticCondition = conditionCandidates(until).find((candidate) => refValue(candidate.ref) === refValue(until.condition.source))?.output.review}
-          {#if semanticCondition}<p class="field-help"><strong>{semanticCondition.gate_key === "plan_acceptance" ? "Until Quest Plan is accepted" : "Until Implementation is accepted"}</strong><br />The Review Verdict is scoped to the exact reviewed artifact and {semanticCondition.gate_key === "plan_acceptance" ? "Plan Acceptance" : "Implementation Acceptance"}.</p>{/if}
+          {@const reviewCondition = semanticCondition(until)}
+          {#if reviewCondition}
+            <section class="semantic-condition" aria-label="Repeat until condition">
+              <span>Repeat until</span>
+              <strong>{acceptedConditionLabel(reviewCondition.output)}</strong>
+              <small>{reviewCondition.step.name} · {gateLabel(reviewCondition.output.review!.gate_key)}</small>
+            </section>
+          {:else}
+            <label for="condition-source">Repeat until</label>
+            <select id="condition-source" class="incomplete" value={refValue(until.condition.source)} on:change={(event) => { const source = parseRef(event.currentTarget.value); if (source) setSelectedNode({ ...until, condition: { ...until.condition, source } }); }}><option value="">Choose what this loop is waiting for…</option>{#each conditionCandidates(until) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select>
+            <p class="inline-condition-issue">Choose what this loop is waiting for. A Review Step must produce a Review Verdict before acceptance can be evaluated.</p>
+          {/if}
           <details class="inspector-advanced"><summary>Advanced condition</summary>
+          <label for="advanced-condition-source">Condition output</label><select id="advanced-condition-source" value={refValue(until.condition.source)} on:change={(event) => { const source = parseRef(event.currentTarget.value); if (source) setSelectedNode({ ...until, condition: { ...until.condition, source } }); }}><option value="">Choose a produced output…</option>{#each conditionCandidates(until) as candidate}<option value={refValue(candidate.ref)}>{candidate.label}</option>{/each}</select>
           <label for="condition-field">Field</label><input id="condition-field" value={until.condition.field} on:input={(event) => setSelectedNode({ ...until, condition: { ...until.condition, field: event.currentTarget.value } })} />
           <label for="condition-value-type">Value type</label><select id="condition-value-type" value={conditionValueType(until.condition.value)} on:change={(event) => setSelectedNode({ ...until, condition: { ...until.condition, value: conditionValueForType(event.currentTarget.value) } })}><option value="string">Text</option><option value="number">Number</option><option value="boolean">True / false</option><option value="null">No value</option></select>
           <label for="condition-value">Accepted value</label>{#if typeof until.condition.value === "boolean"}<select id="condition-value" value={String(until.condition.value)} on:change={(event) => setSelectedNode({ ...until, condition: { ...until.condition, value: event.currentTarget.value === "true" } })}><option value="true">True</option><option value="false">False</option></select>{:else if until.condition.value === null}<input id="condition-value" value="No value" readonly />{:else}<input id="condition-value" type={typeof until.condition.value === "number" ? "number" : "text"} value={until.condition.value} on:input={(event) => setSelectedNode({ ...until, condition: { ...until.condition, value: typeof until.condition.value === "number" ? Number(event.currentTarget.value) : event.currentTarget.value } })} />{/if}</details>
@@ -1017,5 +1163,5 @@ function humanizeKey(value: string): string {
 
   {#if selectedTactic}<dialog bind:this={archiveDialog} on:cancel|preventDefault={closeArchive} aria-labelledby="archive-tactic-title"><div class="dialog-card"><span class="dialog-icon" aria-hidden="true">!</span><h2 id="archive-tactic-title">Archive {selectedTactic.name}?</h2><p>Existing Run history is unaffected.</p><p>{usage.quests || usage.tactics ? `This definition is still referenced by ${usage.quests} active ${usage.quests === 1 ? "Quest" : "Quests"} and ${usage.tactics} active ${usage.tactics === 1 ? "Tactic" : "Tactics"}. Those references may need to be updated before future Runs can launch.` : "It will no longer be available for new reusable selections."}</p><div class="action-row"><button class="secondary" bind:this={archiveCancel} type="button" on:click={closeArchive}>Cancel</button><button class="destructive" type="button" disabled={busy} on:click={confirmArchive}>{busy ? "Archiving…" : "Archive Tactic"}</button></div></div></dialog>{/if}
   <dialog bind:this={removeDialog} on:cancel|preventDefault={closeRemove} aria-labelledby="remove-node-title"><div class="dialog-card"><span class="dialog-icon" aria-hidden="true">!</span><h2 id="remove-node-title">Remove {pendingRemoval?.name ?? "item"}?</h2>{#if (pendingRemoval?.count ?? 0) > 1}<p>This also removes {pendingRemoval!.count - 1} nested {(pendingRemoval!.count - 1) === 1 ? "item" : "items"}.</p>{/if}{#if pendingRemoval?.references.length}<p>The removal will leave {pendingRemoval.references.length === 1 ? "this reference" : "these references"} incomplete: {pendingRemoval.references.join(", ")}.</p>{/if}<p>The draft will remain open so validation can guide repairs.</p><div class="action-row"><button class="secondary" bind:this={removeCancel} type="button" on:click={closeRemove}>Keep item</button><button class="destructive" type="button" on:click={performRemoval}>Remove subtree</button></div></div></dialog>
-  <dialog bind:this={dirtyDialog} on:cancel|preventDefault={keepEditing} aria-labelledby="dirty-tactic-title"><div class="dialog-card"><span class="dialog-icon amber" aria-hidden="true">✎</span><h2 id="dirty-tactic-title">Save your Tactic changes?</h2><p>You have unsaved semantic-flow changes. Save them before leaving, keep editing, or discard this complete draft.</p><div class="dirty-actions"><button class="secondary" bind:this={dirtyKeep} type="button" on:click={keepEditing}>Keep Editing</button><button class="secondary" type="button" on:click={discardAndContinue}>Discard</button><button class="primary" type="button" disabled={busy} on:click={saveAndContinue}>{busy ? "Saving…" : mode === "create" ? "Create Tactic" : "Save Changes"}</button></div></div></dialog>
+  <dialog bind:this={dirtyDialog} on:cancel|preventDefault={keepEditing} aria-labelledby="dirty-tactic-title"><div class="dialog-card"><span class="dialog-icon amber" aria-hidden="true">✎</span><h2 id="dirty-tactic-title">Save your Tactic changes?</h2><p>You have unsaved semantic-flow changes. Save them before leaving, keep editing, or discard this complete draft.</p>{#if validationIssues.length}<div class="dialog-validation"><strong>Can't save this Tactic yet</strong><ul>{#each validationIssues as issue}<li>{issue.message}</li>{/each}</ul></div>{/if}<div class="dirty-actions"><button class="secondary" bind:this={dirtyKeep} type="button" on:click={keepEditing}>Keep Editing</button><button class="secondary" type="button" on:click={discardAndContinue}>Discard</button><button class="primary" type="button" disabled={busy} on:click={saveAndContinue}>{busy ? "Saving…" : mode === "create" ? "Create Tactic" : "Save Changes"}</button></div></div></dialog>
 </aside>

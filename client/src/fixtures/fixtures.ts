@@ -1744,7 +1744,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
     }),
     consumes: [
       {
-        name: "plan",
+        name: "current_plan",
         kind: "quest_plan",
         source: { producer: "plan", output: "plan" },
         required: true,
@@ -1754,7 +1754,7 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
       {
         name: "verdict",
         kind: "review_verdict",
-        review: { gate_key: "plan_acceptance", subject_input: "plan" },
+        review: { gate_key: "plan_acceptance", subject_input: "current_plan" },
       },
     ],
   };
@@ -1764,9 +1764,14 @@ function createWarRoomFixture(name: FixtureName): ClientFixture {
       produces: ["plan"],
     }),
     consumes: [
-      { name: "plan", kind: "quest_plan", source: null, required: true },
       {
-        name: "verdict",
+        name: "current_plan",
+        kind: "quest_plan",
+        source: null,
+        required: true,
+      },
+      {
+        name: "review_feedback",
         kind: "review_verdict",
         source: { producer: "review-plan", output: "verdict" },
         required: true,

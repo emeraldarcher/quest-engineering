@@ -199,28 +199,54 @@ defmodule QuestEngineering.Core.TacticResolverTest do
     assert handed_off.producer_occurrence_id == accepted_plan.producer_occurrence_id
   end
 
-  test "accepted-subject root export resolves to the exact accepted immutable artifact" do
+  test "accepted-subject root export resolves v1, v2, or v3 to the exact accepted immutable artifact" do
     definition = plan_review("planning-id")
 
     assert {:ok, resolution} =
              TacticResolver.resolve(TacticSource.definition(definition.id), catalog([definition]))
 
     assert {:ok, plan} = Compiler.compile(resolution)
-    {:ok, run, [planning]} = Runtime.start(plan, "planning-export")
 
-    {:ok, run, [review]} =
-      Runtime.transition(run, Runtime.completed(planning, %{"plan" => "# Accepted"}))
+    for rejection_count <- 0..2 do
+      {:ok, run, [planning]} = Runtime.start(plan, "planning-export-#{rejection_count}")
 
-    subject_id = review.inputs["plan"].id
+      {:ok, run, [review]} =
+        Runtime.transition(run, Runtime.completed(planning, %{"plan" => "# Plan v1"}))
 
-    {:ok, run, []} =
-      Runtime.transition(
-        run,
-        Runtime.completed(review, %{"verdict" => %{"status" => "accepted"}})
-      )
+      {run, review} =
+        List.duplicate(:reject, rejection_count)
+        |> Enum.with_index(2)
+        |> Enum.reduce({run, review}, fn {_reject, version}, {current_run, current_review} ->
+          {:ok, current_run, [revise]} =
+            Runtime.transition(
+              current_run,
+              Runtime.completed(current_review, %{"verdict" => %{"status" => "rejected"}})
+            )
 
-    assert run.tactic_output_artifact_ids == %{"accepted_plan" => subject_id}
-    assert run.artifacts[subject_id].content_hash == review.inputs["plan"].content_hash
+          {:ok, current_run, [next_review]} =
+            Runtime.transition(
+              current_run,
+              Runtime.completed(revise, %{"plan" => "# Plan v#{version}"})
+            )
+
+          {current_run, next_review}
+        end)
+
+      subject_id = review.inputs["plan"].id
+      subject_hash = review.inputs["plan"].content_hash
+
+      {:ok, run, []} =
+        Runtime.transition(
+          run,
+          Runtime.completed(review, %{"verdict" => %{"status" => "accepted"}})
+        )
+
+      assert run.tactic_output_artifact_ids == %{"accepted_plan" => subject_id}
+      assert run.artifacts[subject_id].content_hash == subject_hash
+
+      assert run.artifacts[subject_id].value["content"] ==
+               "# Plan v#{rejection_count + 1}"
+    end
   end
 
   test "standalone Implement & Review omits its optional Quest Plan without a synthetic artifact" do

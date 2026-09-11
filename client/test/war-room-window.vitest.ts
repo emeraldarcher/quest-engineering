@@ -93,7 +93,7 @@ test("explicit artifact sources remain distinct from inferred bindings", async (
 test("ambiguous artifacts offer only authoritative server-projected candidates", async () => {
   setup("war-room-ambiguous", "ambiguous");
   const source = (await screen.findByLabelText(
-    "Source for change_set",
+    /Source for .*Change Set/,
   )) as HTMLSelectElement;
   expect(Array.from(source.options).map((option) => option.value)).toEqual([
     "",
@@ -101,6 +101,12 @@ test("ambiguous artifacts offer only authoritative server-projected candidates",
     "frontend::change_set",
   ]);
   expect(screen.getByText(/more than one possible producer/)).toBeTruthy();
+  expect(
+    screen.getAllByText(/has multiple compatible sources\. Choose one/).length,
+  ).toBeGreaterThan(0);
+  expect(source.selectedOptions[0]?.textContent).toContain(
+    "multiple compatible values",
+  );
 });
 
 test("preview errors retain the draft and use a safe generic fallback when details are absent", async () => {
@@ -172,6 +178,85 @@ test("New Tactic generates an immutable key and persists one complete semantic b
   const payload = create.mock.calls[0]?.[0];
   expect(payload?.key).toBe("implement-review");
   expect(payload?.body).toMatchObject({ type: "sequence" });
+});
+
+test("authors a complete Plan & Review flow without opening Advanced", async () => {
+  const { store } = setup("war-room-empty");
+  const create = vi
+    .spyOn(store.api, "createTactic")
+    .mockImplementation(async (input) => ({
+      id: "created-plan-review",
+      ...input,
+      archived_at: null,
+    }));
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Create Tactic" }),
+  );
+  await fireEvent.input(screen.getByLabelText("Name"), {
+    target: { value: "Plan & Review" },
+  });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "+ Add first Step" }),
+  );
+  await fireEvent.input(screen.getByLabelText("Step name"), {
+    target: { value: "Plan" },
+  });
+  await fireEvent.input(screen.getByLabelText("Instruction"), {
+    target: { value: "Create a Quest Plan." },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "+ Output" }));
+  await fireEvent.change(screen.getByLabelText("Output type 1"), {
+    target: { value: "quest_plan" },
+  });
+  expect(
+    (screen.getByLabelText("Output name 1") as HTMLInputElement).value,
+  ).toBe("Plan");
+
+  await fireEvent.click(screen.getByText("+ Add", { selector: "summary" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Until Review and revise" }),
+  );
+  expect(screen.getAllByText("Quest Plan is accepted").length).toBeGreaterThan(
+    0,
+  );
+  expect(
+    (screen.getByLabelText("Maximum plan revisions") as HTMLInputElement).value,
+  ).toBe("2");
+
+  await fireEvent.click(screen.getByRole("button", { name: "Edit interface" }));
+  await fireEvent.click(screen.getByRole("button", { name: "+ Output" }));
+  await fireEvent.change(screen.getByLabelText("Output type 1"), {
+    target: { value: "quest_plan" },
+  });
+  expect(
+    (screen.getByLabelText("Output name 1") as HTMLInputElement).value,
+  ).toBe("Accepted Quest Plan");
+  expect(
+    (
+      screen.getByLabelText(
+        "Export source for Accepted Quest Plan",
+      ) as HTMLSelectElement
+    ).value,
+  ).toBe("plan_acceptance");
+  expect(
+    screen.queryByRole("region", { name: "Tactic validation" }),
+  ).toBeNull();
+
+  await fireEvent.click(screen.getByRole("button", { name: "Create Tactic" }));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  const payload = create.mock.calls[0]?.[0];
+  expect(payload?.interface.outputs[0]).toEqual({
+    key: "accepted_plan",
+    label: "Accepted Quest Plan",
+    kind: "quest_plan",
+    source: { type: "accepted_subject", gate_key: "plan_acceptance" },
+  });
+  expect(JSON.stringify(payload?.body)).toContain(
+    '"gate_key":"plan_acceptance","subject_input":"current_plan"',
+  );
+  expect(JSON.stringify(payload?.body)).toContain(
+    '"name":"review_feedback","kind":"review_verdict"',
+  );
 });
 
 test("Step inspector edits Class, instruction, artifacts, and stable Advanced identity", async () => {
@@ -441,7 +526,7 @@ test("interface summary opens a vertical friendly editor with advanced stable ke
     "Export source for Accepted Quest Plan",
   ) as HTMLSelectElement;
   expect(exportSource.selectedOptions[0]?.textContent).toContain(
-    "Plan Acceptance → Accepted Subject",
+    "Plan Acceptance → Accepted Quest Plan",
   );
   const card = outputName.closest<HTMLElement>(".port-card");
   if (!card) throw new Error("Expected output port card");
@@ -496,17 +581,15 @@ test("new interface ports generate keys and permit an incomplete export source",
     target: { value: "quest_plan" },
   });
   expect(
-    screen.getByText(
-      "Create a compatible Step output before exporting this port.",
-    ),
-  ).toBeTruthy();
+    screen.getAllByText("Accepted Quest Plan needs an export source.").length,
+  ).toBeGreaterThan(0);
   expect(
     (
       screen.getByLabelText(
         "Export source for Accepted Quest Plan",
       ) as HTMLSelectElement
     ).selectedOptions[0]?.textContent,
-  ).toContain("Export source not selected yet");
+  ).toContain("Choose an internal output");
 });
 
 test("an established optional input explains which Step uses it", async () => {
@@ -534,6 +617,358 @@ test("TacticUse inspector presents friendly optional binding and scoped output l
     screen.getByText("Accepted Change Set", { selector: ".use-output strong" }),
   ).toBeTruthy();
   expect(document.body.textContent).not.toContain("planning/plan");
+});
+
+test("Plan Review exposes visible type, exact subject, and Plan Acceptance without Advanced", async () => {
+  setup("war-room-plan-interface", "edit");
+  await screen.findByRole("button", { name: "Save Changes" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Step Review Plan/ }),
+  );
+
+  expect(
+    (screen.getByLabelText("Input name 1") as HTMLInputElement).value,
+  ).toBe("Current Quest Plan");
+  expect(
+    (screen.getByLabelText("Input type 1") as HTMLSelectElement).value,
+  ).toBe("quest_plan");
+  const source = screen.getByLabelText(
+    "Source for Current Quest Plan",
+  ) as HTMLSelectElement;
+  expect(source.selectedOptions[0]?.textContent).toContain(
+    "Current Quest Plan · Quest Plan",
+  );
+  expect((screen.getByLabelText("Reviews") as HTMLSelectElement).value).toBe(
+    "current_plan",
+  );
+  expect(
+    (screen.getByLabelText("Acceptance gate") as HTMLSelectElement).value,
+  ).toBe("plan_acceptance");
+  expect(screen.getByText("Verdict · Review Verdict")).toBeTruthy();
+  expect(
+    screen.queryByText("Custom artifact kind", { selector: "label" }),
+  ).toBeNull();
+});
+
+test("Implementation Review preserves its explicit Change Set contract", async () => {
+  setup("war-room-detail", "step");
+  await screen.findByRole("button", { name: "Save Changes" });
+  await fireEvent.click(screen.getByRole("button", { name: /Step Review/ }));
+  expect(
+    (screen.getByLabelText("Input type 1") as HTMLSelectElement).value,
+  ).toBe("change_set");
+  expect((screen.getByLabelText("Reviews") as HTMLSelectElement).value).toBe(
+    "change_set",
+  );
+  expect(
+    (screen.getByLabelText("Acceptance gate") as HTMLSelectElement).value,
+  ).toBe("implementation_acceptance");
+});
+
+test("Plan Until follows the explicit Review contract", async () => {
+  setup("war-room-plan-interface", "edit");
+  await screen.findByRole("button", { name: "Save Changes" });
+  await fireEvent.click(screen.getByRole("button", { name: /Repeat until/ }));
+  const condition = screen.getByRole("region", {
+    name: "Repeat until condition",
+  });
+  expect(condition.textContent).toContain("Quest Plan is accepted");
+  expect(condition.textContent).toContain("Review Plan · Plan Acceptance");
+  expect(document.body.textContent).not.toContain("Implementation is accepted");
+});
+
+test("Plan remediation shows current Plan and rejected Review as two named inputs", async () => {
+  setup("war-room-plan-interface", "edit");
+  await screen.findByRole("button", { name: "Save Changes" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Step Revise Plan/ }),
+  );
+
+  const names = screen.getAllByLabelText(/Input name/) as HTMLInputElement[];
+  expect(names.map((input) => input.value)).toEqual([
+    "Current Quest Plan",
+    "Review Feedback",
+  ]);
+  expect(
+    (screen.getByLabelText("Input type 1") as HTMLSelectElement).value,
+  ).toBe("quest_plan");
+  expect(
+    (screen.getByLabelText("Input type 2") as HTMLSelectElement).value,
+  ).toBe("review_verdict");
+  expect(
+    (
+      screen.getByLabelText(
+        "Source for Current Quest Plan",
+      ) as HTMLSelectElement
+    ).selectedOptions[0]?.textContent,
+  ).toContain("Automatic · Current Quest Plan");
+  expect(
+    (screen.getByLabelText("Source for Review Feedback") as HTMLSelectElement)
+      .selectedOptions[0]?.textContent,
+  ).toContain("Latest rejected Plan Review");
+  expect(
+    screen.getByText("Plan", { selector: ".artifact-card strong" }),
+  ).toBeTruthy();
+});
+
+test("Plan remediation save and reload preserves both inputs and its revised Plan output", async () => {
+  const { store, value } = setup("war-room-plan-interface", "edit");
+  const planning = value.product.tactics.find(
+    (tactic) => tactic.id === "war-tactic-plan",
+  );
+  if (!planning) throw new Error("Expected Plan & Review fixture");
+  const update = vi
+    .spyOn(store.api, "updateTactic")
+    .mockImplementation(async (_id, input) => ({ ...planning, ...input }));
+  await screen.findByRole("button", { name: "Save Changes" });
+  await fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+  await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+  const saved = update.mock.calls[0]?.[1].body as {
+    children: Array<{
+      otherwise?: { consumes: unknown[]; produces: unknown[] };
+    }>;
+  };
+  expect(saved.children[1]?.otherwise).toMatchObject({
+    consumes: [
+      { name: "current_plan", kind: "quest_plan", source: null },
+      {
+        name: "review_feedback",
+        kind: "review_verdict",
+        source: { producer: "review-plan", output: "verdict" },
+      },
+    ],
+    produces: [{ name: "plan", kind: "quest_plan" }],
+  });
+
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Edit Tactic" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Step Revise Plan/ }),
+  );
+  expect(screen.getAllByLabelText(/Input name/)).toHaveLength(2);
+  expect(
+    (screen.getByLabelText("Input type 2") as HTMLSelectElement).value,
+  ).toBe("review_verdict");
+});
+
+test("a concrete source infers an unset input type while incompatible authored types are explicit", async () => {
+  setup("war-room-plan-interface", "edit");
+  await screen.findByRole("button", { name: "Save Changes" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Step Revise Plan/ }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "+ Input" }));
+  const source = screen.getByLabelText(
+    "Source for New Input",
+  ) as HTMLSelectElement;
+  await fireEvent.change(source, {
+    target: { value: "review-plan::verdict" },
+  });
+  expect(
+    (screen.getByLabelText("Input type 3") as HTMLSelectElement).value,
+  ).toBe("review_verdict");
+
+  await fireEvent.change(screen.getByLabelText("Input type 3"), {
+    target: { value: "quest_plan" },
+  });
+  expect(
+    screen.getByText(/source produces Review Verdict, not Quest Plan/),
+  ).toBeTruthy();
+});
+
+test("invalid drafts explain every blocker during normal authoring and use the same dirty Save validation", async () => {
+  setup("war-room-empty");
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Create Tactic" }),
+  );
+  await fireEvent.input(screen.getByLabelText("Name"), {
+    target: { value: "Plan & Review" },
+  });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "+ Add first Step" }),
+  );
+  await fireEvent.input(screen.getByLabelText("Instruction"), {
+    target: { value: "Create the Plan." },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "+ Input" }));
+
+  expect(
+    screen.getByText("Choose what artifact this input expects."),
+  ).toBeTruthy();
+  expect(
+    within(screen.getByRole("region", { name: "Tactic validation" })).getByText(
+      "New Step → New Input needs an artifact type.",
+    ),
+  ).toBeTruthy();
+  const create = screen.getByRole("button", { name: "Create Tactic" });
+  expect((create as HTMLButtonElement).disabled).toBe(false);
+  await fireEvent.click(create);
+  expect(
+    screen.getByRole("region", { name: "Tactic validation" }),
+  ).toBeTruthy();
+
+  await fireEvent.click(screen.getByRole("button", { name: "Close War Room" }));
+  const dialog = screen.getByRole("dialog", {
+    name: "Save your Tactic changes?",
+  });
+  expect(within(dialog).getByText("Can't save this Tactic yet")).toBeTruthy();
+  expect(
+    within(dialog).getByText("New Step → New Input needs an artifact type."),
+  ).toBeTruthy();
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Keep Editing" }),
+  );
+  await fireEvent.change(screen.getByLabelText("Input type 1"), {
+    target: { value: "quest_plan" },
+  });
+  expect(
+    screen.queryAllByText("New Step → New Input needs an artifact type."),
+  ).toHaveLength(0);
+});
+
+test("a Review Verdict without a subject shows semantic inline guidance", async () => {
+  setup("war-room-empty");
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Create Tactic" }),
+  );
+  await fireEvent.input(screen.getByLabelText("Name"), {
+    target: { value: "Review Only" },
+  });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "+ Add first Step" }),
+  );
+  await fireEvent.input(screen.getByLabelText("Instruction"), {
+    target: { value: "Review the work." },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "+ Output" }));
+  await fireEvent.change(screen.getByLabelText("Output type 1"), {
+    target: { value: "review_verdict" },
+  });
+  expect(
+    screen.getAllByText("New Step needs an artifact to review.").length,
+  ).toBeGreaterThan(0);
+  expect(screen.getByLabelText("Reviews")).toBeTruthy();
+  expect(screen.getByLabelText("Acceptance gate")).toBeTruthy();
+});
+
+test("accepted and internal Tactic export modes are separate and explicit", async () => {
+  setup("war-room-plan-interface", "interface");
+  await screen.findByRole("heading", { name: "Tactic Interface" });
+  const mode = screen.getByLabelText(
+    "Export mode for Accepted Quest Plan",
+  ) as HTMLSelectElement;
+  expect(mode.value).toBe("accepted");
+  expect(
+    (
+      screen.getByLabelText(
+        "Export source for Accepted Quest Plan",
+      ) as HTMLSelectElement
+    ).selectedOptions[0]?.textContent,
+  ).toContain("Plan Acceptance → Accepted Quest Plan");
+  expect(screen.getByText(/exact artifact accepted at this gate/)).toBeTruthy();
+
+  await fireEvent.change(mode, { target: { value: "internal" } });
+  const internal = screen.getByLabelText(
+    "Export source for Accepted Quest Plan",
+  ) as HTMLSelectElement;
+  expect(
+    Array.from(internal.options).map((option) => option.textContent),
+  ).toEqual([
+    "Choose an internal output…",
+    "Plan → Quest Plan",
+    "Revise Plan → Updated Quest Plan",
+  ]);
+  expect(screen.getByText(/producer's artifact directly/)).toBeTruthy();
+});
+
+test("a new Quest Plan interface output defaults to the explicit accepted subject", async () => {
+  setup("war-room-plan-interface", "interface");
+  await screen.findByRole("heading", { name: "Tactic Interface" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Remove output Accepted Quest Plan" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "+ Output" }));
+  await fireEvent.change(screen.getByLabelText("Output type 1"), {
+    target: { value: "quest_plan" },
+  });
+  expect(
+    (screen.getByLabelText("Output name 1") as HTMLInputElement).value,
+  ).toBe("Accepted Quest Plan");
+  expect(
+    (
+      screen.getByLabelText(
+        "Export mode for Accepted Quest Plan",
+      ) as HTMLSelectElement
+    ).value,
+  ).toBe("accepted");
+  expect(
+    (
+      screen.getByLabelText(
+        "Export source for Accepted Quest Plan",
+      ) as HTMLSelectElement
+    ).value,
+  ).toBe("plan_acceptance");
+});
+
+test("Custom type reveals its ID only after Custom is chosen", async () => {
+  setup("war-room-empty");
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Create Tactic" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Edit interface" }));
+  await fireEvent.click(screen.getByRole("button", { name: "+ Input" }));
+  expect(screen.queryByLabelText("Custom input type 1")).toBeNull();
+  await fireEvent.change(screen.getByLabelText("Input type 1"), {
+    target: { value: "__custom__" },
+  });
+  const custom = screen.getByLabelText(
+    "Custom input type 1",
+  ) as HTMLInputElement;
+  expect(custom.value).toBe("custom_artifact");
+  await fireEvent.input(custom, { target: { value: "architecture_spec" } });
+  expect(custom.value).toBe("architecture_spec");
+});
+
+test("parent TacticUse saves and reloads only the accepted child boundary", async () => {
+  const { store, value } = setup("war-room-use", "use-delivery");
+  const composite = value.product.tactics.find(
+    (tactic) => tactic.id === "war-tactic-composed",
+  );
+  if (!composite) throw new Error("Expected composed fixture");
+  const update = vi
+    .spyOn(store.api, "updateTactic")
+    .mockImplementation(async (_id, input) => ({ ...composite, ...input }));
+  const binding = (await screen.findByLabelText(
+    "Binding for Quest Plan",
+  )) as HTMLSelectElement;
+  expect(
+    Array.from(binding.options).map((option) => option.textContent),
+  ).toEqual([
+    "Not connected · Optional",
+    "Plan & Review → Accepted Quest Plan",
+  ]);
+  await fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+  await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+  expect(JSON.stringify(update.mock.calls[0]?.[1].body)).toContain(
+    '"source":{"producer":"planning","output":"accepted_plan"}',
+  );
+  expect(JSON.stringify(update.mock.calls[0]?.[1].body)).not.toContain(
+    '"producer":"plan"',
+  );
+  expect(JSON.stringify(update.mock.calls[0]?.[1].body)).not.toContain(
+    '"producer":"revise-plan"',
+  );
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Edit Tactic" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Reuse tactic Implement & Review/ }),
+  );
+  expect(
+    (screen.getByLabelText("Binding for Quest Plan") as HTMLSelectElement)
+      .value,
+  ).toBe("planning::accepted_plan");
 });
 
 test("new TacticUse suggests its single compatible upstream source", async () => {
@@ -646,7 +1081,10 @@ test("referenced output removal warns and leaves actionable draft validation", a
   expect(
     (screen.getByRole("button", { name: "Save Changes" }) as HTMLButtonElement)
       .disabled,
-  ).toBe(true);
+  ).toBe(false);
+  expect(
+    screen.getByRole("region", { name: "Tactic validation" }),
+  ).toBeTruthy();
 });
 
 test("close and Tactic switching use shared Keep Editing, Discard, Save protection", async () => {
