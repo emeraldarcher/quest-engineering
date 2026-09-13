@@ -3,6 +3,7 @@ import type {
   ExecutionOption,
   Loadout,
   Reasoning,
+  ToolEnforcement,
   WorkspaceAccess,
 } from "../../api/contracts";
 import { isKnownCapability } from "./loadout-presentation";
@@ -10,10 +11,12 @@ import { isKnownCapability } from "./loadout-presentation";
 export interface LoadoutDraft {
   name: string;
   description: string;
+  harness: string;
   provider: string;
   model: string;
-  reasoning: Reasoning;
+  reasoning: Reasoning | null;
   tools: string[];
+  toolEnforcement: ToolEnforcement;
   workspaceAccess: WorkspaceAccess;
 }
 
@@ -21,10 +24,12 @@ export function emptyLoadoutDraft(): LoadoutDraft {
   return {
     name: "",
     description: "",
+    harness: "",
     provider: "",
     model: "",
     reasoning: "medium",
     tools: [],
+    toolEnforcement: "exact",
     workspaceAccess: "read_write",
   };
 }
@@ -33,10 +38,12 @@ export function draftFromLoadout(loadout: Loadout): LoadoutDraft {
   return {
     name: loadout.name,
     description: loadout.description,
+    harness: loadout.harness,
     provider: loadout.model.provider,
     model: loadout.model.model,
     reasoning: loadout.reasoning,
     tools: [...loadout.tools],
+    toolEnforcement: loadout.tool_enforcement,
     workspaceAccess: loadout.workspace_access,
   };
 }
@@ -47,9 +54,11 @@ export function loadoutInputFromDraft(
   return {
     name: draft.name.trim(),
     description: draft.description.trim(),
+    harness: draft.harness.trim(),
     model: { provider: draft.provider.trim(), model: draft.model.trim() },
     reasoning: draft.reasoning,
     tools: [...draft.tools],
+    tool_enforcement: draft.toolEnforcement,
     workspace_access: draft.workspaceAccess,
   };
 }
@@ -63,10 +72,15 @@ export function applyExecutionOption(
   );
   return {
     ...draft,
+    harness: option.harness,
     provider: option.model.provider,
     model: option.model.model,
-    reasoning: preferredReasoning(option.reasoning),
-    tools: unique([...option.tools, ...customCapabilities]),
+    reasoning: preferredReasoning(option),
+    tools:
+      option.tool_enforcement === "exact"
+        ? unique([...option.tools, ...customCapabilities])
+        : [...option.tools],
+    toolEnforcement: option.tool_enforcement,
     workspaceAccess: preferredAccess(option),
   };
 }
@@ -100,9 +114,11 @@ export function toggleKnownCapability(
   };
 }
 
-function preferredReasoning(values: Reasoning[]): Reasoning {
+function preferredReasoning(option: ExecutionOption): Reasoning | null {
+  if (option.reasoning_capability.kind === "unsupported") return null;
+  const values = option.reasoning_capability.values;
   if (values.includes("medium")) return "medium";
-  return values[0] ?? "medium";
+  return values[0] as Reasoning;
 }
 
 function preferredAccess(option: ExecutionOption): WorkspaceAccess {

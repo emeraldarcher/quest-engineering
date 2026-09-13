@@ -3,8 +3,8 @@ import { join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import { PiHarness } from "../src/harnesses/pi/adapter.ts";
 import type { ExecuteAction, JsonValue } from "../src/protocol/types.ts";
-import { PiHarness } from "../src/providers/pi/provider.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
 import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
@@ -249,7 +249,7 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
       : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 6,
+    protocol_version: 7,
     worker_id: config.workerId,
     execution: {
       identity: {
@@ -277,9 +277,11 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
         })),
       },
       configuration: {
+        harness_kind: "pi",
         model,
         reasoning: "medium",
         tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+        tool_enforcement: "exact",
       },
       logical_workspace: {
         workspace_id: "00000000-0000-4000-8000-000000000001",

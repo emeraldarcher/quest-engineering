@@ -261,9 +261,11 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
              Products.create_loadout(%{
                key: "coding-#{suffix}",
                name: "Coding",
+               harness: "fake",
                model: %ModelRef{provider: "fake", model: "test"},
-               reasoning: :medium,
+               reasoning: "medium",
                tools: ["workspace.filesystem"],
+               tool_enforcement: :exact,
                workspace_access: :read_write
              })
 

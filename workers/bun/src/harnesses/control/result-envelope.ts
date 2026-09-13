@@ -90,14 +90,14 @@ export async function collectStepResult(dispatch: {
       .sort();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      throw new Error("Pi settled without a structured step result.");
+      throw new Error("Harness settled without a structured step result.");
     throw error;
   }
   if (names.length !== 1)
     throw new Error(
       names.length === 0
-        ? "Pi settled without a structured step result."
-        : `Pi produced ${names.length} structured step results; exactly one is required.`,
+        ? "Harness settled without a structured step result."
+        : `Harness produced ${names.length} structured step results; exactly one is required.`,
     );
   const path = join(dispatch.resultDirectory, names[0] as string);
   const value = JSON.parse(await readFile(path, "utf8")) as unknown;

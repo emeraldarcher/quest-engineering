@@ -130,8 +130,10 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
     review = Map.fetch!(snapshot.loadouts, "review")
 
     %{
+      harness: coding.harness_kind,
       model: %ModelRef{provider: coding.model_provider, model: coding.model_name},
-      reasoning: reasoning_atom(coding.reasoning),
+      reasoning: coding.reasoning,
+      tool_enforcement: :exact,
       coding_tools: coding.tools,
       review_tools: review.tools
     }
@@ -159,10 +161,12 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
 
   defp option_order_key(option) do
     {
+      option.harness,
       option.model.provider,
       option.model.model,
-      Enum.sort(option.reasoning),
+      option.reasoning_capability,
       Enum.sort(option.tools),
+      option.tool_enforcement,
       option.workspaces
       |> Enum.map(&{&1.workspace_id, Enum.sort(&1.workspace_access)})
       |> Enum.sort()
@@ -172,27 +176,31 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   defp compatible_option?(option, workspace_id) do
     workspace = Enum.find(option.workspaces, &(&1.workspace_id == workspace_id))
 
-    option.available && Enum.any?(option.reasoning, &(&1 in ~w(low medium high))) && workspace &&
+    option.available && option.tool_enforcement == "exact" &&
+      enumerated_starter_reasoning?(option.reasoning_capability) && workspace &&
       "read_write" in workspace.workspace_access && "read_only" in workspace.workspace_access
   end
 
   defp configuration(option) do
-    known_reasoning = Enum.filter(option.reasoning, &(&1 in ~w(low medium high)))
+    known_reasoning =
+      Enum.filter(option.reasoning_capability.values, &(&1 in ~w(low medium high)))
 
-    reasoning =
-      if "medium" in known_reasoning, do: :medium, else: reasoning_atom(hd(known_reasoning))
+    reasoning = if "medium" in known_reasoning, do: "medium", else: hd(known_reasoning)
 
     %{
+      harness: option.harness,
       model: %ModelRef{provider: option.model.provider, model: option.model.model},
       reasoning: reasoning,
+      tool_enforcement: :exact,
       coding_tools: Enum.filter(option.tools, &(&1 in @coding_tools)),
       review_tools: Enum.filter(option.tools, &(&1 in @review_tools))
     }
   end
 
-  defp reasoning_atom("low"), do: :low
-  defp reasoning_atom("medium"), do: :medium
-  defp reasoning_atom("high"), do: :high
+  defp enumerated_starter_reasoning?(%{kind: "enumerated", values: values}),
+    do: Enum.any?(values, &(&1 in ~w(low medium high)))
+
+  defp enumerated_starter_reasoning?(_capability), do: false
 
   defp configuration_matches_existing?(configuration, snapshot) do
     Enum.all?(@loadout_keys, fn key ->
@@ -451,7 +459,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
         row.workspace_access == loadout_access(key)
 
     execution_matches =
-      row.reasoning in ~w(low medium high) && is_binary(row.model_provider) &&
+      is_binary(row.harness_kind) && row.reasoning in ~w(low medium high) &&
+        row.tool_enforcement == "exact" && is_binary(row.model_provider) &&
         is_binary(row.model_name)
 
     tools_match = Enum.all?(row.tools, &(&1 in loadout_tool_allowlist(key)))
@@ -471,8 +480,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   defp advertised_loadout?(key, row) do
     ExecutionOptions.list()
     |> Enum.filter(
-      &(Enum.any?(&1.reasoning, fn value -> value in ~w(low medium high) end) &&
-          &1.workspaces != [])
+      &(enumerated_starter_reasoning?(&1.reasoning_capability) &&
+          &1.tool_enforcement == "exact" && &1.workspaces != [])
     )
     |> Enum.map(&configuration/1)
     |> Enum.any?(&loadout_matches?(row, loadout_attributes(key, &1)))
@@ -488,8 +497,9 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
 
   defp same_execution_configuration?(left, right),
     do:
-      left.model_provider == right.model_provider && left.model_name == right.model_name &&
-        left.reasoning == right.reasoning
+      left.harness_kind == right.harness_kind &&
+        left.model_provider == right.model_provider && left.model_name == right.model_name &&
+        left.reasoning == right.reasoning && left.tool_enforcement == right.tool_enforcement
 
   defp class_matches?(row, attributes),
     do:
@@ -499,9 +509,11 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   defp loadout_matches?(row, attributes),
     do:
       row.name == attributes.name && row.description == attributes.description &&
+        row.harness_kind == attributes.harness &&
         row.model_provider == attributes.model.provider &&
-        row.model_name == attributes.model.model &&
-        row.reasoning == Atom.to_string(attributes.reasoning) && row.tools == attributes.tools &&
+        row.model_name == attributes.model.model && row.reasoning == attributes.reasoning &&
+        row.tools == attributes.tools &&
+        row.tool_enforcement == Atom.to_string(attributes.tool_enforcement) &&
         row.workspace_access == Atom.to_string(attributes.workspace_access)
 
   defp squad_matches?(row, members, builder_id, reviewer_id, coding_id, review_id),
@@ -546,9 +558,11 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
       key: key,
       name: loadout_name(key),
       description: loadout_description(key),
+      harness: configuration.harness,
       model: configuration.model,
       reasoning: configuration.reasoning,
       tools: configuration_tools(configuration, key),
+      tool_enforcement: configuration.tool_enforcement,
       workspace_access: if(key == "coding", do: :read_write, else: :read_only)
     }
 

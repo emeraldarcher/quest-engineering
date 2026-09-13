@@ -3,25 +3,25 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  HarnessCapabilities,
+  HarnessSessionState,
+  HumanAttention,
+  HumanInterventionLifecycle,
+} from "../harnesses/types.ts";
+import type {
   ExecuteAction,
   JsonValue,
   LocalDispatchState,
   ReconcileDispatch,
 } from "../protocol/types.ts";
-import type {
-  HarnessCapabilities,
-  HarnessSessionState,
-  HumanAttention,
-  HumanInterventionLifecycle,
-} from "../providers/types.ts";
 import type { NativeSessionRef } from "../session-host/types.ts";
 
-export interface ProviderLineage {
+export interface HarnessLineage {
   lineageId: string;
   logicalLineageId: string;
   configurationJson: string;
-  /** Legacy storage discriminator retained for backward compatibility. */
-  provider: "pi";
+  /** Native model-provider provenance; harness identity is separate. */
+  provider: string;
   harnessKind: string;
   sessionState: HarnessSessionState;
   capabilities: HarnessCapabilities;
@@ -76,7 +76,7 @@ interface LineageRow {
   logical_lineage_id: string;
   configuration_json: string;
   configuration_hash: string;
-  provider: "pi";
+  provider: string;
   harness_kind: string;
   session_state: HarnessSessionState;
   capabilities_json: string;
@@ -114,7 +114,9 @@ export class DispatchRegistry {
     databasePath: string,
     dataRoot: string,
     private readonly harnessKind = "pi",
-    private readonly harnessCapabilities: HarnessCapabilities = defaultHarnessCapabilities(),
+    private readonly harnessCapabilities:
+      | HarnessCapabilities
+      | ((kind: string) => HarnessCapabilities) = defaultHarnessCapabilities(),
   ) {
     mkdirSync(dataRoot, { recursive: true });
     this.databasePath = databasePath;
@@ -158,6 +160,8 @@ export class DispatchRegistry {
           const expectedConfiguration = physicalConfiguration(action);
           if (
             !retained ||
+            retained.harness_kind !==
+              action.execution.configuration.harness_kind ||
             retained.logical_lineage_id !==
               action.execution.context.logical_lineage_id ||
             retained.configuration_json !== expectedConfiguration ||
@@ -174,6 +178,12 @@ export class DispatchRegistry {
           const controlPath = this.lineageControlPath(lineageId);
           const configurationJson = physicalConfiguration(action);
           const createdAt = now();
+          const requestedHarness =
+            action.execution.configuration.harness_kind || this.harnessKind;
+          const requestedCapabilities =
+            typeof this.harnessCapabilities === "function"
+              ? this.harnessCapabilities(requestedHarness)
+              : this.harnessCapabilities;
           this.db
             .query(`INSERT INTO provider_lineages
           (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,created_at,updated_at)
@@ -183,10 +193,10 @@ export class DispatchRegistry {
               action.execution.context.logical_lineage_id,
               configurationJson,
               digest(configurationJson),
-              "pi",
-              this.harnessKind,
+              action.execution.configuration.model.provider,
+              requestedHarness,
               "starting",
-              JSON.stringify(this.harnessCapabilities),
+              JSON.stringify(requestedCapabilities),
               null,
               null,
               createdAt,
@@ -231,7 +241,7 @@ export class DispatchRegistry {
 
   adopt(input: {
     action: ExecuteAction;
-    lineage: ProviderLineage;
+    lineage: HarnessLineage;
     state: "accepted" | "running";
     resultNonce: string;
     resultDirectory: string;
@@ -345,7 +355,7 @@ export class DispatchRegistry {
     ).map(mapDispatch);
   }
 
-  resolveContinuation(action: ExecuteAction): ProviderLineage {
+  resolveContinuation(action: ExecuteAction): HarnessLineage {
     const logicalLineageId = action.execution.context.logical_lineage_id;
     const row = this.db
       .query("SELECT * FROM provider_lineages WHERE logical_lineage_id=?")
@@ -356,6 +366,7 @@ export class DispatchRegistry {
       );
     const expected = physicalConfiguration(action);
     if (
+      row.harness_kind !== action.execution.configuration.harness_kind ||
       row.configuration_json !== expected ||
       row.configuration_hash !== digest(expected)
     )
@@ -377,15 +388,15 @@ export class DispatchRegistry {
     return dispatch;
   }
 
-  getLineage(lineageId: string): ProviderLineage {
+  getLineage(lineageId: string): HarnessLineage {
     const row = this.db
       .query("SELECT * FROM provider_lineages WHERE lineage_id=?")
       .get(lineageId) as LineageRow | null;
-    if (!row) throw new Error(`Unknown provider lineage: ${lineageId}`);
+    if (!row) throw new Error(`Unknown harness lineage: ${lineageId}`);
     return mapLineage(row);
   }
 
-  listLineages(): ProviderLineage[] {
+  listLineages(): HarnessLineage[] {
     return (
       this.db
         .query("SELECT * FROM provider_lineages ORDER BY rowid")
@@ -399,7 +410,7 @@ export class DispatchRegistry {
         const lineage = this.getLineage(lineageId);
         if (lineage.activeActionId && lineage.activeActionId !== actionId) {
           throw new Error(
-            `Provider lineage ${lineageId} is occupied by ${lineage.activeActionId}.`,
+            `Harness lineage ${lineageId} is occupied by ${lineage.activeActionId}.`,
           );
         }
         this.db
@@ -440,13 +451,24 @@ export class DispatchRegistry {
       );
   }
 
+  recordNativeSession(
+    lineageId: string,
+    nativeSession: NativeSessionRef,
+  ): void {
+    this.db
+      .query(
+        "UPDATE provider_lineages SET native_session_json=?,last_activity_at=?,updated_at=? WHERE lineage_id=?",
+      )
+      .run(JSON.stringify(nativeSession), now(), now(), lineageId);
+  }
+
   updateSession(
     lineageId: string,
     state: HarnessSessionState,
     attention: HumanAttention | null,
     lastActivityAt = now(),
     intervention?: HumanInterventionLifecycle | null,
-  ): ProviderLineage {
+  ): HarnessLineage {
     this.db
       .query(
         "UPDATE provider_lineages SET session_state=?,attention_json=?,intervention_json=COALESCE(?,intervention_json),last_activity_at=?,updated_at=? WHERE lineage_id=?",
@@ -487,7 +509,7 @@ export class DispatchRegistry {
         const dispatch = this.get(actionId);
         if (!dispatch.lineageId)
           throw new Error(
-            `Completed dispatch ${actionId} has no provider lineage.`,
+            `Completed dispatch ${actionId} has no harness lineage.`,
           );
         if (dispatch.state === "failed")
           throw new Error(`Cannot complete ${actionId} from failed.`);
@@ -609,7 +631,7 @@ export class DispatchRegistry {
         logical_lineage_id TEXT NOT NULL UNIQUE,
         configuration_json TEXT NOT NULL,
         configuration_hash TEXT NOT NULL,
-        provider TEXT NOT NULL CHECK(provider='pi'),
+        provider TEXT NOT NULL,
         harness_kind TEXT NOT NULL DEFAULT 'pi',
         session_state TEXT NOT NULL DEFAULT 'starting',
         capabilities_json TEXT NOT NULL DEFAULT '{}',
@@ -689,7 +711,15 @@ export class DispatchRegistry {
       .query(
         "UPDATE provider_lineages SET harness_kind=COALESCE(NULLIF(harness_kind,''),'pi'),session_state=COALESCE(NULLIF(session_state,''),'starting'),capabilities_json=CASE WHEN capabilities_json='{}' THEN ? ELSE capabilities_json END,started_at=COALESCE(NULLIF(started_at,''),created_at,?),last_activity_at=COALESCE(NULLIF(last_activity_at,''),updated_at,?)",
       )
-      .run(JSON.stringify(this.harnessCapabilities), timestamp, timestamp);
+      .run(
+        JSON.stringify(
+          typeof this.harnessCapabilities === "function"
+            ? defaultHarnessCapabilities()
+            : this.harnessCapabilities,
+        ),
+        timestamp,
+        timestamp,
+      );
     const capabilityRows = this.db
       .query(
         "SELECT lineage_id,harness_kind,capabilities_json FROM provider_lineages",
@@ -716,9 +746,88 @@ export class DispatchRegistry {
         )
         .run(JSON.stringify(upgraded), row.lineage_id);
     }
-    this.db.exec(
-      "CREATE UNIQUE INDEX IF NOT EXISTS provider_lineages_logical_lineage ON provider_lineages(logical_lineage_id) WHERE logical_lineage_id IS NOT NULL",
-    );
+    this.removeLegacyPiProviderConstraint();
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS provider_lineages_logical_lineage ON provider_lineages(logical_lineage_id) WHERE logical_lineage_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS dispatches_occurrence_id ON dispatches(occurrence_id);
+      CREATE INDEX IF NOT EXISTS dispatches_attempt_id ON dispatches(attempt_id);
+      CREATE INDEX IF NOT EXISTS dispatches_run_occurrence ON dispatches(run_id,occurrence_id);
+      CREATE INDEX IF NOT EXISTS dispatches_state ON dispatches(state);
+    `);
+  }
+
+  private removeLegacyPiProviderConstraint(): void {
+    const row = this.db
+      .query(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='provider_lineages'",
+      )
+      .get() as { sql: string } | null;
+    if (!row?.sql.includes("CHECK(provider='pi')")) return;
+    this.db.exec(`
+      PRAGMA foreign_keys=OFF;
+      DROP INDEX IF EXISTS dispatches_occurrence_id;
+      DROP INDEX IF EXISTS dispatches_attempt_id;
+      DROP INDEX IF EXISTS dispatches_run_occurrence;
+      DROP INDEX IF EXISTS dispatches_state;
+      DROP INDEX IF EXISTS provider_lineages_logical_lineage;
+      BEGIN IMMEDIATE;
+      ALTER TABLE dispatches RENAME TO dispatches_pi_legacy;
+      ALTER TABLE provider_lineages RENAME TO provider_lineages_pi_legacy;
+      CREATE TABLE provider_lineages (
+        lineage_id TEXT PRIMARY KEY,
+        logical_lineage_id TEXT NOT NULL UNIQUE,
+        configuration_json TEXT NOT NULL,
+        configuration_hash TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        harness_kind TEXT NOT NULL,
+        session_state TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        attention_json TEXT,
+        intervention_json TEXT,
+        started_at TEXT NOT NULL,
+        last_activity_at TEXT NOT NULL,
+        result_control_path TEXT NOT NULL UNIQUE,
+        ownership_token TEXT NOT NULL UNIQUE,
+        active_action_id TEXT,
+        herdr_session TEXT,
+        workspace_id TEXT,
+        tab_id TEXT,
+        pane_id TEXT,
+        terminal_id TEXT,
+        agent_name TEXT,
+        native_session_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO provider_lineages
+        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
+      SELECT lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at
+      FROM provider_lineages_pi_legacy;
+      CREATE TABLE dispatches (
+        action_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        occurrence_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        semantic_step_key TEXT NOT NULL,
+        action_json TEXT NOT NULL,
+        action_hash TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('accepted','running','completed','failed','uncertain')),
+        lineage_id TEXT REFERENCES provider_lineages(lineage_id),
+        result_nonce TEXT NOT NULL,
+        result_directory TEXT NOT NULL,
+        outputs_json TEXT,
+        failure_json TEXT,
+        prompt_intent_at TEXT,
+        server_acknowledged_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO dispatches SELECT * FROM dispatches_pi_legacy;
+      DROP TABLE dispatches_pi_legacy;
+      DROP TABLE provider_lineages_pi_legacy;
+      COMMIT;
+      PRAGMA foreign_keys=ON;
+    `);
   }
 
   private ensureColumn(
@@ -751,7 +860,7 @@ function mapDispatch(row: DispatchRow): DispatchRecord {
     serverAcknowledgedAt: row.server_acknowledged_at,
   };
 }
-function mapLineage(row: LineageRow): ProviderLineage {
+function mapLineage(row: LineageRow): HarnessLineage {
   return {
     lineageId: row.lineage_id,
     logicalLineageId: row.logical_lineage_id,
@@ -785,12 +894,14 @@ function mapLineage(row: LineageRow): ProviderLineage {
       : null,
   };
 }
-function physicalConfiguration(action: ExecuteAction): string {
+export function physicalConfiguration(action: ExecuteAction): string {
   const configuration = action.execution.configuration;
   return canonicalJson({
+    harness_kind: configuration.harness_kind,
     model: configuration.model,
     reasoning: configuration.reasoning,
     tools: [...configuration.tools].sort(),
+    tool_enforcement: configuration.tool_enforcement,
     logical_workspace_id: action.execution.logical_workspace.workspace_id,
     workspace_binding_id:
       action.execution.execution_workspace.workspace_binding_id,
@@ -818,6 +929,11 @@ function now(): string {
 
 function defaultHarnessCapabilities(): HarnessCapabilities {
   return {
+    structuredResult: false,
+    continuation: true,
+    retainedSessionRecovery: true,
+    structuredAttention: false,
+    nativeBlocking: true,
     canAttachTerminal: true,
     canSendInput: true,
     canInterrupt: true,

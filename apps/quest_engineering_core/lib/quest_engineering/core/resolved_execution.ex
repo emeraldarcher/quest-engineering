@@ -107,14 +107,15 @@ defmodule QuestEngineering.Core.ResolvedExecution.Configuration do
   alias QuestEngineering.Core.Product.Loadout
   alias QuestEngineering.Core.Product.ModelRef
 
-  @enforce_keys [:model, :reasoning, :tools]
-  # Legacy fields remain decode-only for historical v1 executions.
-  defstruct [:model, :reasoning, :tools, :workspace_ref, :workspace_root, :workspace_access]
+  @enforce_keys [:harness_kind, :model, :reasoning, :tools, :tool_enforcement]
+  defstruct [:harness_kind, :model, :reasoning, :tools, :tool_enforcement]
 
   @type t :: %__MODULE__{
+          harness_kind: String.t(),
           model: ModelRef.t(),
           reasoning: Loadout.reasoning(),
-          tools: [String.t()]
+          tools: [String.t()],
+          tool_enforcement: Loadout.tool_enforcement()
         }
 end
 
@@ -213,9 +214,11 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
         acceptance_contract: action.acceptance_contract
       },
       configuration: %Configuration{
+        harness_kind: member.loadout.harness,
         model: member.loadout.model,
         reasoning: member.loadout.reasoning,
-        tools: member.loadout.tools
+        tools: member.loadout.tools,
+        tool_enforcement: member.loadout.tool_enforcement
       },
       logical_workspace: %LogicalWorkspace{
         workspace_id: snapshot.workspace.id,

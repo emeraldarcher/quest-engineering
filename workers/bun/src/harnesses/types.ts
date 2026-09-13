@@ -1,8 +1,9 @@
-import type { DispatchRecord, ProviderLineage } from "../dispatch/registry.ts";
+import type { DispatchRecord, HarnessLineage } from "../dispatch/registry.ts";
 import type {
   ExecuteAction,
   JsonValue,
   LocalDispatchState,
+  ReasoningCapability,
 } from "../protocol/types.ts";
 import type {
   HostedAgent,
@@ -10,7 +11,44 @@ import type {
   TerminalAttachmentDescriptor,
 } from "../session-host/types.ts";
 
-export type HarnessKind = "pi" | "fake" | (string & {});
+export type HarnessKind = "pi" | "antigravity" | "fake" | (string & {});
+export type HarnessIntegrationStrategy =
+  | "native_extension"
+  | "native_rpc"
+  | "hooks_plus_structured_tool"
+  | "structured_headless"
+  | "terminal_only";
+export type IntegrationStatusKind =
+  | "ready"
+  | "missing_dependency"
+  | "auth_required"
+  | "missing_control_bridge"
+  | "incompatible_version"
+  | "degraded"
+  | "unavailable";
+
+export interface HarnessModelCapability {
+  provider: string;
+  model: string;
+  displayName: string;
+  reasoningCapability:
+    | ReasoningCapability
+    | { kind: "unknown"; detail: string };
+}
+
+export interface HarnessDiscovery {
+  kind: HarnessKind;
+  displayName: string;
+  strategy: HarnessIntegrationStrategy;
+  integration: {
+    status: IntegrationStatusKind;
+    detail: string;
+    installed: boolean;
+    authenticated: boolean;
+  };
+  models: HarnessModelCapability[];
+  capabilities: HarnessCapabilities;
+}
 export type HarnessSessionState =
   | "starting"
   | "running"
@@ -81,6 +119,12 @@ export interface HumanInterventionLifecycle {
 }
 
 export interface HarnessCapabilities {
+  /** A harness without this capability cannot execute QE Attempts. */
+  structuredResult: boolean;
+  continuation: boolean;
+  retainedSessionRecovery: boolean;
+  structuredAttention: boolean;
+  nativeBlocking: boolean;
   canAttachTerminal: boolean;
   canSendInput: boolean;
   canInterrupt: boolean;
@@ -110,7 +154,7 @@ export type HarnessEvent =
   | { type: "output"; inspection: HarnessInspection };
 
 export interface HarnessPreparedExecution {
-  lineage: ProviderLineage;
+  lineage: HarnessLineage;
   ref: HostedExecutionRef;
   agent: HostedAgent;
 }
@@ -118,12 +162,14 @@ export interface HarnessPreparedExecution {
 export interface HarnessRecoveredExecution {
   found: boolean;
   agent?: HostedAgent;
+  /** Present when recovery created a new terminal/process incarnation. */
+  ref?: HostedExecutionRef;
   detail: string;
 }
 
 export interface HarnessAdoptionCandidate {
   action: ExecuteAction;
-  lineage: ProviderLineage;
+  lineage: HarnessLineage;
   state: Extract<LocalDispatchState, "accepted" | "running">;
   resultNonce: string;
   resultDirectory: string;
@@ -137,37 +183,44 @@ export interface HarnessAdoptionCandidate {
 export interface AgentHarness {
   readonly kind: HarnessKind;
   readonly displayName: string;
+  readonly integrationStrategy: HarnessIntegrationStrategy;
   readonly capabilities: HarnessCapabilities;
 
+  discover(): Promise<HarnessDiscovery>;
   start(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution>;
-  continue(
+  continue?(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution>;
+  /** Native readiness after interactive launch and before prompt intent. */
+  ready?(
+    dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+  ): Promise<void>;
   sendInputAndCollect(
     dispatch: DispatchRecord,
     execution: HarnessPreparedExecution,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>>;
-  interrupt(lineage: ProviderLineage): Promise<void>;
-  inspect(lineage: ProviderLineage): Promise<HarnessInspection>;
-  close(lineage: ProviderLineage): Promise<void>;
+  interrupt?(lineage: HarnessLineage): Promise<void>;
+  inspect(lineage: HarnessLineage): Promise<HarnessInspection>;
+  close(lineage: HarnessLineage): Promise<void>;
 
-  recover(lineage: ProviderLineage): Promise<HarnessRecoveredExecution>;
-  waitAndCollect(
+  recover?(lineage: HarnessLineage): Promise<HarnessRecoveredExecution>;
+  waitAndCollect?(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
     agent: HostedAgent,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>>;
   clearActiveMetadata(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<void>;
   discoverAdoptionCandidates(): Promise<HarnessAdoptionCandidate[]>;
-  attachment(lineage: ProviderLineage): TerminalAttachmentDescriptor;
+  attachment?(lineage: HarnessLineage): TerminalAttachmentDescriptor;
   disconnect(): void;
 }

@@ -3,8 +3,8 @@ import { join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import { PiHarness } from "../src/harnesses/pi/adapter.ts";
 import type { ExecuteAction } from "../src/protocol/types.ts";
-import { PiHarness } from "../src/providers/pi/provider.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
 import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
@@ -137,7 +137,7 @@ const instruction =
   'Use bash to run "sleep 20" first. After it finishes, create restart-proof.txt containing exactly "same Pi survived Worker restart" followed by a newline. Produce change_set describing the file.';
 const action: ExecuteAction = {
   type: "execute_action",
-  protocol_version: 6,
+  protocol_version: 7,
   worker_id: config.workerId,
   execution: {
     identity: {
@@ -162,9 +162,11 @@ const action: ExecuteAction = {
       declared_outputs: [{ name: "change_set", kind: "change_set" }],
     },
     configuration: {
+      harness_kind: "pi",
       model,
       reasoning: "medium",
       tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      tool_enforcement: "exact",
     },
     logical_workspace: {
       workspace_id: "00000000-0000-4000-8000-000000000001",

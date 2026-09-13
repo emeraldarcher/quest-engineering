@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
-import { FakeHarness } from "../src/providers/fake/provider.ts";
-import type { HarnessEvent } from "../src/providers/types.ts";
+import { FakeHarness } from "../src/harnesses/fake/adapter.ts";
+import type { HarnessEvent } from "../src/harnesses/types.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];

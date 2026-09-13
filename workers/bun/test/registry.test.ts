@@ -70,6 +70,14 @@ describe("durable dispatch registry", () => {
       capabilities: { canResume: true },
     });
     registry.close();
+    const migrated = new Database(database);
+    const schema = migrated
+      .query(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='provider_lineages'",
+      )
+      .get() as { sql: string };
+    expect(schema.sql).not.toContain("CHECK(provider='pi')");
+    migrated.close();
   });
 
   test("durably accepts one Action ID and deduplicates identical delivery", async () => {
@@ -160,6 +168,27 @@ describe("durable dispatch registry", () => {
     registry.close();
   });
 
+  test("physical continuation rejects a cross-harness context", async () => {
+    const { root, database } = await fixture();
+    const registry = new DispatchRegistry(database, root);
+    const first = registry.accept(action()).dispatch;
+    const lineageId = first.lineageId as string;
+    registry.occupy(lineageId, first.action.action_id);
+    registry.complete(first.action.action_id, { change_set: {} });
+    const continued = action({
+      action_id: "continued-other-harness",
+      occurrence_id: "continued-other-occurrence",
+      attempt_id: "continued-other-attempt",
+      context_requirement: { selector: "continue_from", value: null },
+      context_lineage_occurrence_id: first.action.occurrence_id,
+    });
+    continued.execution.configuration.harness_kind = "antigravity";
+    expect(() => registry.resolveContinuation(continued)).toThrow(
+      "Continuation configuration differs",
+    );
+    registry.close();
+  });
+
   test("harness session identity and attention survive Worker restart", async () => {
     const { root, database } = await fixture();
     const registry = new DispatchRegistry(database, root);
@@ -184,7 +213,7 @@ describe("durable dispatch registry", () => {
       lineageId,
       sessionState: "waiting_for_human",
       attention,
-      harnessKind: "pi",
+      harnessKind: "fake",
     });
     expect(restarted.get(dispatch.action.action_id).lineageId).toBe(lineageId);
     restarted.close();

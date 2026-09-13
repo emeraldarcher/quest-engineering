@@ -37,7 +37,7 @@ defmodule QuestEngineering.Server.ExecutionSessionStoreTest do
         "can_observe_structured_events" => true
       },
       terminal: nil,
-      provider_session_id: nil,
+      native_session_id: nil,
       attention: nil,
       started_at: now,
       last_activity_at: now

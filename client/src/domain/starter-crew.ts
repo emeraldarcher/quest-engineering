@@ -28,7 +28,9 @@ export function supportsStarter(
   );
   return Boolean(
     option.available &&
-      option.reasoning.length > 0 &&
+      option.tool_enforcement === "exact" &&
+      option.reasoning_capability.kind === "enumerated" &&
+      option.reasoning_capability.values.length > 0 &&
       workspace?.workspace_access.includes("read_write") &&
       workspace.workspace_access.includes("read_only"),
   );

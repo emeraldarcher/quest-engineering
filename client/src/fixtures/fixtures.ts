@@ -154,9 +154,11 @@ const loadout: Loadout = {
   key: "coding",
   name: "Coding Tools",
   description: "A full implementation environment for Product changes.",
+  harness: "pi",
   model: { provider: "fixture", model: "town-model" },
   reasoning: "high",
   tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+  tool_enforcement: "exact",
   workspace_access: "read_write",
   archived_at: null,
 };
@@ -176,6 +178,7 @@ const customLoadout: Loadout = {
   key: "experimental",
   name: "Experimental Bench",
   description: "Custom equipment for specialist Product work.",
+  harness: "pi",
   model: { provider: "acme-labs", model: "experimental-model-x" },
   tools: ["workspace.filesystem", "acme.special-tool"],
 };
@@ -373,6 +376,7 @@ function runAttempt(
     output_produced: outputs.length > 0,
     resolution: options.resolution ?? null,
     retry_of_attempt_id: options.retryOf ?? null,
+    execution: null,
   };
 }
 
@@ -1469,9 +1473,11 @@ function createStarterFixture(name: FixtureName): ClientFixture {
     key: "coding",
     name: "Coding",
     description: "Writable engineering capabilities.",
+    harness: "pi",
     model: { provider: "fixture", model: "starter-model" },
     reasoning: "medium",
     tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+    tool_enforcement: "exact",
     workspace_access: "read_write",
     archived_at: null,
   };
@@ -1480,9 +1486,11 @@ function createStarterFixture(name: FixtureName): ClientFixture {
     key: "review",
     name: "Review",
     description: "Read-only review capabilities.",
+    harness: "pi",
     model: coding.model,
     reasoning: coding.reasoning,
     tools: ["workspace.filesystem", "workspace.search"],
+    tool_enforcement: "exact",
     workspace_access: "read_only",
     archived_at: null,
   };
@@ -1623,9 +1631,14 @@ function createStarterFixture(name: FixtureName): ClientFixture {
         hasProject && projectState === "ready"
           ? [
               {
-                model: coding.model,
-                reasoning: ["low", "medium"],
+                harness: coding.harness,
+                model: { ...coding.model, display_name: "Fixture model" },
+                reasoning_capability: {
+                  kind: "enumerated",
+                  values: ["low", "medium"],
+                },
                 tools: coding.tools,
+                tool_enforcement: "exact",
                 workspaces: [
                   {
                     workspace_id: starterProject.id,
@@ -2234,9 +2247,14 @@ function createTownHudFixture(name: FixtureName): ClientFixture {
       ],
       executionOptions: [
         {
-          model: loadout.model,
-          reasoning: ["medium"],
+          harness: loadout.harness,
+          model: { ...loadout.model, display_name: "Fixture model" },
+          reasoning_capability: {
+            kind: "enumerated",
+            values: ["medium"],
+          },
           tools: loadout.tools,
+          tool_enforcement: "exact",
           workspaces: [
             { workspace_id: workspace.id, workspace_access: ["read_write"] },
           ],
@@ -2430,9 +2448,14 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
       ],
       executionOptions: [
         {
-          model: loadout.model,
-          reasoning: ["medium"],
+          harness: loadout.harness,
+          model: { ...loadout.model, display_name: "Fixture model" },
+          reasoning_capability: {
+            kind: "enumerated",
+            values: ["medium"],
+          },
           tools: loadout.tools,
+          tool_enforcement: "exact",
           workspaces: [
             { workspace_id: workspace.id, workspace_access: ["read_write"] },
           ],

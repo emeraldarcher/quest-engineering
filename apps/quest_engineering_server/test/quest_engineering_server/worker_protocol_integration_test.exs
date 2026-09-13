@@ -276,9 +276,11 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
       Products.create_loadout(%{
         key: "pressure-#{suffix}",
         name: "Pressure",
+        harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
-        reasoning: :medium,
+        reasoning: "medium",
         tools: ["workspace.filesystem"],
+        tool_enforcement: :exact,
         workspace_access: :read_write
       })
 
@@ -397,9 +399,11 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
       Products.create_loadout(%{
         key: "loadout-#{suffix}",
         name: "Fake",
+        harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
-        reasoning: :medium,
+        reasoning: "medium",
         tools: ["workspace.filesystem"],
+        tool_enforcement: :exact,
         workspace_access: :read_write
       })
 
@@ -448,10 +452,20 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
       "tags" => ["fake"],
       "executors" => [
         %{
-          "adapter" => "fake",
-          "models" => [%{"provider" => "fake", "model" => "test"}],
-          "reasoning" => ["low", "medium", "high"],
+          "harness_kind" => "fake",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "test",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "medium", "high"]
+              }
+            }
+          ],
           "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{
               "ref" => "workspace:protocol",

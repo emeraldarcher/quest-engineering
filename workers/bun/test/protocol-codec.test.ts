@@ -5,7 +5,7 @@ import {
 } from "../src/protocol/codec.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v6 ResolvedExecution codec", () => {
+describe("Worker Protocol v7 ResolvedExecution codec", () => {
   test("requires and preserves separated semantic instructions", () => {
     const input = action({
       instruction: "Inspect inputs.\nProduce the result.",
@@ -97,6 +97,18 @@ describe("Worker Protocol v6 ResolvedExecution codec", () => {
       subject_kind: "quest_plan",
       subject_artifact_id: "plan-v2",
     });
+  });
+
+  test("preserves unsupported reasoning and explicit tool enforcement", () => {
+    const input = action();
+    input.execution.configuration.reasoning = null;
+    input.execution.configuration.tool_enforcement = "native_permissions";
+    const decoded = decodeExecuteAction(input, input.worker_id);
+
+    expect(decoded.execution.configuration.reasoning).toBeNull();
+    expect(decoded.execution.configuration.tool_enforcement).toBe(
+      "native_permissions",
+    );
   });
 
   test("rejects protocol v2", () => {

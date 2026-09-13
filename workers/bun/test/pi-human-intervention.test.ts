@@ -16,14 +16,23 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import humanAssistanceExtension from "../src/providers/pi/human-assistance-extension.ts";
-import { writeControlAtomic } from "../src/providers/pi/result-envelope.ts";
+import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import {
+  controlDescriptorPath,
+  HarnessControlAuthority,
+} from "../src/harnesses/control/authority.ts";
+import { HARNESS_CONTROL_PATH_ENV } from "../src/harnesses/control/descriptor.ts";
+import { writeControlAtomic } from "../src/harnesses/control/result-envelope.ts";
+import { HarnessControlServer } from "../src/harnesses/control/server.ts";
+import humanAssistanceExtension from "../src/harnesses/pi/human-assistance-extension.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];
 const originalResultPath = process.env.QE_RESULT_CONTROL_PATH;
 const originalAttentionPath = process.env.QE_ATTENTION_CONTROL_PATH;
 const originalRecoveryPath = process.env.QE_RECOVERY_CONTROL_PATH;
+const originalHarnessControlPath = process.env[HARNESS_CONTROL_PATH_ENV];
+const controlCleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   if (originalResultPath === undefined)
@@ -35,6 +44,10 @@ afterEach(async () => {
   if (originalRecoveryPath === undefined)
     delete process.env.QE_RECOVERY_CONTROL_PATH;
   else process.env.QE_RECOVERY_CONTROL_PATH = originalRecoveryPath;
+  if (originalHarnessControlPath === undefined)
+    delete process.env[HARNESS_CONTROL_PATH_ENV];
+  else process.env[HARNESS_CONTROL_PATH_ENV] = originalHarnessControlPath;
+  await Promise.all(controlCleanups.splice(0).map((cleanup) => cleanup()));
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
@@ -62,6 +75,7 @@ test.serial(
     process.env.QE_RESULT_CONTROL_PATH = resultControlPath;
     process.env.QE_ATTENTION_CONTROL_PATH = attentionControlPath;
     process.env.QE_RECOVERY_CONTROL_PATH = join(root, "recovery-control.json");
+    const control = await controlFixture(root, executeAction);
 
     const faux = fauxProvider({
       api: `qe-yield-${crypto.randomUUID()}`,
@@ -134,30 +148,12 @@ test.serial(
     );
     wrong.session.dispose();
 
-    const staleAction = action({
-      action_id: "action-stale",
-      attempt_id: "attempt-stale",
-    });
-    await writeControlAtomic(resultControlPath, {
-      protocolVersion: 1,
-      workerId: staleAction.worker_id,
-      lineageId: "lineage-same",
-      action: staleAction,
-      nonce: "stale-nonce",
-      resultDirectory,
-    });
+    control.authority.invalidate(control.lineage.lineageId);
     await first.session.prompt("/qe-resume");
     expect((await attentionRecord(attentionControlPath)).state).toBe(
       "requested",
     );
-    await writeControlAtomic(resultControlPath, {
-      protocolVersion: 1,
-      workerId: executeAction.worker_id,
-      lineageId: "lineage-same",
-      action: executeAction,
-      nonce: "result-nonce",
-      resultDirectory,
-    });
+    await control.authority.bind(control.dispatch, control.lineage);
 
     // These are ordinary user prompts, not extension input/editor dialogs.
     await first.session.prompt("Why did you stop?");
@@ -252,6 +248,31 @@ test.serial(
     modelRuntime.unregisterProvider(faux.provider.id);
   },
 );
+
+async function controlFixture(
+  root: string,
+  executeAction: ReturnType<typeof action>,
+) {
+  const registry = new DispatchRegistry(
+    join(root, "control.sqlite"),
+    join(root, "control"),
+    "fake",
+  );
+  const dispatch = registry.accept(executeAction).dispatch;
+  if (!dispatch.lineageId) throw new Error("Control fixture has no lineage.");
+  registry.occupy(dispatch.lineageId, executeAction.action_id);
+  const lineage = registry.getLineage(dispatch.lineageId);
+  const authority = new HarnessControlAuthority(registry);
+  const server = new HarnessControlServer(authority);
+  await server.start();
+  await authority.bind(dispatch, lineage);
+  process.env[HARNESS_CONTROL_PATH_ENV] = controlDescriptorPath(lineage);
+  controlCleanups.push(async () => {
+    await server.stop();
+    registry.close();
+  });
+  return { registry, dispatch, lineage, authority, server };
+}
 
 async function sessionFixture(
   root: string,

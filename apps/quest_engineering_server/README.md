@@ -1,6 +1,6 @@
 # Quest Engineering Server — Reusable Tactic Composition v0.9
 
-The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding path-free launch snapshots to the pure Core Runtime and Worker Protocol v6.
+The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding path-free launch snapshots to the pure Core Runtime and Worker Protocol v7.
 
 ```text
 Quest + Squad + Classes + Loadouts
@@ -9,7 +9,7 @@ quest_launches + runtime_runs + ordered runtime_outbox
               ↓ atomic scheduling
 Member binding + logical context binding + Worker slot
               ↓
-ResolvedExecution → Worker Protocol v6
+ResolvedExecution → Worker Protocol v7
 ```
 
 A Worker remains infrastructure. It is not a Squad Member, Class, Loadout, semantic performer, or logical context.
@@ -48,13 +48,13 @@ One transaction acquires all of:
 
 If any temporary resource is unavailable, that candidate writes nothing. Partial unique indexes enforce one active logical Member `(squad_id, member_key)` across all Runs, one active `(run_id, logical_lineage_id)`, and one nonterminal `(worker_id, worker_slot)`. The frozen launch snapshot supplies `squad_id`; mutable current Squad membership is not consulted during acquisition.
 
-`class(key)` selects by launch-snapshot roster order. `same_as` resolves only through the exact source occurrence binding. Logical `continue_from` similarly resolves only through the exact source occurrence context binding. Pi continuation is additionally routed to the Worker owning the source physical lineage.
+`class(key)` selects by launch-snapshot roster order. `same_as` resolves only through the exact source occurrence binding. Logical `continue_from` similarly resolves only through the exact source occurrence context binding. Physical continuation is routed to the Worker owning the source lineage and is rejected across harness kinds.
 
 ## Worker compatibility
 
-`Loadout.tools` is an open namespace of well-formed Quest Engineering capability identifiers. Product validation does not depend on current adapters. A Worker is compatible when at least one advertised executor satisfies the exact model provider/name, reasoning, QE capability set, workspace reference/root, and access level. The server does not require `adapter == "pi"`, and Product has no executor field.
+A Loadout freezes `harness`, provider-qualified model, reasoning/effort, QE tools, and workspace permission; behavioral instructions remain exclusively on Class and task instructions on Step. A Worker is compatible only when one live harness-scoped catalog satisfies every frozen dimension exactly. Harness/model fallback is forbidden, while unavailable Product configurations remain persisted and visible.
 
-The initial Pi adapter advertises:
+Pi and Antigravity advertise:
 
 - `workspace.filesystem`
 - `workspace.search`
@@ -62,9 +62,9 @@ The initial Pi adapter advertises:
 
 Unknown/custom capabilities are valid Product data but cause `waiting_for_worker` until an executor advertises them.
 
-## Worker Protocol v6
+## Worker Protocol v7
 
-Only protocol version 3 is accepted. `execute_action` carries a provider-neutral immutable `ResolvedExecution` with separate identity, performer, work, configuration, and logical context sections. It carries no unresolved performer/context requirement and no Pi/Herdr lineage ID.
+Only protocol version 7 is accepted. `execute_action` carries a provider-neutral immutable `ResolvedExecution` with separate identity, performer, work, configuration, and logical context sections. It carries no unresolved performer/context requirement and no Pi/Herdr lineage ID.
 
 Dispatch states are:
 
@@ -88,4 +88,4 @@ PostgreSQL reconstructs launch, binding, occupancy, and Worker-slot state after 
 
 ## Live execution sessions
 
-Worker Protocol v6 reconciles Product-safe harness session and HumanAttention state under the existing connection-generation fence. PostgreSQL links each dispatch usage to a durable session while continuation may reuse that session across Attempts. Local attachment is disabled unless `QE_LOCAL_SESSION_ATTACH_ENABLED=true`; even then the endpoint requires loopback Tauri requests and returns only a 60-second exact-session descriptor. See [`../../docs/live-execution-sessions.md`](../../docs/live-execution-sessions.md).
+Worker Protocol v7 reconciles Product-safe harness session and HumanAttention state under the existing connection-generation fence. PostgreSQL links each dispatch usage to a durable session while continuation may reuse that session across Attempts. Local attachment is disabled unless `QE_LOCAL_SESSION_ATTACH_ENABLED=true`; even then the endpoint requires loopback Tauri requests and returns only a 60-second exact-session descriptor. See [`../../docs/live-execution-sessions.md`](../../docs/live-execution-sessions.md).

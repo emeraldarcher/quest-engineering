@@ -18,6 +18,7 @@ import {
   type Quest,
   type QuestPreview,
   type Reasoning,
+  type ReasoningCapability,
   type RunProjection,
   type RunSummary,
   type Squad,
@@ -30,6 +31,7 @@ import {
   type TacticInterfaceContract,
   type TacticPreview,
   type TacticSource,
+  type ToolEnforcement,
   type Workspace,
   type WorkspaceAccess,
   type WorkspaceSource,
@@ -49,9 +51,11 @@ export interface LoadoutInput {
   key?: string;
   name?: string;
   description?: string;
+  harness?: string;
   model?: { provider: string; model: string };
-  reasoning?: Reasoning;
+  reasoning?: Reasoning | null;
   tools?: string[];
+  tool_enforcement?: ToolEnforcement;
   workspace_access?: WorkspaceAccess;
 }
 export interface SquadInput {
@@ -449,12 +453,14 @@ function decodeLoadout(value: unknown): Loadout {
     key: asString(x.key, "loadout"),
     name: asString(x.name, "loadout"),
     description: asString(x.description, "loadout"),
+    harness: asString(x.harness, "loadout harness"),
     model: {
       provider: asString(model.provider, "provider"),
       model: asString(model.model, "model"),
     },
-    reasoning: reasoning(x.reasoning),
+    reasoning: nullableReasoning(x.reasoning),
     tools: strings(x.tools, "tools"),
+    tool_enforcement: toolEnforcement(x.tool_enforcement),
     workspace_access: access(x.workspace_access),
     archived_at: nullableString(x.archived_at, "loadout"),
   };
@@ -683,12 +689,15 @@ function decodeExecutionOption(value: unknown): ExecutionOption {
   const x = asRecord(value, "execution option");
   const model = asRecord(x.model, "execution option model");
   return {
+    harness: asString(x.harness, "execution option harness"),
     model: {
       provider: asString(model.provider, "provider"),
       model: asString(model.model, "model"),
+      display_name: asString(model.display_name, "model display name"),
     },
-    reasoning: strings(x.reasoning, "reasoning").map(reasoning),
+    reasoning_capability: reasoningCapability(x.reasoning_capability),
     tools: strings(x.tools, "tools"),
+    tool_enforcement: toolEnforcement(x.tool_enforcement),
     workspaces: asArray(x.workspaces, "option workspaces").map((item) => {
       const w = asRecord(item, "option workspace");
       return {
@@ -1150,12 +1159,32 @@ function decodeRunAttempt(value: unknown) {
       attempt.retry_of_attempt_id,
       "step attempt",
     ),
+    execution:
+      attempt.execution == null
+        ? null
+        : decodeAttemptExecution(attempt.execution),
     operational:
       attempt.operational == null
         ? null
         : decodeOperationalAttempt(attempt.operational),
     session:
       attempt.session == null ? null : decodeHarnessSession(attempt.session),
+  };
+}
+function decodeAttemptExecution(value: unknown) {
+  const execution = asRecord(value, "attempt execution");
+  const model = asRecord(execution.model, "attempt model");
+  return {
+    harness: asString(execution.harness, "attempt harness"),
+    model: {
+      provider: asString(model.provider, "attempt model provider"),
+      model: asString(model.model, "attempt model"),
+    },
+    reasoning: nullableReasoning(execution.reasoning),
+    tools: strings(execution.tools, "attempt tools"),
+    tool_enforcement: toolEnforcement(execution.tool_enforcement),
+    workspace_permission: access(execution.workspace_permission),
+    worker_id: asString(execution.worker_id, "attempt Worker"),
   };
 }
 function decodeOperationalAttempt(value: unknown) {
@@ -1193,6 +1222,10 @@ function decodeHarnessSession(value: unknown) {
   const worker = asRecord(session.worker, "session Worker");
   const capabilities = asRecord(session.capabilities, "session capabilities");
   const attachment = asRecord(session.attachment, "session attachment");
+  const nativeIdentity = asRecord(
+    session.native_identity,
+    "session native identity",
+  );
   const attention =
     session.attention === null
       ? null
@@ -1211,6 +1244,16 @@ function decodeHarnessSession(value: unknown) {
         | "disconnected",
     },
     state: asString(session.state, "harness session") as HarnessSessionState,
+    native_identity: {
+      conversation_id: nullableString(
+        nativeIdentity.conversation_id,
+        "native conversation identity",
+      ),
+      terminal_id: nullableString(
+        nativeIdentity.terminal_id,
+        "native terminal identity",
+      ),
+    },
     capabilities: {
       can_attach_terminal: asBoolean(
         capabilities.can_attach_terminal,
@@ -1402,8 +1445,29 @@ function runStatus(value: unknown): RunProjection["status"] {
 }
 function reasoning(value: unknown): Reasoning {
   const x = asString(value, "reasoning");
-  if (x === "low" || x === "medium" || x === "high") return x;
+  if (x.trim() !== "") return x;
   throw new Error("Invalid reasoning.");
+}
+function nullableReasoning(value: unknown): Reasoning | null {
+  return value === null ? null : reasoning(value);
+}
+function reasoningCapability(value: unknown): ReasoningCapability {
+  const capability = asRecord(value, "reasoning capability");
+  if (capability.kind === "unsupported") return { kind: "unsupported" };
+  if (capability.kind === "enumerated") {
+    const values = strings(
+      capability.values,
+      "reasoning capability values",
+    ).map(reasoning);
+    if (values.length > 0) return { kind: "enumerated", values };
+  }
+  throw new Error("Invalid reasoning capability.");
+}
+function toolEnforcement(value: unknown): ToolEnforcement {
+  const enforcement = asString(value, "tool enforcement");
+  if (enforcement === "exact" || enforcement === "native_permissions")
+    return enforcement;
+  throw new Error("Invalid tool enforcement.");
 }
 function access(value: unknown): WorkspaceAccess {
   const x = asString(value, "workspace access");

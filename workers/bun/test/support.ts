@@ -3,7 +3,7 @@ import type { ExecuteAction } from "../src/protocol/types.ts";
 export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
   const base: ExecuteAction = {
     type: "execute_action",
-    protocol_version: 6,
+    protocol_version: 7,
     worker_id: "worker-test",
     execution: {
       identity: {
@@ -29,9 +29,11 @@ export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
         declared_outputs: [{ name: "change_set", kind: "change_set" }],
       },
       configuration: {
+        harness_kind: "fake",
         model: { provider: "fake", model: "test" },
         reasoning: "medium",
         tools: ["workspace.filesystem"],
+        tool_enforcement: "exact",
       },
       logical_workspace: {
         workspace_id: "00000000-0000-4000-8000-000000000001",

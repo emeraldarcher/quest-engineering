@@ -308,6 +308,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
   end
 
   defp select_worker(execution, assignment, action, context) do
+    assert_continuation_harness!(execution, action, context)
     continuation_worker_id = continuation_worker(action, context)
     required_worker_id = assignment.worker_id
 
@@ -345,6 +346,37 @@ defmodule QuestEngineering.Server.SchedulingStore do
          waiting(:waiting_for_capacity, action, %{
            compatible_worker_ids: Enum.map(workers, & &1.id)
          })}
+    end
+  end
+
+  defp assert_continuation_harness!(_execution, _action, %{source_occurrence_id: nil}),
+    do: :ok
+
+  defp assert_continuation_harness!(execution, action, %{source_occurrence_id: source}) do
+    source_execution =
+      Repo.one(
+        from scheduled in ScheduledActionExecution,
+          where: scheduled.run_id == ^action.run_id and scheduled.occurrence_id == ^source,
+          order_by: [desc: scheduled.bound_at],
+          limit: 1
+      )
+
+    with %ScheduledActionExecution{} <- source_execution,
+         {:ok, decoded} <-
+           ResolvedExecutionCodec.decode(
+             source_execution.resolved_execution,
+             source_execution.resolved_execution_version
+           ),
+         true <- decoded.configuration.harness_kind == execution.configuration.harness_kind do
+      :ok
+    else
+      _ ->
+        Repo.rollback(
+          invariant(:cross_harness_continuation_forbidden, %{
+            source_occurrence_id: source,
+            requested_harness: execution.configuration.harness_kind
+          })
+        )
     end
   end
 

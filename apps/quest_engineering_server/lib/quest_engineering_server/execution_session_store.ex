@@ -95,7 +95,7 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
       state: Atom.to_string(session.state),
       capabilities: session.capabilities,
       terminal: session.terminal,
-      provider_session_id: session.provider_session_id,
+      native_session_id: session.native_session_id,
       attention: attention,
       last_connection_generation: generation,
       started_at: session.started_at,

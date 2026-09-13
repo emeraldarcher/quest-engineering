@@ -26,8 +26,9 @@ defmodule QuestEngineering.Core.Product.Loadout do
   @moduledoc """
   Capability and resource configuration with no behavioral instructions.
 
-  `tools` contains Quest Engineering capability identifiers. Provider adapters
-  map those identifiers to native tools; Loadouts never contain Pi tool names.
+  `tools` contains Quest Engineering capability identifiers. `tool_enforcement`
+  states whether that set is physically exact or a native-permissions profile;
+  operation authorization remains owned by the selected harness.
   """
 
   alias QuestEngineering.Core.Product.ModelRef
@@ -37,9 +38,11 @@ defmodule QuestEngineering.Core.Product.Loadout do
     :key,
     :name,
     :description,
+    :harness,
     :model,
     :reasoning,
     :tools,
+    :tool_enforcement,
     :workspace_access
   ]
   defstruct [
@@ -47,22 +50,27 @@ defmodule QuestEngineering.Core.Product.Loadout do
     :key,
     :name,
     :description,
+    :harness,
     :model,
     :reasoning,
     :tools,
+    :tool_enforcement,
     :workspace_access
   ]
 
-  @type reasoning :: :low | :medium | :high
+  @type reasoning :: String.t() | nil
+  @type tool_enforcement :: :exact | :native_permissions
   @type workspace_access :: :none | :read_only | :read_write
   @type t :: %__MODULE__{
           id: String.t(),
           key: String.t(),
           name: String.t(),
           description: String.t(),
+          harness: String.t(),
           model: ModelRef.t(),
           reasoning: reasoning(),
           tools: [String.t()],
+          tool_enforcement: tool_enforcement(),
           workspace_access: workspace_access()
         }
 end

@@ -1,5 +1,5 @@
-import type { HostedAgentStatus } from "../session-host/types.ts";
-import type { HumanAttention } from "./types.ts";
+import type { HostedAgentStatus } from "../../session-host/types.ts";
+import type { HumanAttention } from "../types.ts";
 
 export type StructuredAttentionSignal =
   | { state: "requested"; attention: HumanAttention }

@@ -16,10 +16,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 6
+  @version 7
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
-  @reasoning ~w(low medium high)
   @access ~w(none read_only read_write)
   @session_states ~w(starting running waiting_for_human recovering retained closed unavailable)
   @attention_categories ~w(needs_input needs_permission needs_authentication needs_confirmation blocked_external interactive_prompt unknown_interactive_block)
@@ -80,7 +79,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 5
+  @spec version() :: 7
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -435,7 +434,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          {:ok, member_key} <- required_string(value, "member_key"),
          {:ok, session_id} <- required_string(value, "session_id"),
          {:ok, lineage_id} <- required_string(value, "lineage_id"),
-         {:ok, pi_session_id} <- required_string(value, "pi_session_id") do
+         {:ok, native_session_id} <- required_string(value, "native_session_id") do
       {:ok,
        %{
          request_id: request_id,
@@ -446,7 +445,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          member_key: member_key,
          session_id: session_id,
          lineage_id: lineage_id,
-         pi_session_id: pi_session_id
+         native_session_id: native_session_id
        }}
     end
   end
@@ -478,7 +477,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          {:ok, state} <- session_state(value["state"]),
          {:ok, capabilities} <- decode_session_capabilities(value["capabilities"]),
          {:ok, terminal} <- decode_terminal(value["terminal"]),
-         {:ok, provider_session_id} <- optional_string(value["provider_session_id"]),
+         {:ok, native_session_id} <- optional_string(value["native_session_id"]),
          {:ok, attention} <- decode_attention(value["attention"]),
          {:ok, intervention} <- decode_intervention(value["intervention"]),
          {:ok, started_at} <- timestamp(value["started_at"], "session.started_at"),
@@ -497,7 +496,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          state: state,
          capabilities: capabilities,
          terminal: terminal,
-         provider_session_id: provider_session_id,
+         native_session_id: native_session_id,
          attention: attention,
          intervention: intervention,
          started_at: started_at,
@@ -670,7 +669,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp optional_string(nil), do: {:ok, nil}
   defp optional_string(value) when is_binary(value) and value != "", do: {:ok, value}
-  defp optional_string(_), do: error(:invalid_field, "session.provider_session_id")
+  defp optional_string(_), do: error(:invalid_field, "session.native_session_id")
 
   defp required_boolean(value, key) do
     case Map.fetch(value, key) do
@@ -1050,23 +1049,22 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp validate_executor(
          %{
-           "adapter" => adapter,
+           "harness_kind" => harness_kind,
            "models" => models,
-           "reasoning" => reasoning,
-           "tools" => tools
+           "tools" => tools,
+           "tool_enforcement" => tool_enforcement
          } = executor
        )
-       when is_binary(adapter) and adapter != "" and is_list(models) and models != [] and
-              is_list(reasoning) and is_list(tools) do
+       when is_binary(harness_kind) and harness_kind != "" and is_list(models) and models != [] and
+              is_list(tools) and tool_enforcement in ["exact", "native_permissions"] do
     with :ok <- validate_models(models),
-         :ok <- allowed_string_list(reasoning, @reasoning, "capabilities.executors.reasoning"),
          :ok <- string_list(tools, "capabilities.executors.tools") do
       {:ok,
        %{
-         "adapter" => adapter,
+         "harness_kind" => harness_kind,
          "models" => Enum.uniq(models),
-         "reasoning" => Enum.uniq(reasoning),
          "tools" => Enum.uniq(tools),
+         "tool_enforcement" => tool_enforcement,
          "workspaces" => Map.get(executor, "workspaces", [])
        }}
     end
@@ -1076,16 +1074,32 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     do: error(:invalid_capabilities, "capabilities.executors")
 
   defp validate_models(models) do
-    if Enum.all?(models, fn
-         %{"provider" => provider, "model" => model} ->
-           is_binary(provider) and provider != "" and is_binary(model) and model != ""
-
-         _other ->
-           false
-       end),
-       do: :ok,
-       else: error(:invalid_field, "capabilities.executors.models")
+    if Enum.all?(models, &valid_model?/1),
+      do: :ok,
+      else: error(:invalid_field, "capabilities.executors.models")
   end
+
+  defp valid_model?(%{
+         "provider" => provider,
+         "model" => model,
+         "display_name" => display_name,
+         "reasoning_capability" => reasoning_capability
+       }) do
+    non_blank?(provider) and non_blank?(model) and non_blank?(display_name) and
+      valid_reasoning_capability?(reasoning_capability)
+  end
+
+  defp valid_model?(_other), do: false
+
+  defp valid_reasoning_capability?(%{"kind" => "unsupported"} = capability),
+    do: map_size(capability) == 1
+
+  defp valid_reasoning_capability?(%{"kind" => "enumerated", "values" => values} = capability)
+       when is_list(values) and values != [] and map_size(capability) == 2 do
+    Enum.uniq(values) == values and Enum.all?(values, &non_blank?/1)
+  end
+
+  defp valid_reasoning_capability?(_other), do: false
 
   defp validate_workspace_bindings(bindings) when is_list(bindings) do
     if Enum.all?(bindings, fn
@@ -1112,12 +1126,6 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp valid_uuid?(value), do: is_binary(value) and match?({:ok, _}, Ecto.UUID.cast(value))
   defp non_blank?(value), do: is_binary(value) and String.trim(value) != ""
-
-  defp allowed_string_list(values, allowed, field) do
-    if Enum.all?(values, &(&1 in allowed)),
-      do: :ok,
-      else: error(:invalid_field, field, %{allowed: allowed})
-  end
 
   defp string_list(values, field) when is_list(values) do
     if Enum.all?(values, &(is_binary(&1) and &1 != "")),
@@ -1187,12 +1195,14 @@ defmodule QuestEngineering.Server.WorkerProtocol do
         "acceptance_contract" => work.acceptance_contract
       },
       "configuration" => %{
+        "harness_kind" => configuration.harness_kind,
         "model" => %{
           "provider" => configuration.model.provider,
           "model" => configuration.model.model
         },
-        "reasoning" => Atom.to_string(configuration.reasoning),
-        "tools" => configuration.tools
+        "reasoning" => configuration.reasoning,
+        "tools" => configuration.tools,
+        "tool_enforcement" => Atom.to_string(configuration.tool_enforcement)
       },
       "logical_workspace" => %{
         "workspace_id" => logical_workspace.workspace_id,

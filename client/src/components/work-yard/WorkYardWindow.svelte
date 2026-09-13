@@ -24,6 +24,7 @@ import {
   deliveryPresentation,
   diagnosticPresentation,
   documentContent,
+  effortLabel,
   executionPresentation,
   formatLaunchTime,
   friendlyArtifact,
@@ -34,6 +35,7 @@ import {
   runProgress,
   stepDisplayName,
   stepResult,
+  toolPolicyLabel,
   totalSteps,
   workspacePresentation,
 } from "./run-presentation";
@@ -505,9 +507,10 @@ function attemptOutput(attempt: RunAttempt): string {
                             <span class="eyebrow">{step.member?.name ?? "Member"} · {step.name ?? humanize(step.semantic_step_key)}</span>
                             <h4>{session.harness.display_name}</h4>
                             <p><strong>{sessionControlLabel(step)}</strong> · {session.worker.display_name}</p>
+                            {#if step.attempt?.execution}<small>{step.attempt.execution.model.provider}/{step.attempt.execution.model.model} · {effortLabel(step.attempt.execution)} · {toolPolicyLabel(step.attempt.execution)} · {humanize(step.attempt.execution.workspace_permission)}</small>{/if}
                             {#if session.attention}<blockquote>“{session.attention.message}”</blockquote>{/if}
                             {#if session.attention?.interaction?.kind === "conversational_intervention"}
-                              <small>Use normal Pi chat for as many turns as needed. Return control with <code>{session.attention.interaction.resume_command ?? "/qe-resume"}</code>.</small>
+                              {#if session.harness.kind === "pi"}<small>Use normal Pi chat for as many turns as needed. Return control with <code>{session.attention.interaction.resume_command ?? "/qe-resume"}</code>.</small>{:else}<small>Use the same live native {session.harness.display_name} terminal, then detach to let Worker observation resume.</small>{/if}
                             {/if}
                             {#if session.events.length}<details class="session-history"><summary>Session history</summary><ul>{#each session.events as event}<li>{sessionEventLabel(event)} · {formatLaunchTime(event.occurred_at)}</li>{/each}</ul></details>{/if}
                             {#if session.worker.state === "disconnected" || session.attachment.reason === "worker_offline"}<small>Session unavailable · Worker offline</small>
@@ -596,7 +599,7 @@ function attemptOutput(attempt: RunAttempt): string {
                         <p class="based-on"><strong>Based on:</strong> {implementationPlanInput(step, run.artifacts)?.title ?? "Quest Plan"}{implementationPlanInput(step, run.artifacts)?.version ? ` v${implementationPlanInput(step, run.artifacts)?.version}` : ""}{implementationPlanInput(step, run.artifacts)?.id && planReviewer(implementationPlanInput(step, run.artifacts)?.id ?? "") ? ` · Accepted by ${planReviewer(implementationPlanInput(step, run.artifacts)?.id ?? "")}` : ""}</p>
                       {/if}
                       {#if step.issue}<p class="step-issue">{step.issue.message}</p>{/if}
-                      {#if step.session}<p class="step-session"><strong>{step.session.harness.display_name}</strong> · {sessionControlLabel(step)} · {step.session.worker.display_name}</p>{/if}
+                      {#if step.session}<p class="step-session"><strong>{step.session.harness.display_name}</strong> · {sessionControlLabel(step)} · {step.session.worker.display_name}{#if step.attempt?.execution} · {step.attempt.execution.model.provider}/{step.attempt.execution.model.model} · {effortLabel(step.attempt.execution)} · {toolPolicyLabel(step.attempt.execution)}{/if}</p>{/if}
                       {#if step.inputs.length || step.outputs.length}
                         <div class="artifact-links">
                           {#each step.inputs as reference}<button on:click={() => { tab = "artifacts"; const item = run?.artifacts.find((artifact) => artifact.id === reference.artifact_id); if (item) void selectArtifact(item); }}>Input · {artifactTypeLabel(reference.type)}</button>{/each}
@@ -611,7 +614,7 @@ function attemptOutput(attempt: RunAttempt): string {
                               {@const attemptStatus = executionPresentation(attempt.state)}
                               <li>
                                 <span><strong>Attempt {attempt.number}</strong><em class="tone-text-{attemptStatus.tone}">{attemptStatus.label}{attempt.resolution === "retried" ? " · Retried" : attempt.resolution === "marked_failed" ? " · Marked failed" : ""}</em></span>
-                                <small>{#if attempt.operational}{attempt.operational.recovery_epoch === 0 ? "Initial execution" : `Human recovery ${attempt.operational.recovery_epoch}`} · Attempt {attempt.operational.attempt_in_epoch}{attempt.operational.attempt_allowance ? ` of ${attempt.operational.attempt_allowance}` : ""} · {/if}{attemptOutput(attempt)}</small>
+                                <small>{#if attempt.execution}{attempt.execution.harness} · {attempt.execution.model.provider}/{attempt.execution.model.model} · {effortLabel(attempt.execution)} · {toolPolicyLabel(attempt.execution)} · {attempt.execution.worker_id} · {/if}{#if attempt.operational}{attempt.operational.recovery_epoch === 0 ? "Initial execution" : `Human recovery ${attempt.operational.recovery_epoch}`} · Attempt {attempt.operational.attempt_in_epoch}{attempt.operational.attempt_allowance ? ` of ${attempt.operational.attempt_allowance}` : ""} · {/if}{attemptOutput(attempt)}</small>
                               </li>
                             {/each}
                           </ol>
@@ -694,7 +697,7 @@ function attemptOutput(attempt: RunAttempt): string {
               {#if run.delivery}<div><span>Delivery base revision</span><code>{shortRevision(run.delivery.revisions.base)}</code></div><div><span>Delivery head revision</span><code>{shortRevision(run.delivery.revisions.head)}</code></div>{/if}
               <div><span>Run branch</span><code>{run.execution_environment.branch ?? "Unavailable"}</code></div>
               <div><span>Dirty source changes excluded</span><code>{run.execution_environment.source_dirty_changes_excluded === null ? "Unavailable" : run.execution_environment.source_dirty_changes_excluded ? "Yes" : "No"}</code></div>
-              {#each sessionSteps as step}{#if step.session}<div><span>{step.session.harness.display_name} session ID</span><code>{step.session.id}</code></div>{/if}{/each}
+              {#each sessionSteps as step}{#if step.session}<div><span>{step.session.harness.display_name} QE lineage</span><code>{step.session.id}</code></div>{#if step.session.native_identity.conversation_id}<div><span>Native conversation</span><code>{step.session.native_identity.conversation_id}</code></div>{/if}{#if step.session.native_identity.terminal_id}<div><span>Terminal/process incarnation</span><code>{step.session.native_identity.terminal_id}</code></div>{/if}{/if}{/each}
             </div>
             {#if $errorStore}<div class="technical-code"><span>Last operation code</span><code>{$errorStore.code}</code></div>{/if}
             {#if run.delivery?.issue}<div class="technical-code"><span>Delivery issue code</span><code>{run.delivery.issue.code}</code></div>{/if}

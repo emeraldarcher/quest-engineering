@@ -148,9 +148,11 @@ defmodule QuestEngineering.Server.Product.Repository do
       key: attributes[:key],
       name: attributes[:name],
       description: Map.get(attributes, :description, ""),
+      harness: attributes[:harness],
       model: attributes[:model],
       reasoning: attributes[:reasoning],
       tools: attributes[:tools],
+      tool_enforcement: attributes[:tool_enforcement],
       workspace_access: attributes[:workspace_access]
     }
 
@@ -170,9 +172,11 @@ defmodule QuestEngineering.Server.Product.Repository do
            key: current.key,
            name: Map.get(attributes, :name, current.name),
            description: Map.get(attributes, :description, current.description),
+           harness: Map.get(attributes, :harness, current.harness),
            model: Map.get(attributes, :model, current.model),
            reasoning: Map.get(attributes, :reasoning, current.reasoning),
            tools: Map.get(attributes, :tools, current.tools),
+           tool_enforcement: Map.get(attributes, :tool_enforcement, current.tool_enforcement),
            workspace_access: Map.get(attributes, :workspace_access, current.workspace_access)
          },
          {:ok, value} <- Validation.validate(value),
@@ -508,9 +512,11 @@ defmodule QuestEngineering.Server.Product.Repository do
       key: row.key,
       name: row.name,
       description: row.description,
+      harness: row.harness_kind,
       model: %ModelRef{provider: row.model_provider, model: row.model_name},
-      reasoning: reasoning(row.reasoning),
+      reasoning: row.reasoning,
       tools: row.tools,
+      tool_enforcement: tool_enforcement(row.tool_enforcement),
       workspace_access: workspace_access(row.workspace_access)
     }
   end
@@ -587,10 +593,12 @@ defmodule QuestEngineering.Server.Product.Repository do
       key: value.key,
       name: value.name,
       description: value.description,
+      harness_kind: value.harness,
       model_provider: value.model.provider,
       model_name: value.model.model,
-      reasoning: Atom.to_string(value.reasoning),
+      reasoning: value.reasoning,
       tools: value.tools,
+      tool_enforcement: Atom.to_string(value.tool_enforcement),
       workspace_access: Atom.to_string(value.workspace_access)
     }
   end
@@ -628,9 +636,8 @@ defmodule QuestEngineering.Server.Product.Repository do
     }
   end
 
-  defp reasoning("low"), do: :low
-  defp reasoning("medium"), do: :medium
-  defp reasoning("high"), do: :high
+  defp tool_enforcement("exact"), do: :exact
+  defp tool_enforcement("native_permissions"), do: :native_permissions
 
   defp workspace_access("none"), do: :none
   defp workspace_access("read_only"), do: :read_only

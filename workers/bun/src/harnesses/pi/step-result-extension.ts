@@ -1,14 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { JsonValue } from "../../protocol/types.ts";
-import {
-  readControl,
-  STEP_RESULT_PROTOCOL_VERSION,
-  type StepResultEnvelope,
-  validateOutputs,
-  writeStepResultAtomic,
-} from "./result-envelope.ts";
+import { HarnessControlClient } from "../control/client.ts";
 
+/** Pi-native transport shim into the generic Worker-local QE control bridge. */
 export default function questEngineeringStepResultExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "qe_step_result",
@@ -23,26 +18,9 @@ export default function questEngineeringStepResultExtension(pi: ExtensionAPI) {
       outputs: Type.Record(Type.String(), Type.Unknown()),
     }),
     async execute(toolCallId, params) {
-      const controlPath = process.env.QE_RESULT_CONTROL_PATH?.trim();
-      if (!controlPath) throw new Error("QE_RESULT_CONTROL_PATH is missing.");
-      const control = await readControl(controlPath);
-      validateOutputs(control.action.declared_outputs, params.outputs);
-      const envelope: StepResultEnvelope = {
-        protocolVersion: STEP_RESULT_PROTOCOL_VERSION,
-        kind: "quest_engineering_step_result",
-        workerId: control.workerId,
-        actionId: control.action.action_id,
-        runId: control.action.run_id,
-        occurrenceId: control.action.occurrence_id,
-        attemptId: control.action.attempt_id,
-        nonce: control.nonce,
-        createdAt: new Date().toISOString(),
-        outputs: params.outputs as Record<string, JsonValue>,
-      };
-      await writeStepResultAtomic(
-        control.resultDirectory,
+      const result = await HarnessControlClient.fromEnvironment().completeStep(
+        params.outputs as Record<string, JsonValue>,
         toolCallId,
-        envelope,
       );
       return {
         content: [
@@ -51,7 +29,7 @@ export default function questEngineeringStepResultExtension(pi: ExtensionAPI) {
             text: "Quest Engineering step result recorded.",
           },
         ],
-        details: envelope,
+        details: result,
         terminate: true,
       };
     },

@@ -181,7 +181,7 @@ defmodule QuestEngineering.Server.StarterCrewTest do
     assert {:ok, customized} =
              Products.update_loadout(coding.id, %{
                model: %ModelRef{provider: "custom", model: "evolved"},
-               reasoning: :high,
+               reasoning: "high",
                tools: ["workspace.filesystem"]
              })
 
@@ -347,10 +347,20 @@ defmodule QuestEngineering.Server.StarterCrewTest do
       "tags" => [],
       "executors" => [
         %{
-          "adapter" => "fake",
-          "models" => models,
-          "reasoning" => ["low", "medium"],
+          "harness_kind" => "fake",
+          "models" =>
+            Enum.map(
+              models,
+              &Map.merge(&1, %{
+                "display_name" => "Test model",
+                "reasoning_capability" => %{
+                  "kind" => "enumerated",
+                  "values" => ["low", "medium"]
+                }
+              })
+            ),
           "tools" => ["workspace.filesystem", "workspace.search"],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{
               "ref" => workspace.name,
@@ -396,9 +406,11 @@ defmodule QuestEngineering.Server.StarterCrewTest do
       key: "coding",
       name: "Coding",
       description: "Writable engineering capabilities.",
+      harness: "fake",
       model: %ModelRef{provider: "fake", model: "starter"},
-      reasoning: :medium,
+      reasoning: "medium",
       tools: ["workspace.filesystem", "workspace.search"],
+      tool_enforcement: :exact,
       workspace_access: :read_write
     }
 
@@ -407,9 +419,11 @@ defmodule QuestEngineering.Server.StarterCrewTest do
       key: "review",
       name: "Review",
       description: "Read-only review capabilities.",
+      harness: "fake",
       model: %ModelRef{provider: "fake", model: "starter"},
-      reasoning: :medium,
+      reasoning: "medium",
       tools: ["workspace.filesystem", "workspace.search"],
+      tool_enforcement: :exact,
       workspace_access: :read_only
     }
 end

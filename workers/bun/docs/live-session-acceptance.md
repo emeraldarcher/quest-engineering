@@ -132,7 +132,7 @@ Do **not** place forced-yield wording in the Quest objective. Quest intent is sh
    - QE Attempt and StepOccurrence;
    - logical Member and Worker slot;
    - worktree;
-   - provider lineage/session projection;
+   - harness lineage/session projection;
    - Herdr session, target, pane and terminal;
    - Pi native session ID/path and process PID.
 14. Verify the Builder has one dispatch, one Attempt, no retry, and one nonce-bound final result.

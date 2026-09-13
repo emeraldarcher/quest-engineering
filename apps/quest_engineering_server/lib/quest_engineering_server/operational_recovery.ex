@@ -202,7 +202,7 @@ defmodule QuestEngineering.Server.OperationalRecovery do
           worker_id: scheduled.worker_id,
           session_id: nil,
           lineage_id: nil,
-          pi_session_id: nil
+          native_session_id: nil
         },
         mode: :fresh
       )
@@ -406,8 +406,8 @@ defmodule QuestEngineering.Server.OperationalRecovery do
       request.lineage_id != session.id ->
         error(:recovery_session_mismatch, request)
 
-      session.provider_session_id != request.pi_session_id ->
-        error(:recovery_pi_session_mismatch, request)
+      session.native_session_id != request.native_session_id ->
+        error(:recovery_native_session_mismatch, request)
 
       true ->
         nil

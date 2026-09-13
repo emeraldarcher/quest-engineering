@@ -219,8 +219,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         end)
 
         :ok = WorkspaceControl.request_discovery()
-        assert_eventually(fn -> WorkspaceControl.list_candidates() != [] end)
-        [candidate | _] = WorkspaceControl.list_candidates()
+        assert_eventually(fn -> worker_candidate(worker_id) != nil end)
+
+        candidate = worker_candidate(worker_id)
 
         {:ok, deleted_workspace} =
           Products.create_workspace(%{
@@ -289,8 +290,8 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         end)
 
         :ok = WorkspaceControl.request_discovery()
-        assert_eventually(fn -> WorkspaceControl.list_candidates() != [] end)
-        [replacement_candidate | _] = WorkspaceControl.list_candidates()
+        assert_eventually(fn -> worker_candidate(worker_id) != nil end)
+        replacement_candidate = worker_candidate(worker_id)
 
         {:ok, replacement} =
           Products.create_workspace(%{
@@ -329,6 +330,15 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
     end
   end
 
+  defp worker_candidate(worker_id) do
+    Enum.find(WorkspaceControl.list_candidates(), fn candidate ->
+      case Repo.get(WorkerWorkspaceCandidate, candidate.candidate_id) do
+        %{worker_id: ^worker_id} -> true
+        _ -> false
+      end
+    end)
+  end
+
   defp product_fixture do
     suffix = Integer.to_string(System.unique_integer([:positive]))
 
@@ -351,9 +361,11 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
       Products.create_loadout(%{
         key: "fake-#{suffix}",
         name: "Fake integration",
+        harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
-        reasoning: :medium,
+        reasoning: "medium",
         tools: ["workspace.filesystem"],
+        tool_enforcement: :exact,
         workspace_access: :read_write
       })
 

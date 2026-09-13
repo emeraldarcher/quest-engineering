@@ -125,9 +125,11 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.LoadoutSnapshot do
     :key,
     :name,
     :description,
+    :harness,
     :model,
     :reasoning,
     :tools,
+    :tool_enforcement,
     :workspace_access
   ]
   defstruct [
@@ -135,9 +137,11 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.LoadoutSnapshot do
     :key,
     :name,
     :description,
+    :harness,
     :model,
     :reasoning,
     :tools,
+    :tool_enforcement,
     :workspace_access
   ]
 
@@ -146,9 +150,11 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.LoadoutSnapshot do
           key: String.t(),
           name: String.t(),
           description: String.t(),
+          harness: String.t(),
           model: ModelRef.t(),
           reasoning: Loadout.reasoning(),
           tools: [String.t()],
+          tool_enforcement: Loadout.tool_enforcement(),
           workspace_access: Loadout.workspace_access()
         }
 end
@@ -176,7 +182,7 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
   alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.Tactics.PerformerRequirement
 
-  @schema_version 4
+  @schema_version 6
 
   @spec build(Quest.t(), Workspace.t(), Squad.t(), [Class.t()], [Loadout.t()], Catalog.t()) ::
           {:ok, LaunchSnapshot.t()} | {:error, [ValidationError.t()]}
@@ -324,9 +330,11 @@ defmodule QuestEngineering.Core.Product.LaunchSnapshot.Builder do
       key: loadout.key,
       name: loadout.name,
       description: loadout.description,
+      harness: loadout.harness,
       model: loadout.model,
       reasoning: loadout.reasoning,
       tools: loadout.tools,
+      tool_enforcement: loadout.tool_enforcement,
       workspace_access: loadout.workspace_access
     }
   end

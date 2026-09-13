@@ -309,9 +309,11 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
     Products.create_loadout(%{
       key: key,
       name: key,
+      harness: "fake",
       model: %ModelRef{provider: "fake", model: "test"},
-      reasoning: :low,
+      reasoning: "low",
       tools: [],
+      tool_enforcement: :exact,
       workspace_access: access
     })
   end
@@ -324,10 +326,20 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
       "tags" => [],
       "executors" => [
         %{
-          "adapter" => "fake",
-          "models" => [%{"provider" => "fake", "model" => "test"}],
-          "reasoning" => ["low", "medium", "high"],
+          "harness_kind" => "fake",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "test",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "medium", "high"]
+              }
+            }
+          ],
           "tools" => [],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{
               "ref" => "workspace:review-gate",

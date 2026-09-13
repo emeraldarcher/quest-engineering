@@ -52,6 +52,20 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
              })
 
     assert Enum.any?(errors, &(&1.code == :duplicate_tool_key))
+
+    assert {:ok, unsupported} =
+             Products.update_loadout(loadout.id, %{
+               reasoning: nil,
+               tool_enforcement: :native_permissions,
+               harness: "antigravity",
+               model: %ModelRef{provider: "antigravity", model: "no-effort"}
+             })
+
+    assert unsupported.reasoning == nil
+    assert unsupported.tool_enforcement == :native_permissions
+    assert {:ok, round_tripped} = Products.get_loadout(loadout.id)
+    assert round_tripped.reasoning == nil
+    assert round_tripped.tool_enforcement == :native_permissions
   end
 
   test "stores Members as ordered Squad-owned components" do
@@ -279,9 +293,11 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
       key: "coding",
       name: "Coding",
       description: "Writable capabilities.",
+      harness: "fake",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
-      reasoning: :medium,
+      reasoning: "medium",
       tools: ["workspace.filesystem", "terminal.shell"],
+      tool_enforcement: :exact,
       workspace_access: :read_write
     })
   end
@@ -291,9 +307,11 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
       key: "review",
       name: "Review",
       description: "Read-only capabilities.",
+      harness: "fake",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
-      reasoning: :high,
+      reasoning: "high",
       tools: ["workspace.filesystem", "workspace.search"],
+      tool_enforcement: :exact,
       workspace_access: :read_only
     })
   end

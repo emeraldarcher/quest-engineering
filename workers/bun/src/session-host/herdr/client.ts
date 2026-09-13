@@ -180,17 +180,55 @@ export class HerdrSocketClient implements HerdrControlClient {
         "shell_not_ready",
         `Pane ${input.paneId} did not reach an interactive shell.`,
       );
-    const result = await this.request(
-      "agent.start",
-      {
-        pane_id: input.paneId,
-        name: input.name,
-        kind: input.integrationKind,
-        args: input.args,
-        timeout_ms: remainingMs,
-      },
-      remainingMs + 5_000,
-    );
+    let result: Record<string, unknown>;
+    try {
+      result = await this.request(
+        "agent.start",
+        {
+          pane_id: input.paneId,
+          name: input.name,
+          kind: input.integrationKind,
+          args: input.args,
+          timeout_ms: remainingMs,
+        },
+        remainingMs + 5_000,
+      );
+    } catch (error) {
+      if (!(error instanceof HerdrApiError) || error.code !== "agent_pane_busy")
+        throw error;
+      // Herdr 0.9 can transiently report the shell busy while its accepted
+      // launch is becoming visible. First adopt that exact launch; otherwise
+      // wait on shell process state before one bounded retry.
+      try {
+        const current = await this.getAgent(input.paneId);
+        if (
+          current.interactiveReady &&
+          current.name === input.name &&
+          current.agent === input.integrationKind
+        )
+          return current;
+      } catch {
+        // No exact accepted launch is projected yet.
+      }
+      await this.waitForAvailableShell(input.paneId, deadline);
+      const retryMs = deadline - Date.now();
+      if (retryMs <= 3_000)
+        throw new HerdrApiError(
+          "agent_pane_busy",
+          `Pane ${input.paneId} did not settle before the launch deadline.`,
+        );
+      result = await this.request(
+        "agent.start",
+        {
+          pane_id: input.paneId,
+          name: input.name,
+          kind: input.integrationKind,
+          args: input.args,
+          timeout_ms: retryMs,
+        },
+        retryMs + 5_000,
+      );
+    }
 
     // Herdr may accept launch before its response projection includes the agent.
     // Discover that exact launch rather than issuing a duplicate start request.

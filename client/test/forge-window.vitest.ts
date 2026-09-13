@@ -36,9 +36,11 @@ const coding: Loadout = {
   key: "coding",
   name: "Coding",
   description: "Full coding environment for implementation work.",
+  harness: "pi",
   model: { provider: "openai-codex", model: "gpt-5.6-sol" },
   reasoning: "high",
   tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+  tool_enforcement: "exact",
   workspace_access: "read_write",
   archived_at: null,
 };
@@ -58,13 +60,19 @@ const custom: Loadout = {
   key: "custom",
   name: "Custom Bench",
   description: "Specialist equipment.",
+  harness: "pi",
   model: { provider: "custom-provider", model: "custom-model-x" },
   tools: ["workspace.filesystem", "acme.special-tool"],
 };
 const option: ExecutionOption = {
-  model: coding.model,
-  reasoning: ["low", "medium", "high"],
+  harness: coding.harness,
+  model: { ...coding.model, display_name: "GPT 5.6 Sol" },
+  reasoning_capability: {
+    kind: "enumerated",
+    values: ["low", "medium", "high"],
+  },
   tools: [...coding.tools],
+  tool_enforcement: "exact",
   workspaces: [
     {
       workspace_id: "workspace-1",
@@ -189,12 +197,12 @@ test("custom Loadouts remain configured and understandable in read mode", () => 
   renderForge(fakeStore(), product, "custom");
 
   const customCard = screen.getByRole("button", {
-    name: /Custom Bench Custom model · High/,
+    name: /Custom Bench Unavailable configuration · High/,
   });
   expect(customCard.textContent).not.toContain("custom-provider");
   expect(screen.getByText("Configured")).toBeTruthy();
   expect(
-    screen.getByText("custom-provider / custom-model-x", {
+    screen.getByText("pi / custom-provider / custom-model-x", {
       selector: ".custom-model code",
     }),
   ).toBeTruthy();
@@ -206,7 +214,7 @@ test("custom Loadouts remain configured and understandable in read mode", () => 
 test("cards are native keyboard-focusable controls", () => {
   renderForge();
   const card = screen.getByRole("button", {
-    name: /Review GPT 5.6 Sol · Medium Read only/,
+    name: /Review GPT 5.6 Sol · pi · Medium Read only/,
   });
   card.focus();
   expect(document.activeElement).toBe(card);
@@ -218,7 +226,7 @@ test("Edit is explicit and normal controls use Product-facing language", async (
 
   expect(screen.getByRole("heading", { name: "Edit Coding" })).toBeTruthy();
   expect(screen.getByLabelText("Model")).toBeTruthy();
-  expect(screen.getByLabelText("Reasoning")).toBeTruthy();
+  expect(screen.getByLabelText("Reasoning / Effort")).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Project access" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Capabilities" })).toBeTruthy();
   expect(screen.getByText("Read & write")).toBeTruthy();
@@ -228,6 +236,44 @@ test("Edit is explicit and normal controls use Product-facing language", async (
     screen.getByText("Custom configuration").closest("details")?.open,
   ).toBe(false);
   expect(screen.getByRole("button", { name: "Save Changes" })).toBeTruthy();
+});
+
+test("unsupported effort and native tool authorization avoid false precision", async () => {
+  const native: Loadout = {
+    ...coding,
+    id: "loadout-native",
+    name: "Native Antigravity",
+    harness: "antigravity",
+    model: { provider: "antigravity", model: "claude-sonnet-4-6" },
+    reasoning: null,
+    tool_enforcement: "native_permissions",
+  };
+  const nativeOption: ExecutionOption = {
+    ...option,
+    harness: "antigravity",
+    model: { ...native.model, display_name: "Claude Sonnet 4.6" },
+    reasoning_capability: { kind: "unsupported" },
+    tool_enforcement: "native_permissions",
+  };
+  renderForge(
+    fakeStore(),
+    {
+      ...product,
+      loadouts: [native],
+      loadoutCatalog: [native],
+      executionOptions: [nativeOption],
+    },
+    null,
+  );
+
+  expect(screen.getByText("Not configurable")).toBeTruthy();
+  expect(screen.getByText("Native permissions")).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+  expect(screen.getByText("Not configurable for this Model.")).toBeTruthy();
+  expect(screen.queryByRole("checkbox", { name: /Project files/ })).toBeNull();
+  expect(
+    screen.getByText("Authorization: native allow / ask / deny"),
+  ).toBeTruthy();
 });
 
 test("Cancel leaves explicit Create and Edit modes without saving", async () => {
@@ -267,9 +313,11 @@ test("changing Name only preserves a custom ModelRef and unknown capabilities", 
   expect(updateLoadout).toHaveBeenCalledWith(custom.id, {
     name: "Renamed Custom Bench",
     description: custom.description,
+    harness: "pi",
     model: custom.model,
     reasoning: custom.reasoning,
     tools: custom.tools,
+    tool_enforcement: custom.tool_enforcement,
     workspace_access: custom.workspace_access,
   });
   expect(updateLoadout.mock.calls[0]?.[1]).not.toHaveProperty("key");
@@ -300,9 +348,11 @@ test("applying a preset to New Loadout creates ordinary Product fields only", as
     key: "preset-coding",
     name: "Preset Coding",
     description: "",
-    model: option.model,
+    harness: "pi",
+    model: { provider: option.model.provider, model: option.model.model },
     reasoning: "medium",
     tools: option.tools,
+    tool_enforcement: "exact",
     workspace_access: "read_write",
   });
   expect(submitted).not.toHaveProperty("preset_id");

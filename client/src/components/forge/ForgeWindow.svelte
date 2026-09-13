@@ -9,7 +9,6 @@ import type {
   ApiError,
   ExecutionOption,
   Loadout,
-  Reasoning,
   WorkspaceAccess,
 } from "../../api/contracts";
 import type { AppStore, ProductState } from "../../state/app-store";
@@ -48,10 +47,9 @@ export let scene: string | null = null;
 
 type Mode = "detail" | "create" | "edit";
 type DraftErrors = Partial<
-  Record<"name" | "provider" | "model" | "tools", string>
+  Record<"name" | "harness" | "provider" | "model" | "tools", string>
 >;
 
-const reasoningChoices: Reasoning[] = ["low", "medium", "high"];
 const accessChoices: WorkspaceAccess[] = ["none", "read_only", "read_write"];
 let mode: Mode = "detail";
 let selectedId: string | null = null;
@@ -92,12 +90,32 @@ $: selectedPreset =
     (option) => optionKey(option) === selectedPresetKey,
   ) ?? null;
 $: currentModelDiscovered =
+  !!draft.harness &&
   !!draft.provider &&
   !!draft.model &&
   modelIsDiscovered(
-    { provider: draft.provider, model: draft.model },
+    { harness: draft.harness, provider: draft.provider, model: draft.model },
     product.executionOptions,
   );
+$: selectedModelOption = product.executionOptions.find(
+  (option) =>
+    option.harness === draft.harness &&
+    option.model.provider === draft.provider &&
+    option.model.model === draft.model,
+) ?? null;
+$: selectedConfigurationAvailable = selectedModelOption
+  ? optionSupportsDraft(selectedModelOption, draft)
+  : false;
+$: selectedReasoningCapability = selectedConfigurationAvailable
+  ? (selectedModelOption?.reasoning_capability ?? null)
+  : null;
+$: visibleReasoningChoices =
+  selectedReasoningCapability?.kind === "enumerated"
+    ? selectedReasoningCapability.values
+    : draft.reasoning === null
+      ? []
+      : [draft.reasoning];
+$: nativeToolPolicy = draft.toolEnforcement === "native_permissions";
 
 onMount(async () => {
   initialized = true;
@@ -118,7 +136,11 @@ onMount(async () => {
     selectedId =
       product.loadouts.find((item) => item.key === "experimental")?.id ??
       product.loadouts.find(
-        (item) => !modelIsDiscovered(item.model, product.executionOptions),
+        (item) =>
+          !modelIsDiscovered(
+            { harness: item.harness, ...item.model },
+            product.executionOptions,
+          ),
       )?.id ??
       selectedId;
   } else if (scene === "new") {
@@ -128,7 +150,11 @@ onMount(async () => {
   } else if (scene === "custom-config" && preferred) {
     const customPreferred =
       product.loadouts.find(
-        (item) => !modelIsDiscovered(item.model, product.executionOptions),
+        (item) =>
+          !modelIsDiscovered(
+            { harness: item.harness, ...item.model },
+            product.executionOptions,
+          ),
       ) ?? preferred;
     startEdit(customPreferred);
     customOpen = true;
@@ -240,8 +266,66 @@ function chooseModel(value: string) {
     customOpen = true;
     return;
   }
-  draft = { ...draft, provider: choice.provider, model: choice.model };
+  const option = product.executionOptions.find(
+    (candidate) =>
+      candidate.harness === choice.harness &&
+      candidate.model.provider === choice.provider &&
+      candidate.model.model === choice.model,
+  );
+  if (!option) return;
+  const capability = option.reasoning_capability;
+  const reasoning =
+    capability.kind === "unsupported"
+      ? null
+      : draft.reasoning !== null && capability.values.includes(draft.reasoning)
+        ? draft.reasoning
+        : (capability.values[0] ?? null);
+  draft = {
+    ...draft,
+    harness: choice.harness,
+    provider: choice.provider,
+    model: choice.model,
+    reasoning,
+    tools:
+      option.tool_enforcement === "native_permissions"
+        ? [...option.tools]
+        : draft.tools,
+    toolEnforcement: option.tool_enforcement,
+  };
   clearIssues();
+}
+
+function optionSupportsDraft(option: ExecutionOption, value: LoadoutDraft): boolean {
+  const reasoningSupported =
+    option.reasoning_capability.kind === "unsupported"
+      ? value.reasoning === null
+      : value.reasoning !== null &&
+        option.reasoning_capability.values.includes(value.reasoning);
+  const advertised = [...option.tools].sort();
+  const selected = [...value.tools].sort();
+  const toolsSupported =
+    option.tool_enforcement === "exact"
+      ? selected.every((tool) => advertised.includes(tool))
+      : JSON.stringify(selected) === JSON.stringify(advertised);
+  return (
+    reasoningSupported &&
+    value.toolEnforcement === option.tool_enforcement &&
+    toolsSupported
+  );
+}
+
+function preservesPersistedExecutionConfiguration(): boolean {
+  if (mode !== "edit" || !selectedLoadout) return false;
+  const original = draftFromLoadout(selectedLoadout);
+  return (
+    draft.harness === original.harness &&
+    draft.provider === original.provider &&
+    draft.model === original.model &&
+    draft.reasoning === original.reasoning &&
+    draft.toolEnforcement === original.toolEnforcement &&
+    JSON.stringify([...draft.tools].sort()) ===
+      JSON.stringify([...original.tools].sort())
+  );
 }
 
 function toggleCapability(id: string, enabled: boolean) {
@@ -310,8 +394,27 @@ async function saveAndContinue() {
 function validateDraft(): boolean {
   const errors: DraftErrors = {};
   if (!draft.name.trim()) errors.name = "Enter a Loadout name.";
+  if (!draft.harness.trim()) errors.harness = "Choose or enter a Harness.";
   if (!draft.provider.trim()) errors.provider = "Choose a Model or enter a canonical provider.";
   if (!draft.model.trim()) errors.model = "Choose or enter a Model.";
+  const preservesHistorical = preservesPersistedExecutionConfiguration();
+  if (!preservesHistorical && selectedReasoningCapability?.kind === "unsupported" && draft.reasoning !== null)
+    errors.model = "This Model does not support configurable reasoning.";
+  if (
+    !preservesHistorical &&
+    selectedReasoningCapability?.kind === "enumerated" &&
+    (draft.reasoning === null ||
+      !selectedReasoningCapability.values.includes(draft.reasoning))
+  )
+    errors.model = "Choose one of this Model's supported reasoning values.";
+  if (
+    !preservesHistorical &&
+    selectedModelOption?.tool_enforcement === "native_permissions" &&
+    (draft.toolEnforcement !== "native_permissions" ||
+      JSON.stringify([...draft.tools].sort()) !==
+        JSON.stringify([...selectedModelOption.tools].sort()))
+  )
+    errors.tools = "Use the complete native tool profile advertised by this Harness.";
   const invalidCapability = draft.tools.find(
     (tool) =>
       tool.length > 128 ||
@@ -367,6 +470,7 @@ function applyServerError(failure: ApiError | null) {
   for (const detail of failure?.details ?? []) {
     const field = detail.path[0];
     if (field === "name") errors.name = "Enter a valid Loadout name.";
+    if (field === "harness") errors.harness = "Enter a valid Harness ID.";
     if (field === "model") {
       errors.provider = "Enter a valid canonical provider.";
       errors.model = "Enter a valid Model ID.";
@@ -417,9 +521,12 @@ async function archiveLoadout() {
 }
 
 function loadoutModelName(loadout: Loadout): string {
-  return modelIsDiscovered(loadout.model, product.executionOptions)
-    ? modelLabel(loadout.model.model)
-    : "Custom model";
+  return modelIsDiscovered(
+    { harness: loadout.harness, ...loadout.model },
+    product.executionOptions,
+  )
+    ? `${modelLabel(loadout.model.model)} · ${loadout.harness}`
+    : "Unavailable configuration";
 }
 </script>
 
@@ -460,7 +567,7 @@ function loadoutModelName(loadout: Loadout): string {
             >
               <span class="card-heading"><strong>{loadout.name}</strong><span aria-hidden="true">◆</span></span>
               <span class="card-model">{loadoutModelName(loadout)} · {reasoningLabel(loadout.reasoning)}</span>
-              <span class="card-access">{accessLabel(loadout.workspace_access)} · {loadout.tools.length} {loadout.tools.length === 1 ? "capability" : "capabilities"}</span>
+              <span class="card-access">{accessLabel(loadout.workspace_access)} · {loadout.tool_enforcement === "exact" ? `${loadout.tools.length} ${loadout.tools.length === 1 ? "capability" : "capabilities"}` : "Native tool permissions"}</span>
               <span class="card-usage">{usageLabel(count)}</span>
             </button>
           {/each}
@@ -514,28 +621,34 @@ function loadoutModelName(loadout: Loadout): string {
                 </div>
                 <button class="secondary apply-preset" type="button" disabled={!selectedPreset} on:click={applyPreset}>Apply preset</button>
               </div>
-              <p class="preset-impact">Applying replaces Model, Reasoning, Project access, and standard capabilities. Custom capability IDs are preserved.</p>
+              <p class="preset-impact">Applying replaces Model, Reasoning, Project access, and the resolved tool policy. Custom capability IDs are preserved only for exact-selection Harnesses.</p>
             {/if}
 
             <div class="form-grid model-grid">
               <div class="field">
                 <label for="loadout-model">Model</label>
-                <select id="loadout-model" value={draft.provider && draft.model ? modelRefKey({ provider: draft.provider, model: draft.model }) : ""} on:change={(event) => chooseModel(event.currentTarget.value)}>
+                <select id="loadout-model" value={draft.harness && draft.provider && draft.model ? modelRefKey({ harness: draft.harness, provider: draft.provider, model: draft.model }) : ""} on:change={(event) => chooseModel(event.currentTarget.value)}>
                   <option value="">Choose a discovered model</option>
                   {#each modelChoices as model}
-                    <option value={modelRefKey(model)}>{modelLabel(model.model)} · {providerLabel(model.provider)}</option>
+                    <option value={modelRefKey(model)}>{model.display_name} · {model.harness} · {providerLabel(model.provider)}</option>
                   {/each}
-                  {#if draft.provider && draft.model && !currentModelDiscovered}
-                    <option value={modelRefKey({ provider: draft.provider, model: draft.model })}>Custom model — currently configured</option>
+                  {#if draft.harness && draft.provider && draft.model && !currentModelDiscovered}
+                    <option value={modelRefKey({ harness: draft.harness, provider: draft.provider, model: draft.model })}>Unavailable configuration — currently configured</option>
                   {/if}
                 </select>
                 {#if !product.executionOptions.length}<button class="custom-link" type="button" on:click={() => customOpen = true}>Use custom configuration</button>{/if}
               </div>
               <div class="field">
-                <label for="loadout-reasoning">Reasoning</label>
-                <select id="loadout-reasoning" bind:value={draft.reasoning}>
-                  {#each reasoningChoices as reasoning}<option value={reasoning}>{reasoningLabel(reasoning)}</option>{/each}
-                </select>
+                <label for="loadout-reasoning">Reasoning / Effort</label>
+                {#if selectedReasoningCapability?.kind === "unsupported" || (selectedReasoningCapability === null && draft.reasoning === null)}
+                  <p id="loadout-reasoning" class="preset-impact">Not configurable for this Model.</p>
+                {:else if visibleReasoningChoices.length}
+                  <select id="loadout-reasoning" bind:value={draft.reasoning}>
+                    {#each visibleReasoningChoices as reasoning}<option value={reasoning}>{reasoningLabel(reasoning)}</option>{/each}
+                  </select>
+                {:else}
+                  <input id="loadout-reasoning" bind:value={draft.reasoning} placeholder="Native reasoning value" />
+                {/if}
               </div>
             </div>
           </section>
@@ -553,18 +666,26 @@ function loadoutModelName(loadout: Loadout): string {
           </section>
 
           <section class="form-section" aria-labelledby="capabilities-heading">
-            <div class="form-section-heading"><span aria-hidden="true">C</span><div><h3 id="capabilities-heading">Capabilities</h3><p>Choose the equipment this Loadout carries.</p></div></div>
-            <div class="capability-picker">
-              {#each knownCapabilities as capability}
-                <label class:selected={draft.tools.includes(capability.id)}>
-                  <input type="checkbox" checked={draft.tools.includes(capability.id)} on:change={(event) => toggleCapability(capability.id, event.currentTarget.checked)} />
-                  <span class="capability-icon" aria-hidden="true">{capability.icon}</span>
-                  <span><strong>{capability.name}</strong><small>{capability.description}</small></span>
-                </label>
-              {/each}
-            </div>
-            {#if customCapabilities(draft).length}
-              <p class="custom-retained">{customCapabilities(draft).length} custom {customCapabilities(draft).length === 1 ? "capability is" : "capabilities are"} preserved.</p>
+            <div class="form-section-heading"><span aria-hidden="true">C</span><div><h3 id="capabilities-heading">Capabilities</h3><p>{nativeToolPolicy ? "Use the Harness's native tool profile and permission controls." : "Choose the equipment this Loadout carries."}</p></div></div>
+            {#if nativeToolPolicy}
+              <div class="model-panel">
+                <span class="panel-icon" aria-hidden="true">◆</span>
+                <div><small>Tool profile</small><strong>Native Harness Tools</strong><span>Authorization: native allow / ask / deny</span></div>
+              </div>
+              <p class="preset-impact">QE records this complete capability profile but does not claim an exact native tool subset.</p>
+            {:else}
+              <div class="capability-picker">
+                {#each knownCapabilities as capability}
+                  <label class:selected={draft.tools.includes(capability.id)}>
+                    <input type="checkbox" checked={draft.tools.includes(capability.id)} on:change={(event) => toggleCapability(capability.id, event.currentTarget.checked)} />
+                    <span class="capability-icon" aria-hidden="true">{capability.icon}</span>
+                    <span><strong>{capability.name}</strong><small>{capability.description}</small></span>
+                  </label>
+                {/each}
+              </div>
+              {#if customCapabilities(draft).length}
+                <p class="custom-retained">{customCapabilities(draft).length} custom {customCapabilities(draft).length === 1 ? "capability is" : "capabilities are"} preserved.</p>
+              {/if}
             {/if}
           </section>
 
@@ -573,6 +694,11 @@ function loadoutModelName(loadout: Loadout): string {
             <div class="custom-content">
               <p>Use canonical Product identifiers for models or capabilities not currently advertised by a Worker.</p>
               <div class="form-grid model-grid">
+                <div class="field">
+                  <label for="custom-harness">Harness</label>
+                  <input id="custom-harness" bind:value={draft.harness} aria-invalid={fieldErrors.harness ? "true" : undefined} />
+                  {#if fieldErrors.harness}<small class="field-error">{fieldErrors.harness}</small>{/if}
+                </div>
                 <div class="field">
                   <label for="custom-provider">Canonical provider</label>
                   <input id="custom-provider" bind:value={draft.provider} aria-invalid={fieldErrors.provider ? "true" : undefined} />
@@ -584,11 +710,13 @@ function loadoutModelName(loadout: Loadout): string {
                   {#if fieldErrors.model}<small class="field-error">{fieldErrors.model}</small>{/if}
                 </div>
               </div>
-              <div class="field">
-                <label for="custom-capabilities">Custom capability IDs <span>One per line</span></label>
-                <textarea id="custom-capabilities" rows="3" value={customToolsText} on:input={(event) => updateCustomCapabilities(event.currentTarget.value)} aria-invalid={fieldErrors.tools ? "true" : undefined}></textarea>
-                {#if fieldErrors.tools}<small class="field-error">{fieldErrors.tools}</small>{/if}
-              </div>
+              {#if !nativeToolPolicy}
+                <div class="field">
+                  <label for="custom-capabilities">Custom capability IDs <span>One per line</span></label>
+                  <textarea id="custom-capabilities" rows="3" value={customToolsText} on:input={(event) => updateCustomCapabilities(event.currentTarget.value)} aria-invalid={fieldErrors.tools ? "true" : undefined}></textarea>
+                  {#if fieldErrors.tools}<small class="field-error">{fieldErrors.tools}</small>{/if}
+                </div>
+              {/if}
             </div>
           </details>
 
@@ -598,7 +726,7 @@ function loadoutModelName(loadout: Loadout): string {
           </footer>
         </form>
       {:else if selectedLoadout}
-        {@const discovered = modelIsDiscovered(selectedLoadout.model, product.executionOptions)}
+        {@const discovered = product.executionOptions.some((option) => option.harness === selectedLoadout.harness && option.model.provider === selectedLoadout.model.provider && option.model.model === selectedLoadout.model.model && optionSupportsDraft(option, draftFromLoadout(selectedLoadout)))}
         <article class="loadout-detail">
           <div class="detail-title-row">
             <div><span class="eyebrow">Loadout · Equipment</span><h2>{selectedLoadout.name}</h2></div>
@@ -609,17 +737,19 @@ function loadoutModelName(loadout: Loadout): string {
 
           <section class="model-panel">
             <span class="panel-icon" aria-hidden="true">◆</span>
-            <div><small>Model</small>{#if discovered}<strong>{modelLabel(selectedLoadout.model.model)}</strong><span>{providerLabel(selectedLoadout.model.provider)}</span>{:else}<strong class="custom-model"><code>{canonicalModel(selectedLoadout)}</code></strong><span>Custom model configuration</span>{/if}</div>
+            <div><small>Model</small>{#if discovered}<strong>{modelLabel(selectedLoadout.model.model)}</strong><span>{selectedLoadout.harness} · {providerLabel(selectedLoadout.model.provider)}</span>{:else}<strong class="custom-model"><code>{canonicalModel(selectedLoadout)}</code></strong><span>Unavailable configuration</span>{/if}</div>
           </section>
 
           <div class="configuration-grid">
-            <section><small>Reasoning</small><strong>{reasoningLabel(selectedLoadout.reasoning)}</strong></section>
+            <section><small>Harness</small><strong>{selectedLoadout.harness}</strong></section>
+            <section><small>Reasoning / Effort</small><strong>{reasoningLabel(selectedLoadout.reasoning)}</strong></section>
             <section><small>Project access</small><strong>{accessLabel(selectedLoadout.workspace_access)}</strong></section>
-            <section><small>Capabilities</small><strong>{selectedLoadout.tools.length}</strong></section>
+            <section><small>Tool policy</small><strong>{selectedLoadout.tool_enforcement === "exact" ? "Exact selection" : "Native permissions"}</strong></section>
           </div>
 
           <section class="capabilities-panel" aria-labelledby="detail-capabilities-title">
-            <h3 id="detail-capabilities-title">Capabilities</h3>
+            <h3 id="detail-capabilities-title">{selectedLoadout.tool_enforcement === "exact" ? "Capabilities" : "Native tool profile"}</h3>
+            {#if selectedLoadout.tool_enforcement === "native_permissions"}<p>Operation authorization uses the Harness's native allow / ask / deny controls.</p>{/if}
             {#if selectedLoadout.tools.length}
               <ul>
                 {#each selectedLoadout.tools as capabilityId}
@@ -639,6 +769,7 @@ function loadoutModelName(loadout: Loadout): string {
             <dl>
               <div><dt>Loadout key</dt><dd><code>{selectedLoadout.key}</code><small>Immutable</small></dd></div>
               <div><dt>Canonical model</dt><dd><code>{canonicalModel(selectedLoadout)}</code></dd></div>
+              <div><dt>Tool enforcement</dt><dd><code>{selectedLoadout.tool_enforcement}</code></dd></div>
               <div><dt>Capability IDs</dt><dd>{#if selectedLoadout.tools.length}<code>{selectedLoadout.tools.join("\n")}</code>{:else}<span>None</span>{/if}</dd></div>
             </dl>
           </details>

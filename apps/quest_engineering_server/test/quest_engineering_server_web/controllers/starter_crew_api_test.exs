@@ -108,10 +108,20 @@ defmodule QuestEngineering.ServerWeb.StarterCrewApiTest do
       "tags" => [],
       "executors" => [
         %{
-          "adapter" => "fake",
-          "models" => [%{"provider" => "fake", "model" => "starter"}],
-          "reasoning" => ["low", "medium"],
+          "harness_kind" => "fake",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "starter",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "medium"]
+              }
+            }
+          ],
           "tools" => ["workspace.filesystem", "workspace.search"],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{
               "ref" => "workspace:starter-api",

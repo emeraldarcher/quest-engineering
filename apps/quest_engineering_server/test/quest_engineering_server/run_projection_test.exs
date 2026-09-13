@@ -31,9 +31,11 @@ defmodule QuestEngineering.Server.RunProjectionTest do
       Products.create_loadout(%{
         key: "loadout-projection",
         name: "Loadout",
+        harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
-        reasoning: :low,
+        reasoning: "low",
         tools: [],
+        tool_enforcement: :exact,
         workspace_access: :read_write
       })
 
@@ -120,6 +122,22 @@ defmodule QuestEngineering.Server.RunProjectionTest do
     assert second_step.session.attention["attention_id"] == attention["attention_id"]
     assert second_step.session.attachment.available
     assert second_step.attempt.session.id == second_step.session.id
+
+    assert second_step.attempt.execution == %{
+             harness: "fake",
+             model: %{provider: "fake", model: "test"},
+             reasoning: "low",
+             tools: [],
+             tool_enforcement: "exact",
+             workspace_permission: "read_write",
+             worker_id: "worker-projection"
+           }
+
+    assert second_step.session.native_identity == %{
+             conversation_id: "pi-test",
+             terminal_id: nil
+           }
+
     assert Enum.map(second_step.session.events, & &1.type) == ["attention_requested"]
 
     assert {:ok, takeover_descriptor} =
@@ -330,7 +348,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
         "supports_observation" => true,
         "supports_takeover" => true
       },
-      provider_session_id: "pi-test",
+      native_session_id: "pi-test",
       attention: attention,
       started_at: DateTime.from_iso8601(now) |> elem(1),
       last_activity_at: DateTime.from_iso8601(now) |> elem(1)
@@ -354,10 +372,20 @@ defmodule QuestEngineering.Server.RunProjectionTest do
       "tags" => [],
       "executors" => [
         %{
-          "adapter" => "fake",
-          "models" => [%{"provider" => "fake", "model" => "test"}],
-          "reasoning" => ["low", "medium", "high"],
+          "harness_kind" => "fake",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "test",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "medium", "high"]
+              }
+            }
+          ],
           "tools" => [],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{"ref" => "workspace:projection", "root" => root, "max_access" => "read_write"}
           ]

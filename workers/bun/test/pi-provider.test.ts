@@ -5,16 +5,16 @@ import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import {
+  writeControlAtomic,
+  writeStepResultAtomic,
+} from "../src/harnesses/control/result-envelope.ts";
+import {
   mappedPiTools,
   PiHarness,
   piPromptFor,
-} from "../src/providers/pi/provider.ts";
-import {
-  writeControlAtomic,
-  writeStepResultAtomic,
-} from "../src/providers/pi/result-envelope.ts";
-import { workspaceAccessAllows } from "../src/providers/pi/workspace-permission-extension.ts";
-import type { HarnessEvent } from "../src/providers/types.ts";
+} from "../src/harnesses/pi/adapter.ts";
+import { workspaceAccessAllows } from "../src/harnesses/pi/workspace-permission-extension.ts";
+import type { HarnessEvent } from "../src/harnesses/types.ts";
 import type {
   HostedAgent,
   HostedExecutionRef,
@@ -40,9 +40,10 @@ async function fixture() {
   const registry = new DispatchRegistry(join(root, "state.sqlite"), root);
   const host = new FakeHost(join(root, "workspace"));
   const extension = join(
-    process.cwd(),
+    import.meta.dir,
+    "..",
     "src",
-    "providers",
+    "harnesses",
     "pi",
     "step-result-extension.ts",
   );
@@ -669,9 +670,10 @@ test("Worker restart restores Herdr-only blocked attention from recovered state"
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const extension = join(
-    process.cwd(),
+    import.meta.dir,
+    "..",
     "src",
-    "providers",
+    "harnesses",
     "pi",
     "step-result-extension.ts",
   );

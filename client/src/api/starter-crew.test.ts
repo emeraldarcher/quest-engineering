@@ -50,9 +50,11 @@ function starterResult() {
     key,
     name,
     description: `${name} description`,
+    harness: "fake",
     model: { provider: "fake", model: "starter" },
     reasoning: "medium",
     tools: ["workspace.filesystem"],
+    tool_enforcement: "exact",
     workspace_access: access,
     archived_at: null,
   });

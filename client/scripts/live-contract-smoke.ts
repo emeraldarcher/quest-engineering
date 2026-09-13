@@ -13,8 +13,11 @@ const api = new ApiClient({ httpBaseUrl });
 const options = (await api.listExecutionOptions()).filter(
   (option) => option.available,
 );
-const option = options.find((item) =>
-  item.workspaces.some((workspace) => workspace.workspace_id === workspaceId),
+const option = options.find(
+  (item) =>
+    item.tool_enforcement === "exact" &&
+    item.reasoning_capability.kind === "enumerated" &&
+    item.workspaces.some((workspace) => workspace.workspace_id === workspaceId),
 );
 if (!option)
   throw new Error(
@@ -23,9 +26,13 @@ if (!option)
 const workspace = option.workspaces.find(
   (item) => item.workspace_id === workspaceId,
 );
-const reasoning = option.reasoning.includes("medium")
-  ? "medium"
-  : option.reasoning[0];
+const reasoning =
+  option.reasoning_capability.kind === "enumerated" &&
+  option.reasoning_capability.values.includes("medium")
+    ? "medium"
+    : option.reasoning_capability.kind === "enumerated"
+      ? option.reasoning_capability.values[0]
+      : null;
 if (
   !workspace ||
   !reasoning ||
@@ -43,9 +50,11 @@ const loadout = await api.createLoadout({
   key: `smoke-coding-${suffix}`,
   name: "Smoke Coding",
   description: "",
-  model: option.model,
+  harness: option.harness,
+  model: { provider: option.model.provider, model: option.model.model },
   reasoning,
   tools: option.tools.filter((tool) => tool !== "terminal.shell"),
+  tool_enforcement: "exact",
   workspace_access: "read_write",
 });
 const squad = await api.createSquad({

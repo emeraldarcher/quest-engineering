@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("execution document artifacts", () => {
-  test("materializes verified immutable Plan input outside the Git worktree", () => {
+  test("cross-harness handoff preserves exact artifact ID and hash outside the Git worktree", () => {
     const dataRoot = resolve(
       ".pi/tmp",
       `worker-artifacts-${crypto.randomUUID()}`,
@@ -33,6 +33,8 @@ describe("execution document artifacts", () => {
       true,
     );
     expect(plan?.path.startsWith(worktree)).toBe(false);
+    expect(plan?.artifactId).toBe("run-1/artifact/2/quest_plan");
+    expect(plan?.contentHash).toBe(hash);
     expect(plan?.filename).toMatch(/^quest-plan-v2-[0-9a-f]{8}\.md$/);
     expect(readFileSync(plan?.path as string, "utf8")).toBe(content);
     expect(existsSync(`${plan?.path}.qe-artifact.json`)).toBe(true);
@@ -77,7 +79,7 @@ function dispatchWithPlan(
       context_requirement: { selector: "fresh", value: null },
       context_lineage_occurrence_id: null,
       worker_id: "worker-1",
-      protocol_version: 6,
+      protocol_version: 7,
       type: "execute_action",
       execution: {
         identity: {
@@ -125,9 +127,11 @@ function dispatchWithPlan(
           acceptance_contract: null,
         },
         configuration: {
+          harness_kind: "antigravity",
           model: { provider: "fake", model: "test" },
           reasoning: "low",
           tools: ["workspace.filesystem"],
+          tool_enforcement: "exact",
         },
         logical_workspace: {
           workspace_id: "workspace-1",

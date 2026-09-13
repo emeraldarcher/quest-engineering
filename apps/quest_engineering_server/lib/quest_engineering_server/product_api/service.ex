@@ -137,7 +137,16 @@ defmodule QuestEngineering.Server.ProductApi.Service do
 
   defp attributes(:loadout, payload) do
     with {:ok, attributes} <-
-           basic(payload, [:key, :name, :description, :reasoning, :tools, :workspace_access]),
+           basic(payload, [
+             :key,
+             :name,
+             :description,
+             :harness,
+             :reasoning,
+             :tools,
+             :tool_enforcement,
+             :workspace_access
+           ]),
          {:ok, attributes} <- loadout_enums(attributes),
          {:ok, model} <- model(Map.get(payload, "model", Map.get(payload, :model, :absent))) do
       {:ok, if(model == :absent, do: attributes, else: Map.put(attributes, :model, model))}
@@ -190,13 +199,26 @@ defmodule QuestEngineering.Server.ProductApi.Service do
   defp basic(_, _), do: malformed([], :expected_object)
 
   defp loadout_enums(attributes) do
-    with {:ok, attributes} <-
-           enum(attributes, :reasoning, %{"low" => :low, "medium" => :medium, "high" => :high}) do
+    with {:ok, attributes} <- reasoning(attributes),
+         {:ok, attributes} <-
+           enum(attributes, :tool_enforcement, %{
+             "exact" => :exact,
+             "native_permissions" => :native_permissions
+           }) do
       enum(attributes, :workspace_access, %{
         "none" => :none,
         "read_only" => :read_only,
         "read_write" => :read_write
       })
+    end
+  end
+
+  defp reasoning(attributes) do
+    case Map.fetch(attributes, :reasoning) do
+      :error -> {:ok, attributes}
+      {:ok, nil} -> {:ok, attributes}
+      {:ok, value} when is_binary(value) and byte_size(value) > 0 -> {:ok, attributes}
+      {:ok, _value} -> malformed(["reasoning"], :invalid_value)
     end
   end
 

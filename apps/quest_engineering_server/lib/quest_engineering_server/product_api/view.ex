@@ -72,9 +72,11 @@ defmodule QuestEngineering.Server.ProductApi.View do
       key: value.key,
       name: value.name,
       description: value.description,
+      harness: value.harness,
       model: %{provider: value.model.provider, model: value.model.model},
-      reasoning: Atom.to_string(value.reasoning),
+      reasoning: value.reasoning,
       tools: value.tools,
+      tool_enforcement: Atom.to_string(value.tool_enforcement),
       workspace_access: Atom.to_string(value.workspace_access),
       archived_at: timestamp(archived_at)
     }

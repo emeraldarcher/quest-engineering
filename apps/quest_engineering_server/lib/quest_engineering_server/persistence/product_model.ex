@@ -74,10 +74,12 @@ defmodule QuestEngineering.Server.Persistence.ProductLoadout do
     field :key, :string
     field :name, :string
     field :description, :string, default: ""
+    field :harness_kind, :string
     field :model_provider, :string
     field :model_name, :string
     field :reasoning, :string
     field :tools, {:array, :string}, default: []
+    field :tool_enforcement, :string
     field :workspace_access, :string
     field :archived_at, :utc_datetime_usec
 
@@ -93,10 +95,12 @@ defmodule QuestEngineering.Server.Persistence.ProductLoadout do
         :key,
         :name,
         :description,
+        :harness_kind,
         :model_provider,
         :model_name,
         :reasoning,
         :tools,
+        :tool_enforcement,
         :workspace_access
       ],
       empty_values: []
@@ -112,10 +116,12 @@ defmodule QuestEngineering.Server.Persistence.ProductLoadout do
       [
         :name,
         :description,
+        :harness_kind,
         :model_provider,
         :model_name,
         :reasoning,
         :tools,
+        :tool_enforcement,
         :workspace_access
       ],
       empty_values: []
@@ -128,15 +134,20 @@ defmodule QuestEngineering.Server.Persistence.ProductLoadout do
     |> validate_required([
       :key,
       :name,
+      :harness_kind,
       :model_provider,
       :model_name,
-      :reasoning,
       :tools,
+      :tool_enforcement,
       :workspace_access
     ])
-    |> validate_inclusion(:reasoning, ["low", "medium", "high"])
+    |> validate_format(:harness_kind, ~r/^[a-z][a-z0-9_-]*$/)
+    |> validate_format(:reasoning, ~r/^\S(?:.*\S)?$/)
+    |> validate_inclusion(:tool_enforcement, ["exact", "native_permissions"])
+    |> check_constraint(:harness_kind, name: :product_loadouts_harness_kind_valid)
     |> validate_inclusion(:workspace_access, ["none", "read_only", "read_write"])
     |> check_constraint(:reasoning, name: :product_loadouts_reasoning_valid)
+    |> check_constraint(:tool_enforcement, name: :product_loadouts_tool_enforcement_valid)
     |> check_constraint(:workspace_access, name: :product_loadouts_workspace_access_valid)
   end
 end

@@ -17,37 +17,61 @@ defmodule QuestEngineering.Server.CapabilityMatcher do
   def executor_compatible?(_capabilities, _requested), do: false
 
   defp executor_profile_compatible?(executor, requested) when is_map(executor) do
-    model?(executor["models"], requested.model.provider, requested.model.model) and
-      Atom.to_string(requested.reasoning) in List.wrap(executor["reasoning"]) and
-      subset?(requested.tools, executor["tools"]) and
-      adapter_constraints?(executor["adapter"], requested)
+    executor["harness_kind"] == requested.harness_kind and
+      model?(
+        executor["models"],
+        requested.model.provider,
+        requested.model.model,
+        requested.reasoning
+      ) and tool_selection?(executor, requested) and
+      harness_constraints?(executor["harness_kind"], requested)
   end
 
   defp executor_profile_compatible?(_executor, _requested), do: false
 
-  defp model?(models, provider, model) when is_list(models) do
+  defp model?(models, provider, model, reasoning) when is_list(models) do
     Enum.any?(models, fn
-      %{"provider" => ^provider, "model" => ^model} -> true
-      _other -> false
+      %{
+        "provider" => ^provider,
+        "model" => ^model,
+        "reasoning_capability" => %{"kind" => "unsupported"}
+      } ->
+        is_nil(reasoning)
+
+      %{
+        "provider" => ^provider,
+        "model" => ^model,
+        "reasoning_capability" => %{"kind" => "enumerated", "values" => values}
+      }
+      when is_list(values) ->
+        is_binary(reasoning) and reasoning in values
+
+      _other ->
+        false
     end)
   end
 
-  defp model?(_models, _provider, _model), do: false
+  defp model?(_models, _provider, _model, _reasoning), do: false
 
-  defp subset?(requested, advertised) when is_list(advertised),
-    do: MapSet.subset?(MapSet.new(requested), MapSet.new(advertised))
+  defp tool_selection?(executor, requested) do
+    advertised = executor["tools"]
+    requested_enforcement = Atom.to_string(requested.tool_enforcement)
 
-  defp subset?(_requested, _advertised), do: false
+    executor["tool_enforcement"] == requested_enforcement and is_list(advertised) and
+      MapSet.subset?(MapSet.new(requested.tools), MapSet.new(advertised)) and
+      (requested_enforcement == "exact" or
+         MapSet.equal?(MapSet.new(requested.tools), MapSet.new(advertised)))
+  end
 
   # These are Pi-adapter constraints for currently well-known QE capabilities,
   # not universal Product validation. Other executors may represent capability
   # combinations differently.
-  defp adapter_constraints?("pi", %{tools: tools, workspace_access: access}) do
+  defp harness_constraints?("pi", %{tools: tools, workspace_access: access}) do
     workspace_tools = ["workspace.filesystem", "workspace.search", "terminal.shell"]
 
     not ("terminal.shell" in tools and access != :read_write) and
       not (access == :none and Enum.any?(workspace_tools, &(&1 in tools)))
   end
 
-  defp adapter_constraints?(_adapter, _requested), do: true
+  defp harness_constraints?(_harness, _requested), do: true
 end

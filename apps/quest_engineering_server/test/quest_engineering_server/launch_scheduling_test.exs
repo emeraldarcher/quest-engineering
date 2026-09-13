@@ -805,7 +805,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
                state: :retained,
                capabilities: %{"can_attach_terminal" => true},
                terminal: %{"supports_takeover" => true},
-               provider_session_id: "pi-session-retained",
+               native_session_id: "pi-session-retained",
                attention: nil,
                started_at: now,
                last_activity_at: now
@@ -824,7 +824,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
                worker_id: worker.id,
                session_id: lineage_id,
                lineage_id: lineage_id,
-               pi_session_id: "pi-session-retained"
+               native_session_id: "pi-session-retained"
              })
 
     assert recovery.continuation_mode == "retained"
@@ -1389,9 +1389,11 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
       Products.create_loadout(%{
         key: key,
         name: key,
+        harness: "fake",
         model: model,
-        reasoning: :medium,
+        reasoning: "medium",
         tools: tools,
+        tool_enforcement: :exact,
         workspace_access: :read_write
       })
 
@@ -1438,10 +1440,20 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
       "tags" => [],
       "executors" => [
         %{
-          "adapter" => adapter,
-          "models" => [%{"provider" => "fake", "model" => "test"}],
-          "reasoning" => ["low", "medium", "high"],
+          "harness_kind" => adapter,
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "test",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "medium", "high"]
+              }
+            }
+          ],
           "tools" => tools,
+          "tool_enforcement" => "exact",
           "workspaces" =>
             Enum.map(workspace_roots, fn {ref, workspace_root} ->
               %{"ref" => ref, "root" => workspace_root, "max_access" => "read_write"}

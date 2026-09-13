@@ -79,7 +79,7 @@ defmodule QuestEngineering.Core.ProductTest do
     test "compiles the embedded Tactic and resolves exact Class and Loadout values" do
       assert {:ok, snapshot} = valid_snapshot()
 
-      assert %LaunchSnapshot{schema_version: 4} = snapshot
+      assert %LaunchSnapshot{schema_version: 6} = snapshot
 
       assert snapshot.quest.objective ==
                "Implement and independently review the requested change."
@@ -92,6 +92,21 @@ defmodule QuestEngineering.Core.ProductTest do
       assert Enum.map(snapshot.execution_plan.steps, & &1.key) == ["implement", "review"]
       refute Map.has_key?(Map.from_struct(snapshot), :run_id)
       refute Map.has_key?(Map.from_struct(snapshot), :launch_id)
+    end
+
+    test "freezes unsupported reasoning and native tool policy without a fake effort" do
+      unsupported = %{
+        coding_loadout()
+        | harness: "antigravity",
+          model: %ModelRef{provider: "antigravity", model: "no-effort"},
+          reasoning: nil,
+          tool_enforcement: :native_permissions
+      }
+
+      assert {:ok, snapshot} = valid_snapshot([unsupported, review_loadout()])
+      frozen = hd(snapshot.squad.members).loadout
+      assert frozen.reasoning == nil
+      assert frozen.tool_enforcement == :native_permissions
     end
 
     test "a later definition mutation cannot change an existing snapshot" do
@@ -342,13 +357,13 @@ defmodule QuestEngineering.Core.ProductTest do
       access: :read_write
     }
 
-  defp valid_snapshot do
+  defp valid_snapshot(loadouts \\ [coding_loadout(), review_loadout()]) do
     Builder.build(
       quest(),
       workspace(),
       engineering_squad(),
       [builder_class(), reviewer_class()],
-      [coding_loadout(), review_loadout()],
+      loadouts,
       Catalog.empty()
     )
   end
@@ -379,9 +394,11 @@ defmodule QuestEngineering.Core.ProductTest do
       key: "coding",
       name: "Coding",
       description: "Writable engineering capabilities.",
+      harness: "pi",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
-      reasoning: :medium,
+      reasoning: "medium",
       tools: ["workspace.filesystem", "terminal.shell"],
+      tool_enforcement: :exact,
       workspace_access: :read_write
     }
   end
@@ -392,9 +409,11 @@ defmodule QuestEngineering.Core.ProductTest do
       key: "review",
       name: "Review",
       description: "Read-only review capabilities.",
+      harness: "pi",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
-      reasoning: :high,
+      reasoning: "high",
       tools: ["workspace.filesystem", "workspace.search"],
+      tool_enforcement: :exact,
       workspace_access: :read_only
     }
   end

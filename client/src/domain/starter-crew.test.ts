@@ -12,9 +12,15 @@ const workspace: Workspace = {
   archived_at: null,
 };
 const option: ExecutionOption = {
-  model: { provider: "test", model: "starter" },
-  reasoning: ["medium"],
+  harness: "fake",
+  model: {
+    provider: "test",
+    model: "starter",
+    display_name: "Starter",
+  },
+  reasoning_capability: { kind: "enumerated", values: ["medium"] },
   tools: ["workspace.filesystem"],
+  tool_enforcement: "exact",
   workspaces: [
     {
       workspace_id: workspace.id,

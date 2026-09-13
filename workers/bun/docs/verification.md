@@ -52,7 +52,7 @@ Plan fresh
 → Run completed at revision 5
 ```
 
-Five unique Action IDs produced five unique idempotent transitions and five completed dispatches. Plan, Implement, both Reviews, and Repair returned exact declared structured artifacts. Implement and Repair shared one provider lineage; the two Review occurrences used distinct lineages. All local lineage occupancy was cleared before server acknowledgement and Herdr metadata was marked inactive after completion.
+Five unique Action IDs produced five unique idempotent transitions and five completed dispatches. Plan, Implement, both Reviews, and Repair returned exact declared structured artifacts. Implement and Repair shared one harness lineage; the two Review occurrences used distinct lineages. All local lineage occupancy was cleared before server acknowledgement and Herdr metadata was marked inactive after completion.
 
 During Repair the Bun Worker was killed. The same Herdr/Pi process finished, the restarted Worker collected the result from its stable control path, reconnected at a newer server generation, and advanced the Run without duplicate execution.
 

@@ -1,40 +1,88 @@
 import type { WorkerConfig } from "./config.ts";
+import type { HarnessDiscovery } from "./harnesses/types.ts";
 import type {
   ExecuteAction,
   ExecutorCapability,
   WorkerCapabilities,
 } from "./protocol/types.ts";
 
-const QE_TOOLS = [
+export const QE_TOOL_CAPABILITIES = [
   "workspace.filesystem",
   "workspace.search",
   "terminal.shell",
 ] as const;
 
 export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
+  const reasoning = config.reasoningLevels ?? ["low", "medium", "high"];
   return {
-    adapter: config.provider,
-    models:
+    harness_kind: config.provider,
+    models: (
       config.executorModels ??
       (config.piModel
         ? [splitModel(config.piModel)]
-        : [{ provider: config.provider, model: "test" }]),
-    reasoning: config.reasoningLevels ?? ["low", "medium", "high"],
-    tools: [...QE_TOOLS],
+        : [{ provider: config.provider, model: "test" }])
+    ).map((model) => ({
+      ...model,
+      display_name: `${model.provider}/${model.model}`,
+      reasoning_capability: { kind: "enumerated", values: reasoning },
+    })),
+    tools: [...QE_TOOL_CAPABILITIES],
+    tool_enforcement: "exact",
   };
+}
+
+export function discoveredExecutorCapabilities(
+  discoveries: HarnessDiscovery[],
+): ExecutorCapability[] {
+  return discoveries
+    .filter(
+      (discovery) =>
+        discovery.integration.status === "ready" &&
+        discovery.capabilities.structuredResult &&
+        discovery.models.length > 0,
+    )
+    .map((discovery) => ({
+      harness_kind: discovery.kind,
+      models: discovery.models
+        .filter(
+          (
+            model,
+          ): model is typeof model & {
+            reasoningCapability: Exclude<
+              typeof model.reasoningCapability,
+              { kind: "unknown" }
+            >;
+          } => model.reasoningCapability.kind !== "unknown",
+        )
+        .map((model) => ({
+          provider: model.provider,
+          model: model.model,
+          display_name: model.displayName,
+          reasoning_capability: model.reasoningCapability,
+        })),
+      tools: [...QE_TOOL_CAPABILITIES],
+      tool_enforcement:
+        discovery.kind === "antigravity"
+          ? ("native_permissions" as const)
+          : ("exact" as const),
+    }))
+    .filter((executor) => executor.models.length > 0);
 }
 
 export function workerCapabilities(
   config: WorkerConfig,
   os: string,
   arch: string,
+  discoveries?: HarnessDiscovery[],
 ): WorkerCapabilities {
   return {
     os,
     arch,
     max_concurrency: config.maxConcurrency,
     tags: config.tags,
-    executors: [executorCapabilities(config)],
+    executors: discoveries
+      ? discoveredExecutorCapabilities(discoveries)
+      : [executorCapabilities(config)],
     features: [
       "run_delivery_v1",
       "run_worktree_retention_v1",
@@ -67,14 +115,20 @@ export function assertExecutionSupported(
       binding.allow_unconfined_shell) &&
     capabilities.executors.some(
       (executor) =>
+        executor.harness_kind === requested.harness_kind &&
         executor.models.some(
           (model) =>
             model.provider === requested.model.provider &&
-            model.model === requested.model.model,
+            model.model === requested.model.model &&
+            reasoningSupported(model.reasoning_capability, requested.reasoning),
         ) &&
-        executor.reasoning.includes(requested.reasoning) &&
-        requested.tools.every((tool) => executor.tools.includes(tool)) &&
-        adapterCombinationSupported(executor.adapter, action),
+        toolSelectionSupported(
+          executor.tool_enforcement,
+          executor.tools,
+          requested.tool_enforcement,
+          requested.tools,
+        ) &&
+        harnessCombinationSupported(executor.harness_kind, action),
     );
   if (!compatible)
     throw new Error(
@@ -82,11 +136,36 @@ export function assertExecutionSupported(
     );
 }
 
-function adapterCombinationSupported(
-  adapter: string,
+function reasoningSupported(
+  capability: ExecutorCapability["models"][number]["reasoning_capability"],
+  requested: string | null,
+): boolean {
+  return capability.kind === "unsupported"
+    ? requested === null
+    : requested !== null && capability.values.includes(requested);
+}
+
+function toolSelectionSupported(
+  advertisedEnforcement: ExecutorCapability["tool_enforcement"],
+  advertisedTools: string[],
+  requestedEnforcement: ExecutorCapability["tool_enforcement"],
+  requestedTools: string[],
+): boolean {
+  if (advertisedEnforcement !== requestedEnforcement) return false;
+  const available = new Set(advertisedTools);
+  if (!requestedTools.every((tool) => available.has(tool))) return false;
+  return (
+    advertisedEnforcement === "exact" ||
+    (requestedTools.length === available.size &&
+      requestedTools.every((tool) => available.has(tool)))
+  );
+}
+
+function harnessCombinationSupported(
+  harnessKind: string,
   action: ExecuteAction,
 ): boolean {
-  if (adapter !== "pi") return true;
+  if (harnessKind !== "pi") return true;
   const requested = action.execution.configuration;
   const access = action.execution.execution_workspace.access;
   const workspaceTools = [

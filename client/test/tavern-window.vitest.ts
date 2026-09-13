@@ -40,9 +40,11 @@ const coding: Loadout = {
   key: "coding",
   name: "Coding",
   description: "Implementation equipment.",
+  harness: "pi",
   model: { provider: "fixture", model: "town-model" },
   reasoning: "high",
   tools: ["workspace.filesystem", "terminal.shell"],
+  tool_enforcement: "exact",
   workspace_access: "read_write",
   archived_at: null,
 };

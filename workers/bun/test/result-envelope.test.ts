@@ -7,7 +7,7 @@ import {
   type StepResultEnvelope,
   writeControlAtomic,
   writeStepResultAtomic,
-} from "../src/providers/pi/result-envelope.ts";
+} from "../src/harnesses/control/result-envelope.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];

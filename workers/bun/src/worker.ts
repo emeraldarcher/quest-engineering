@@ -12,8 +12,15 @@ import { DispatchExecutor } from "./dispatch/executor.ts";
 import {
   type DispatchRecord,
   DispatchRegistry,
-  type ProviderLineage,
+  type HarnessLineage,
 } from "./dispatch/registry.ts";
+import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
+import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
+import { HarnessControlServer } from "./harnesses/control/server.ts";
+import { FakeHarness } from "./harnesses/fake/adapter.ts";
+import { PiHarness } from "./harnesses/pi/adapter.ts";
+import { HarnessRegistry } from "./harnesses/registry.ts";
+import type { AgentHarness } from "./harnesses/types.ts";
 import { decodeExecuteAction } from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
@@ -22,9 +29,6 @@ import type {
   WorkerCapabilities,
 } from "./protocol/types.ts";
 import { WORKER_PROTOCOL_VERSION } from "./protocol/types.ts";
-import { FakeHarness } from "./providers/fake/provider.ts";
-import { PiHarness } from "./providers/pi/provider.ts";
-import type { AgentHarness } from "./providers/types.ts";
 import { LocalHerdrConnectionProvider } from "./session-host/herdr/connection.ts";
 import { HerdrTerminalBackend } from "./session-host/herdr/session-host.ts";
 import {
@@ -47,6 +51,9 @@ export class QuestEngineeringWorker {
   readonly executor: DispatchExecutor;
   readonly worktrees: RunWorktreeRegistry;
   readonly deliveries: RunDeliveryRegistry;
+  readonly harnessControl: HarnessControlAuthority;
+  readonly harnesses: HarnessRegistry;
+  private readonly harnessControlServer: HarnessControlServer;
   private readonly channel: PhoenixWorkerChannel;
   private readonly capabilities: WorkerCapabilities;
   private stopping = false;
@@ -69,21 +76,28 @@ export class QuestEngineeringWorker {
   constructor(private readonly config: WorkerConfig) {
     this.worktrees = new RunWorktreeRegistry(config);
     this.deliveries = new RunDeliveryRegistry(config, this.worktrees);
-    const harness: AgentHarness =
+    const harnesses: AgentHarness[] =
       config.provider === "fake"
-        ? new FakeHarness(config.fakeOutputs, config.fakeDelayMs)
-        : new PiHarness(
-            new HerdrTerminalBackend(
+        ? [new FakeHarness(config.fakeOutputs, config.fakeDelayMs)]
+        : (config.enabledHarnesses ?? ["pi", "antigravity"]).map((kind) => {
+            const host = new HerdrTerminalBackend(
               new LocalHerdrConnectionProvider(config.herdrSession),
-            ),
-            config,
-          );
+            );
+            return kind === "antigravity"
+              ? new AntigravityHarness(host, config)
+              : new PiHarness(host, config);
+          });
+    this.harnesses = new HarnessRegistry(harnesses);
+    const defaultHarness = harnesses[0];
+    if (!defaultHarness) throw new Error("Worker has no enabled harnesses.");
     this.registry = new DispatchRegistry(
       join(config.dataRoot, "dispatches.sqlite"),
       config.dataRoot,
-      harness.kind,
-      harness.capabilities,
+      defaultHarness.kind,
+      (kind) => this.harnesses.get(kind).capabilities,
     );
+    this.harnessControl = new HarnessControlAuthority(this.registry);
+    this.harnessControlServer = new HarnessControlServer(this.harnessControl);
     // Harness and terminal transport are composed once per long-lived Worker.
     const capabilities = workerCapabilities(config, platform(), arch());
     this.capabilities = capabilities;
@@ -105,13 +119,16 @@ export class QuestEngineeringWorker {
     );
     this.executor = new DispatchExecutor(
       this.registry,
-      harness,
+      this.harnesses,
       (dispatch, type) => this.report(dispatch, type),
       (dispatch, lineage) => this.reportHarnessSession(dispatch, lineage),
+      this.harnessControl,
     );
   }
 
   async run(): Promise<void> {
+    await this.refreshHarnessCapabilities();
+    await this.harnessControlServer.start();
     await this.executor.recoverAll();
     while (!this.stopping) {
       try {
@@ -129,6 +146,23 @@ export class QuestEngineeringWorker {
     }
   }
 
+  private async refreshHarnessCapabilities(): Promise<void> {
+    const discoveries = await this.harnesses.discover();
+    const discovered = workerCapabilities(
+      this.config,
+      platform(),
+      arch(),
+      discoveries,
+    );
+    if (discovered.executors.length === 0)
+      throw new Error(
+        `No enabled harness is ready: ${discoveries
+          .map((item) => `${item.displayName}: ${item.integration.detail}`)
+          .join(" ")}`,
+      );
+    Object.assign(this.capabilities, discovered);
+  }
+
   attachment(actionId: string) {
     return this.executor.attachment(actionId);
   }
@@ -139,6 +173,7 @@ export class QuestEngineeringWorker {
     this.heartbeat = null;
     this.channel.close();
     this.executor.disconnect();
+    await this.harnessControlServer.stop();
     this.registry.close();
     this.deliveries.close();
     this.worktrees.close();
@@ -375,6 +410,14 @@ export class QuestEngineeringWorker {
     }, this.config.heartbeatMs);
     this.heartbeat.unref?.();
     void this.scanRecoveryRequests();
+    // Publish the bounded authorized-root catalog on every registration so a
+    // discovery request racing the join acknowledgement cannot be lost.
+    void this.reportWorkspaceSources().catch((error) =>
+      console.warn(
+        "Workspace source discovery failed",
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
   }
 
   private async scanRecoveryRequests(): Promise<void> {
@@ -448,7 +491,7 @@ export class QuestEngineeringWorker {
               member_key: dispatch.action.execution.performer.member_key,
               session_id: lineage.lineageId,
               lineage_id: lineage.lineageId,
-              pi_session_id: String(request.piSessionId),
+              native_session_id: String(request.piSessionId),
             },
           });
           await writeRecoveryResult(path, request, "authorized", {
@@ -465,7 +508,18 @@ export class QuestEngineeringWorker {
   }
 
   private async reportWorkspaceSources(): Promise<void> {
-    this.sourceCandidates.clear();
+    const discoveredCandidates = new Map<
+      string,
+      {
+        rootKey: string;
+        path: string;
+        maxAccess: "none" | "read_only" | "read_write";
+        allowShell: boolean;
+        fingerprint: string | null;
+        publicationRemoteName: string | null;
+        publicationRepositoryIdentity: string | null;
+      }
+    >();
     const candidates: Array<Record<string, unknown>> = [];
     for (const root of this.config.allowedRoots) {
       for (const path of discoverGitRoots(
@@ -478,7 +532,7 @@ export class QuestEngineeringWorker {
           .digest("hex");
         const publication = await publicationMetadata(path);
         const fingerprint = publication.fingerprint;
-        this.sourceCandidates.set(candidateId, {
+        discoveredCandidates.set(candidateId, {
           rootKey: root.key,
           path,
           maxAccess: root.max_access,
@@ -499,6 +553,9 @@ export class QuestEngineeringWorker {
         });
       }
     }
+    this.sourceCandidates.clear();
+    for (const [candidateId, candidate] of discoveredCandidates)
+      this.sourceCandidates.set(candidateId, candidate);
     await this.channel.sendProtocol({
       type: "workspace_sources",
       protocol_version: WORKER_PROTOCOL_VERSION,
@@ -790,7 +847,7 @@ export class QuestEngineeringWorker {
 
   private reportHarnessSession(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<boolean> {
     const previous =
       this.sessionReports.get(lineage.lineageId) ?? Promise.resolve(false);
@@ -868,7 +925,7 @@ export class QuestEngineeringWorker {
 
 function harnessSessionPayload(
   dispatch: DispatchRecord,
-  lineage: ProviderLineage,
+  lineage: HarnessLineage,
   executor: DispatchExecutor,
 ): ReconcileSession {
   const capability = lineage.capabilities;
@@ -899,7 +956,12 @@ function harnessSessionPayload(
     attempt_id: dispatch.action.attempt_id,
     member_key: dispatch.action.execution.performer.member_key,
     harness_kind: lineage.harnessKind,
-    harness_display_name: lineage.harnessKind === "pi" ? "Pi" : "Test Harness",
+    harness_display_name:
+      lineage.harnessKind === "pi"
+        ? "Pi"
+        : lineage.harnessKind === "antigravity"
+          ? "Antigravity"
+          : "Test Harness",
     state: lineage.sessionState,
     capabilities: {
       can_attach_terminal: capability.canAttachTerminal,
@@ -917,7 +979,7 @@ function harnessSessionPayload(
       automation_resume: capability.automationResume,
     },
     terminal,
-    provider_session_id:
+    native_session_id:
       lineage.nativeSession?.kind === "id" ? lineage.nativeSession.value : null,
     attention: lineage.attention
       ? {

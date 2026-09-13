@@ -8,10 +8,12 @@ import {
   currentReviewResult,
   diagnosticPresentation,
   documentContent,
+  effortLabel,
   implementationPlanInput,
   latestReviewArtifact,
   questPresentation,
   stepDisplayName,
+  toolPolicyLabel,
 } from "./run-presentation";
 
 function run(): RunProjection {
@@ -85,6 +87,22 @@ function quest(
 }
 
 describe("Work Yard operational presentation", () => {
+  test("reports unsupported effort and native authorization without exact-subset claims", () => {
+    const execution = {
+      harness: "antigravity",
+      model: { provider: "antigravity", model: "claude-sonnet-4-6" },
+      reasoning: null,
+      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      tool_enforcement: "native_permissions" as const,
+      workspace_permission: "read_write" as const,
+      worker_id: "worker-a",
+    };
+
+    expect(effortLabel(execution)).toBe("Effort not configurable");
+    expect(toolPolicyLabel(execution)).toBe("Tool policy: native permissions");
+    expect(toolPolicyLabel(execution)).not.toContain("exact");
+  });
+
   test("Run Again requires the selected Run to be the authoritative current eligible Run", () => {
     expect(canRunAgain(run(), quest("run-older", "run_again"))).toBe(false);
     expect(canRunAgain(run(), quest("run-current", "retry_publishing"))).toBe(
@@ -142,6 +160,7 @@ describe("Work Yard operational presentation", () => {
         output_produced: false,
         resolution: null,
         retry_of_attempt_id: null,
+        execution: null,
       },
       attempts: [
         {
@@ -154,6 +173,7 @@ describe("Work Yard operational presentation", () => {
           output_produced: false,
           resolution: null,
           retry_of_attempt_id: null,
+          execution: null,
         },
       ],
       member: null,

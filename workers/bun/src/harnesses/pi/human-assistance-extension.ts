@@ -6,7 +6,8 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readControl } from "./result-envelope.ts";
+import { HarnessControlClient } from "../control/client.ts";
+import { readControl } from "../control/result-envelope.ts";
 
 const categories = [
   "needs_input",
@@ -91,11 +92,13 @@ export default function humanAssistanceExtension(pi: ExtensionAPI) {
       await writeAttention(record);
       setBlocked(pi, record, true);
       blockedAttentionId = record.attentionId;
+      let outcome: "completed" | "cannot_complete" = "cannot_complete";
       try {
         const completed = await ctx.ui.select(
           "Quest Engineering needs your help",
           ["Completed", "Cannot complete"],
         );
+        outcome = completed === "Completed" ? "completed" : "cannot_complete";
         return {
           content: [
             {
@@ -114,6 +117,10 @@ export default function humanAssistanceExtension(pi: ExtensionAPI) {
         };
       } finally {
         const resolvedAt = new Date().toISOString();
+        await HarnessControlClient.fromEnvironment().resolveHumanAssistance(
+          record.attentionId,
+          outcome,
+        );
         await writeAttention({
           ...record,
           state: "resolved",
@@ -297,6 +304,10 @@ export default function humanAssistanceExtension(pi: ExtensionAPI) {
   pi.on("agent_start", async () => {
     if (!resuming) return;
     const automationResumedAt = new Date().toISOString();
+    await HarnessControlClient.fromEnvironment().automationResumed(
+      resuming.attentionId,
+      resuming.piSessionId,
+    );
     const resolved: AttentionRecord = {
       ...resuming,
       state: "resolved",
@@ -330,11 +341,21 @@ async function createRecord(
 ): Promise<AttentionRecord> {
   const resultPath = requiredPath("QE_RESULT_CONTROL_PATH");
   const control = await readControl(resultPath);
+  const accepted =
+    await HarnessControlClient.fromEnvironment().requestHumanAssistance({
+      category: input.category,
+      message: input.message.trim().slice(0, 240),
+      interaction: input.interaction,
+    });
+  if (!accepted.attention)
+    throw new Error(
+      "QE control bridge did not return a HumanAttention record.",
+    );
   return {
     version: 2,
-    attentionId: crypto.randomUUID(),
-    category: input.category,
-    message: input.message.trim().slice(0, 240),
+    attentionId: accepted.attention.attentionId,
+    category: accepted.attention.category,
+    message: accepted.attention.message,
     interaction: input.interaction,
     state: "requested",
     identity: {
@@ -346,7 +367,7 @@ async function createRecord(
       attemptId: control.action.attempt_id,
     },
     piSessionId: ctx.sessionManager.getSessionId(),
-    requestedAt: new Date().toISOString(),
+    requestedAt: accepted.attention.requestedAt,
   };
 }
 
@@ -357,19 +378,9 @@ async function checkpointMismatch(
   if (record.piSessionId !== ctx.sessionManager.getSessionId())
     return "The QE intervention checkpoint belongs to another Pi session.";
   try {
-    const control = await readControl(requiredPath("QE_RESULT_CONTROL_PATH"));
-    const identity = record.identity;
-    if (
-      control.workerId !== identity.workerId ||
-      control.lineageId !== identity.lineageId ||
-      control.action.action_id !== identity.actionId ||
-      control.action.run_id !== identity.runId ||
-      control.action.occurrence_id !== identity.occurrenceId ||
-      control.action.attempt_id !== identity.attemptId
-    )
-      return "The QE intervention checkpoint is stale for this Action or Attempt.";
+    await HarnessControlClient.fromEnvironment().completionStatus();
   } catch {
-    return "The active QE execution checkpoint is unavailable.";
+    return "The active QE execution checkpoint is unavailable or stale.";
   }
   return null;
 }

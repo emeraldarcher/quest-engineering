@@ -45,7 +45,8 @@ export function isKnownCapability(id: string): boolean {
   return capabilityById.has(id);
 }
 
-export function reasoningLabel(reasoning: Reasoning): string {
+export function reasoningLabel(reasoning: Reasoning | null): string {
+  if (reasoning === null) return "Not configurable";
   return `${reasoning.charAt(0).toLocaleUpperCase()}${reasoning.slice(1)}`;
 }
 
@@ -84,48 +85,65 @@ export function modelLabel(model: string): string {
 }
 
 export function canonicalModel(loadout: Loadout): string {
-  return `${loadout.model.provider} / ${loadout.model.model}`;
+  return `${loadout.harness} / ${loadout.model.provider} / ${loadout.model.model}`;
 }
 
 export function modelRefKey(model: {
+  harness: string;
   provider: string;
   model: string;
 }): string {
-  return JSON.stringify([model.provider, model.model]);
+  return JSON.stringify([model.harness, model.provider, model.model]);
 }
 
 export function optionKey(option: ExecutionOption): string {
   return JSON.stringify({
     model: option.model,
-    reasoning: option.reasoning,
+    reasoning_capability: option.reasoning_capability,
     tools: option.tools,
+    tool_enforcement: option.tool_enforcement,
     workspaces: option.workspaces,
     available: option.available,
   });
 }
 
-export function uniqueModelOptions(
-  options: ExecutionOption[],
-): Array<{ provider: string; model: string }> {
+export function uniqueModelOptions(options: ExecutionOption[]): Array<{
+  harness: string;
+  provider: string;
+  model: string;
+  display_name: string;
+}> {
   return Array.from(
     new Map(
-      options.map((option) => [modelRefKey(option.model), option.model]),
+      options.map((option) => {
+        const value = { harness: option.harness, ...option.model };
+        return [modelRefKey(value), value];
+      }),
     ).values(),
   );
 }
 
 export function modelIsDiscovered(
-  model: { provider: string; model: string },
+  model: { harness: string; provider: string; model: string },
   options: ExecutionOption[],
 ): boolean {
   const key = modelRefKey(model);
-  return options.some((option) => modelRefKey(option.model) === key);
+  return options.some(
+    (option) =>
+      modelRefKey({ harness: option.harness, ...option.model }) === key,
+  );
 }
 
 export function presetLabel(option: ExecutionOption): string {
-  const reasoning = option.reasoning.map(reasoningLabel).join(" / ");
-  const capabilityCount = option.tools.length;
-  return `${modelLabel(option.model.model)} · ${reasoning} · ${capabilityCount} ${capabilityCount === 1 ? "capability" : "capabilities"}`;
+  const reasoning =
+    option.reasoning_capability.kind === "unsupported"
+      ? "Effort not configurable"
+      : option.reasoning_capability.values.map(reasoningLabel).join(" / ");
+  const tools =
+    option.tool_enforcement === "exact"
+      ? `${option.tools.length} ${option.tools.length === 1 ? "capability" : "capabilities"}`
+      : "Native tool permissions";
+  return `${option.harness} · ${option.model.display_name} · ${reasoning} · ${tools}`;
 }
 
 function titleIdentifier(value: string): string {

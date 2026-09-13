@@ -658,6 +658,10 @@ function harnessSession(
       state: "connected",
     },
     state,
+    native_identity: {
+      conversation_id: "conversation-1",
+      terminal_id: "terminal-1",
+    },
     capabilities: {
       can_attach_terminal: true,
       can_send_input: true,

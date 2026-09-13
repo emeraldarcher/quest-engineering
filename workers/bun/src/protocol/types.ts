@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 6 as const;
+export const WORKER_PROTOCOL_VERSION = 7 as const;
 
 export type JsonValue =
   | string
@@ -34,7 +34,11 @@ export interface AcceptanceContract {
   subject_artifact_id: string;
 }
 
-export type Reasoning = "low" | "medium" | "high";
+export type Reasoning = string;
+export type ReasoningCapability =
+  | { kind: "enumerated"; values: string[] }
+  | { kind: "unsupported" };
+export type ToolEnforcement = "exact" | "native_permissions";
 export type WorkspaceAccess = "none" | "read_only" | "read_write";
 
 export interface ResolvedExecution {
@@ -61,9 +65,11 @@ export interface ResolvedExecution {
     acceptance_contract?: AcceptanceContract | null;
   };
   configuration: {
+    harness_kind: string;
     model: { provider: string; model: string };
-    reasoning: Reasoning;
+    reasoning: Reasoning | null;
     tools: string[];
+    tool_enforcement: ToolEnforcement;
   };
   logical_workspace: {
     workspace_id: string;
@@ -161,7 +167,7 @@ export interface ReconcileSession {
     supports_observation: boolean;
     supports_takeover: boolean;
   } | null;
-  provider_session_id: string | null;
+  native_session_id: string | null;
   attention: {
     attention_id: string;
     category: string;
@@ -195,10 +201,15 @@ export interface ReconcileDispatch {
 }
 
 export interface ExecutorCapability {
-  adapter: string;
-  models: Array<{ provider: string; model: string }>;
-  reasoning: Reasoning[];
+  harness_kind: string;
+  models: Array<{
+    provider: string;
+    model: string;
+    display_name: string;
+    reasoning_capability: ReasoningCapability;
+  }>;
   tools: string[];
+  tool_enforcement: ToolEnforcement;
 }
 
 export interface WorkerCapabilities {

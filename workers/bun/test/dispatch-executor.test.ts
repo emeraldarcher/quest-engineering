@@ -5,15 +5,17 @@ import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import {
   type DispatchRecord,
   DispatchRegistry,
-  type ProviderLineage,
+  type HarnessLineage,
 } from "../src/dispatch/registry.ts";
-import type { JsonValue, ReconcileDispatch } from "../src/protocol/types.ts";
-import { FakeHarness } from "../src/providers/fake/provider.ts";
+import { FakeHarness } from "../src/harnesses/fake/adapter.ts";
+import { HarnessRegistry } from "../src/harnesses/registry.ts";
 import type {
   AgentHarness,
+  HarnessDiscovery,
   HarnessEvent,
   HarnessPreparedExecution,
-} from "../src/providers/types.ts";
+} from "../src/harnesses/types.ts";
+import type { JsonValue, ReconcileDispatch } from "../src/protocol/types.ts";
 import type { HostedAgent } from "../src/session-host/types.ts";
 import { action } from "./support.ts";
 
@@ -107,6 +109,59 @@ test("independent dispatches enter provider execution concurrently", async () =>
 
   provider.releaseAll();
   await Promise.all([firstOperation, secondOperation]);
+  registry.close();
+});
+
+test("Pi and Antigravity selections execute concurrently without Worker-global serialization", async () => {
+  const { root, database } = await fixture();
+  let harnesses: HarnessRegistry;
+  const registry = new DispatchRegistry(
+    database,
+    root,
+    "pi",
+    (kind) => harnesses.get(kind).capabilities,
+  );
+  const pi = new BlockingProvider(registry, "pi");
+  const antigravity = new BlockingProvider(registry, "antigravity");
+  harnesses = new HarnessRegistry([pi, antigravity]);
+  const executor = new DispatchExecutor(registry, harnesses, async () => false);
+  const piAction = action();
+  piAction.execution.configuration.harness_kind = "pi";
+  const agyAction = action({
+    action_id: "agy-action",
+    run_id: "agy-run",
+    occurrence_id: "agy-occurrence",
+    attempt_id: "agy-attempt",
+  });
+  agyAction.execution.configuration.harness_kind = "antigravity";
+  const first = executor.accept(piAction).dispatch;
+  const second = executor.accept(agyAction).dispatch;
+
+  const operations = [
+    executor.start(first.action.action_id),
+    executor.start(second.action.action_id),
+  ];
+  for (
+    let attempt = 0;
+    attempt < 100 && pi.running + antigravity.running < 2;
+    attempt += 1
+  )
+    await Bun.sleep(1);
+  expect(pi.running).toBe(1);
+  expect(antigravity.running).toBe(1);
+  expect(registry.getLineage(first.lineageId as string).harnessKind).toBe("pi");
+  expect(registry.getLineage(second.lineageId as string).harnessKind).toBe(
+    "antigravity",
+  );
+
+  await pi.interrupt();
+  expect(pi.interrupts).toBe(1);
+  expect(antigravity.running).toBe(1);
+  pi.releaseAll();
+  antigravity.releaseAll();
+  await Promise.all(operations);
+  expect(registry.get(first.action.action_id).state).toBe("completed");
+  expect(registry.get(second.action.action_id).state).toBe("completed");
   registry.close();
 });
 
@@ -347,9 +402,14 @@ test("acceptance and completion are durable before external side effects and rep
 });
 
 class InspectingProvider implements AgentHarness {
-  readonly kind = "fake";
-  readonly displayName = "Fake";
+  readonly displayName: string;
+  readonly integrationStrategy = "native_rpc" as const;
   readonly capabilities = {
+    structuredResult: true,
+    continuation: true,
+    retainedSessionRecovery: true,
+    structuredAttention: false,
+    nativeBlocking: false,
     canAttachTerminal: false,
     canSendInput: true,
     canInterrupt: true,
@@ -365,11 +425,39 @@ class InspectingProvider implements AgentHarness {
     automationResume: false,
   };
   starts = 0;
+  interrupts = 0;
   sawDurableAcceptance = false;
-  constructor(private readonly registry: DispatchRegistry) {}
+  constructor(
+    private readonly registry: DispatchRegistry,
+    readonly kind = "fake",
+  ) {
+    this.displayName = kind;
+  }
+  async discover(): Promise<HarnessDiscovery> {
+    return {
+      kind: this.kind,
+      displayName: this.displayName,
+      strategy: this.integrationStrategy,
+      integration: {
+        status: "ready" as const,
+        detail: "Test adapter ready.",
+        installed: true,
+        authenticated: true,
+      },
+      models: [
+        {
+          provider: "fake",
+          model: "test",
+          displayName: "Test",
+          reasoningCapability: { kind: "enumerated", values: ["medium"] },
+        },
+      ],
+      capabilities: this.capabilities,
+    };
+  }
   async start(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     this.starts += 1;
     this.sawDurableAcceptance =
@@ -378,7 +466,7 @@ class InspectingProvider implements AgentHarness {
   }
   async continue(
     _dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     return prepared(lineage);
   }
@@ -396,8 +484,10 @@ class InspectingProvider implements AgentHarness {
   async waitAndCollect() {
     return { change_set: { version: 1 } };
   }
-  async interrupt() {}
-  async inspect(lineage: ProviderLineage) {
+  async interrupt() {
+    this.interrupts += 1;
+  }
+  async inspect(lineage: HarnessLineage) {
     return inspection(lineage);
   }
   async close() {}
@@ -405,7 +495,7 @@ class InspectingProvider implements AgentHarness {
   async discoverAdoptionCandidates() {
     return [];
   }
-  attachment(lineage: ProviderLineage) {
+  attachment(lineage: HarnessLineage) {
     return {
       mode: "local_native_terminal" as const,
       backendKind: "fake",
@@ -438,7 +528,7 @@ class BlockingProvider extends InspectingProvider {
   }
 }
 
-function inspection(lineage: ProviderLineage) {
+function inspection(lineage: HarnessLineage) {
   return {
     state: "running" as const,
     agent: prepared(lineage).agent,
@@ -448,7 +538,7 @@ function inspection(lineage: ProviderLineage) {
   };
 }
 
-function prepared(lineage: ProviderLineage): HarnessPreparedExecution {
+function prepared(lineage: HarnessLineage): HarnessPreparedExecution {
   const agent: HostedAgent = {
     name: lineage.lineageId,
     agent: "pi",

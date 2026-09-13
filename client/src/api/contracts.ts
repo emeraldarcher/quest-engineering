@@ -49,9 +49,11 @@ export interface Loadout {
   key: string;
   name: string;
   description: string;
+  harness: string;
   model: { provider: string; model: string };
-  reasoning: Reasoning;
+  reasoning: Reasoning | null;
   tools: string[];
+  tool_enforcement: ToolEnforcement;
   workspace_access: WorkspaceAccess;
   archived_at: string | null;
 }
@@ -193,7 +195,11 @@ export interface WorkspaceSource {
   max_access: WorkspaceAccess;
   shell_available: boolean;
 }
-export type Reasoning = "low" | "medium" | "high";
+export type Reasoning = string;
+export type ReasoningCapability =
+  | { kind: "enumerated"; values: Reasoning[] }
+  | { kind: "unsupported" };
+export type ToolEnforcement = "exact" | "native_permissions";
 export type WorkspaceAccess = "none" | "read_only" | "read_write";
 export type StepState =
   | "pending"
@@ -226,9 +232,15 @@ export interface StarterCrewResult {
 }
 
 export interface ExecutionOption {
-  model: { provider: string; model: string };
-  reasoning: Reasoning[];
+  harness: string;
+  model: {
+    provider: string;
+    model: string;
+    display_name: string;
+  };
+  reasoning_capability: ReasoningCapability;
   tools: string[];
+  tool_enforcement: ToolEnforcement;
   workspaces: Array<{
     workspace_id: string;
     workspace_access: WorkspaceAccess[];
@@ -283,6 +295,10 @@ export interface HarnessSessionProjection {
     state: "connected" | "disconnected";
   };
   state: HarnessSessionState;
+  native_identity: {
+    conversation_id: string | null;
+    terminal_id: string | null;
+  };
   capabilities: {
     can_attach_terminal: boolean;
     can_send_input: boolean;
@@ -348,6 +364,15 @@ export interface RunAttempt {
   output_produced: boolean;
   resolution: "retried" | "marked_failed" | null;
   retry_of_attempt_id: string | null;
+  execution: {
+    harness: string;
+    model: { provider: string; model: string };
+    reasoning: Reasoning | null;
+    tools: string[];
+    tool_enforcement: ToolEnforcement;
+    workspace_permission: WorkspaceAccess;
+    worker_id: string;
+  } | null;
   operational?: {
     recovery_epoch: number;
     recovery_kind: "initial" | "human";

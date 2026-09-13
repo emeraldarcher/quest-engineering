@@ -41,9 +41,11 @@ defmodule QuestEngineering.ServerWeb.RunChannelTest do
       Products.create_loadout(%{
         key: "loadout-channel",
         name: "Loadout",
+        harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
-        reasoning: :low,
+        reasoning: "low",
         tools: [],
+        tool_enforcement: :exact,
         workspace_access: :read_write
       })
 
@@ -180,10 +182,20 @@ defmodule QuestEngineering.ServerWeb.RunChannelTest do
       "tags" => [],
       "executors" => [
         %{
-          "adapter" => "fake",
-          "models" => [%{"provider" => "fake", "model" => "test"}],
-          "reasoning" => ["low", "medium", "high"],
+          "harness_kind" => "fake",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "test",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "medium", "high"]
+              }
+            }
+          ],
           "tools" => [],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{"ref" => "workspace:channel", "root" => root, "max_access" => "read_write"}
           ]

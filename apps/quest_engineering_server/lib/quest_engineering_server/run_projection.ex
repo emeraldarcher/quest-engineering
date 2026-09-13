@@ -11,6 +11,7 @@ defmodule QuestEngineering.Server.RunProjection do
   alias QuestEngineering.Server.Persistence.OperationalAttemptAttribution
   alias QuestEngineering.Server.Persistence.OperationalRecoveryEpoch
   alias QuestEngineering.Server.Persistence.QuestLaunch
+  alias QuestEngineering.Server.Persistence.ResolvedExecutionCodec
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
@@ -403,6 +404,7 @@ defmodule QuestEngineering.Server.RunProjection do
       resolution: attempt_resolution(facts.dispatch),
       retry_of_attempt_id: previous_attempt_id(occurrence.attempts, attempt.number),
       operational: operational_attempt(facts.attribution, facts.epoch),
+      execution: attempt_execution_configuration(facts.scheduled),
       session: attempt_session(facts.action, execution)
     }
   end
@@ -443,6 +445,32 @@ defmodule QuestEngineering.Server.RunProjection do
     }
   end
 
+  defp attempt_execution_configuration(nil), do: nil
+
+  defp attempt_execution_configuration(scheduled) do
+    case ResolvedExecutionCodec.decode(
+           scheduled.resolved_execution,
+           scheduled.resolved_execution_version
+         ) do
+      {:ok, execution} ->
+        %{
+          harness: execution.configuration.harness_kind,
+          model: %{
+            provider: execution.configuration.model.provider,
+            model: execution.configuration.model.model
+          },
+          reasoning: execution.configuration.reasoning,
+          tools: execution.configuration.tools,
+          tool_enforcement: Atom.to_string(execution.configuration.tool_enforcement),
+          workspace_permission: Atom.to_string(execution.execution_workspace.access),
+          worker_id: scheduled.worker_id
+        }
+
+      _ ->
+        nil
+    end
+  end
+
   defp attempt_session(nil, _execution), do: nil
 
   defp attempt_session(action, execution) do
@@ -468,6 +496,10 @@ defmodule QuestEngineering.Server.RunProjection do
         state: worker.status
       },
       state: session_state(session, worker, current_usage),
+      native_identity: %{
+        conversation_id: session.native_session_id,
+        terminal_id: get_in(session.terminal || %{}, ["terminal_id"])
+      },
       capabilities: capability_projection(session.capabilities),
       attachment: attachment_projection(session, worker, current_usage, available),
       attention: if(current_usage, do: session.attention, else: nil),

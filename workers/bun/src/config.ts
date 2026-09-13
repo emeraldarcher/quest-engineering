@@ -49,6 +49,7 @@ export interface WorkerConfig {
   reconnectMs: number;
   resultTimeoutMs: number;
   provider: "pi" | "fake";
+  enabledHarnesses?: Array<"pi" | "antigravity" | "fake">;
   fakeOutputs: Record<string, JsonValue>;
   fakeDelayMs: number;
   gitAuthorName?: string;
@@ -112,6 +113,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     "QE_RESULT_TIMEOUT_MS",
   );
   const provider = env.QE_WORKER_PROVIDER === "fake" ? "fake" : "pi";
+  const enabledHarnesses =
+    provider === "fake"
+      ? (["fake"] as const)
+      : harnesses(env.QE_WORKER_HARNESSES ?? "pi,antigravity");
   const executorModels = models(
     env.QE_EXECUTOR_MODELS ?? env.QE_PI_MODEL,
     provider,
@@ -164,6 +169,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     reconnectMs,
     resultTimeoutMs,
     provider,
+    enabledHarnesses: [...enabledHarnesses],
     fakeOutputs,
     fakeDelayMs,
     ...(env.QE_GIT_AUTHOR_NAME?.trim()
@@ -344,8 +350,7 @@ function models(
   const configured = csv(value);
   if (configured.length === 0 && provider === "fake")
     return [{ provider: "fake", model: "test" }];
-  if (configured.length === 0)
-    throw new Error("QE_EXECUTOR_MODELS is required for the Pi provider.");
+  if (configured.length === 0) return [];
   return configured.map((entry) => {
     const separator = entry.indexOf("/");
     if (separator < 1 || separator === entry.length - 1)
@@ -356,11 +361,17 @@ function models(
     };
   });
 }
-function reasoning(value: string): Reasoning[] {
+function harnesses(value: string): Array<"pi" | "antigravity"> {
   const values = csv(value);
-  if (!values.every((item) => ["low", "medium", "high"].includes(item)))
-    throw new Error("QE_REASONING_LEVELS contains an unsupported level.");
-  return values as Reasoning[];
+  if (
+    values.length === 0 ||
+    !values.every((item) => item === "pi" || item === "antigravity")
+  )
+    throw new Error("QE_WORKER_HARNESSES must contain pi and/or antigravity.");
+  return values as Array<"pi" | "antigravity">;
+}
+function reasoning(value: string): Reasoning[] {
+  return csv(value);
 }
 function access(value: string): WorkspaceAccess {
   if (!["none", "read_only", "read_write"].includes(value))

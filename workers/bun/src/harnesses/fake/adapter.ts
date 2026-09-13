@@ -1,12 +1,13 @@
 import type {
   DispatchRecord,
-  ProviderLineage,
+  HarnessLineage,
 } from "../../dispatch/registry.ts";
 import type { JsonValue } from "../../protocol/types.ts";
 import type { HostedAgent } from "../../session-host/types.ts";
 import type {
   AgentHarness,
   HarnessCapabilities,
+  HarnessDiscovery,
   HarnessEvent,
   HarnessInspection,
   HarnessPreparedExecution,
@@ -19,6 +20,7 @@ import { OperationalExecutionError } from "../types.ts";
 export class FakeHarness implements AgentHarness {
   readonly kind = "fake";
   readonly displayName = "Test Harness";
+  readonly integrationStrategy = "native_rpc" as const;
   readonly capabilities: HarnessCapabilities;
   private readonly inspections = new Map<string, HarnessInspection>();
   private readonly waiters = new Map<string, () => void>();
@@ -35,6 +37,11 @@ export class FakeHarness implements AgentHarness {
     } = {},
   ) {
     this.capabilities = {
+      structuredResult: true,
+      continuation: true,
+      retainedSessionRecovery: true,
+      structuredAttention: true,
+      nativeBlocking: true,
       canAttachTerminal: false,
       canSendInput: true,
       canInterrupt: true,
@@ -51,16 +58,42 @@ export class FakeHarness implements AgentHarness {
     };
   }
 
+  async discover(): Promise<HarnessDiscovery> {
+    return {
+      kind: this.kind,
+      displayName: this.displayName,
+      strategy: this.integrationStrategy,
+      integration: {
+        status: "ready" as const,
+        detail: "Deterministic test harness is enabled.",
+        installed: true,
+        authenticated: true,
+      },
+      models: [
+        {
+          provider: "fake",
+          model: "test",
+          displayName: "Deterministic Test Model",
+          reasoningCapability: {
+            kind: "enumerated",
+            values: ["low", "medium", "high"],
+          },
+        },
+      ],
+      capabilities: this.capabilities,
+    };
+  }
+
   async start(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     return prepared(dispatch, lineage);
   }
 
   async continue(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     return prepared(dispatch, lineage);
   }
@@ -117,7 +150,7 @@ export class FakeHarness implements AgentHarness {
   }
 
   requestAttention(
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
     category: HumanAttentionCategory = "needs_input",
     message = "Test harness needs input.",
   ): HarnessInspection {
@@ -142,7 +175,7 @@ export class FakeHarness implements AgentHarness {
   }
 
   requestConversationalIntervention(
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
     message = "Test harness needs a conversation.",
   ): HarnessInspection {
     const requestedAt = new Date().toISOString();
@@ -177,7 +210,7 @@ export class FakeHarness implements AgentHarness {
     return inspection;
   }
 
-  provideInput(lineage: ProviderLineage): HarnessInspection {
+  provideInput(lineage: HarnessLineage): HarnessInspection {
     const inspection = this.running(
       lineage,
       fakeAgent(lineage.lineageId, "working"),
@@ -191,7 +224,7 @@ export class FakeHarness implements AgentHarness {
     return inspection;
   }
 
-  resumeAutomation(lineage: ProviderLineage): HarnessInspection {
+  resumeAutomation(lineage: HarnessLineage): HarnessInspection {
     const previous = this.inspections.get(lineage.lineageId)?.intervention;
     const inspection = this.running(
       lineage,
@@ -216,7 +249,7 @@ export class FakeHarness implements AgentHarness {
     return inspection;
   }
 
-  emitOutput(lineage: ProviderLineage): void {
+  emitOutput(lineage: HarnessLineage): void {
     const inspection = this.running(
       lineage,
       fakeAgent(lineage.lineageId, "working"),
@@ -235,7 +268,7 @@ export class FakeHarness implements AgentHarness {
     this.nextFailure = new OperationalExecutionError(message, "auto_retryable");
   }
 
-  async interrupt(lineage: ProviderLineage): Promise<void> {
+  async interrupt(lineage: HarnessLineage): Promise<void> {
     this.inspections.set(lineage.lineageId, {
       state: "retained",
       agent: fakeAgent(lineage.lineageId, "idle"),
@@ -247,7 +280,7 @@ export class FakeHarness implements AgentHarness {
     this.waiters.delete(lineage.lineageId);
   }
 
-  async inspect(lineage: ProviderLineage): Promise<HarnessInspection> {
+  async inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
     return (
       this.inspections.get(lineage.lineageId) ?? {
         state: "recovering",
@@ -259,7 +292,7 @@ export class FakeHarness implements AgentHarness {
     );
   }
 
-  async close(lineage: ProviderLineage): Promise<void> {
+  async close(lineage: HarnessLineage): Promise<void> {
     this.inspections.set(lineage.lineageId, {
       state: "closed",
       agent: null,
@@ -269,7 +302,7 @@ export class FakeHarness implements AgentHarness {
     });
   }
 
-  async recover(lineage: ProviderLineage): Promise<HarnessRecoveredExecution> {
+  async recover(lineage: HarnessLineage): Promise<HarnessRecoveredExecution> {
     const inspection = await this.inspect(lineage);
     return inspection.agent
       ? {
@@ -282,7 +315,7 @@ export class FakeHarness implements AgentHarness {
 
   async waitAndCollect(
     dispatch: DispatchRecord,
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
     agent: HostedAgent,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
@@ -294,7 +327,7 @@ export class FakeHarness implements AgentHarness {
   async discoverAdoptionCandidates() {
     return [];
   }
-  attachment(lineage: ProviderLineage) {
+  attachment(lineage: HarnessLineage) {
     return {
       mode: "local_native_terminal" as const,
       backendKind: "fake",
@@ -307,7 +340,7 @@ export class FakeHarness implements AgentHarness {
   disconnect(): void {}
 
   private running(
-    lineage: ProviderLineage,
+    lineage: HarnessLineage,
     agent: HostedAgent,
   ): HarnessInspection {
     const inspection: HarnessInspection = {
@@ -324,7 +357,7 @@ export class FakeHarness implements AgentHarness {
 
 function prepared(
   _dispatch: DispatchRecord,
-  lineage: ProviderLineage,
+  lineage: HarnessLineage,
 ): HarnessPreparedExecution {
   const agent = fakeAgent(lineage.lineageId, "idle");
   return {

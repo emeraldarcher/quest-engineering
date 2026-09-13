@@ -43,12 +43,12 @@ Svelte never constructs these commands.
 
 ## Identity and durability
 
-The existing Worker `provider_lineages.lineage_id` represents the current Pi adapter's durable harness-session/physical-lineage lifetime. No alias ID was added: one lineage owns one retained Pi/Herdr execution and may be used by several Attempts through continuation. Each dispatch retains its association with that lineage.
+The Worker lineage ID represents a durable harness-session/physical-lineage lifetime. One lineage has an exact `harness_kind`, native conversation identity, and Herdr provenance, and may be used by several Attempts through same-harness continuation. Each dispatch retains its association with that lineage.
 
 Therefore:
 
 ```text
-Attempt --uses--> provider lineage / harness session --hosted by--> Herdr terminal
+Attempt --uses--> QE lineage / harness session --hosted by--> Herdr terminal/process incarnation
 ```
 
 The relationships are not cardinality assumptions:
@@ -95,11 +95,11 @@ The Worker correlates both signals by durable lineage and active blocked episode
 
 ## Occupancy and recovery
 
-Waiting for a human does not terminalize the dispatch. The Worker dispatch remains running, its provider lineage stays occupied, and Phoenix retains Worker slot, logical Member, context and worktree occupancy. Attachment creates no Attempt, occurrence, retry, process or terminal. Closing or detaching the terminal changes none of these facts; only `/qe-resume` hands Pi conversational control back.
+Waiting for a human does not terminalize the dispatch. The Worker dispatch remains running, its harness lineage stays occupied, and Phoenix retains Worker slot, logical Member, context and worktree occupancy. Attachment creates no Attempt, occurrence, retry, process or terminal. Closing or detaching the terminal changes none of these facts; only `/qe-resume` hands Pi conversational control back.
 
 A failed operational Attempt is different. Its session may remain retained for postmortem conversation without occupying an execution slot. `/qe-retry` writes a durable local request that the Worker validates and sends through generation-fenced Worker Protocol; Phoenix appends a human recovery epoch and the scheduler reacquires normal resources for a new Attempt under the same StepOccurrence. Valid retained Pi lineage is preferred, but unavailable or unverifiable continuity is never silently replaced. See `docs/retry-and-remediation.md`.
 
-Worker restart follows the existing recovery path. The SQLite dispatch/lineage and attention record are loaded; Herdr provenance locates the same Pi process/pane using `session.snapshot`; `agent.get` inspection reconciles its current blocked/running state. A currently blocked recovered agent restores HumanAttention even when no QE assistance control record exists or survived. Worker Protocol v6 reports the same session ID under the new connection generation. Stale-generation projections cannot issue attachment descriptors.
+Worker restart loads the SQLite dispatch/lineage and attention record. For either harness, Herdr provenance first locates the exact surviving process/pane using `session.snapshot`; `agent.get` inspection reconciles blocked/running state. Antigravity may otherwise resume only a verified native conversation ID into a new interactive terminal/process incarnation and must verify the returned identity. A currently blocked recovered agent restores HumanAttention. Worker Protocol v7 reports the same QE session ID under the new connection generation. Stale-generation projections cannot issue attachment descriptors.
 
 Each lineage is observed independently. No global session lock is introduced, so assistance for one session does not pause another Worker slot or Quest.
 
@@ -124,6 +124,6 @@ Tauri validates descriptor shape and takeover authority, confirms that the named
 
 The local endpoint is not a substitute for authentication. Future proxied/remote attachment remains blocked until QE has user identity and Project authorization, and must use a narrowly scoped authenticated relay rather than turning Phoenix into SSH.
 
-## Loadouts and future harnesses
+## Loadouts and harness selection
 
-Loadouts continue to select model, reasoning, tools and workspace access. The current Worker effectively offers one production harness, so no Product migration is required. When one Worker can offer multiple harnesses for the same model, a future execution-capability field must select `harness_kind`; it belongs in Loadout/execution configuration, never Class instructions.
+Loadouts select `harness_kind`, model, nullable reasoning/effort, tool profile and enforcement, and workspace access. `reasoning: null` is frozen only for a model that explicitly reports effort as unsupported. Tool enforcement distinguishes Pi's exact native subset from Antigravity's complete native-permissions profile. These are execution capabilities and belong in Loadout configuration, never Class instructions.

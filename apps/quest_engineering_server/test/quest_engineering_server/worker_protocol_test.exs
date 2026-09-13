@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v6 logical Workspace bindings" do
+  test "accepts explicit protocol v7 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -36,6 +36,41 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert {:error, %WorkerProtocol.Error{code: :invalid_capabilities}} =
              WorkerProtocol.decode_hello(malformed)
+  end
+
+  test "reasoning capability distinguishes unsupported from unknown" do
+    unsupported =
+      put_in(
+        hello(),
+        [
+          "capabilities",
+          "executors",
+          Access.at(0),
+          "models",
+          Access.at(0),
+          "reasoning_capability"
+        ],
+        %{"kind" => "unsupported"}
+      )
+
+    assert {:ok, _hello} = WorkerProtocol.decode_hello(unsupported)
+
+    unknown =
+      put_in(
+        hello(),
+        [
+          "capabilities",
+          "executors",
+          Access.at(0),
+          "models",
+          Access.at(0),
+          "reasoning_capability"
+        ],
+        %{"kind" => "unknown"}
+      )
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             WorkerProtocol.decode_hello(unknown)
   end
 
   test "encodes persisted string source kinds in binding commands" do
@@ -55,7 +90,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes authoritative Delivery evidence messages" do
     payload = %{
       "type" => "run_delivery_inspected",
-      "protocol_version" => 6,
+      "protocol_version" => 7,
       "worker_id" => @worker_id,
       "delivery" => %{
         "delivery_id" => Ecto.UUID.generate(),
@@ -82,7 +117,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "accepts uncertain reconciliation only with structured failure" do
     payload = %{
       "type" => "dispatch_state",
-      "protocol_version" => 6,
+      "protocol_version" => 7,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -97,7 +132,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "normalizes classified failures and validates retained recovery requests" do
     failed = %{
       "type" => "step_failed",
-      "protocol_version" => 6,
+      "protocol_version" => 7,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -115,7 +150,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     recovery = %{
       "type" => "human_recovery_requested",
-      "protocol_version" => 6,
+      "protocol_version" => 7,
       "worker_id" => @worker_id,
       "recovery" => %{
         "request_id" => "request",
@@ -126,7 +161,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         "member_key" => "builder",
         "session_id" => "lineage",
         "lineage_id" => "lineage",
-        "pi_session_id" => "pi-session"
+        "native_session_id" => "pi-session"
       }
     }
 
@@ -137,7 +172,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes Product-safe harness session and structured attention state" do
     payload = %{
       "type" => "session_state",
-      "protocol_version" => 6,
+      "protocol_version" => 7,
       "worker_id" => @worker_id,
       "session" => %{
         "session_id" => "session-1",
@@ -172,7 +207,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
           "supports_observation" => true,
           "supports_takeover" => true
         },
-        "provider_session_id" => "pi-session",
+        "native_session_id" => "pi-session",
         "attention" => %{
           "attention_id" => "attention-1",
           "category" => "needs_input",
@@ -221,7 +256,8 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     encoded = WorkerProtocol.execute_action(@worker_id, execution())
     wire = encoded["execution"]
 
-    assert encoded["protocol_version"] == 6
+    assert encoded["protocol_version"] == 7
+    assert wire["configuration"]["harness_kind"] == "fake"
     assert wire["configuration"]["model"] == %{"provider" => "fake", "model" => "test"}
 
     assert wire["logical_workspace"] == %{
@@ -233,6 +269,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert wire["execution_workspace"]["canonical_root"] == "/workspace"
     refute Map.has_key?(wire, "performer_requirement")
     refute Map.has_key?(wire, "pi_session")
+    assert wire["configuration"]["reasoning"] == "medium"
+    assert wire["configuration"]["tool_enforcement"] == "exact"
+
+    no_effort = put_in(execution().configuration.reasoning, nil)
+    no_effort_wire = WorkerProtocol.execute_action(@worker_id, no_effort)
+    assert no_effort_wire["execution"]["configuration"]["reasoning"] == nil
   end
 
   defp execution do
@@ -267,9 +309,11 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         declared_outputs: [%ArtifactOutput{name: "change_set", kind: "change_set"}]
       },
       configuration: %Configuration{
+        harness_kind: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
-        reasoning: :medium,
-        tools: ["custom.qe-capability"]
+        reasoning: "medium",
+        tools: ["custom.qe-capability"],
+        tool_enforcement: :exact
       },
       logical_workspace: %LogicalWorkspace{workspace_id: @workspace_id, workspace_key: "test"},
       execution_workspace: %ExecutionWorkspace{
@@ -289,7 +333,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   defp hello do
     %{
       "type" => "worker_hello",
-      "protocol_version" => 6,
+      "protocol_version" => 7,
       "worker_id" => @worker_id,
       "capabilities" => %{
         "os" => "test",
@@ -299,10 +343,20 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         "features" => ["run_delivery_v1"],
         "executors" => [
           %{
-            "adapter" => "other-executor",
-            "models" => [%{"provider" => "fake", "model" => "test"}],
-            "reasoning" => ["medium"],
-            "tools" => ["custom.qe-capability"]
+            "harness_kind" => "other-executor",
+            "models" => [
+              %{
+                "provider" => "fake",
+                "model" => "test",
+                "display_name" => "Test model",
+                "reasoning_capability" => %{
+                  "kind" => "enumerated",
+                  "values" => ["medium"]
+                }
+              }
+            ],
+            "tools" => ["custom.qe-capability"],
+            "tool_enforcement" => "exact"
           }
         ],
         "workspace_bindings" => [

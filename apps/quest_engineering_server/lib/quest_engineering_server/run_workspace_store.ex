@@ -346,8 +346,8 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
     |> Enum.filter(&MapSet.member?(classes, &1.class.key))
     |> Enum.map(& &1.loadout)
     |> Enum.uniq_by(fn loadout ->
-      {loadout.model.provider, loadout.model.model, loadout.reasoning, Enum.sort(loadout.tools),
-       loadout.workspace_access}
+      {loadout.harness, loadout.model.provider, loadout.model.model, loadout.reasoning,
+       Enum.sort(loadout.tools), loadout.tool_enforcement, loadout.workspace_access}
     end)
   end
 
@@ -361,9 +361,11 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
 
     shell_allowed and access_allowed and
       CapabilityMatcher.executor_compatible?(worker.capabilities, %{
+        harness_kind: loadout.harness,
         model: loadout.model,
         reasoning: loadout.reasoning,
         tools: loadout.tools,
+        tool_enforcement: loadout.tool_enforcement,
         workspace_access: loadout.workspace_access
       })
   end

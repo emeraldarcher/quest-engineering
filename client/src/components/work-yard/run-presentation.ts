@@ -3,6 +3,7 @@ import type {
   ArtifactSummary,
   DeliveryProjection,
   Quest,
+  RunAttempt,
   RunProjection,
   RunStep,
   RunSummary,
@@ -510,6 +511,22 @@ export function artifactProducer(
   const step = steps[index];
   if (!step) return "Producer unavailable";
   return `${stepDisplayName(steps, index)}${step.member ? ` · ${step.member.name}` : ""}`;
+}
+
+export function effortLabel(
+  execution: NonNullable<RunAttempt["execution"]>,
+): string {
+  return execution.reasoning === null
+    ? "Effort not configurable"
+    : `${humanize(execution.reasoning)} effort`;
+}
+
+export function toolPolicyLabel(
+  execution: NonNullable<RunAttempt["execution"]>,
+): string {
+  return execution.tool_enforcement === "native_permissions"
+    ? "Tool policy: native permissions"
+    : `Tools: ${execution.tools.length} exact`;
 }
 
 export function humanize(value: string): string {

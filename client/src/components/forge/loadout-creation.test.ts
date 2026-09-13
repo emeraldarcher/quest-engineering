@@ -6,9 +6,11 @@ import { createLoadoutWithGeneratedKey } from "./loadout-creation";
 const input: Omit<Required<LoadoutInput>, "key"> = {
   name: "Senior Coding",
   description: "A coding setup.",
+  harness: "pi",
   model: { provider: "custom-provider", model: "custom-model" },
   reasoning: "high",
   tools: ["acme.special-tool"],
+  tool_enforcement: "exact",
   workspace_access: "read_write",
 };
 const created: Loadout = {

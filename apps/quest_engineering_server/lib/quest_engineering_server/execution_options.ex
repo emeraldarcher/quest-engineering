@@ -19,7 +19,9 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       profile = hd(profiles)
       %{profile | available: Enum.any?(profiles, & &1.available)}
     end)
-    |> Enum.sort_by(&{&1.model.provider, &1.model.model, &1.tools, &1.reasoning})
+    |> Enum.sort_by(
+      &{&1.harness, &1.model.provider, &1.model.model, &1.tools, &1.reasoning_capability}
+    )
   end
 
   defp profiles(%Worker{capabilities: %{"executors" => executors}, status: status} = worker)
@@ -32,11 +34,17 @@ defmodule QuestEngineering.Server.ExecutionOptions do
   defp profiles(_worker), do: []
 
   defp profile(
-         %{"models" => models, "reasoning" => reasoning, "tools" => tools},
+         %{
+           "harness_kind" => harness,
+           "models" => models,
+           "tools" => tools,
+           "tool_enforcement" => tool_enforcement
+         },
          bindings,
          available
        )
-       when is_list(models) and is_list(reasoning) and is_list(tools) do
+       when is_binary(harness) and harness != "" and is_list(models) and is_list(tools) and
+              tool_enforcement in ["exact", "native_permissions"] do
     workspaces =
       bindings
       |> Enum.reject(fn binding ->
@@ -51,9 +59,11 @@ defmodule QuestEngineering.Server.ExecutionOptions do
          false <- workspaces == [] do
       Enum.map(models, fn model ->
         %{
-          model: model,
-          reasoning: Enum.sort(reasoning),
+          harness: harness,
+          model: Map.take(model, [:provider, :model, :display_name]),
+          reasoning_capability: model.reasoning_capability,
           tools: Enum.sort(tools),
+          tool_enforcement: tool_enforcement,
           workspaces: workspaces,
           available: available
         }
@@ -113,9 +123,38 @@ defmodule QuestEngineering.Server.ExecutionOptions do
   defp models(models) do
     values =
       Enum.flat_map(models, fn
-        %{"provider" => provider, "model" => model}
-        when is_binary(provider) and is_binary(model) ->
-          [%{provider: provider, model: model}]
+        %{
+          "provider" => provider,
+          "model" => model,
+          "display_name" => display_name,
+          "reasoning_capability" => reasoning_capability
+        }
+        when is_binary(provider) and is_binary(model) and is_binary(display_name) ->
+          case reasoning_capability do
+            %{"kind" => "unsupported"} ->
+              [
+                %{
+                  provider: provider,
+                  model: model,
+                  display_name: display_name,
+                  reasoning_capability: %{kind: "unsupported"}
+                }
+              ]
+
+            %{"kind" => "enumerated", "values" => values}
+            when is_list(values) and values != [] ->
+              [
+                %{
+                  provider: provider,
+                  model: model,
+                  display_name: display_name,
+                  reasoning_capability: %{kind: "enumerated", values: Enum.sort(values)}
+                }
+              ]
+
+            _other ->
+              []
+          end
 
         _ ->
           []
@@ -134,10 +173,13 @@ defmodule QuestEngineering.Server.ExecutionOptions do
 
   defp profile_key(profile),
     do: {
+      profile.harness,
       profile.model.provider,
       profile.model.model,
-      profile.reasoning,
+      profile.model.display_name,
+      profile.reasoning_capability,
       profile.tools,
+      profile.tool_enforcement,
       Enum.map(profile.workspaces, &{&1.workspace_id, &1.workspace_access})
     }
 end

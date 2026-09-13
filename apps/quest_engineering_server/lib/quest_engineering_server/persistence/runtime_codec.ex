@@ -69,7 +69,7 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.Tactics.Until
   alias QuestEngineering.Server.Persistence.Error
 
-  @snapshot_version 3
+  @snapshot_version 4
 
   @struct_modules [
     ExecutionPlan,
@@ -135,7 +135,7 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   @modules_by_name Map.new(@struct_modules, &{Atom.to_string(&1), &1})
   @closed_atoms ~w(
     active carried check checking class completed continue_from current definition dispatched equals
-    execute_step exhausted failed fresh high inline low medium none otherwise pending read_only
+    exact execute_step exhausted failed fresh high inline low medium native_permissions none otherwise pending read_only
     read_write remediating root running same_as step_completed step_failed step_retry_requested
     until_exhausted
   )a

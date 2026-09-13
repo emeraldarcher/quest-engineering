@@ -5,8 +5,8 @@ defmodule QuestEngineering.Server.Persistence.LaunchSnapshotCodec do
   alias QuestEngineering.Server.Persistence.Error
   alias QuestEngineering.Server.Persistence.RuntimeCodec
 
-  @version 4
-  @supported_versions [4]
+  @version 6
+  @supported_versions [6]
   def version, do: @version
 
   def encode(%LaunchSnapshot{} = snapshot), do: RuntimeCodec.encode(snapshot)
@@ -30,8 +30,8 @@ defmodule QuestEngineering.Server.Persistence.ResolvedExecutionCodec do
   alias QuestEngineering.Server.Persistence.Error
   alias QuestEngineering.Server.Persistence.RuntimeCodec
 
-  @version 3
-  @supported_versions [3]
+  @version 5
+  @supported_versions [5]
   def version, do: @version
 
   def encode(%ResolvedExecution{} = execution), do: RuntimeCodec.encode(execution)

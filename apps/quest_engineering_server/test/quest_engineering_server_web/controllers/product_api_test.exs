@@ -283,9 +283,11 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
       post_json("/api/v1/loadouts", %{
         key: "coding-http",
         name: "Coding",
+        harness: "fake",
         model: %{provider: "fake", model: "test"},
         reasoning: "medium",
         tools: ["workspace.filesystem"],
+        tool_enforcement: "exact",
         workspace_access: "read_write"
       })
 
@@ -420,10 +422,20 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
       "tags" => ["internal"],
       "executors" => [
         %{
-          "adapter" => "private-adapter",
-          "models" => [%{"provider" => "fake", "model" => "test"}],
-          "reasoning" => ["low", "high"],
+          "harness_kind" => "private-adapter",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "test",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "high"]
+              }
+            }
+          ],
           "tools" => ["workspace.filesystem", "workspace.search"],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{
               "ref" => "workspace:api",
@@ -443,9 +455,18 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert %{
              "execution_options" => [
                %{
-                 "model" => %{"provider" => "fake", "model" => "test"},
-                 "reasoning" => ["high", "low"],
+                 "harness" => "private-adapter",
+                 "model" => %{
+                   "provider" => "fake",
+                   "model" => "test",
+                   "display_name" => "Test model"
+                 },
+                 "reasoning_capability" => %{
+                   "kind" => "enumerated",
+                   "values" => ["high", "low"]
+                 },
                  "tools" => ["workspace.filesystem", "workspace.search"],
+                 "tool_enforcement" => "exact",
                  "workspaces" => [
                    %{
                      "workspace_id" => workspace_id,
@@ -460,7 +481,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert workspace_id == workspace.id
     encoded = Jason.encode!(json_response(response, 200))
     refute encoded =~ "options-one"
-    refute encoded =~ "private-adapter"
+    assert encoded =~ "private-adapter"
     refute encoded =~ "/not-for-clients"
     refute encoded =~ "max_concurrency"
   end

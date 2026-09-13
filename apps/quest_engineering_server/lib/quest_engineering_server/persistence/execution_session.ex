@@ -12,7 +12,7 @@ defmodule QuestEngineering.Server.Persistence.ExecutionSession do
     field :state, :string
     field :capabilities, :map
     field :terminal, :map
-    field :provider_session_id, :string
+    field :native_session_id, :string
     field :attention, :map
     field :last_connection_generation, :integer
     field :started_at, :utc_datetime_usec
@@ -31,7 +31,7 @@ defmodule QuestEngineering.Server.Persistence.ExecutionSession do
       :state,
       :capabilities,
       :terminal,
-      :provider_session_id,
+      :native_session_id,
       :attention,
       :last_connection_generation,
       :started_at,

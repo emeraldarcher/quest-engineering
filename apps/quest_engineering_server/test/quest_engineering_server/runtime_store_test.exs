@@ -32,7 +32,7 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
     assert created == nil
 
     assert {:ok, %{run: recovered, revision: 0}} = RuntimeStore.fetch_run("create-recovery")
-    assert RuntimeCodec.snapshot_version() == 3
+    assert RuntimeCodec.snapshot_version() == 4
     assert hd(recovered.plan.steps).instruction == "Execute test step a."
     assert recovered.occurrences[hd(recovered.occurrence_order)].status == :dispatched
 

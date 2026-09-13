@@ -104,11 +104,21 @@ defmodule QuestEngineering.Core.Product.Validation do
       |> require(key?(value.key), :invalid_key, ["key"], %{value: value.key})
       |> require(non_blank?(value.name), :invalid_name, ["name"], %{})
       |> require(text?(value.description), :invalid_description, ["description"], %{})
+      |> require(key?(value.harness), :invalid_harness, ["harness"], %{value: value.harness})
       |> require(model_ref?(value.model), :invalid_model_ref, ["model"], %{})
-      |> require(value.reasoning in [:low, :medium, :high], :invalid_reasoning, ["reasoning"], %{
-        value: value.reasoning
-      })
+      |> require(
+        is_nil(value.reasoning) or non_blank?(value.reasoning),
+        :invalid_reasoning,
+        ["reasoning"],
+        %{value: value.reasoning}
+      )
       |> require(is_list(value.tools), :invalid_tools, ["tools"], %{reason: :not_a_list})
+      |> require(
+        value.tool_enforcement in [:exact, :native_permissions],
+        :invalid_tool_enforcement,
+        ["tool_enforcement"],
+        %{value: value.tool_enforcement}
+      )
       |> require(
         value.workspace_access in [:none, :read_only, :read_write],
         :invalid_workspace_access,

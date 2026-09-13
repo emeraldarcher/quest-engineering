@@ -1,6 +1,6 @@
 # Quest Engineering Product API v1 — v0.13
 
-The JSON API is under `/api/v1`, uses `snake_case`, and never exposes Worker IDs, executor adapters, Herdr/Pi identities, source paths, Run-worktree paths, Git remote URLs, or credentials.
+The JSON API is under `/api/v1`, uses `snake_case`, and exposes Product-safe harness/model catalogs but never exposes raw Worker capability documents, bridge credentials, descriptor paths, auth material, source paths, Run-worktree paths, or Git remote URLs.
 
 ## Projects / logical Workspaces
 
@@ -18,7 +18,7 @@ The domain and API retain `Workspace`; ordinary UI calls it a **Project**. Works
 
 ## Product definitions and Quest lifecycle
 
-Classes, Loadouts, Squads, reusable Tactics, and Quests retain CRUD and archival. Preview remains side-effect free.
+Classes, Loadouts, Squads, reusable Tactics, and Quests retain CRUD and archival. A Loadout contains only `harness`, provider-qualified `model`, nullable `reasoning`, `tools`, `tool_enforcement`, and `workspace_access` execution fields; behavior remains on Class and task instructions on Step. `reasoning: null` means the selected model explicitly does not support effort control. `/execution-options` returns harness-scoped live model labels, `reasoning_capability` (`enumerated` values or `unsupported`), `tool_enforcement` (`exact` or `native_permissions`), and availability. Preview remains side-effect free.
 
 `POST /quests/:id/launch` creates an explicit new immutable Launch/Runtime Run/worktree. Launch is rejected while Runtime or Delivery is active, while publishing needs a recoverable retry, or after merge completion. `Run Again` is allowed after Runtime failure, `closed_unmerged`, and `no_changes`.
 

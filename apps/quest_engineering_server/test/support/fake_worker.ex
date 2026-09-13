@@ -197,7 +197,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         options
         |> Keyword.get(:capabilities, default_capabilities())
         |> Map.put_new("workspace_bindings", []),
-      protocol_version: Keyword.get(options, :protocol_version, 6),
+      protocol_version: Keyword.get(options, :protocol_version, 7),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -565,7 +565,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         "can_observe_structured_events" => true
       },
       "terminal" => nil,
-      "provider_session_id" => nil,
+      "native_session_id" => nil,
       "attention" => attention,
       "started_at" => now,
       "last_activity_at" => now
@@ -610,10 +610,20 @@ defmodule QuestEngineering.Server.FakeWorker do
       "workspace_bindings" => [],
       "executors" => [
         %{
-          "adapter" => "fake",
-          "models" => [%{"provider" => "fake", "model" => "test"}],
-          "reasoning" => ["low", "medium", "high"],
+          "harness_kind" => "fake",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "test",
+              "display_name" => "Test model",
+              "reasoning_capability" => %{
+                "kind" => "enumerated",
+                "values" => ["low", "medium", "high"]
+              }
+            }
+          ],
           "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"],
+          "tool_enforcement" => "exact",
           "workspaces" => [
             %{
               "ref" => "workspace:test",

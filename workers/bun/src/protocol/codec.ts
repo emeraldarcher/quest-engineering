@@ -2,7 +2,6 @@ import {
   type ArtifactInstance,
   type ExecuteAction,
   isJsonValue,
-  type Reasoning,
   type ResolvedExecution,
   WORKER_PROTOCOL_VERSION,
   type WorkspaceAccess,
@@ -87,10 +86,14 @@ function decodeExecution(value: unknown): ResolvedExecution {
     configuration.tools,
     "execution.configuration.tools",
   );
-  const reasoning = oneOf(
+  const reasoning = nullableString(
     configuration.reasoning,
-    ["low", "medium", "high"] as const,
     "execution.configuration.reasoning",
+  );
+  const toolEnforcement = oneOf(
+    configuration.tool_enforcement,
+    ["exact", "native_permissions"] as const,
+    "execution.configuration.tool_enforcement",
   );
   const access = oneOf(
     executionWorkspace.access,
@@ -163,6 +166,10 @@ function decodeExecution(value: unknown): ResolvedExecution {
       ),
     },
     configuration: {
+      harness_kind: string(
+        configuration.harness_kind,
+        "execution.configuration.harness_kind",
+      ),
       model: {
         provider: string(
           model.provider,
@@ -170,8 +177,9 @@ function decodeExecution(value: unknown): ResolvedExecution {
         ),
         model: string(model.model, "execution.configuration.model.model"),
       },
-      reasoning: reasoning as Reasoning,
+      reasoning,
       tools,
+      tool_enforcement: toolEnforcement,
     },
     logical_workspace: {
       workspace_id: string(
