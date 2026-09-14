@@ -82,19 +82,51 @@ function decodeExecution(value: unknown): ResolvedExecution {
     work.declared_outputs,
     "execution.work.declared_outputs",
   );
-  const tools = uniqueStrings(
-    configuration.tools,
-    "execution.configuration.tools",
-  );
   const reasoning = nullableString(
     configuration.reasoning,
     "execution.configuration.reasoning",
+  );
+  const reasoningCapability = decodeReasoningCapability(
+    configuration.reasoning_capability,
+    "execution.configuration.reasoning_capability",
+  );
+  if (
+    (reasoningCapability.kind === "unsupported") !== (reasoning === null) ||
+    (reasoningCapability.kind === "enumerated" &&
+      (reasoning === null || !reasoningCapability.values.includes(reasoning)))
+  )
+    throw new ProtocolDecodeError(
+      "execution.configuration.reasoning",
+      "must exactly match the resolved reasoning capability",
+    );
+  const toolPolicy = decodeToolPolicy(
+    configuration.tool_policy,
+    "execution.configuration.tool_policy",
+  );
+  const resolvedToolProfile = record(
+    configuration.resolved_tool_profile,
+    "execution.configuration.resolved_tool_profile",
+  );
+  const resolvedTools = uniqueStrings(
+    resolvedToolProfile.tools,
+    "execution.configuration.resolved_tool_profile.tools",
   );
   const toolEnforcement = oneOf(
     configuration.tool_enforcement,
     ["exact", "native_permissions"] as const,
     "execution.configuration.tool_enforcement",
   );
+  if (
+    (toolPolicy.kind === "exact" &&
+      (toolEnforcement !== "exact" ||
+        !sameStringSet(toolPolicy.tools, resolvedTools))) ||
+    (toolPolicy.kind === "native_permissions" &&
+      toolEnforcement !== "native_permissions")
+  )
+    throw new ProtocolDecodeError(
+      "execution.configuration.tool_policy",
+      "does not match resolved enforcement/profile",
+    );
   const access = oneOf(
     executionWorkspace.access,
     ["none", "read_only", "read_write"] as const,
@@ -178,8 +210,10 @@ function decodeExecution(value: unknown): ResolvedExecution {
         model: string(model.model, "execution.configuration.model.model"),
       },
       reasoning,
-      tools,
+      reasoning_capability: reasoningCapability,
+      tool_policy: toolPolicy,
       tool_enforcement: toolEnforcement,
+      resolved_tool_profile: { tools: resolvedTools },
     },
     logical_workspace: {
       workspace_id: string(
@@ -356,6 +390,35 @@ function nonNegativeInteger(value: unknown, field: string): number {
     throw new ProtocolDecodeError(field, "must be a non-negative integer");
   return Number(value);
 }
+function sameStringSet(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length && left.every((value) => right.includes(value))
+  );
+}
+
+function decodeReasoningCapability(value: unknown, field: string) {
+  const capability = record(value, field);
+  if (capability.kind === "unsupported")
+    return { kind: "unsupported" as const };
+  if (capability.kind === "enumerated") {
+    const values = uniqueStrings(capability.values, `${field}.values`);
+    if (values.length > 0) return { kind: "enumerated" as const, values };
+  }
+  throw new ProtocolDecodeError(field, "invalid reasoning capability");
+}
+
+function decodeToolPolicy(value: unknown, field: string) {
+  const policy = record(value, field);
+  if (policy.kind === "native_permissions")
+    return { kind: "native_permissions" as const };
+  if (policy.kind === "exact")
+    return {
+      kind: "exact" as const,
+      tools: uniqueStrings(policy.tools, `${field}.tools`),
+    };
+  throw new ProtocolDecodeError(field, "invalid tool policy");
+}
+
 function decodeOutputDeclarations(
   value: unknown,
   field: string,

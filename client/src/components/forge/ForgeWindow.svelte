@@ -112,10 +112,11 @@ $: selectedReasoningCapability = selectedConfigurationAvailable
 $: visibleReasoningChoices =
   selectedReasoningCapability?.kind === "enumerated"
     ? selectedReasoningCapability.values
-    : draft.reasoning === null
-      ? []
-      : [draft.reasoning];
-$: nativeToolPolicy = draft.toolEnforcement === "native_permissions";
+    : typeof draft.reasoning === "string"
+      ? [draft.reasoning]
+      : [];
+$: nativeToolPolicy = draft.toolPolicy.kind === "native_permissions";
+$: draftTools = draft.toolPolicy.kind === "exact" ? draft.toolPolicy.tools : [];
 
 onMount(async () => {
   initialized = true;
@@ -277,7 +278,7 @@ function chooseModel(value: string) {
   const reasoning =
     capability.kind === "unsupported"
       ? null
-      : draft.reasoning !== null && capability.values.includes(draft.reasoning)
+      : typeof draft.reasoning === "string" && capability.values.includes(draft.reasoning)
         ? draft.reasoning
         : (capability.values[0] ?? null);
   draft = {
@@ -286,11 +287,12 @@ function chooseModel(value: string) {
     provider: choice.provider,
     model: choice.model,
     reasoning,
-    tools:
-      option.tool_enforcement === "native_permissions"
-        ? [...option.tools]
-        : draft.tools,
-    toolEnforcement: option.tool_enforcement,
+    toolPolicy:
+      option.tool_policy.kind === "native_permissions"
+        ? { kind: "native_permissions" }
+        : draft.toolPolicy.kind === "exact"
+          ? draft.toolPolicy
+          : { kind: "exact", tools: [...option.current_tool_profile.tools] },
   };
   clearIssues();
 }
@@ -299,19 +301,15 @@ function optionSupportsDraft(option: ExecutionOption, value: LoadoutDraft): bool
   const reasoningSupported =
     option.reasoning_capability.kind === "unsupported"
       ? value.reasoning === null
-      : value.reasoning !== null &&
+      : typeof value.reasoning === "string" &&
         option.reasoning_capability.values.includes(value.reasoning);
-  const advertised = [...option.tools].sort();
-  const selected = [...value.tools].sort();
-  const toolsSupported =
-    option.tool_enforcement === "exact"
-      ? selected.every((tool) => advertised.includes(tool))
-      : JSON.stringify(selected) === JSON.stringify(advertised);
-  return (
-    reasoningSupported &&
-    value.toolEnforcement === option.tool_enforcement &&
-    toolsSupported
-  );
+  const policySupported =
+    option.tool_policy.kind === value.toolPolicy.kind &&
+    (value.toolPolicy.kind === "native_permissions" ||
+      value.toolPolicy.tools.every((tool) =>
+        option.current_tool_profile.tools.includes(tool),
+      ));
+  return reasoningSupported && policySupported;
 }
 
 function preservesPersistedExecutionConfiguration(): boolean {
@@ -322,9 +320,7 @@ function preservesPersistedExecutionConfiguration(): boolean {
     draft.provider === original.provider &&
     draft.model === original.model &&
     draft.reasoning === original.reasoning &&
-    draft.toolEnforcement === original.toolEnforcement &&
-    JSON.stringify([...draft.tools].sort()) ===
-      JSON.stringify([...original.tools].sort())
+    JSON.stringify(draft.toolPolicy) === JSON.stringify(original.toolPolicy)
   );
 }
 
@@ -398,24 +394,24 @@ function validateDraft(): boolean {
   if (!draft.provider.trim()) errors.provider = "Choose a Model or enter a canonical provider.";
   if (!draft.model.trim()) errors.model = "Choose or enter a Model.";
   const preservesHistorical = preservesPersistedExecutionConfiguration();
+  if (draft.reasoning === undefined)
+    errors.model = "Choose a Model with a resolved reasoning capability.";
   if (!preservesHistorical && selectedReasoningCapability?.kind === "unsupported" && draft.reasoning !== null)
     errors.model = "This Model does not support configurable reasoning.";
   if (
     !preservesHistorical &&
     selectedReasoningCapability?.kind === "enumerated" &&
-    (draft.reasoning === null ||
+    (typeof draft.reasoning !== "string" ||
       !selectedReasoningCapability.values.includes(draft.reasoning))
   )
     errors.model = "Choose one of this Model's supported reasoning values.";
   if (
     !preservesHistorical &&
-    selectedModelOption?.tool_enforcement === "native_permissions" &&
-    (draft.toolEnforcement !== "native_permissions" ||
-      JSON.stringify([...draft.tools].sort()) !==
-        JSON.stringify([...selectedModelOption.tools].sort()))
+    selectedModelOption &&
+    selectedModelOption.tool_policy.kind !== draft.toolPolicy.kind
   )
-    errors.tools = "Use the complete native tool profile advertised by this Harness.";
-  const invalidCapability = draft.tools.find(
+    errors.tools = "Use a tool policy supported by this Harness.";
+  const invalidCapability = draftTools.find(
     (tool) =>
       tool.length > 128 ||
       !/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(tool),
@@ -567,7 +563,7 @@ function loadoutModelName(loadout: Loadout): string {
             >
               <span class="card-heading"><strong>{loadout.name}</strong><span aria-hidden="true">◆</span></span>
               <span class="card-model">{loadoutModelName(loadout)} · {reasoningLabel(loadout.reasoning)}</span>
-              <span class="card-access">{accessLabel(loadout.workspace_access)} · {loadout.tool_enforcement === "exact" ? `${loadout.tools.length} ${loadout.tools.length === 1 ? "capability" : "capabilities"}` : "Native tool permissions"}</span>
+              <span class="card-access">{accessLabel(loadout.workspace_access)} · {loadout.tool_policy.kind === "exact" ? `${loadout.tool_policy.tools.length} ${loadout.tool_policy.tools.length === 1 ? "capability" : "capabilities"}` : "Native tool permissions"}</span>
               <span class="card-usage">{usageLabel(count)}</span>
             </button>
           {/each}
@@ -666,18 +662,18 @@ function loadoutModelName(loadout: Loadout): string {
           </section>
 
           <section class="form-section" aria-labelledby="capabilities-heading">
-            <div class="form-section-heading"><span aria-hidden="true">C</span><div><h3 id="capabilities-heading">Capabilities</h3><p>{nativeToolPolicy ? "Use the Harness's native tool profile and permission controls." : "Choose the equipment this Loadout carries."}</p></div></div>
+            <div class="form-section-heading"><span aria-hidden="true">C</span><div><h3 id="capabilities-heading">Capabilities</h3><p>{nativeToolPolicy ? "Use the Harness's native permission system. QE capabilities are resolved at execution." : "Choose the equipment this Loadout carries."}</p></div></div>
             {#if nativeToolPolicy}
               <div class="model-panel">
                 <span class="panel-icon" aria-hidden="true">◆</span>
-                <div><small>Tool profile</small><strong>Native Harness Tools</strong><span>Authorization: native allow / ask / deny</span></div>
+                <div><small>Tool Policy</small><strong>Native Harness Tools</strong><span>Authorization: native allow / ask / deny</span></div>
               </div>
-              <p class="preset-impact">QE records this complete capability profile but does not claim an exact native tool subset.</p>
+              <p class="preset-impact">The current native capability profile is informational and is frozen only when an execution is resolved.</p>
             {:else}
               <div class="capability-picker">
                 {#each knownCapabilities as capability}
-                  <label class:selected={draft.tools.includes(capability.id)}>
-                    <input type="checkbox" checked={draft.tools.includes(capability.id)} on:change={(event) => toggleCapability(capability.id, event.currentTarget.checked)} />
+                  <label class:selected={draftTools.includes(capability.id)}>
+                    <input type="checkbox" checked={draftTools.includes(capability.id)} on:change={(event) => toggleCapability(capability.id, event.currentTarget.checked)} />
                     <span class="capability-icon" aria-hidden="true">{capability.icon}</span>
                     <span><strong>{capability.name}</strong><small>{capability.description}</small></span>
                   </label>
@@ -744,15 +740,15 @@ function loadoutModelName(loadout: Loadout): string {
             <section><small>Harness</small><strong>{selectedLoadout.harness}</strong></section>
             <section><small>Reasoning / Effort</small><strong>{reasoningLabel(selectedLoadout.reasoning)}</strong></section>
             <section><small>Project access</small><strong>{accessLabel(selectedLoadout.workspace_access)}</strong></section>
-            <section><small>Tool policy</small><strong>{selectedLoadout.tool_enforcement === "exact" ? "Exact selection" : "Native permissions"}</strong></section>
+            <section><small>Tool policy</small><strong>{selectedLoadout.tool_policy.kind === "exact" ? "Exact selection" : "Native permissions"}</strong></section>
           </div>
 
           <section class="capabilities-panel" aria-labelledby="detail-capabilities-title">
-            <h3 id="detail-capabilities-title">{selectedLoadout.tool_enforcement === "exact" ? "Capabilities" : "Native tool profile"}</h3>
-            {#if selectedLoadout.tool_enforcement === "native_permissions"}<p>Operation authorization uses the Harness's native allow / ask / deny controls.</p>{/if}
-            {#if selectedLoadout.tools.length}
+            <h3 id="detail-capabilities-title">{selectedLoadout.tool_policy.kind === "exact" ? "Capabilities" : "Native tool policy"}</h3>
+            {#if selectedLoadout.tool_policy.kind === "native_permissions"}<p>Operation authorization uses the Harness's native allow / ask / deny controls.</p>{/if}
+            {#if selectedLoadout.tool_policy.kind === "exact" && selectedLoadout.tool_policy.tools.length}
               <ul>
-                {#each selectedLoadout.tools as capabilityId}
+                {#each selectedLoadout.tool_policy.kind === "exact" ? selectedLoadout.tool_policy.tools : [] as capabilityId}
                   {@const capability = knownCapability(capabilityId)}
                   <li class:custom={!capability}>
                     <span class="capability-icon" aria-hidden="true">{capability?.icon ?? "◇"}</span>
@@ -761,7 +757,7 @@ function loadoutModelName(loadout: Loadout): string {
                   </li>
                 {/each}
               </ul>
-            {:else}<p>No capabilities configured.</p>{/if}
+            {:else if selectedLoadout.tool_policy.kind === "exact"}<p>No capabilities configured.</p>{/if}
           </section>
 
           <details class="advanced" bind:open={advancedOpen}>
@@ -769,8 +765,8 @@ function loadoutModelName(loadout: Loadout): string {
             <dl>
               <div><dt>Loadout key</dt><dd><code>{selectedLoadout.key}</code><small>Immutable</small></dd></div>
               <div><dt>Canonical model</dt><dd><code>{canonicalModel(selectedLoadout)}</code></dd></div>
-              <div><dt>Tool enforcement</dt><dd><code>{selectedLoadout.tool_enforcement}</code></dd></div>
-              <div><dt>Capability IDs</dt><dd>{#if selectedLoadout.tools.length}<code>{selectedLoadout.tools.join("\n")}</code>{:else}<span>None</span>{/if}</dd></div>
+              <div><dt>Tool policy</dt><dd><code>{selectedLoadout.tool_policy.kind}</code></dd></div>
+              {#if selectedLoadout.tool_policy.kind === "exact"}<div><dt>Capability IDs</dt><dd>{#if selectedLoadout.tool_policy.tools.length}<code>{selectedLoadout.tool_policy.tools.join("\n")}</code>{:else}<span>None</span>{/if}</dd></div>{/if}
             </dl>
           </details>
 

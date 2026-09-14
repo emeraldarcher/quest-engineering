@@ -6,6 +6,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   callbacks only pass decoded messages to application services.
   """
 
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
@@ -13,6 +15,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Identity
   alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
+  alias QuestEngineering.Core.ResolvedExecution.ReasoningCapability
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
@@ -1051,22 +1054,30 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          %{
            "harness_kind" => harness_kind,
            "models" => models,
-           "tools" => tools,
-           "tool_enforcement" => tool_enforcement
+           "supported_tool_policies" => supported_tool_policies,
+           "tool_enforcement" => tool_enforcement,
+           "tool_profile" => %{"tools" => tools}
          } = executor
        )
        when is_binary(harness_kind) and harness_kind != "" and is_list(models) and models != [] and
-              is_list(tools) and tool_enforcement in ["exact", "native_permissions"] do
+              is_list(tools) and is_list(supported_tool_policies) and
+              tool_enforcement in ["exact", "native_permissions"] do
     with :ok <- validate_models(models),
-         :ok <- string_list(tools, "capabilities.executors.tools") do
+         :ok <- string_list(tools, "capabilities.executors.tool_profile.tools"),
+         true <- Enum.uniq(supported_tool_policies) == supported_tool_policies,
+         true <- Enum.all?(supported_tool_policies, &(&1 in ["exact", "native_permissions"])),
+         true <- supported_tool_policies == [tool_enforcement] do
       {:ok,
        %{
          "harness_kind" => harness_kind,
          "models" => Enum.uniq(models),
-         "tools" => Enum.uniq(tools),
+         "supported_tool_policies" => supported_tool_policies,
          "tool_enforcement" => tool_enforcement,
+         "tool_profile" => %{"tools" => Enum.uniq(tools)},
          "workspaces" => Map.get(executor, "workspaces", [])
        }}
+    else
+      _invalid -> error(:invalid_capabilities, "capabilities.executors.tool_policy")
     end
   end
 
@@ -1182,6 +1193,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          execution_workspace: %ExecutionWorkspace{} = execution_workspace,
          context: %Context{} = context
        }) do
+    validate_resolved_configuration!(configuration)
+
     %{
       "identity" => stringify_struct(identity),
       "performer" => stringify_struct(performer),
@@ -1201,8 +1214,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
           "model" => configuration.model.model
         },
         "reasoning" => configuration.reasoning,
-        "tools" => configuration.tools,
-        "tool_enforcement" => Atom.to_string(configuration.tool_enforcement)
+        "reasoning_capability" => reasoning_capability(configuration.reasoning_capability),
+        "tool_policy" => tool_policy(configuration.tool_policy),
+        "tool_enforcement" => Atom.to_string(configuration.tool_enforcement),
+        "resolved_tool_profile" => %{"tools" => configuration.resolved_tool_profile.tools}
       },
       "logical_workspace" => %{
         "workspace_id" => logical_workspace.workspace_id,
@@ -1221,6 +1236,59 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       }
     }
   end
+
+  defp validate_resolved_configuration!(
+         %Configuration{
+           reasoning: nil,
+           reasoning_capability: %ReasoningCapability{kind: :unsupported, values: []}
+         } = configuration
+       ),
+       do: validate_resolved_tools!(configuration)
+
+  defp validate_resolved_configuration!(
+         %Configuration{
+           reasoning: reasoning,
+           reasoning_capability: %ReasoningCapability{kind: :enumerated, values: values}
+         } = configuration
+       )
+       when is_binary(reasoning) do
+    if reasoning in values,
+      do: validate_resolved_tools!(configuration),
+      else: raise(ArgumentError, "resolved reasoning is not advertised")
+  end
+
+  defp validate_resolved_configuration!(_configuration),
+    do: raise(ArgumentError, "resolved reasoning/capability combination is invalid")
+
+  defp validate_resolved_tools!(%Configuration{
+         tool_policy: %Exact{tools: expected},
+         tool_enforcement: :exact,
+         resolved_tool_profile: %{tools: actual}
+       }) do
+    if MapSet.new(expected) == MapSet.new(actual),
+      do: :ok,
+      else: raise(ArgumentError, "resolved exact tool profile is invalid")
+  end
+
+  defp validate_resolved_tools!(%Configuration{
+         tool_policy: %NativePermissions{},
+         tool_enforcement: :native_permissions,
+         resolved_tool_profile: %{tools: actual}
+       })
+       when is_list(actual),
+       do: :ok
+
+  defp validate_resolved_tools!(_configuration),
+    do: raise(ArgumentError, "resolved tool policy/enforcement combination is invalid")
+
+  defp reasoning_capability(%ReasoningCapability{kind: :unsupported, values: []}),
+    do: %{"kind" => "unsupported"}
+
+  defp reasoning_capability(%ReasoningCapability{kind: :enumerated, values: values}),
+    do: %{"kind" => "enumerated", "values" => values}
+
+  defp tool_policy(%Exact{tools: tools}), do: %{"kind" => "exact", "tools" => tools}
+  defp tool_policy(%NativePermissions{}), do: %{"kind" => "native_permissions"}
 
   defp encode_operational_recovery(nil), do: nil
 

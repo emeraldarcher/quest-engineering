@@ -264,8 +264,9 @@ defmodule QuestEngineering.Server.Product.TacticLibraryTest do
                harness: "fake",
                model: %ModelRef{provider: "fake", model: "test"},
                reasoning: "medium",
-               tools: ["workspace.filesystem"],
-               tool_enforcement: :exact,
+               tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{
+                 tools: ["workspace.filesystem"]
+               },
                workspace_access: :read_write
              })
 

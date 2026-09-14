@@ -460,8 +460,13 @@ defmodule QuestEngineering.Server.RunProjection do
             model: execution.configuration.model.model
           },
           reasoning: execution.configuration.reasoning,
-          tools: execution.configuration.tools,
+          reasoning_capability:
+            reasoning_capability(execution.configuration.reasoning_capability),
+          tool_policy: tool_policy(execution.configuration.tool_policy),
           tool_enforcement: Atom.to_string(execution.configuration.tool_enforcement),
+          resolved_tool_profile: %{
+            tools: execution.configuration.resolved_tool_profile.tools
+          },
           workspace_permission: Atom.to_string(execution.execution_workspace.access),
           worker_id: scheduled.worker_id
         }
@@ -482,6 +487,21 @@ defmodule QuestEngineering.Server.RunProjection do
         nil
     end
   end
+
+  defp reasoning_capability(%{
+         kind: :enumerated,
+         values: values
+       }),
+       do: %{kind: "enumerated", values: values}
+
+  defp reasoning_capability(%{kind: :unsupported, values: []}),
+    do: %{kind: "unsupported"}
+
+  defp tool_policy(%QuestEngineering.Core.Product.ToolPolicy.Exact{tools: tools}),
+    do: %{kind: "exact", tools: tools}
+
+  defp tool_policy(%QuestEngineering.Core.Product.ToolPolicy.NativePermissions{}),
+    do: %{kind: "native_permissions"}
 
   defp session_projection(session, worker, events, action_id) do
     current_usage = session.current_action_id == action_id

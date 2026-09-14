@@ -101,21 +101,63 @@ defmodule QuestEngineering.Core.ResolvedExecution.Work do
         }
 end
 
+defmodule QuestEngineering.Core.ResolvedExecution.ReasoningCapability do
+  @moduledoc false
+  @enforce_keys [:kind, :values]
+  defstruct [:kind, :values]
+  @type t :: %__MODULE__{kind: :enumerated | :unsupported, values: [String.t()]}
+end
+
+defmodule QuestEngineering.Core.ResolvedExecution.ToolProfile do
+  @moduledoc """
+  The exact QE semantic tool/capability profile resolved for one execution.
+
+  This is adapter-advertised QE capability evidence, not necessarily a raw
+  inventory of every internal native harness tool.
+  """
+  @enforce_keys [:tools]
+  defstruct [:tools]
+  @type t :: %__MODULE__{tools: [String.t()]}
+end
+
 defmodule QuestEngineering.Core.ResolvedExecution.Configuration do
   @moduledoc false
 
   alias QuestEngineering.Core.Product.Loadout
   alias QuestEngineering.Core.Product.ModelRef
+  alias QuestEngineering.Core.ResolvedExecution.ReasoningCapability
+  alias QuestEngineering.Core.ResolvedExecution.ToolProfile
 
-  @enforce_keys [:harness_kind, :model, :reasoning, :tools, :tool_enforcement]
-  defstruct [:harness_kind, :model, :reasoning, :tools, :tool_enforcement]
+  @enforce_keys [
+    :harness_kind,
+    :model,
+    :reasoning,
+    :reasoning_capability,
+    :tool_policy,
+    :tool_enforcement,
+    :resolved_tool_profile
+  ]
+  defstruct [
+    :harness_kind,
+    :model,
+    :reasoning,
+    :reasoning_capability,
+    :tool_policy,
+    :tool_enforcement,
+    :resolved_tool_profile
+  ]
+
+  @typedoc "The execution guarantee provided by the matched harness adapter."
+  @type tool_enforcement :: :exact | :native_permissions
 
   @type t :: %__MODULE__{
           harness_kind: String.t(),
           model: ModelRef.t(),
           reasoning: Loadout.reasoning(),
-          tools: [String.t()],
-          tool_enforcement: Loadout.tool_enforcement()
+          reasoning_capability: ReasoningCapability.t(),
+          tool_policy: Loadout.tool_policy(),
+          tool_enforcement: tool_enforcement(),
+          resolved_tool_profile: ToolProfile.t()
         }
 end
 
@@ -160,6 +202,8 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
 
   alias QuestEngineering.Core.Product.LaunchSnapshot
   alias QuestEngineering.Core.Product.LaunchSnapshot.ResolvedMember
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
@@ -167,6 +211,8 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
   alias QuestEngineering.Core.ResolvedExecution.Identity
   alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
+  alias QuestEngineering.Core.ResolvedExecution.ReasoningCapability
+  alias QuestEngineering.Core.ResolvedExecution.ToolProfile
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.Action
 
@@ -190,6 +236,8 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
       )
       when is_binary(launch_id) and is_binary(logical_lineage_id) and
              is_map(execution_workspace) do
+    validate_resolution!(member.loadout, execution_workspace)
+
     %ResolvedExecution{
       identity: %Identity{
         launch_id: launch_id,
@@ -217,8 +265,10 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
         harness_kind: member.loadout.harness,
         model: member.loadout.model,
         reasoning: member.loadout.reasoning,
-        tools: member.loadout.tools,
-        tool_enforcement: member.loadout.tool_enforcement
+        reasoning_capability: Map.fetch!(execution_workspace, :reasoning_capability),
+        tool_policy: member.loadout.tool_policy,
+        tool_enforcement: Map.fetch!(execution_workspace, :tool_enforcement),
+        resolved_tool_profile: Map.fetch!(execution_workspace, :resolved_tool_profile)
       },
       logical_workspace: %LogicalWorkspace{
         workspace_id: snapshot.workspace.id,
@@ -237,4 +287,33 @@ defmodule QuestEngineering.Core.ResolvedExecution.Builder do
       }
     }
   end
+
+  defp validate_resolution!(loadout, resolution) do
+    unless valid_reasoning?(loadout.reasoning, Map.fetch!(resolution, :reasoning_capability)),
+      do:
+        raise(ArgumentError, "resolved reasoning does not match the discovered model capability")
+
+    unless valid_tools?(
+             loadout.tool_policy,
+             Map.fetch!(resolution, :tool_enforcement),
+             Map.fetch!(resolution, :resolved_tool_profile)
+           ),
+           do:
+             raise(ArgumentError, "resolved tool profile does not match the authored tool policy")
+  end
+
+  defp valid_reasoning?(nil, %ReasoningCapability{kind: :unsupported, values: []}), do: true
+
+  defp valid_reasoning?(reasoning, %ReasoningCapability{kind: :enumerated, values: values}),
+    do: is_binary(reasoning) and reasoning in values
+
+  defp valid_reasoning?(_reasoning, _capability), do: false
+
+  defp valid_tools?(%Exact{tools: expected}, :exact, %ToolProfile{tools: actual}),
+    do: MapSet.new(expected) == MapSet.new(actual)
+
+  defp valid_tools?(%NativePermissions{}, :native_permissions, %ToolProfile{tools: actual}),
+    do: is_list(actual)
+
+  defp valid_tools?(_policy, _enforcement, _profile), do: false
 end

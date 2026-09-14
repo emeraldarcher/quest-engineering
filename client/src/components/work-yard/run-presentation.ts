@@ -524,9 +524,9 @@ export function effortLabel(
 export function toolPolicyLabel(
   execution: NonNullable<RunAttempt["execution"]>,
 ): string {
-  return execution.tool_enforcement === "native_permissions"
+  return execution.tool_policy.kind === "native_permissions"
     ? "Tool policy: native permissions"
-    : `Tools: ${execution.tools.length} exact`;
+    : `Tools: ${execution.tool_policy.tools.length} exact`;
 }
 
 export function humanize(value: string): string {

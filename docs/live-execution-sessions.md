@@ -126,4 +126,4 @@ The local endpoint is not a substitute for authentication. Future proxied/remote
 
 ## Loadouts and harness selection
 
-Loadouts select `harness_kind`, model, nullable reasoning/effort, tool profile and enforcement, and workspace access. `reasoning: null` is frozen only for a model that explicitly reports effort as unsupported. Tool enforcement distinguishes Pi's exact native subset from Antigravity's complete native-permissions profile. These are execution capabilities and belong in Loadout configuration, never Class instructions.
+Loadouts select `harness_kind`, model, nullable reasoning/effort, authored ToolPolicy, and workspace access. `reasoning: null` is resolved only with explicit unsupported capability evidence. Tool enforcement and the adapter's current QE semantic capability profile are derived at scheduling and frozen in per-Attempt resolved execution; they are not authored Loadout fields. `ResolvedToolProfile` records that exact QE profile, not necessarily a raw inventory of every internal native harness tool. These execution concerns never belong in Class instructions.

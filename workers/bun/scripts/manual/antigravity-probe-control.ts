@@ -130,8 +130,10 @@ function probeAction(root: string): ExecuteAction {
           model: "gemini-3.8-flash-low",
         },
         reasoning: "low",
-        tools: [],
+        reasoning_capability: { kind: "enumerated", values: ["low"] },
+        tool_policy: { kind: "native_permissions" },
         tool_enforcement: "native_permissions",
+        resolved_tool_profile: { tools: [] },
       },
       logical_workspace: { workspace_id: workspaceId, workspace_key: "probe" },
       execution_workspace: {

@@ -100,8 +100,15 @@ async function fixture(
       model: selection.model ?? "gemini-test-high",
     },
     reasoning: selection.reasoning === undefined ? "high" : selection.reasoning,
-    tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+    reasoning_capability:
+      selection.reasoning === null
+        ? { kind: "unsupported" }
+        : { kind: "enumerated", values: [selection.reasoning ?? "high"] },
+    tool_policy: { kind: "native_permissions" },
     tool_enforcement: "native_permissions",
+    resolved_tool_profile: {
+      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+    },
   };
   execute.execution.execution_workspace.canonical_root = workspace;
   const dispatch = registry.accept(execute).dispatch;
@@ -273,25 +280,26 @@ test("effort capability rejects omitted enumerated effort and configured unsuppo
   }
 });
 
-test("Antigravity rejects exact enforcement and partial native profiles", async () => {
+test("Antigravity accepts only resolved native-permissions policy", async () => {
   const exact = await fixture();
   exact.dispatch.action.execution.configuration.tool_enforcement = "exact";
   try {
     await expect(
       exact.harness.start(exact.dispatch, exact.lineage),
-    ).rejects.toThrow("complete native-permissions tool profile");
+    ).rejects.toThrow("native-permissions policy");
   } finally {
     await exact.close();
   }
 
   const partial = await fixture();
-  partial.dispatch.action.execution.configuration.tools = [
-    "workspace.filesystem",
-  ];
+  partial.dispatch.action.execution.configuration.tool_policy = {
+    kind: "exact",
+    tools: ["workspace.filesystem"],
+  };
   try {
     await expect(
       partial.harness.start(partial.dispatch, partial.lineage),
-    ).rejects.toThrow("complete native-permissions tool profile");
+    ).rejects.toThrow("native-permissions policy");
   } finally {
     await partial.close();
   }

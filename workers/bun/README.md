@@ -60,7 +60,7 @@ Terminal worktrees are retained. There is no automatic GC.
 
 `terminal.shell` requires `read_write` and root-specific `allow_unconfined_shell: true`. Pi always starts with `--no-skills`, `--no-prompt-templates`, and `--no-context-files`.
 
-Continuation requires exact harness kind, model, reasoning/effort, tools, logical Workspace, binding, worktree, canonical root, and access equality. It never crosses a harness, Run worktree, or Worker.
+Continuation requires exact harness kind, model, resolved reasoning capability/value, authored ToolPolicy, resolved enforcement/profile, logical Workspace, binding, worktree, canonical root, and access equality. It never crosses a harness, Run worktree, or Worker.
 
 ## Live sessions
 
@@ -68,7 +68,9 @@ Continuation requires exact harness kind, model, reasoning/effort, tools, logica
 
 Antigravity 1.2.2 discovers its authenticated native model catalog dynamically, pins the exact native model and any explicitly supported effort before inference, and keeps an actual TUI alive for normal Work Yard observation and authorized takeover. Models that explicitly lack effort control are advertised with `reasoning_capability.kind=unsupported`; their resolved reasoning is `null` and launch omits `--effort`. Its semantic-only `qe_complete_step` MCP tool and Stop hook both use the generic Worker-local control bridge. Native screen rendering and Stop `terminationReason` are not completion evidence. Recovery adopts a surviving exact TUI first, otherwise resumes only a verified native conversation into a new interactive process. Herdr 0.9 `agent_pane_busy` is handled by exact-launch adoption or shell-state settlement with one bounded retry, never a blind delay.
 
-Pi advertises `tool_enforcement=exact` and maps a frozen QE capability subset to its native `--tools` set. Antigravity advertises `tool_enforcement=native_permissions`; its frozen tool list is the complete native capability profile, while Antigravity's allow/ask/deny engine remains authoritative for individual operations.
+Pi advertises support for authored `ToolPolicy.exact` and maps that QE capability subset to its native `--tools` set. Antigravity advertises support for `ToolPolicy.native_permissions`; its Loadout stores no catalog. Scheduling derives `tool_enforcement` and freezes the exact QE semantic capability profile advertised by the adapter as the Attempt's `ResolvedToolProfile`, while Antigravity's allow/ask/deny engine remains authoritative for individual operations. Protocol v7 `tool_profile` and `resolved_tool_profile` contain QE semantic capability IDs, not necessarily harness-native tool identifiers.
+
+Antigravity 1.2.2 has neither a stable low-level native tool-catalog interface nor an arbitrary per-tool restriction interface. QE does not claim that `ResolvedToolProfile` is a complete inventory of every internal Antigravity tool. Future native identifiers must use a separate protocol field rather than overloading the QE semantic capability profile.
 
 Herdr's actual `blocked` agent state creates provider-neutral HumanAttention; Pi's explicit `qe_request_human_assistance` tool can enrich the same episode with structured context. In `conversational_intervention` mode, Pi blocks and terminates only the current agent run, returns to its ordinary editor, permits multi-turn human chat, and resumes automation only through `/qe-resume`. The Worker keeps collecting the same dispatch across Pi's `agent_settled` boundary and persists the Product-safe checkpoint/lifecycle in the existing lineage registry. QE does not scan terminal or chat prose. Waiting retains dispatch, Member, Worker-slot, lineage and worktree occupancy. See [live-session acceptance](docs/live-session-acceptance.md) and the repository [architecture](../../docs/live-execution-sessions.md).
 

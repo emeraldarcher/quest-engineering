@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { QE_TOOL_CAPABILITIES } from "../../capabilities.ts";
 import type { WorkerConfig } from "../../config.ts";
 import {
   type DispatchRecord,
@@ -741,11 +740,12 @@ export class AntigravityHarness implements AgentHarness {
     configuration: Record<string, unknown>,
   ): Promise<void> {
     if (
+      record(configuration.tool_policy)?.kind !== "native_permissions" ||
       configuration.tool_enforcement !== "native_permissions" ||
-      !sameStringSet(configuration.tools, QE_TOOL_CAPABILITIES)
+      !Array.isArray(record(configuration.resolved_tool_profile)?.tools)
     )
       throw new Error(
-        "The retained Antigravity execution did not freeze the complete native-permissions tool profile.",
+        "The retained Antigravity execution did not freeze its resolved QE semantic capability profile.",
       );
     const model = record(configuration.model);
     const provider = model?.provider;
@@ -773,11 +773,12 @@ export class AntigravityHarness implements AgentHarness {
     if (configuration.harness_kind !== this.kind)
       throw new Error("Resolved execution selected another harness.");
     if (
+      configuration.tool_policy.kind !== "native_permissions" ||
       configuration.tool_enforcement !== "native_permissions" ||
-      !sameStringSet(configuration.tools, QE_TOOL_CAPABILITIES)
+      !Array.isArray(configuration.resolved_tool_profile.tools)
     )
       throw new Error(
-        "Antigravity requires its complete native-permissions tool profile; exact subset enforcement is unavailable.",
+        "Antigravity requires its native-permissions policy and resolved QE semantic capability profile.",
       );
     if (configuration.model.provider !== ANTIGRAVITY_MODEL_PROVIDER)
       throw new Error(
@@ -997,13 +998,6 @@ function unavailableInspection(
     intervention: lineage.intervention,
     lastActivityAt,
   };
-}
-function sameStringSet(value: unknown, expected: readonly string[]): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length === expected.length &&
-    value.every((item) => typeof item === "string" && expected.includes(item))
-  );
 }
 function effortArgs(reasoning: unknown): string[] {
   return typeof reasoning === "string" ? ["--effort", reasoning] : [];

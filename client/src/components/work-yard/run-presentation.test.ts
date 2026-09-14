@@ -92,8 +92,12 @@ describe("Work Yard operational presentation", () => {
       harness: "antigravity",
       model: { provider: "antigravity", model: "claude-sonnet-4-6" },
       reasoning: null,
-      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      reasoning_capability: { kind: "unsupported" as const },
+      tool_policy: { kind: "native_permissions" as const },
       tool_enforcement: "native_permissions" as const,
+      resolved_tool_profile: {
+        tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      },
       workspace_permission: "read_write" as const,
       worker_id: "worker-a",
     };

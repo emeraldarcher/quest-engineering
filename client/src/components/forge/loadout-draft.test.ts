@@ -3,6 +3,7 @@ import type { ExecutionOption, Loadout } from "../../api/contracts";
 import {
   applyExecutionOption,
   draftFromLoadout,
+  emptyLoadoutDraft,
   loadoutInputFromDraft,
 } from "./loadout-draft";
 import { modelRefKey } from "./loadout-presentation";
@@ -15,8 +16,10 @@ const custom: Loadout = {
   harness: "pi",
   model: { provider: "custom-provider", model: "custom-model-x" },
   reasoning: "high",
-  tools: ["workspace.filesystem", "acme.special-tool"],
-  tool_enforcement: "exact",
+  tool_policy: {
+    kind: "exact",
+    tools: ["workspace.filesystem", "acme.special-tool"],
+  },
   workspace_access: "read_write",
   archived_at: null,
 };
@@ -31,8 +34,11 @@ const option: ExecutionOption = {
     kind: "enumerated",
     values: ["low", "medium", "high"],
   },
-  tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+  tool_policy: { kind: "exact" },
   tool_enforcement: "exact",
+  current_tool_profile: {
+    tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+  },
   workspaces: [
     {
       workspace_id: "workspace-1",
@@ -46,86 +52,69 @@ test("identical provider/model names remain distinct across harnesses", () => {
   expect(
     modelRefKey({ harness: "pi", provider: "shared", model: "same" }),
   ).not.toBe(
-    modelRefKey({
-      harness: "antigravity",
-      provider: "shared",
-      model: "same",
-    }),
+    modelRefKey({ harness: "antigravity", provider: "shared", model: "same" }),
   );
 });
 
-test("an undiscovered custom ModelRef and capability round-trip losslessly", () => {
+test("an undiscovered exact policy round-trips losslessly", () => {
   const input = loadoutInputFromDraft(draftFromLoadout(custom));
-
   expect(input.model).toEqual(custom.model);
-  expect(input.tools).toEqual(custom.tools);
-  expect(input.workspace_access).toBe("read_write");
-  expect(input).not.toHaveProperty("instructions");
+  expect(input.tool_policy).toEqual(custom.tool_policy);
+  expect(input).not.toHaveProperty("tool_enforcement");
 });
 
-test("editing identity only does not normalize or delete custom configuration", () => {
-  const draft = { ...draftFromLoadout(custom), name: "Renamed Custom Coding" };
-  const input = loadoutInputFromDraft(draft);
-
-  expect(input.name).toBe("Renamed Custom Coding");
-  expect(input.model).toEqual(custom.model);
-  expect(input.tools).toEqual(["workspace.filesystem", "acme.special-tool"]);
-});
-
-test("a known execution option populates ordinary Product fields only", () => {
-  const populated = applyExecutionOption(
-    { ...draftFromLoadout(custom), name: "Preset Coding" },
-    option,
+test("a known exact option populates an authored exact policy", () => {
+  const input = loadoutInputFromDraft(
+    applyExecutionOption(
+      { ...draftFromLoadout(custom), name: "Preset Coding" },
+      option,
+    ),
   );
-  const input = loadoutInputFromDraft(populated);
-
-  expect(input).toEqual({
-    name: "Preset Coding",
-    description: custom.description,
-    harness: "pi",
-    model: { provider: option.model.provider, model: option.model.model },
-    reasoning: "medium",
-    tools: [
-      "workspace.filesystem",
-      "workspace.search",
-      "terminal.shell",
-      "acme.special-tool",
-    ],
-    tool_enforcement: "exact",
-    workspace_access: "read_write",
+  expect(input.reasoning).toBe("medium");
+  expect(input.tool_policy).toEqual({
+    kind: "exact",
+    tools: [...option.current_tool_profile.tools, "acme.special-tool"],
   });
-  expect(input).not.toHaveProperty("preset_id");
-  expect(input).not.toHaveProperty("execution_profile_id");
-  expect(input).not.toHaveProperty("known_profile");
 });
 
-test("unsupported reasoning and native tool profile populate without fake values or subsets", () => {
+test("native policy stores no discovered catalog as authored intent", () => {
   const native: ExecutionOption = {
     ...option,
     harness: "antigravity",
     reasoning_capability: { kind: "unsupported" },
+    tool_policy: { kind: "native_permissions" },
     tool_enforcement: "native_permissions",
+    current_tool_profile: { tools: ["a", "b", "c"] },
   };
-  const populated = applyExecutionOption(draftFromLoadout(custom), native);
-  const input = loadoutInputFromDraft(populated);
-
+  const input = loadoutInputFromDraft(
+    applyExecutionOption(draftFromLoadout(custom), native),
+  );
   expect(input.reasoning).toBeNull();
-  expect(input.tools).toEqual(native.tools);
-  expect(input.tool_enforcement).toBe("native_permissions");
-  expect(input.tools).not.toContain("acme.special-tool");
+  expect(input.tool_policy).toEqual({ kind: "native_permissions" });
+  expect(input).not.toHaveProperty("tools");
+  expect(input).not.toHaveProperty("tool_enforcement");
 });
 
-test("applying a preset preserves custom capability IDs explicitly", () => {
-  const populated = applyExecutionOption(draftFromLoadout(custom), option);
-
-  expect({
-    harness: populated.harness,
-    provider: populated.provider,
-    model: populated.model,
-  }).toEqual({
-    harness: option.harness,
-    provider: option.model.provider,
-    model: option.model.model,
+test("switching from native policy to Pi creates a valid exact draft", () => {
+  const nativeLoadout: Loadout = {
+    ...custom,
+    harness: "antigravity",
+    reasoning: null,
+    tool_policy: { kind: "native_permissions" },
+  };
+  const populated = applyExecutionOption(
+    draftFromLoadout(nativeLoadout),
+    option,
+  );
+  expect(populated.toolPolicy).toEqual({
+    kind: "exact",
+    tools: option.current_tool_profile.tools,
   });
-  expect(populated.tools).toContain("acme.special-tool");
+});
+
+test("an unresolved draft cannot serialize as unsupported", () => {
+  expect(emptyLoadoutDraft().reasoning).toBeUndefined();
+  expect(() => loadoutInputFromDraft(emptyLoadoutDraft())).toThrow(
+    "has not been resolved",
+  );
 });

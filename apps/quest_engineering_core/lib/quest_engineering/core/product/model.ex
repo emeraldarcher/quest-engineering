@@ -22,13 +22,26 @@ defmodule QuestEngineering.Core.Product.ModelRef do
   @type t :: %__MODULE__{provider: String.t(), model: String.t()}
 end
 
+defmodule QuestEngineering.Core.Product.ToolPolicy.Exact do
+  @moduledoc "User-authored execution intent requesting an exactly enforced QE capability subset."
+  @enforce_keys [:tools]
+  defstruct [:tools]
+  @type t :: %__MODULE__{tools: [String.t()]}
+end
+
+defmodule QuestEngineering.Core.Product.ToolPolicy.NativePermissions do
+  @moduledoc "User-authored execution intent to use a harness's native tools and authorization system."
+  defstruct []
+  @type t :: %__MODULE__{}
+end
+
 defmodule QuestEngineering.Core.Product.Loadout do
   @moduledoc """
   Capability and resource configuration with no behavioral instructions.
 
-  `tools` contains Quest Engineering capability identifiers. `tool_enforcement`
-  states whether that set is physically exact or a native-permissions profile;
-  operation authorization remains owned by the selected harness.
+  `tool_policy` is user-authored execution intent. Harness enforcement and the
+  execution-time QE semantic capability profile are resolved later and are not
+  Loadout knobs.
   """
 
   alias QuestEngineering.Core.Product.ModelRef
@@ -41,8 +54,7 @@ defmodule QuestEngineering.Core.Product.Loadout do
     :harness,
     :model,
     :reasoning,
-    :tools,
-    :tool_enforcement,
+    :tool_policy,
     :workspace_access
   ]
   defstruct [
@@ -53,13 +65,14 @@ defmodule QuestEngineering.Core.Product.Loadout do
     :harness,
     :model,
     :reasoning,
-    :tools,
-    :tool_enforcement,
+    :tool_policy,
     :workspace_access
   ]
 
   @type reasoning :: String.t() | nil
-  @type tool_enforcement :: :exact | :native_permissions
+  @type tool_policy ::
+          QuestEngineering.Core.Product.ToolPolicy.Exact.t()
+          | QuestEngineering.Core.Product.ToolPolicy.NativePermissions.t()
   @type workspace_access :: :none | :read_only | :read_write
   @type t :: %__MODULE__{
           id: String.t(),
@@ -69,8 +82,7 @@ defmodule QuestEngineering.Core.Product.Loadout do
           harness: String.t(),
           model: ModelRef.t(),
           reasoning: reasoning(),
-          tools: [String.t()],
-          tool_enforcement: tool_enforcement(),
+          tool_policy: tool_policy(),
           workspace_access: workspace_access()
         }
 end

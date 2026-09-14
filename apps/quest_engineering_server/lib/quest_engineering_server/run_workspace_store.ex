@@ -347,27 +347,31 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
     |> Enum.map(& &1.loadout)
     |> Enum.uniq_by(fn loadout ->
       {loadout.harness, loadout.model.provider, loadout.model.model, loadout.reasoning,
-       Enum.sort(loadout.tools), loadout.tool_enforcement, loadout.workspace_access}
+       inspect(loadout.tool_policy), loadout.workspace_access}
     end)
   end
 
   defp compatible_requirement?(worker, binding, loadout) do
     requested_access = Atom.to_string(loadout.workspace_access)
 
-    shell_allowed =
-      "terminal.shell" not in loadout.tools or binding.allow_unconfined_shell
-
     access_allowed = @access_rank[binding.max_access] >= @access_rank[requested_access]
 
-    shell_allowed and access_allowed and
-      CapabilityMatcher.executor_compatible?(worker.capabilities, %{
-        harness_kind: loadout.harness,
-        model: loadout.model,
-        reasoning: loadout.reasoning,
-        tools: loadout.tools,
-        tool_enforcement: loadout.tool_enforcement,
-        workspace_access: loadout.workspace_access
-      })
+    requested = %{
+      harness_kind: loadout.harness,
+      model: loadout.model,
+      reasoning: loadout.reasoning,
+      tool_policy: loadout.tool_policy,
+      workspace_access: loadout.workspace_access
+    }
+
+    case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
+      {:ok, %{resolved_tool_profile: %{tools: tools}}} ->
+        access_allowed and
+          ("terminal.shell" not in tools or binding.allow_unconfined_shell)
+
+      :error ->
+        false
+    end
   end
 
   # credo:disable-for-next-line Credo.Check.Refactor.Nesting

@@ -39,8 +39,10 @@ const coding: Loadout = {
   harness: "pi",
   model: { provider: "openai-codex", model: "gpt-5.6-sol" },
   reasoning: "high",
-  tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
-  tool_enforcement: "exact",
+  tool_policy: {
+    kind: "exact",
+    tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+  },
   workspace_access: "read_write",
   archived_at: null,
 };
@@ -51,7 +53,10 @@ const review: Loadout = {
   name: "Review",
   description: "Read-only review equipment.",
   reasoning: "medium",
-  tools: ["workspace.filesystem", "workspace.search"],
+  tool_policy: {
+    kind: "exact",
+    tools: ["workspace.filesystem", "workspace.search"],
+  },
   workspace_access: "read_only",
 };
 const custom: Loadout = {
@@ -62,7 +67,10 @@ const custom: Loadout = {
   description: "Specialist equipment.",
   harness: "pi",
   model: { provider: "custom-provider", model: "custom-model-x" },
-  tools: ["workspace.filesystem", "acme.special-tool"],
+  tool_policy: {
+    kind: "exact",
+    tools: ["workspace.filesystem", "acme.special-tool"],
+  },
 };
 const option: ExecutionOption = {
   harness: coding.harness,
@@ -71,8 +79,11 @@ const option: ExecutionOption = {
     kind: "enumerated",
     values: ["low", "medium", "high"],
   },
-  tools: [...coding.tools],
+  tool_policy: { kind: "exact" },
   tool_enforcement: "exact",
+  current_tool_profile: {
+    tools: coding.tool_policy.kind === "exact" ? coding.tool_policy.tools : [],
+  },
   workspaces: [
     {
       workspace_id: "workspace-1",
@@ -246,13 +257,14 @@ test("unsupported effort and native tool authorization avoid false precision", a
     harness: "antigravity",
     model: { provider: "antigravity", model: "claude-sonnet-4-6" },
     reasoning: null,
-    tool_enforcement: "native_permissions",
+    tool_policy: { kind: "native_permissions" },
   };
   const nativeOption: ExecutionOption = {
     ...option,
     harness: "antigravity",
     model: { ...native.model, display_name: "Claude Sonnet 4.6" },
     reasoning_capability: { kind: "unsupported" },
+    tool_policy: { kind: "native_permissions" },
     tool_enforcement: "native_permissions",
   };
   renderForge(
@@ -271,9 +283,16 @@ test("unsupported effort and native tool authorization avoid false precision", a
   await fireEvent.click(screen.getByRole("button", { name: "Edit" }));
   expect(screen.getByText("Not configurable for this Model.")).toBeTruthy();
   expect(screen.queryByRole("checkbox", { name: /Project files/ })).toBeNull();
+  expect(screen.getByText("Native Harness Tools")).toBeTruthy();
+  expect(
+    screen.getByText(
+      "Use the Harness's native permission system. QE capabilities are resolved at execution.",
+    ),
+  ).toBeTruthy();
   expect(
     screen.getByText("Authorization: native allow / ask / deny"),
   ).toBeTruthy();
+  expect(screen.queryByLabelText("Tool Enforcement")).toBeNull();
 });
 
 test("Cancel leaves explicit Create and Edit modes without saving", async () => {
@@ -316,8 +335,7 @@ test("changing Name only preserves a custom ModelRef and unknown capabilities", 
     harness: "pi",
     model: custom.model,
     reasoning: custom.reasoning,
-    tools: custom.tools,
-    tool_enforcement: custom.tool_enforcement,
+    tool_policy: custom.tool_policy,
     workspace_access: custom.workspace_access,
   });
   expect(updateLoadout.mock.calls[0]?.[1]).not.toHaveProperty("key");
@@ -351,8 +369,10 @@ test("applying a preset to New Loadout creates ordinary Product fields only", as
     harness: "pi",
     model: { provider: option.model.provider, model: option.model.model },
     reasoning: "medium",
-    tools: option.tools,
-    tool_enforcement: "exact",
+    tool_policy: {
+      kind: "exact",
+      tools: option.current_tool_profile.tools,
+    },
     workspace_access: "read_write",
   });
   expect(submitted).not.toHaveProperty("preset_id");
@@ -374,7 +394,10 @@ test("applying a preset while editing preserves custom capability IDs", async ()
   await fireEvent.click(screen.getByRole("button", { name: "Apply preset" }));
   await fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
 
-  expect(updateLoadout.mock.calls[0]?.[1].tools).toContain("acme.special-tool");
+  expect(updateLoadout.mock.calls[0]?.[1].tool_policy).toMatchObject({
+    kind: "exact",
+    tools: expect.arrayContaining(["acme.special-tool"]),
+  });
 });
 
 test("Custom configuration is intentional and does not leak into normal editing", async () => {

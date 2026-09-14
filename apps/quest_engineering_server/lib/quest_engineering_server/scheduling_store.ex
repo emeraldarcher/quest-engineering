@@ -118,22 +118,37 @@ defmodule QuestEngineering.Server.SchedulingStore do
 
   defp resolve_candidate(snapshot, launch, assignment, action) do
     with {:ok, member} <- resolve_member(snapshot, action),
-         {:ok, context} <- resolve_context(action),
-         execution =
-           Builder.build(
-             snapshot,
-             action,
-             launch.id,
-             member,
-             context.logical_lineage_id,
-             context.source_occurrence_id,
-             %{
-               worktree_id: assignment.worktree_id,
-               workspace_binding_id: assignment.workspace_binding_id,
-               canonical_root: assignment.canonical_worktree_root
-             }
-           ),
-         {:ok, worker, slot} <- select_worker(execution, assignment, action, context) do
+         {:ok, context} <- resolve_context(action) do
+      resolve_candidate_for_member(snapshot, launch, assignment, action, member, context)
+    end
+  end
+
+  defp resolve_candidate_for_member(snapshot, launch, assignment, action, member, context) do
+    requested = %{
+      harness_kind: member.loadout.harness,
+      model: member.loadout.model,
+      reasoning: member.loadout.reasoning,
+      tool_policy: member.loadout.tool_policy,
+      workspace_access: member.loadout.workspace_access
+    }
+
+    with {:ok, worker, slot, resolution} <-
+           select_worker(requested, assignment, action, context) do
+      execution =
+        Builder.build(
+          snapshot,
+          action,
+          launch.id,
+          member,
+          context.logical_lineage_id,
+          context.source_occurrence_id,
+          Map.merge(resolution, %{
+            worktree_id: assignment.worktree_id,
+            workspace_binding_id: assignment.workspace_binding_id,
+            canonical_root: assignment.canonical_worktree_root
+          })
+        )
+
       {:ok,
        %{
          squad_id: snapshot.squad.id,
@@ -307,35 +322,17 @@ defmodule QuestEngineering.Server.SchedulingStore do
     end
   end
 
-  defp select_worker(execution, assignment, action, context) do
-    assert_continuation_harness!(execution, action, context)
+  defp select_worker(requested, assignment, action, context) do
+    assert_continuation_harness!(requested, action, context)
     continuation_worker_id = continuation_worker(action, context)
     required_worker_id = assignment.worker_id
 
-    if continuation_worker_id && continuation_worker_id != required_worker_id do
-      Repo.rollback(invariant(:continuation_run_worker_mismatch, %{run_id: action.run_id}))
-    end
+    ensure_continuation_worker!(continuation_worker_id, required_worker_id, action)
+    workers = compatible_workers(requested, required_worker_id)
 
-    requested =
-      execution.configuration
-      |> Map.from_struct()
-      |> Map.put(:workspace_access, execution.execution_workspace.access)
-
-    workers =
-      Repo.all(
-        from worker in Worker,
-          where: worker.status == "connected",
-          order_by: [asc: worker.id],
-          lock: "FOR UPDATE"
-      )
-      |> Enum.filter(fn worker ->
-        worker.id == required_worker_id and
-          CapabilityMatcher.executor_compatible?(worker.capabilities, requested)
-      end)
-
-    case Enum.find_value(workers, &worker_with_free_slot/1) do
-      {worker, slot} ->
-        {:ok, worker, slot}
+    case Enum.find_value(workers, &available_worker/1) do
+      {worker, slot, resolution} ->
+        {:ok, worker, slot, resolution}
 
       nil when workers == [] ->
         {:waiting,
@@ -344,15 +341,43 @@ defmodule QuestEngineering.Server.SchedulingStore do
       nil ->
         {:waiting,
          waiting(:waiting_for_capacity, action, %{
-           compatible_worker_ids: Enum.map(workers, & &1.id)
+           compatible_worker_ids: Enum.map(workers, fn {worker, _resolution} -> worker.id end)
          })}
     end
   end
 
-  defp assert_continuation_harness!(_execution, _action, %{source_occurrence_id: nil}),
+  defp ensure_continuation_worker!(nil, _required_worker_id, _action), do: :ok
+  defp ensure_continuation_worker!(required_worker_id, required_worker_id, _action), do: :ok
+
+  defp ensure_continuation_worker!(_continuation_worker_id, _required_worker_id, action),
+    do: Repo.rollback(invariant(:continuation_run_worker_mismatch, %{run_id: action.run_id}))
+
+  defp compatible_workers(requested, required_worker_id) do
+    Repo.all(
+      from worker in Worker,
+        where: worker.status == "connected",
+        order_by: [asc: worker.id],
+        lock: "FOR UPDATE"
+    )
+    |> Enum.flat_map(fn worker ->
+      case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
+        {:ok, resolution} when worker.id == required_worker_id -> [{worker, resolution}]
+        _other -> []
+      end
+    end)
+  end
+
+  defp available_worker({worker, resolution}) do
+    case worker_with_free_slot(worker) do
+      {worker, slot} -> {worker, slot, resolution}
+      nil -> nil
+    end
+  end
+
+  defp assert_continuation_harness!(_requested, _action, %{source_occurrence_id: nil}),
     do: :ok
 
-  defp assert_continuation_harness!(execution, action, %{source_occurrence_id: source}) do
+  defp assert_continuation_harness!(requested, action, %{source_occurrence_id: source}) do
     source_execution =
       Repo.one(
         from scheduled in ScheduledActionExecution,
@@ -367,14 +392,14 @@ defmodule QuestEngineering.Server.SchedulingStore do
              source_execution.resolved_execution,
              source_execution.resolved_execution_version
            ),
-         true <- decoded.configuration.harness_kind == execution.configuration.harness_kind do
+         true <- decoded.configuration.harness_kind == requested.harness_kind do
       :ok
     else
       _ ->
         Repo.rollback(
           invariant(:cross_harness_continuation_forbidden, %{
             source_occurrence_id: source,
-            requested_harness: execution.configuration.harness_kind
+            requested_harness: requested.harness_kind
           })
         )
     end

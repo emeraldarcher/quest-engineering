@@ -52,8 +52,7 @@ export interface Loadout {
   harness: string;
   model: { provider: string; model: string };
   reasoning: Reasoning | null;
-  tools: string[];
-  tool_enforcement: ToolEnforcement;
+  tool_policy: ToolPolicy;
   workspace_access: WorkspaceAccess;
   archived_at: string | null;
 }
@@ -199,7 +198,20 @@ export type Reasoning = string;
 export type ReasoningCapability =
   | { kind: "enumerated"; values: Reasoning[] }
   | { kind: "unsupported" };
+/** User-authored execution intent. */
+export type ToolPolicy =
+  | { kind: "exact"; tools: string[] }
+  | { kind: "native_permissions" };
+/** Execution guarantee provided by the matched harness adapter. */
 export type ToolEnforcement = "exact" | "native_permissions";
+/**
+ * QE semantic capability profile advertised/resolved by an adapter. On a
+ * ResolvedExecution this is exact for the Attempt, but is not necessarily every
+ * internal native harness tool.
+ */
+export interface ResolvedToolProfile {
+  tools: string[];
+}
 export type WorkspaceAccess = "none" | "read_only" | "read_write";
 export type StepState =
   | "pending"
@@ -239,8 +251,9 @@ export interface ExecutionOption {
     display_name: string;
   };
   reasoning_capability: ReasoningCapability;
-  tools: string[];
+  tool_policy: { kind: ToolPolicy["kind"] };
   tool_enforcement: ToolEnforcement;
+  current_tool_profile: ResolvedToolProfile;
   workspaces: Array<{
     workspace_id: string;
     workspace_access: WorkspaceAccess[];
@@ -368,8 +381,10 @@ export interface RunAttempt {
     harness: string;
     model: { provider: string; model: string };
     reasoning: Reasoning | null;
-    tools: string[];
+    reasoning_capability: ReasoningCapability;
+    tool_policy: ToolPolicy;
     tool_enforcement: ToolEnforcement;
+    resolved_tool_profile: ResolvedToolProfile;
     workspace_permission: WorkspaceAccess;
     worker_id: string;
   } | null;

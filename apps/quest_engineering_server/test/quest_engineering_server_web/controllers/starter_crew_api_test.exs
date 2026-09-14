@@ -120,8 +120,9 @@ defmodule QuestEngineering.ServerWeb.StarterCrewApiTest do
               }
             }
           ],
-          "tools" => ["workspace.filesystem", "workspace.search"],
+          "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",
+          "tool_profile" => %{"tools" => ["workspace.filesystem", "workspace.search"]},
           "workspaces" => [
             %{
               "ref" => "workspace:starter-api",

@@ -143,8 +143,7 @@ defmodule QuestEngineering.Server.ProductApi.Service do
              :description,
              :harness,
              :reasoning,
-             :tools,
-             :tool_enforcement,
+             :tool_policy,
              :workspace_access
            ]),
          {:ok, attributes} <- loadout_enums(attributes),
@@ -200,16 +199,36 @@ defmodule QuestEngineering.Server.ProductApi.Service do
 
   defp loadout_enums(attributes) do
     with {:ok, attributes} <- reasoning(attributes),
-         {:ok, attributes} <-
-           enum(attributes, :tool_enforcement, %{
-             "exact" => :exact,
-             "native_permissions" => :native_permissions
-           }) do
+         {:ok, attributes} <- tool_policy(attributes) do
       enum(attributes, :workspace_access, %{
         "none" => :none,
         "read_only" => :read_only,
         "read_write" => :read_write
       })
+    end
+  end
+
+  defp tool_policy(attributes) do
+    case Map.fetch(attributes, :tool_policy) do
+      :error ->
+        {:ok, attributes}
+
+      {:ok, %{"kind" => "exact", "tools" => tools}} when is_list(tools) ->
+        {:ok,
+         Map.put(attributes, :tool_policy, %QuestEngineering.Core.Product.ToolPolicy.Exact{
+           tools: tools
+         })}
+
+      {:ok, %{"kind" => "native_permissions"} = policy} when map_size(policy) == 1 ->
+        {:ok,
+         Map.put(
+           attributes,
+           :tool_policy,
+           %QuestEngineering.Core.Product.ToolPolicy.NativePermissions{}
+         )}
+
+      {:ok, _value} ->
+        malformed(["tool_policy"], :invalid_value)
     end
   end
 

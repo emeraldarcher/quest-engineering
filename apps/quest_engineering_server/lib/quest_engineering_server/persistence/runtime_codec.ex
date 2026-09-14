@@ -38,6 +38,8 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.Product.TacticProvenance
   alias QuestEngineering.Core.Product.TacticProvenance.Occurrence, as: TacticOccurrence
   alias QuestEngineering.Core.Product.TacticProvenance.Root, as: TacticRoot
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
@@ -45,6 +47,8 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.ResolvedExecution.Identity
   alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
+  alias QuestEngineering.Core.ResolvedExecution.ReasoningCapability
+  alias QuestEngineering.Core.ResolvedExecution.ToolProfile
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.Action
   alias QuestEngineering.Core.Runtime.ArtifactInstance
@@ -69,7 +73,7 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   alias QuestEngineering.Core.Tactics.Until
   alias QuestEngineering.Server.Persistence.Error
 
-  @snapshot_version 4
+  @snapshot_version 5
 
   @struct_modules [
     ExecutionPlan,
@@ -81,6 +85,8 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     ClassSnapshot,
     LoadoutSnapshot,
     ModelRef,
+    Exact,
+    NativePermissions,
     TacticProvenance,
     TacticOccurrence,
     TacticRoot,
@@ -93,6 +99,8 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     ResolvedExecution,
     Identity,
     Performer,
+    ReasoningCapability,
+    ToolProfile,
     Work,
     Configuration,
     LogicalWorkspace,
@@ -134,9 +142,10 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   ]
   @modules_by_name Map.new(@struct_modules, &{Atom.to_string(&1), &1})
   @closed_atoms ~w(
-    active carried check checking class completed continue_from current definition dispatched equals
-    exact execute_step exhausted failed fresh high inline low medium native_permissions none otherwise pending read_only
-    read_write remediating root running same_as step_completed step_failed step_retry_requested
+    active carried check checking class completed continue_from current definition dispatched enumerated
+    equals exact execute_step exhausted failed fresh high inline low medium native_permissions none otherwise
+    pending read_only read_write remediating root running same_as step_completed step_failed
+    step_retry_requested unsupported
     until_exhausted
   )a
   @closed_atoms_by_name Map.new(@closed_atoms, &{Atom.to_string(&1), &1})

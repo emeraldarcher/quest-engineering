@@ -622,8 +622,11 @@ defmodule QuestEngineering.Server.FakeWorker do
               }
             }
           ],
-          "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"],
+          "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",
+          "tool_profile" => %{
+            "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"]
+          },
           "workspaces" => [
             %{
               "ref" => "workspace:test",

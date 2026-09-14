@@ -54,23 +54,26 @@ Physical continuation is adapter-specific and is valid only within the same harn
 Each discovered model reports a capability rather than an assumed global enum:
 
 - `enumerated` carries the model's exact native values. A Loadout freezes one advertised value and the adapter passes the corresponding native launch option.
-- `unsupported` means the model has no configurable reasoning/effort dimension. The Loadout and LaunchSnapshot freeze `null`, and the adapter omits the native option.
-- Unknown or conflicting discovery evidence is not equivalent to `unsupported` and is not advertised as schedulable.
+- `unsupported` means the model has no configurable reasoning/effort dimension. The authored value is explicitly `null`, the resolved execution also freezes the matching `unsupported` capability evidence, and the adapter omits the native option.
+- Unknown or conflicting discovery evidence is not equivalent to `unsupported`, never becomes `null`, and is not advertised as schedulable.
 
-The values are harness-discovered strings, so Pi may expose native levels that differ from Antigravity. Unsupported is exact, not a wildcard.
+The values are harness-discovered strings, so Pi may expose native levels that differ from Antigravity. Protocol and constructor validation reject `enumerated + null` and `unsupported + value`.
 
-## Tool guarantee levels
+## Canonical tool semantics
 
-Four related concepts remain separate:
+Four values remain separate:
 
-1. **Availability** — capability IDs exposed by an executor.
-2. **Selection** — the tool set or complete native profile frozen in a Loadout.
-3. **Enforcement** — whether the adapter guarantees an exact selected subset.
-4. **Operation authorization** — whether a concrete native operation is allowed, denied, or requires the user.
+1. **`ToolPolicy`** — authored Loadout intent: either `exact(tools)` or `native_permissions`.
+2. **`ToolEnforcement`** — a harness guarantee resolved from Worker capability evidence, never an authored knob.
+3. **`ResolvedToolProfile`** — the exact QE semantic capability profile resolved by the adapter for one scheduled Attempt. It is adapter-advertised QE capability evidence, not necessarily a raw inventory of every internal native harness tool.
+4. **Native permission system** — per-operation allow/ask/deny authorization owned by the harness.
 
-`tool_enforcement` has two states:
+Workers advertise `supported_tool_policies`, `tool_enforcement`, and a current read-only `tool_profile`. Both `tool_profile` and `resolved_tool_profile` contain QE semantic capability IDs, not necessarily harness-native tool identifiers. The scheduler resolves this evidence into each immutable `ResolvedExecution`; changing an adapter's advertised profile does not mutate the Loadout or an earlier Attempt's provenance. Any future native identifiers require a distinct field rather than overloading these profiles.
 
-- `exact`: the adapter mechanically restricts native tool availability to the frozen subset. Pi maps QE capability IDs into its exact `--tools` set while preserving mandatory QE control tools.
-- `native_permissions`: the frozen `tools` identify the complete advertised native capability profile, not an allow-list. The scheduler requires exact profile identity. Antigravity uses this state because 1.2.2 has no deterministic arbitrary-subset switch; Antigravity's native allow/ask/deny engine remains the sole operation-authorization authority.
+Pi supports `ToolPolicy.exact`, resolves `ToolEnforcement.exact`, and maps the authored QE subset into its native `--tools` set while preserving mandatory QE control tools. Example: `exact([workspace.filesystem, workspace.search])` resolves the same profile.
 
-QE does not copy, parse, approve, or infer native permission decisions. Native blocked-state observation remains HumanAttention evidence, not a second permission engine.
+Antigravity supports `ToolPolicy.native_permissions` and resolves `ToolEnforcement.native_permissions`. Its Loadout stores no catalog. At dispatch, the exact QE semantic capability profile advertised by the adapter is frozen in `ResolvedToolProfile`; later expansion or contraction creates different provenance without invalidating the authored policy, provided the adapter remains ready and continues to advertise native-permissions support. A change from `[a, b, c]` to `[a, b, c, d]` proves only that the adapter resolved different QE semantic capabilities; it does not prove that Antigravity internally added exactly one native tool. Antigravity's native allow/ask/deny engine remains the sole operation-authorization authority.
+
+Antigravity 1.2.2 exposes neither a stable low-level native tool-catalog interface nor an arbitrary per-tool restriction interface. QE therefore does not claim that `ResolvedToolProfile` completely enumerates every internal Antigravity tool; it records exactly the semantic capability profile advertised by the Antigravity adapter for that execution.
+
+QE completion tools and bridge readiness are adapter/control-plane requirements, not user policy entries. QE does not copy, parse, approve, or infer native permission decisions. Native blocked-state observation remains HumanAttention evidence, not a second permission engine.

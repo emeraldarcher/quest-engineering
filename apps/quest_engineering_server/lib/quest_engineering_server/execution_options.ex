@@ -20,7 +20,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       %{profile | available: Enum.any?(profiles, & &1.available)}
     end)
     |> Enum.sort_by(
-      &{&1.harness, &1.model.provider, &1.model.model, &1.tools, &1.reasoning_capability}
+      &{&1.harness, &1.model.provider, &1.model.model, &1.tool_policy, &1.reasoning_capability}
     )
   end
 
@@ -37,13 +37,15 @@ defmodule QuestEngineering.Server.ExecutionOptions do
          %{
            "harness_kind" => harness,
            "models" => models,
-           "tools" => tools,
-           "tool_enforcement" => tool_enforcement
+           "supported_tool_policies" => supported_policies,
+           "tool_enforcement" => tool_enforcement,
+           "tool_profile" => %{"tools" => tools}
          },
          bindings,
          available
        )
        when is_binary(harness) and harness != "" and is_list(models) and is_list(tools) and
+              is_list(supported_policies) and
               tool_enforcement in ["exact", "native_permissions"] do
     workspaces =
       bindings
@@ -57,16 +59,11 @@ defmodule QuestEngineering.Server.ExecutionOptions do
 
     with {:ok, models} <- models(models),
          false <- workspaces == [] do
-      Enum.map(models, fn model ->
-        %{
-          harness: harness,
-          model: Map.take(model, [:provider, :model, :display_name]),
-          reasoning_capability: model.reasoning_capability,
-          tools: Enum.sort(tools),
-          tool_enforcement: tool_enforcement,
-          workspaces: workspaces,
-          available: available
-        }
+      Enum.flat_map(models, fn model ->
+        Enum.map(
+          supported_policies,
+          &execution_option(&1, harness, model, tool_enforcement, tools, workspaces, available)
+        )
       end)
     else
       _ -> []
@@ -74,6 +71,27 @@ defmodule QuestEngineering.Server.ExecutionOptions do
   end
 
   defp profile(_executor, _bindings, _available), do: []
+
+  defp execution_option(
+         policy_kind,
+         harness,
+         model,
+         tool_enforcement,
+         tools,
+         workspaces,
+         available
+       ) do
+    %{
+      harness: harness,
+      model: Map.take(model, [:provider, :model, :display_name]),
+      reasoning_capability: model.reasoning_capability,
+      tool_policy: %{kind: policy_kind},
+      tool_enforcement: tool_enforcement,
+      current_tool_profile: %{tools: Enum.sort(tools)},
+      workspaces: workspaces,
+      available: available
+    }
+  end
 
   defp safe_bindings(worker) do
     explicit =
@@ -178,8 +196,9 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       profile.model.model,
       profile.model.display_name,
       profile.reasoning_capability,
-      profile.tools,
+      profile.tool_policy,
       profile.tool_enforcement,
+      profile.current_tool_profile,
       Enum.map(profile.workspaces, &{&1.workspace_id, &1.workspace_access})
     }
 end

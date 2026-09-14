@@ -157,8 +157,10 @@ const loadout: Loadout = {
   harness: "pi",
   model: { provider: "fixture", model: "town-model" },
   reasoning: "high",
-  tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
-  tool_enforcement: "exact",
+  tool_policy: {
+    kind: "exact",
+    tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+  },
   workspace_access: "read_write",
   archived_at: null,
 };
@@ -169,7 +171,10 @@ const reviewLoadout: Loadout = {
   name: "Review Tools",
   description: "Read-only tools for independent review.",
   reasoning: "medium",
-  tools: ["workspace.filesystem", "workspace.search"],
+  tool_policy: {
+    kind: "exact",
+    tools: ["workspace.filesystem", "workspace.search"],
+  },
   workspace_access: "read_only",
 };
 const customLoadout: Loadout = {
@@ -180,7 +185,10 @@ const customLoadout: Loadout = {
   description: "Custom equipment for specialist Product work.",
   harness: "pi",
   model: { provider: "acme-labs", model: "experimental-model-x" },
-  tools: ["workspace.filesystem", "acme.special-tool"],
+  tool_policy: {
+    kind: "exact",
+    tools: ["workspace.filesystem", "acme.special-tool"],
+  },
 };
 const archivedReviewerClass: ClassDefinition = {
   ...reviewerClass,
@@ -1476,8 +1484,10 @@ function createStarterFixture(name: FixtureName): ClientFixture {
     harness: "pi",
     model: { provider: "fixture", model: "starter-model" },
     reasoning: "medium",
-    tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
-    tool_enforcement: "exact",
+    tool_policy: {
+      kind: "exact",
+      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+    },
     workspace_access: "read_write",
     archived_at: null,
   };
@@ -1489,8 +1499,10 @@ function createStarterFixture(name: FixtureName): ClientFixture {
     harness: "pi",
     model: coding.model,
     reasoning: coding.reasoning,
-    tools: ["workspace.filesystem", "workspace.search"],
-    tool_enforcement: "exact",
+    tool_policy: {
+      kind: "exact",
+      tools: ["workspace.filesystem", "workspace.search"],
+    },
     workspace_access: "read_only",
     archived_at: null,
   };
@@ -1637,8 +1649,14 @@ function createStarterFixture(name: FixtureName): ClientFixture {
                   kind: "enumerated",
                   values: ["low", "medium"],
                 },
-                tools: coding.tools,
+                tool_policy: { kind: "exact" },
                 tool_enforcement: "exact",
+                current_tool_profile: {
+                  tools:
+                    coding.tool_policy.kind === "exact"
+                      ? coding.tool_policy.tools
+                      : [],
+                },
                 workspaces: [
                   {
                     workspace_id: starterProject.id,
@@ -2253,8 +2271,14 @@ function createTownHudFixture(name: FixtureName): ClientFixture {
             kind: "enumerated",
             values: ["medium"],
           },
-          tools: loadout.tools,
+          tool_policy: { kind: "exact" },
           tool_enforcement: "exact",
+          current_tool_profile: {
+            tools:
+              loadout.tool_policy.kind === "exact"
+                ? loadout.tool_policy.tools
+                : [],
+          },
           workspaces: [
             { workspace_id: workspace.id, workspace_access: ["read_write"] },
           ],
@@ -2454,8 +2478,14 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
             kind: "enumerated",
             values: ["medium"],
           },
-          tools: loadout.tools,
+          tool_policy: { kind: "exact" },
           tool_enforcement: "exact",
+          current_tool_profile: {
+            tools:
+              loadout.tool_policy.kind === "exact"
+                ? loadout.tool_policy.tools
+                : [],
+          },
           workspaces: [
             { workspace_id: workspace.id, workspace_access: ["read_write"] },
           ],

@@ -102,12 +102,41 @@ describe("Worker Protocol v7 ResolvedExecution codec", () => {
   test("preserves unsupported reasoning and explicit tool enforcement", () => {
     const input = action();
     input.execution.configuration.reasoning = null;
+    input.execution.configuration.reasoning_capability = {
+      kind: "unsupported",
+    };
+    input.execution.configuration.tool_policy = { kind: "native_permissions" };
     input.execution.configuration.tool_enforcement = "native_permissions";
     const decoded = decodeExecuteAction(input, input.worker_id);
 
     expect(decoded.execution.configuration.reasoning).toBeNull();
     expect(decoded.execution.configuration.tool_enforcement).toBe(
       "native_permissions",
+    );
+  });
+
+  test("rejects null without unsupported evidence and malformed capability evidence", () => {
+    const enumeratedNull = action();
+    enumeratedNull.execution.configuration.reasoning = null;
+    expect(() =>
+      decodeExecuteAction(enumeratedNull, enumeratedNull.worker_id),
+    ).toThrow("must exactly match");
+
+    const unsupportedValue = action();
+    unsupportedValue.execution.configuration.reasoning_capability = {
+      kind: "unsupported",
+    };
+    expect(() =>
+      decodeExecuteAction(unsupportedValue, unsupportedValue.worker_id),
+    ).toThrow("must exactly match");
+
+    const unknown = action() as unknown as Record<string, unknown>;
+    const execution = unknown.execution as Record<string, unknown>;
+    const configuration = execution.configuration as Record<string, unknown>;
+    configuration.reasoning = null;
+    configuration.reasoning_capability = { kind: "unknown" };
+    expect(() => decodeExecuteAction(unknown, "worker-test")).toThrow(
+      "invalid reasoning capability",
     );
   });
 

@@ -2,6 +2,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   use ExUnit.Case, async: true
 
   alias QuestEngineering.Core.Product.ModelRef
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
@@ -9,6 +10,8 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Core.ResolvedExecution.Identity
   alias QuestEngineering.Core.ResolvedExecution.LogicalWorkspace
   alias QuestEngineering.Core.ResolvedExecution.Performer
+  alias QuestEngineering.Core.ResolvedExecution.ReasoningCapability
+  alias QuestEngineering.Core.ResolvedExecution.ToolProfile
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
   alias QuestEngineering.Core.Tactics.ArtifactOutput
@@ -69,7 +72,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         %{"kind" => "unknown"}
       )
 
-    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+    assert {:error, %WorkerProtocol.Error{code: :invalid_capabilities}} =
              WorkerProtocol.decode_hello(unknown)
   end
 
@@ -270,9 +273,38 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     refute Map.has_key?(wire, "performer_requirement")
     refute Map.has_key?(wire, "pi_session")
     assert wire["configuration"]["reasoning"] == "medium"
+
+    assert wire["configuration"]["reasoning_capability"] == %{
+             "kind" => "enumerated",
+             "values" => ["medium"]
+           }
+
+    assert wire["configuration"]["tool_policy"] == %{
+             "kind" => "exact",
+             "tools" => ["custom.qe-capability"]
+           }
+
     assert wire["configuration"]["tool_enforcement"] == "exact"
 
-    no_effort = put_in(execution().configuration.reasoning, nil)
+    assert wire["configuration"]["resolved_tool_profile"] == %{
+             "tools" => ["custom.qe-capability"]
+           }
+
+    malformed = put_in(execution().configuration.reasoning, nil)
+
+    assert_raise ArgumentError, fn ->
+      WorkerProtocol.execute_action(@worker_id, malformed)
+    end
+
+    no_effort = %{
+      execution()
+      | configuration: %{
+          execution().configuration
+          | reasoning: nil,
+            reasoning_capability: %ReasoningCapability{kind: :unsupported, values: []}
+        }
+    }
+
     no_effort_wire = WorkerProtocol.execute_action(@worker_id, no_effort)
     assert no_effort_wire["execution"]["configuration"]["reasoning"] == nil
   end
@@ -312,8 +344,10 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         harness_kind: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
         reasoning: "medium",
-        tools: ["custom.qe-capability"],
-        tool_enforcement: :exact
+        reasoning_capability: %ReasoningCapability{kind: :enumerated, values: ["medium"]},
+        tool_policy: %Exact{tools: ["custom.qe-capability"]},
+        tool_enforcement: :exact,
+        resolved_tool_profile: %ToolProfile{tools: ["custom.qe-capability"]}
       },
       logical_workspace: %LogicalWorkspace{workspace_id: @workspace_id, workspace_key: "test"},
       execution_workspace: %ExecutionWorkspace{
@@ -355,8 +389,9 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                 }
               }
             ],
-            "tools" => ["custom.qe-capability"],
-            "tool_enforcement" => "exact"
+            "supported_tool_policies" => ["exact"],
+            "tool_enforcement" => "exact",
+            "tool_profile" => %{"tools" => ["custom.qe-capability"]}
           }
         ],
         "workspace_bindings" => [

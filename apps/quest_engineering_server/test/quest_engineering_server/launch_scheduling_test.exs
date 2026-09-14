@@ -884,7 +884,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
   test "open custom QE capability remains valid Product data and waits for support", context do
     fixture = product_fixture(tools: ["custom.company-capability"])
-    assert fixture.loadout.tools == ["custom.company-capability"]
+    assert fixture.loadout.tool_policy.tools == ["custom.company-capability"]
     assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
     register_worker("worker-no-custom", context.workspace_root, adapter: "general-executor")
 
@@ -1392,8 +1392,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
         harness: "fake",
         model: model,
         reasoning: "medium",
-        tools: tools,
-        tool_enforcement: :exact,
+        tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{tools: tools},
         workspace_access: :read_write
       })
 
@@ -1452,8 +1451,9 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
               }
             }
           ],
-          "tools" => tools,
+          "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",
+          "tool_profile" => %{"tools" => tools},
           "workspaces" =>
             Enum.map(workspace_roots, fn {ref, workspace_root} ->
               %{"ref" => ref, "root" => workspace_root, "max_access" => "read_write"}

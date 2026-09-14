@@ -165,8 +165,15 @@ const action: ExecuteAction = {
       harness_kind: "pi",
       model,
       reasoning: "medium",
-      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      reasoning_capability: { kind: "enumerated", values: ["medium"] },
+      tool_policy: {
+        kind: "exact",
+        tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      },
       tool_enforcement: "exact",
+      resolved_tool_profile: {
+        tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+      },
     },
     logical_workspace: {
       workspace_id: "00000000-0000-4000-8000-000000000001",

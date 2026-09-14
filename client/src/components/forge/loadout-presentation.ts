@@ -100,8 +100,9 @@ export function optionKey(option: ExecutionOption): string {
   return JSON.stringify({
     model: option.model,
     reasoning_capability: option.reasoning_capability,
-    tools: option.tools,
+    tool_policy: option.tool_policy,
     tool_enforcement: option.tool_enforcement,
+    current_tool_profile: option.current_tool_profile,
     workspaces: option.workspaces,
     available: option.available,
   });
@@ -140,8 +141,8 @@ export function presetLabel(option: ExecutionOption): string {
       ? "Effort not configurable"
       : option.reasoning_capability.values.map(reasoningLabel).join(" / ");
   const tools =
-    option.tool_enforcement === "exact"
-      ? `${option.tools.length} ${option.tools.length === 1 ? "capability" : "capabilities"}`
+    option.tool_policy.kind === "exact"
+      ? `${option.current_tool_profile.tools.length} ${option.current_tool_profile.tools.length === 1 ? "capability" : "capabilities"}`
       : "Native tool permissions";
   return `${option.harness} · ${option.model.display_name} · ${reasoning} · ${tools}`;
 }

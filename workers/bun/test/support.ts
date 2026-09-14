@@ -32,8 +32,10 @@ export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
         harness_kind: "fake",
         model: { provider: "fake", model: "test" },
         reasoning: "medium",
-        tools: ["workspace.filesystem"],
+        reasoning_capability: { kind: "enumerated", values: ["medium"] },
+        tool_policy: { kind: "exact", tools: ["workspace.filesystem"] },
         tool_enforcement: "exact",
+        resolved_tool_profile: { tools: ["workspace.filesystem"] },
       },
       logical_workspace: {
         workspace_id: "00000000-0000-4000-8000-000000000001",

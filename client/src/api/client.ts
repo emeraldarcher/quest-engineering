@@ -32,6 +32,7 @@ import {
   type TacticPreview,
   type TacticSource,
   type ToolEnforcement,
+  type ToolPolicy,
   type Workspace,
   type WorkspaceAccess,
   type WorkspaceSource,
@@ -54,8 +55,7 @@ export interface LoadoutInput {
   harness?: string;
   model?: { provider: string; model: string };
   reasoning?: Reasoning | null;
-  tools?: string[];
-  tool_enforcement?: ToolEnforcement;
+  tool_policy?: ToolPolicy;
   workspace_access?: WorkspaceAccess;
 }
 export interface SquadInput {
@@ -459,8 +459,7 @@ function decodeLoadout(value: unknown): Loadout {
       model: asString(model.model, "model"),
     },
     reasoning: nullableReasoning(x.reasoning),
-    tools: strings(x.tools, "tools"),
-    tool_enforcement: toolEnforcement(x.tool_enforcement),
+    tool_policy: toolPolicy(x.tool_policy),
     workspace_access: access(x.workspace_access),
     archived_at: nullableString(x.archived_at, "loadout"),
   };
@@ -696,8 +695,14 @@ function decodeExecutionOption(value: unknown): ExecutionOption {
       display_name: asString(model.display_name, "model display name"),
     },
     reasoning_capability: reasoningCapability(x.reasoning_capability),
-    tools: strings(x.tools, "tools"),
+    tool_policy: executionToolPolicy(x.tool_policy),
     tool_enforcement: toolEnforcement(x.tool_enforcement),
+    current_tool_profile: {
+      tools: strings(
+        asRecord(x.current_tool_profile, "current tool profile").tools,
+        "current tool profile tools",
+      ),
+    },
     workspaces: asArray(x.workspaces, "option workspaces").map((item) => {
       const w = asRecord(item, "option workspace");
       return {
@@ -1181,8 +1186,16 @@ function decodeAttemptExecution(value: unknown) {
       model: asString(model.model, "attempt model"),
     },
     reasoning: nullableReasoning(execution.reasoning),
-    tools: strings(execution.tools, "attempt tools"),
+    reasoning_capability: reasoningCapability(execution.reasoning_capability),
+    tool_policy: toolPolicy(execution.tool_policy),
     tool_enforcement: toolEnforcement(execution.tool_enforcement),
+    resolved_tool_profile: {
+      tools: strings(
+        asRecord(execution.resolved_tool_profile, "resolved tool profile")
+          .tools,
+        "resolved tool profile tools",
+      ),
+    },
     workspace_permission: access(execution.workspace_permission),
     worker_id: asString(execution.worker_id, "attempt Worker"),
   };
@@ -1462,6 +1475,20 @@ function reasoningCapability(value: unknown): ReasoningCapability {
     if (values.length > 0) return { kind: "enumerated", values };
   }
   throw new Error("Invalid reasoning capability.");
+}
+function toolPolicy(value: unknown): ToolPolicy {
+  const policy = asRecord(value, "tool policy");
+  if (policy.kind === "native_permissions")
+    return { kind: "native_permissions" };
+  if (policy.kind === "exact")
+    return { kind: "exact", tools: strings(policy.tools, "tool policy tools") };
+  throw new Error("Invalid tool policy.");
+}
+function executionToolPolicy(value: unknown): { kind: ToolPolicy["kind"] } {
+  const policy = asRecord(value, "execution tool policy");
+  if (policy.kind === "exact" || policy.kind === "native_permissions")
+    return { kind: policy.kind };
+  throw new Error("Invalid execution tool policy.");
 }
 function toolEnforcement(value: unknown): ToolEnforcement {
   const enforcement = asString(value, "tool enforcement");

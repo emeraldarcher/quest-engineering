@@ -6,6 +6,8 @@ import type {
   WorkerCapabilities,
 } from "./protocol/types.ts";
 
+// Harness-neutral QE semantic capability IDs advertised by each adapter. This
+// is not a forensic inventory of every tool internal to a native harness.
 export const QE_TOOL_CAPABILITIES = [
   "workspace.filesystem",
   "workspace.search",
@@ -26,8 +28,9 @@ export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
       display_name: `${model.provider}/${model.model}`,
       reasoning_capability: { kind: "enumerated", values: reasoning },
     })),
-    tools: [...QE_TOOL_CAPABILITIES],
+    supported_tool_policies: ["exact"],
     tool_enforcement: "exact",
+    tool_profile: { tools: [...QE_TOOL_CAPABILITIES] },
   };
 }
 
@@ -60,11 +63,15 @@ export function discoveredExecutorCapabilities(
           display_name: model.displayName,
           reasoning_capability: model.reasoningCapability,
         })),
-      tools: [...QE_TOOL_CAPABILITIES],
+      supported_tool_policies:
+        discovery.kind === "antigravity"
+          ? ["native_permissions" as const]
+          : ["exact" as const],
       tool_enforcement:
         discovery.kind === "antigravity"
           ? ("native_permissions" as const)
           : ("exact" as const),
+      tool_profile: { tools: [...QE_TOOL_CAPABILITIES] },
     }))
     .filter((executor) => executor.models.length > 0);
 }
@@ -111,7 +118,7 @@ export function assertExecutionSupported(
   const compatible =
     binding !== undefined &&
     accessRank[binding.max_access] >= accessRank[workspace.access] &&
-    (!requested.tools.includes("terminal.shell") ||
+    (!requested.resolved_tool_profile.tools.includes("terminal.shell") ||
       binding.allow_unconfined_shell) &&
     capabilities.executors.some(
       (executor) =>
@@ -120,14 +127,16 @@ export function assertExecutionSupported(
           (model) =>
             model.provider === requested.model.provider &&
             model.model === requested.model.model &&
-            reasoningSupported(model.reasoning_capability, requested.reasoning),
+            reasoningSupported(
+              model.reasoning_capability,
+              requested.reasoning,
+            ) &&
+            reasoningCapabilityEqual(
+              model.reasoning_capability,
+              requested.reasoning_capability,
+            ),
         ) &&
-        toolSelectionSupported(
-          executor.tool_enforcement,
-          executor.tools,
-          requested.tool_enforcement,
-          requested.tools,
-        ) &&
+        toolSelectionSupported(executor, requested) &&
         harnessCombinationSupported(executor.harness_kind, action),
     );
   if (!compatible)
@@ -145,19 +154,41 @@ function reasoningSupported(
     : requested !== null && capability.values.includes(requested);
 }
 
-function toolSelectionSupported(
-  advertisedEnforcement: ExecutorCapability["tool_enforcement"],
-  advertisedTools: string[],
-  requestedEnforcement: ExecutorCapability["tool_enforcement"],
-  requestedTools: string[],
+function reasoningCapabilityEqual(
+  left: ExecutorCapability["models"][number]["reasoning_capability"],
+  right: ExecutorCapability["models"][number]["reasoning_capability"],
 ): boolean {
-  if (advertisedEnforcement !== requestedEnforcement) return false;
-  const available = new Set(advertisedTools);
-  if (!requestedTools.every((tool) => available.has(tool))) return false;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function toolSelectionSupported(
+  executor: ExecutorCapability,
+  requested: ExecuteAction["execution"]["configuration"],
+): boolean {
+  if (
+    !executor.supported_tool_policies.includes(requested.tool_policy.kind) ||
+    executor.tool_enforcement !== requested.tool_enforcement
+  )
+    return false;
+  const available = executor.tool_profile.tools;
+  if (requested.tool_policy.kind === "exact")
+    return (
+      requested.tool_enforcement === "exact" &&
+      requested.tool_policy.tools.every((tool) => available.includes(tool)) &&
+      sameStringSet(
+        requested.resolved_tool_profile.tools,
+        requested.tool_policy.tools,
+      )
+    );
   return (
-    advertisedEnforcement === "exact" ||
-    (requestedTools.length === available.size &&
-      requestedTools.every((tool) => available.has(tool)))
+    requested.tool_enforcement === "native_permissions" &&
+    sameStringSet(requested.resolved_tool_profile.tools, available)
+  );
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length && left.every((value) => right.includes(value))
   );
 }
 
@@ -168,17 +199,16 @@ function harnessCombinationSupported(
   if (harnessKind !== "pi") return true;
   const requested = action.execution.configuration;
   const access = action.execution.execution_workspace.access;
+  const tools =
+    requested.tool_policy.kind === "exact" ? requested.tool_policy.tools : [];
   const workspaceTools = [
     "workspace.filesystem",
     "workspace.search",
     "terminal.shell",
   ];
   return (
-    !(requested.tools.includes("terminal.shell") && access !== "read_write") &&
-    !(
-      access === "none" &&
-      requested.tools.some((tool) => workspaceTools.includes(tool))
-    )
+    !(tools.includes("terminal.shell") && access !== "read_write") &&
+    !(access === "none" && tools.some((tool) => workspaceTools.includes(tool)))
   );
 }
 function splitModel(value: string): { provider: string; model: string } {

@@ -13,6 +13,8 @@ defmodule QuestEngineering.Server.LaunchQuest do
   alias QuestEngineering.Core.Product.Squad
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.Runtime
   alias QuestEngineering.Server.DeliveryStore
@@ -293,14 +295,13 @@ defmodule QuestEngineering.Server.LaunchQuest do
       harness: row.harness_kind,
       model: %ModelRef{provider: row.model_provider, model: row.model_name},
       reasoning: row.reasoning,
-      tools: row.tools,
-      tool_enforcement: tool_enforcement(row.tool_enforcement),
+      tool_policy: tool_policy(row.tool_policy_kind, row.tool_policy_tools),
       workspace_access: workspace_access(row.workspace_access)
     }
   end
 
-  defp tool_enforcement("exact"), do: :exact
-  defp tool_enforcement("native_permissions"), do: :native_permissions
+  defp tool_policy("exact", tools), do: %Exact{tools: tools}
+  defp tool_policy("native_permissions", []), do: %NativePermissions{}
   defp workspace_access("none"), do: :none
   defp workspace_access("read_only"), do: :read_only
   defp workspace_access("read_write"), do: :read_write

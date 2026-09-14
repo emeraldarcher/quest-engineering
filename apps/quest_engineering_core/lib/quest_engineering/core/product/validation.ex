@@ -25,6 +25,8 @@ defmodule QuestEngineering.Core.Product.Validation do
   alias QuestEngineering.Core.Product.TacticOutputPort
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.Product.ValidationError
   alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.Tactics.ArtifactRef
@@ -112,12 +114,11 @@ defmodule QuestEngineering.Core.Product.Validation do
         ["reasoning"],
         %{value: value.reasoning}
       )
-      |> require(is_list(value.tools), :invalid_tools, ["tools"], %{reason: :not_a_list})
       |> require(
-        value.tool_enforcement in [:exact, :native_permissions],
-        :invalid_tool_enforcement,
-        ["tool_enforcement"],
-        %{value: value.tool_enforcement}
+        match?(%Exact{}, value.tool_policy) or match?(%NativePermissions{}, value.tool_policy),
+        :invalid_tool_policy,
+        ["tool_policy"],
+        %{}
       )
       |> require(
         value.workspace_access in [:none, :read_only, :read_write],
@@ -126,8 +127,16 @@ defmodule QuestEngineering.Core.Product.Validation do
         %{value: value.workspace_access}
       )
 
-    errors ++ tool_errors(value.tools)
+    errors ++ tool_policy_errors(value.tool_policy)
   end
+
+  defp tool_policy_errors(%Exact{tools: tools}) when is_list(tools), do: tool_errors(tools)
+
+  defp tool_policy_errors(%Exact{}),
+    do: [error(:invalid_tools, ["tool_policy", "tools"], %{reason: :not_a_list})]
+
+  defp tool_policy_errors(%NativePermissions{}), do: []
+  defp tool_policy_errors(_invalid), do: []
 
   defp tool_errors(tools) when is_list(tools) do
     invalid =
@@ -142,8 +151,6 @@ defmodule QuestEngineering.Core.Product.Validation do
 
     invalid ++ duplicate
   end
-
-  defp tool_errors(_invalid), do: []
 
   defp tool_key_errors({tool, index}) do
     if capability_key?(tool),

@@ -5,6 +5,8 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
 
   alias QuestEngineering.Core.Product.ModelRef
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
   alias QuestEngineering.Server.Persistence.TacticCodec
@@ -41,14 +43,18 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
     assert {:ok, loadout} = coding_loadout()
 
     assert loadout.model == %ModelRef{provider: "openai-codex", model: "model-a"}
-    assert loadout.tools == ["workspace.filesystem", "terminal.shell"]
+    assert loadout.tool_policy == %Exact{tools: ["workspace.filesystem", "terminal.shell"]}
     refute Map.has_key?(Map.from_struct(loadout), :runtime)
     refute Map.has_key?(Map.from_struct(loadout), :agent_kind)
     refute Map.has_key?(Map.from_struct(loadout), :instructions)
+    refute Map.has_key?(Map.from_struct(loadout), :tool_enforcement)
+    refute Map.has_key?(Map.from_struct(loadout), :tools)
 
     assert {:error, errors} =
              Products.update_loadout(loadout.id, %{
-               tools: ["workspace.filesystem", "workspace.filesystem"]
+               tool_policy: %Exact{
+                 tools: ["workspace.filesystem", "workspace.filesystem"]
+               }
              })
 
     assert Enum.any?(errors, &(&1.code == :duplicate_tool_key))
@@ -56,16 +62,16 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
     assert {:ok, unsupported} =
              Products.update_loadout(loadout.id, %{
                reasoning: nil,
-               tool_enforcement: :native_permissions,
+               tool_policy: %NativePermissions{},
                harness: "antigravity",
                model: %ModelRef{provider: "antigravity", model: "no-effort"}
              })
 
     assert unsupported.reasoning == nil
-    assert unsupported.tool_enforcement == :native_permissions
+    assert unsupported.tool_policy == %NativePermissions{}
     assert {:ok, round_tripped} = Products.get_loadout(loadout.id)
     assert round_tripped.reasoning == nil
-    assert round_tripped.tool_enforcement == :native_permissions
+    assert round_tripped.tool_policy == %NativePermissions{}
   end
 
   test "stores Members as ordered Squad-owned components" do
@@ -296,8 +302,7 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
       harness: "fake",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
       reasoning: "medium",
-      tools: ["workspace.filesystem", "terminal.shell"],
-      tool_enforcement: :exact,
+      tool_policy: %Exact{tools: ["workspace.filesystem", "terminal.shell"]},
       workspace_access: :read_write
     })
   end
@@ -310,8 +315,7 @@ defmodule QuestEngineering.Server.Product.RepositoryTest do
       harness: "fake",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
       reasoning: "high",
-      tools: ["workspace.filesystem", "workspace.search"],
-      tool_enforcement: :exact,
+      tool_policy: %Exact{tools: ["workspace.filesystem", "workspace.search"]},
       workspace_access: :read_only
     })
   end

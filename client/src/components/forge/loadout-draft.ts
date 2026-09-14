@@ -3,7 +3,7 @@ import type {
   ExecutionOption,
   Loadout,
   Reasoning,
-  ToolEnforcement,
+  ToolPolicy,
   WorkspaceAccess,
 } from "../../api/contracts";
 import { isKnownCapability } from "./loadout-presentation";
@@ -14,9 +14,8 @@ export interface LoadoutDraft {
   harness: string;
   provider: string;
   model: string;
-  reasoning: Reasoning | null;
-  tools: string[];
-  toolEnforcement: ToolEnforcement;
+  reasoning: Reasoning | null | undefined;
+  toolPolicy: ToolPolicy;
   workspaceAccess: WorkspaceAccess;
 }
 
@@ -27,9 +26,8 @@ export function emptyLoadoutDraft(): LoadoutDraft {
     harness: "",
     provider: "",
     model: "",
-    reasoning: "medium",
-    tools: [],
-    toolEnforcement: "exact",
+    reasoning: undefined,
+    toolPolicy: { kind: "exact", tools: [] },
     workspaceAccess: "read_write",
   };
 }
@@ -42,8 +40,10 @@ export function draftFromLoadout(loadout: Loadout): LoadoutDraft {
     provider: loadout.model.provider,
     model: loadout.model.model,
     reasoning: loadout.reasoning,
-    tools: [...loadout.tools],
-    toolEnforcement: loadout.tool_enforcement,
+    toolPolicy:
+      loadout.tool_policy.kind === "exact"
+        ? { kind: "exact", tools: [...loadout.tool_policy.tools] }
+        : { kind: "native_permissions" },
     workspaceAccess: loadout.workspace_access,
   };
 }
@@ -51,14 +51,18 @@ export function draftFromLoadout(loadout: Loadout): LoadoutDraft {
 export function loadoutInputFromDraft(
   draft: LoadoutDraft,
 ): Omit<Required<LoadoutInput>, "key"> {
+  if (draft.reasoning === undefined)
+    throw new Error("Reasoning capability has not been resolved.");
   return {
     name: draft.name.trim(),
     description: draft.description.trim(),
     harness: draft.harness.trim(),
     model: { provider: draft.provider.trim(), model: draft.model.trim() },
     reasoning: draft.reasoning,
-    tools: [...draft.tools],
-    tool_enforcement: draft.toolEnforcement,
+    tool_policy:
+      draft.toolPolicy.kind === "exact"
+        ? { kind: "exact", tools: [...draft.toolPolicy.tools] }
+        : { kind: "native_permissions" },
     workspace_access: draft.workspaceAccess,
   };
 }
@@ -67,20 +71,23 @@ export function applyExecutionOption(
   draft: LoadoutDraft,
   option: ExecutionOption,
 ): LoadoutDraft {
-  const customCapabilities = draft.tools.filter(
-    (capability) => !isKnownCapability(capability),
-  );
+  const customCapabilities = customCapabilitiesForPolicy(draft.toolPolicy);
   return {
     ...draft,
     harness: option.harness,
     provider: option.model.provider,
     model: option.model.model,
     reasoning: preferredReasoning(option),
-    tools:
-      option.tool_enforcement === "exact"
-        ? unique([...option.tools, ...customCapabilities])
-        : [...option.tools],
-    toolEnforcement: option.tool_enforcement,
+    toolPolicy:
+      option.tool_policy.kind === "exact"
+        ? {
+            kind: "exact",
+            tools: unique([
+              ...option.current_tool_profile.tools,
+              ...customCapabilities,
+            ]),
+          }
+        : { kind: "native_permissions" },
     workspaceAccess: preferredAccess(option),
   };
 }
@@ -89,17 +96,23 @@ export function replaceCustomCapabilities(
   draft: LoadoutDraft,
   customCapabilities: string[],
 ): LoadoutDraft {
+  if (draft.toolPolicy.kind !== "exact") return draft;
   return {
     ...draft,
-    tools: unique([
-      ...draft.tools.filter((capability) => isKnownCapability(capability)),
-      ...customCapabilities,
-    ]),
+    toolPolicy: {
+      kind: "exact",
+      tools: unique([
+        ...draft.toolPolicy.tools.filter((capability) =>
+          isKnownCapability(capability),
+        ),
+        ...customCapabilities,
+      ]),
+    },
   };
 }
 
 export function customCapabilities(draft: LoadoutDraft): string[] {
-  return draft.tools.filter((capability) => !isKnownCapability(capability));
+  return customCapabilitiesForPolicy(draft.toolPolicy);
 }
 
 export function toggleKnownCapability(
@@ -107,11 +120,17 @@ export function toggleKnownCapability(
   capability: string,
   enabled: boolean,
 ): LoadoutDraft {
-  if (enabled) return { ...draft, tools: unique([...draft.tools, capability]) };
-  return {
-    ...draft,
-    tools: draft.tools.filter((value) => value !== capability),
-  };
+  if (draft.toolPolicy.kind !== "exact") return draft;
+  const tools = enabled
+    ? unique([...draft.toolPolicy.tools, capability])
+    : draft.toolPolicy.tools.filter((value) => value !== capability);
+  return { ...draft, toolPolicy: { kind: "exact", tools } };
+}
+
+function customCapabilitiesForPolicy(policy: ToolPolicy): string[] {
+  return policy.kind === "exact"
+    ? policy.tools.filter((capability) => !isKnownCapability(capability))
+    : [];
 }
 
 function preferredReasoning(option: ExecutionOption): Reasoning | null {

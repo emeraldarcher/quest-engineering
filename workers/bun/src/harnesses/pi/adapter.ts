@@ -615,8 +615,11 @@ export class PiHarness implements AgentHarness {
 
   private piArgs(dispatch: DispatchRecord, agentName: string): string[] {
     const configuration = dispatch.action.execution.configuration;
-    if (configuration.tool_enforcement !== "exact")
-      throw new Error("Pi requires exact tool-selection enforcement.");
+    if (
+      configuration.tool_policy.kind !== "exact" ||
+      configuration.tool_enforcement !== "exact"
+    )
+      throw new Error("Pi requires an exactly enforced tool policy.");
     return [
       "--model",
       `${configuration.model.provider}/${configuration.model.model}`,
@@ -820,7 +823,10 @@ export function piPromptFor(
 export function mappedPiTools(
   dispatch: Pick<DispatchRecord, "action">,
 ): string[] {
-  const { tools } = dispatch.action.execution.configuration;
+  const policy = dispatch.action.execution.configuration.tool_policy;
+  if (policy.kind !== "exact")
+    throw new Error("Pi requires an exact tool policy.");
+  const { tools } = policy;
   const workspace = dispatch.action.execution.execution_workspace;
   const mapped = new Set<string>([
     "qe_step_result",

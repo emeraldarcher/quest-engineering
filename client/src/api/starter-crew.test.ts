@@ -53,8 +53,7 @@ function starterResult() {
     harness: "fake",
     model: { provider: "fake", model: "starter" },
     reasoning: "medium",
-    tools: ["workspace.filesystem"],
-    tool_enforcement: "exact",
+    tool_policy: { kind: "exact", tools: ["workspace.filesystem"] },
     workspace_access: access,
     archived_at: null,
   });

@@ -19,6 +19,8 @@ defmodule QuestEngineering.Server.Product.Repository do
   alias QuestEngineering.Core.Product.Squad
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.Product.Validation
   alias QuestEngineering.Core.Product.ValidationError
   alias QuestEngineering.Core.Product.Workspace
@@ -142,7 +144,9 @@ defmodule QuestEngineering.Server.Product.Repository do
   end
 
   @spec create_loadout(map()) :: persistence_result(Loadout.t())
-  def create_loadout(attributes) when is_map(attributes) do
+  def create_loadout(attributes)
+      when is_map(attributes) and is_map_key(attributes, :reasoning) and
+             is_map_key(attributes, :tool_policy) do
     value = %Loadout{
       id: Ecto.UUID.generate(),
       key: attributes[:key],
@@ -150,9 +154,8 @@ defmodule QuestEngineering.Server.Product.Repository do
       description: Map.get(attributes, :description, ""),
       harness: attributes[:harness],
       model: attributes[:model],
-      reasoning: attributes[:reasoning],
-      tools: attributes[:tools],
-      tool_enforcement: attributes[:tool_enforcement],
+      reasoning: Map.fetch!(attributes, :reasoning),
+      tool_policy: Map.fetch!(attributes, :tool_policy),
       workspace_access: attributes[:workspace_access]
     }
 
@@ -160,6 +163,17 @@ defmodule QuestEngineering.Server.Product.Repository do
          {:ok, row} <- Repo.insert(ProductLoadout.create_changeset(loadout_attributes(value))) do
       {:ok, loadout_from_row(row)}
     end
+  end
+
+  def create_loadout(_attributes) do
+    {:error,
+     [
+       %ValidationError{
+         code: :missing_execution_configuration,
+         path: ["reasoning", "tool_policy"],
+         details: %{}
+       }
+     ]}
   end
 
   @spec update_loadout(String.t(), map()) :: persistence_result(Loadout.t())
@@ -175,8 +189,7 @@ defmodule QuestEngineering.Server.Product.Repository do
            harness: Map.get(attributes, :harness, current.harness),
            model: Map.get(attributes, :model, current.model),
            reasoning: Map.get(attributes, :reasoning, current.reasoning),
-           tools: Map.get(attributes, :tools, current.tools),
-           tool_enforcement: Map.get(attributes, :tool_enforcement, current.tool_enforcement),
+           tool_policy: Map.get(attributes, :tool_policy, current.tool_policy),
            workspace_access: Map.get(attributes, :workspace_access, current.workspace_access)
          },
          {:ok, value} <- Validation.validate(value),
@@ -515,8 +528,7 @@ defmodule QuestEngineering.Server.Product.Repository do
       harness: row.harness_kind,
       model: %ModelRef{provider: row.model_provider, model: row.model_name},
       reasoning: row.reasoning,
-      tools: row.tools,
-      tool_enforcement: tool_enforcement(row.tool_enforcement),
+      tool_policy: tool_policy(row.tool_policy_kind, row.tool_policy_tools),
       workspace_access: workspace_access(row.workspace_access)
     }
   end
@@ -597,8 +609,8 @@ defmodule QuestEngineering.Server.Product.Repository do
       model_provider: value.model.provider,
       model_name: value.model.model,
       reasoning: value.reasoning,
-      tools: value.tools,
-      tool_enforcement: Atom.to_string(value.tool_enforcement),
+      tool_policy_kind: tool_policy_kind(value.tool_policy),
+      tool_policy_tools: tool_policy_tools(value.tool_policy),
       workspace_access: Atom.to_string(value.workspace_access)
     }
   end
@@ -636,8 +648,12 @@ defmodule QuestEngineering.Server.Product.Repository do
     }
   end
 
-  defp tool_enforcement("exact"), do: :exact
-  defp tool_enforcement("native_permissions"), do: :native_permissions
+  defp tool_policy("exact", tools), do: %Exact{tools: tools}
+  defp tool_policy("native_permissions", []), do: %NativePermissions{}
+  defp tool_policy_kind(%Exact{}), do: "exact"
+  defp tool_policy_kind(%NativePermissions{}), do: "native_permissions"
+  defp tool_policy_tools(%Exact{tools: tools}), do: tools
+  defp tool_policy_tools(%NativePermissions{}), do: []
 
   defp workspace_access("none"), do: :none
   defp workspace_access("read_only"), do: :read_only

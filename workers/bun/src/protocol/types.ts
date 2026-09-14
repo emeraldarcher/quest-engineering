@@ -38,7 +38,20 @@ export type Reasoning = string;
 export type ReasoningCapability =
   | { kind: "enumerated"; values: string[] }
   | { kind: "unsupported" };
+/** User-authored execution intent, independent of a harness's authorization decisions. */
+export type ToolPolicy =
+  | { kind: "exact"; tools: string[] }
+  | { kind: "native_permissions" };
+/** The execution guarantee provided by the matched harness adapter. */
 export type ToolEnforcement = "exact" | "native_permissions";
+/**
+ * Exact QE semantic capability profile resolved by the adapter for one execution.
+ * These IDs are QE capability evidence, not necessarily a raw inventory of every
+ * internal native harness tool.
+ */
+export interface ResolvedToolProfile {
+  tools: string[];
+}
 export type WorkspaceAccess = "none" | "read_only" | "read_write";
 
 export interface ResolvedExecution {
@@ -68,8 +81,10 @@ export interface ResolvedExecution {
     harness_kind: string;
     model: { provider: string; model: string };
     reasoning: Reasoning | null;
-    tools: string[];
+    reasoning_capability: ReasoningCapability;
+    tool_policy: ToolPolicy;
     tool_enforcement: ToolEnforcement;
+    resolved_tool_profile: ResolvedToolProfile;
   };
   logical_workspace: {
     workspace_id: string;
@@ -208,8 +223,9 @@ export interface ExecutorCapability {
     display_name: string;
     reasoning_capability: ReasoningCapability;
   }>;
-  tools: string[];
+  supported_tool_policies: Array<ToolPolicy["kind"]>;
   tool_enforcement: ToolEnforcement;
+  tool_profile: ResolvedToolProfile;
 }
 
 export interface WorkerCapabilities {

@@ -53,8 +53,12 @@ const loadout = await api.createLoadout({
   harness: option.harness,
   model: { provider: option.model.provider, model: option.model.model },
   reasoning,
-  tools: option.tools.filter((tool) => tool !== "terminal.shell"),
-  tool_enforcement: "exact",
+  tool_policy: {
+    kind: "exact",
+    tools: option.current_tool_profile.tools.filter(
+      (tool) => tool !== "terminal.shell",
+    ),
+  },
   workspace_access: "read_write",
 });
 const squad = await api.createSquad({

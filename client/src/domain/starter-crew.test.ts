@@ -19,8 +19,9 @@ const option: ExecutionOption = {
     display_name: "Starter",
   },
   reasoning_capability: { kind: "enumerated", values: ["medium"] },
-  tools: ["workspace.filesystem"],
+  tool_policy: { kind: "exact" },
   tool_enforcement: "exact",
+  current_tool_profile: { tools: ["workspace.filesystem"] },
   workspaces: [
     {
       workspace_id: workspace.id,

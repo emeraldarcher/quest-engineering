@@ -57,7 +57,7 @@ async function fixture() {
 test("maps QE capabilities through mechanically restricted access levels", () => {
   const none = action();
   none.execution.execution_workspace.access = "none";
-  none.execution.configuration.tools = [];
+  none.execution.configuration.tool_policy = { kind: "exact", tools: [] };
   expect(mappedPiTools({ action: none })).toEqual([
     "qe_step_result",
     "qe_request_human_assistance",
@@ -65,11 +65,10 @@ test("maps QE capabilities through mechanically restricted access levels", () =>
 
   const readOnly = action();
   readOnly.execution.execution_workspace.access = "read_only";
-  readOnly.execution.configuration.tools = [
-    "workspace.filesystem",
-    "workspace.search",
-    "terminal.shell",
-  ];
+  readOnly.execution.configuration.tool_policy = {
+    kind: "exact",
+    tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+  };
   expect(mappedPiTools({ action: readOnly })).toEqual([
     "qe_step_result",
     "qe_request_human_assistance",
@@ -80,10 +79,10 @@ test("maps QE capabilities through mechanically restricted access levels", () =>
   ]);
 
   const readWrite = action();
-  readWrite.execution.configuration.tools = [
-    "workspace.filesystem",
-    "terminal.shell",
-  ];
+  readWrite.execution.configuration.tool_policy = {
+    kind: "exact",
+    tools: ["workspace.filesystem", "terminal.shell"],
+  };
   expect(mappedPiTools({ action: readWrite })).toEqual([
     "qe_step_result",
     "qe_request_human_assistance",
@@ -217,7 +216,7 @@ test("access-none stays Run-pinned but uses an isolated non-repository CWD", asy
   const none = action();
   none.execution.execution_workspace.access = "none";
   none.execution.execution_workspace.canonical_root = join(root, "workspace");
-  none.execution.configuration.tools = [];
+  none.execution.configuration.tool_policy = { kind: "exact", tools: [] };
   const accepted = registry.accept(none).dispatch;
   const lineage = registry.getLineage(accepted.lineageId as string);
 

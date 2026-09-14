@@ -900,8 +900,12 @@ export function physicalConfiguration(action: ExecuteAction): string {
     harness_kind: configuration.harness_kind,
     model: configuration.model,
     reasoning: configuration.reasoning,
-    tools: [...configuration.tools].sort(),
+    reasoning_capability: configuration.reasoning_capability,
+    tool_policy: configuration.tool_policy,
     tool_enforcement: configuration.tool_enforcement,
+    resolved_tool_profile: {
+      tools: [...configuration.resolved_tool_profile.tools].sort(),
+    },
     logical_workspace_id: action.execution.logical_workspace.workspace_id,
     workspace_binding_id:
       action.execution.execution_workspace.workspace_binding_id,

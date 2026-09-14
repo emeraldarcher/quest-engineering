@@ -286,8 +286,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
         harness: "fake",
         model: %{provider: "fake", model: "test"},
         reasoning: "medium",
-        tools: ["workspace.filesystem"],
-        tool_enforcement: "exact",
+        tool_policy: %{kind: "exact", tools: ["workspace.filesystem"]},
         workspace_access: "read_write"
       })
 
@@ -434,8 +433,9 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
               }
             }
           ],
-          "tools" => ["workspace.filesystem", "workspace.search"],
+          "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",
+          "tool_profile" => %{"tools" => ["workspace.filesystem", "workspace.search"]},
           "workspaces" => [
             %{
               "ref" => "workspace:api",
@@ -465,8 +465,11 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
                    "kind" => "enumerated",
                    "values" => ["high", "low"]
                  },
-                 "tools" => ["workspace.filesystem", "workspace.search"],
+                 "tool_policy" => %{"kind" => "exact"},
                  "tool_enforcement" => "exact",
+                 "current_tool_profile" => %{
+                   "tools" => ["workspace.filesystem", "workspace.search"]
+                 },
                  "workspaces" => [
                    %{
                      "workspace_id" => workspace_id,

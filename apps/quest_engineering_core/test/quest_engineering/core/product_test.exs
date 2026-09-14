@@ -13,9 +13,13 @@ defmodule QuestEngineering.Core.ProductTest do
   alias QuestEngineering.Core.Product.Squad
   alias QuestEngineering.Core.Product.TacticResolver.Catalog
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.Product.Validation
   alias QuestEngineering.Core.Product.Workspace
   alias QuestEngineering.Core.ResolvedExecution.Builder, as: ResolvedExecutionBuilder
+  alias QuestEngineering.Core.ResolvedExecution.ReasoningCapability
+  alias QuestEngineering.Core.ResolvedExecution.ToolProfile
   alias QuestEngineering.Core.Runtime
 
   describe "definition validation" do
@@ -42,7 +46,9 @@ defmodule QuestEngineering.Core.ProductTest do
     test "Loadout rejects duplicate or malformed capability keys" do
       loadout = %{
         coding_loadout()
-        | tools: ["workspace.filesystem", "workspace.filesystem", "Pi Native Read"]
+        | tool_policy: %Exact{
+            tools: ["workspace.filesystem", "workspace.filesystem", "Pi Native Read"]
+          }
       }
 
       assert {:error, errors} = Validation.validate(loadout)
@@ -70,7 +76,7 @@ defmodule QuestEngineering.Core.ProductTest do
       assert is_binary(builder_class().id)
       assert is_binary(builder_class().key)
       assert is_binary(coding_loadout().model.provider)
-      assert Enum.all?(coding_loadout().tools, &is_binary/1)
+      assert Enum.all?(coding_loadout().tool_policy.tools, &is_binary/1)
       assert is_binary(hd(engineering_squad().members).key)
     end
   end
@@ -79,7 +85,7 @@ defmodule QuestEngineering.Core.ProductTest do
     test "compiles the embedded Tactic and resolves exact Class and Loadout values" do
       assert {:ok, snapshot} = valid_snapshot()
 
-      assert %LaunchSnapshot{schema_version: 6} = snapshot
+      assert %LaunchSnapshot{schema_version: 7} = snapshot
 
       assert snapshot.quest.objective ==
                "Implement and independently review the requested change."
@@ -100,13 +106,13 @@ defmodule QuestEngineering.Core.ProductTest do
         | harness: "antigravity",
           model: %ModelRef{provider: "antigravity", model: "no-effort"},
           reasoning: nil,
-          tool_enforcement: :native_permissions
+          tool_policy: %NativePermissions{}
       }
 
       assert {:ok, snapshot} = valid_snapshot([unsupported, review_loadout()])
       frozen = hd(snapshot.squad.members).loadout
       assert frozen.reasoning == nil
-      assert frozen.tool_enforcement == :native_permissions
+      assert frozen.tool_policy == %NativePermissions{}
     end
 
     test "a later definition mutation cannot change an existing snapshot" do
@@ -245,7 +251,13 @@ defmodule QuestEngineering.Core.ProductTest do
           %{
             worktree_id: "worktree-id",
             workspace_binding_id: "binding-id",
-            canonical_root: "/canonical/run-worktree"
+            canonical_root: "/canonical/run-worktree",
+            reasoning_capability: %ReasoningCapability{
+              kind: :enumerated,
+              values: [member.loadout.reasoning]
+            },
+            tool_enforcement: :exact,
+            resolved_tool_profile: %ToolProfile{tools: member.loadout.tool_policy.tools}
           }
         )
 
@@ -309,7 +321,10 @@ defmodule QuestEngineering.Core.ProductTest do
           builder,
           "builder-lineage",
           nil,
-          execution_workspace("builder-worktree")
+          execution_workspace("builder-worktree", "medium", [
+            "workspace.filesystem",
+            "terminal.shell"
+          ])
         )
 
       assert implement_execution.work.quest_objective == objective
@@ -333,7 +348,10 @@ defmodule QuestEngineering.Core.ProductTest do
           reviewer,
           "reviewer-lineage",
           nil,
-          execution_workspace("reviewer-worktree")
+          execution_workspace("reviewer-worktree", "high", [
+            "workspace.filesystem",
+            "workspace.search"
+          ])
         )
 
       assert review_execution.work.quest_objective == objective
@@ -349,12 +367,15 @@ defmodule QuestEngineering.Core.ProductTest do
     end
   end
 
-  defp execution_workspace(worktree_id),
+  defp execution_workspace(worktree_id, reasoning, tools),
     do: %{
       worktree_id: worktree_id,
       workspace_binding_id: "binding-id",
       canonical_root: "/canonical/run-worktree",
-      access: :read_write
+      access: :read_write,
+      reasoning_capability: %ReasoningCapability{kind: :enumerated, values: [reasoning]},
+      tool_enforcement: :exact,
+      resolved_tool_profile: %ToolProfile{tools: tools}
     }
 
   defp valid_snapshot(loadouts \\ [coding_loadout(), review_loadout()]) do
@@ -397,8 +418,7 @@ defmodule QuestEngineering.Core.ProductTest do
       harness: "pi",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
       reasoning: "medium",
-      tools: ["workspace.filesystem", "terminal.shell"],
-      tool_enforcement: :exact,
+      tool_policy: %Exact{tools: ["workspace.filesystem", "terminal.shell"]},
       workspace_access: :read_write
     }
   end
@@ -412,8 +432,7 @@ defmodule QuestEngineering.Core.ProductTest do
       harness: "pi",
       model: %ModelRef{provider: "openai-codex", model: "model-a"},
       reasoning: "high",
-      tools: ["workspace.filesystem", "workspace.search"],
-      tool_enforcement: :exact,
+      tool_policy: %Exact{tools: ["workspace.filesystem", "workspace.search"]},
       workspace_access: :read_only
     }
   end

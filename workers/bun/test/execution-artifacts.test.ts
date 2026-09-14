@@ -130,8 +130,10 @@ function dispatchWithPlan(
           harness_kind: "antigravity",
           model: { provider: "fake", model: "test" },
           reasoning: "low",
-          tools: ["workspace.filesystem"],
+          reasoning_capability: { kind: "enumerated", values: ["low"] },
+          tool_policy: { kind: "exact", tools: ["workspace.filesystem"] },
           tool_enforcement: "exact",
+          resolved_tool_profile: { tools: ["workspace.filesystem"] },
         },
         logical_workspace: {
           workspace_id: "workspace-1",

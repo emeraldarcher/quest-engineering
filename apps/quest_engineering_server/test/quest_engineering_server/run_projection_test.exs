@@ -34,8 +34,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
         harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
         reasoning: "low",
-        tools: [],
-        tool_enforcement: :exact,
+        tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{tools: []},
         workspace_access: :read_write
       })
 
@@ -127,8 +126,13 @@ defmodule QuestEngineering.Server.RunProjectionTest do
              harness: "fake",
              model: %{provider: "fake", model: "test"},
              reasoning: "low",
-             tools: [],
+             reasoning_capability: %{
+               kind: "enumerated",
+               values: ["low", "medium", "high"]
+             },
+             tool_policy: %{kind: "exact", tools: []},
              tool_enforcement: "exact",
+             resolved_tool_profile: %{tools: []},
              workspace_permission: "read_write",
              worker_id: "worker-projection"
            }
@@ -384,8 +388,9 @@ defmodule QuestEngineering.Server.RunProjectionTest do
               }
             }
           ],
-          "tools" => [],
+          "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",
+          "tool_profile" => %{"tools" => []},
           "workspaces" => [
             %{"ref" => "workspace:projection", "root" => root, "max_access" => "read_write"}
           ]

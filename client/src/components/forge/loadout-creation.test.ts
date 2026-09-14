@@ -9,8 +9,7 @@ const input: Omit<Required<LoadoutInput>, "key"> = {
   harness: "pi",
   model: { provider: "custom-provider", model: "custom-model" },
   reasoning: "high",
-  tools: ["acme.special-tool"],
-  tool_enforcement: "exact",
+  tool_policy: { kind: "exact", tools: ["acme.special-tool"] },
   workspace_access: "read_write",
 };
 const created: Loadout = {

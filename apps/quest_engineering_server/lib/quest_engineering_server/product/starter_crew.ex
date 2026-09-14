@@ -133,9 +133,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
       harness: coding.harness_kind,
       model: %ModelRef{provider: coding.model_provider, model: coding.model_name},
       reasoning: coding.reasoning,
-      tool_enforcement: :exact,
-      coding_tools: coding.tools,
-      review_tools: review.tools
+      coding_tools: coding.tool_policy_tools,
+      review_tools: review.tool_policy_tools
     }
   end
 
@@ -165,8 +164,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
       option.model.provider,
       option.model.model,
       option.reasoning_capability,
-      Enum.sort(option.tools),
-      option.tool_enforcement,
+      option.tool_policy,
+      option.current_tool_profile,
       option.workspaces
       |> Enum.map(&{&1.workspace_id, Enum.sort(&1.workspace_access)})
       |> Enum.sort()
@@ -176,7 +175,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   defp compatible_option?(option, workspace_id) do
     workspace = Enum.find(option.workspaces, &(&1.workspace_id == workspace_id))
 
-    option.available && option.tool_enforcement == "exact" &&
+    option.available && option.tool_policy.kind == "exact" &&
+      option.tool_enforcement == "exact" &&
       enumerated_starter_reasoning?(option.reasoning_capability) && workspace &&
       "read_write" in workspace.workspace_access && "read_only" in workspace.workspace_access
   end
@@ -191,9 +191,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
       harness: option.harness,
       model: %ModelRef{provider: option.model.provider, model: option.model.model},
       reasoning: reasoning,
-      tool_enforcement: :exact,
-      coding_tools: Enum.filter(option.tools, &(&1 in @coding_tools)),
-      review_tools: Enum.filter(option.tools, &(&1 in @review_tools))
+      coding_tools: Enum.filter(option.current_tool_profile.tools, &(&1 in @coding_tools)),
+      review_tools: Enum.filter(option.current_tool_profile.tools, &(&1 in @review_tools))
     }
   end
 
@@ -460,10 +459,10 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
 
     execution_matches =
       is_binary(row.harness_kind) && row.reasoning in ~w(low medium high) &&
-        row.tool_enforcement == "exact" && is_binary(row.model_provider) &&
+        row.tool_policy_kind == "exact" && is_binary(row.model_provider) &&
         is_binary(row.model_name)
 
-    tools_match = Enum.all?(row.tools, &(&1 in loadout_tool_allowlist(key)))
+    tools_match = Enum.all?(row.tool_policy_tools, &(&1 in loadout_tool_allowlist(key)))
     identity_matches && execution_matches && tools_match
   end
 
@@ -481,7 +480,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
     ExecutionOptions.list()
     |> Enum.filter(
       &(enumerated_starter_reasoning?(&1.reasoning_capability) &&
-          &1.tool_enforcement == "exact" && &1.workspaces != [])
+          &1.tool_policy.kind == "exact" && &1.tool_enforcement == "exact" &&
+          &1.workspaces != [])
     )
     |> Enum.map(&configuration/1)
     |> Enum.any?(&loadout_matches?(row, loadout_attributes(key, &1)))
@@ -490,7 +490,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
   defp loadout_pair_matches?("coding", coding, review),
     do:
       same_execution_configuration?(coding, review) &&
-        review.tools == Enum.filter(coding.tools, &(&1 in @review_tools))
+        review.tool_policy_tools ==
+          Enum.filter(coding.tool_policy_tools, &(&1 in @review_tools))
 
   defp loadout_pair_matches?("review", review, coding),
     do: loadout_pair_matches?("coding", coding, review)
@@ -499,7 +500,7 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
     do:
       left.harness_kind == right.harness_kind &&
         left.model_provider == right.model_provider && left.model_name == right.model_name &&
-        left.reasoning == right.reasoning && left.tool_enforcement == right.tool_enforcement
+        left.reasoning == right.reasoning && left.tool_policy_kind == right.tool_policy_kind
 
   defp class_matches?(row, attributes),
     do:
@@ -512,8 +513,8 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
         row.harness_kind == attributes.harness &&
         row.model_provider == attributes.model.provider &&
         row.model_name == attributes.model.model && row.reasoning == attributes.reasoning &&
-        row.tools == attributes.tools &&
-        row.tool_enforcement == Atom.to_string(attributes.tool_enforcement) &&
+        row.tool_policy_kind == "exact" &&
+        row.tool_policy_tools == attributes.tool_policy.tools &&
         row.workspace_access == Atom.to_string(attributes.workspace_access)
 
   defp squad_matches?(row, members, builder_id, reviewer_id, coding_id, review_id),
@@ -561,8 +562,9 @@ defmodule QuestEngineering.Server.Product.StarterCrew do
       harness: configuration.harness,
       model: configuration.model,
       reasoning: configuration.reasoning,
-      tools: configuration_tools(configuration, key),
-      tool_enforcement: configuration.tool_enforcement,
+      tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{
+        tools: configuration_tools(configuration, key)
+      },
       workspace_access: if(key == "coding", do: :read_write, else: :read_only)
     }
 

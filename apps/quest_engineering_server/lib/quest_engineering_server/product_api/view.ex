@@ -6,6 +6,8 @@ defmodule QuestEngineering.Server.ProductApi.View do
   alias QuestEngineering.Core.Product.ResolvedTacticUse
   alias QuestEngineering.Core.Product.TacticSource.Definition
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.Tactics.Parallel
   alias QuestEngineering.Core.Tactics.Sequence
   alias QuestEngineering.Core.Tactics.Step
@@ -75,12 +77,14 @@ defmodule QuestEngineering.Server.ProductApi.View do
       harness: value.harness,
       model: %{provider: value.model.provider, model: value.model.model},
       reasoning: value.reasoning,
-      tools: value.tools,
-      tool_enforcement: Atom.to_string(value.tool_enforcement),
+      tool_policy: tool_policy(value.tool_policy),
       workspace_access: Atom.to_string(value.workspace_access),
       archived_at: timestamp(archived_at)
     }
   end
+
+  defp tool_policy(%Exact{tools: tools}), do: %{kind: "exact", tools: tools}
+  defp tool_policy(%NativePermissions{}), do: %{kind: "native_permissions"}
 
   def squad(value, archived_at \\ nil) do
     %{

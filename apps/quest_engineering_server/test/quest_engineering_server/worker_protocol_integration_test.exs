@@ -279,8 +279,9 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
         harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
         reasoning: "medium",
-        tools: ["workspace.filesystem"],
-        tool_enforcement: :exact,
+        tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{
+          tools: ["workspace.filesystem"]
+        },
         workspace_access: :read_write
       })
 
@@ -402,8 +403,9 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
         harness: "fake",
         model: %ModelRef{provider: "fake", model: "test"},
         reasoning: "medium",
-        tools: ["workspace.filesystem"],
-        tool_enforcement: :exact,
+        tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{
+          tools: ["workspace.filesystem"]
+        },
         workspace_access: :read_write
       })
 
@@ -464,8 +466,11 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
               }
             }
           ],
-          "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"],
+          "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",
+          "tool_profile" => %{
+            "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"]
+          },
           "workspaces" => [
             %{
               "ref" => "workspace:protocol",

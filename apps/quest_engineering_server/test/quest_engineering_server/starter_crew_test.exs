@@ -182,7 +182,9 @@ defmodule QuestEngineering.Server.StarterCrewTest do
              Products.update_loadout(coding.id, %{
                model: %ModelRef{provider: "custom", model: "evolved"},
                reasoning: "high",
-               tools: ["workspace.filesystem"]
+               tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{
+                 tools: ["workspace.filesystem"]
+               }
              })
 
     assert %{state: :manual_configuration, conflict: nil} = StarterCrew.status()
@@ -359,8 +361,9 @@ defmodule QuestEngineering.Server.StarterCrewTest do
                 }
               })
             ),
-          "tools" => ["workspace.filesystem", "workspace.search"],
+          "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",
+          "tool_profile" => %{"tools" => ["workspace.filesystem", "workspace.search"]},
           "workspaces" => [
             %{
               "ref" => workspace.name,
@@ -409,8 +412,9 @@ defmodule QuestEngineering.Server.StarterCrewTest do
       harness: "fake",
       model: %ModelRef{provider: "fake", model: "starter"},
       reasoning: "medium",
-      tools: ["workspace.filesystem", "workspace.search"],
-      tool_enforcement: :exact,
+      tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{
+        tools: ["workspace.filesystem", "workspace.search"]
+      },
       workspace_access: :read_write
     }
 
@@ -422,8 +426,9 @@ defmodule QuestEngineering.Server.StarterCrewTest do
       harness: "fake",
       model: %ModelRef{provider: "fake", model: "starter"},
       reasoning: "medium",
-      tools: ["workspace.filesystem", "workspace.search"],
-      tool_enforcement: :exact,
+      tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{
+        tools: ["workspace.filesystem", "workspace.search"]
+      },
       workspace_access: :read_only
     }
 end
