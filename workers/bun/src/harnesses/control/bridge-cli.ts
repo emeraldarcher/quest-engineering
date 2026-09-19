@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import type { JsonValue } from "../../protocol/types.ts";
 import { HarnessControlClient } from "./client.ts";
-import type { HarnessControlOperation } from "./types.ts";
+import { HarnessControlError, type HarnessControlOperation } from "./types.ts";
 
 const [mode, event] = process.argv.slice(2);
 
@@ -27,13 +27,26 @@ try {
     const operation = decodeOperation(JSON.parse(await Bun.stdin.text()));
     output(await HarnessControlClient.fromEnvironment().call(operation));
   } else {
-    throw new Error(
-      "Usage: qe-harness-bridge hook stop | qe-harness-bridge local-control",
-    );
+    throw new Error("Usage: qe-harness-bridge hook stop | local-control");
   }
 } catch (error) {
+  const recoverableStopInfrastructureFailure =
+    mode === "hook" &&
+    event === "stop" &&
+    error instanceof HarnessControlError &&
+    [
+      "bridge_unavailable",
+      "bridge_timeout",
+      "invalid_bridge_response",
+    ].includes(error.code);
+  if (recoverableStopInfrastructureFailure)
+    output({
+      decision: "continue",
+      reason:
+        "Quest Engineering completion infrastructure is temporarily unavailable. Continue without repeating completed work and retry qe_complete_step after the local bridge recovers.",
+    });
   console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 2;
+  process.exitCode = recoverableStopInfrastructureFailure ? 0 : 2;
 }
 
 function output(value: unknown): void {

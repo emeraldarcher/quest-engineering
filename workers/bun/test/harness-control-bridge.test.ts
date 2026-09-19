@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createServer } from "node:net";
+import { join, resolve } from "node:path";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import {
   controlDescriptorPath,
@@ -188,6 +189,134 @@ test("concurrent lineages are isolated and cannot use guessed or cross-generatio
   ).rejects.toMatchObject({ code: "bridge_generation_mismatch" });
 });
 
+test("semantic completion rejection is correctable and does not consume omission enforcement", async () => {
+  const value = await createFixture(1);
+  const { client } = await bind(value);
+
+  let completionError: unknown;
+  try {
+    await client.completeStep({ wrong: true });
+  } catch (error) {
+    completionError = error;
+  }
+  expect(completionError).toMatchObject({
+    kind: "semantic_validation",
+    code: "invalid_step_result",
+  });
+  const firstStop = (await client.nativeStop("model_stop", true)).nativeStop;
+  expect(firstStop).toMatchObject({
+    decision: "continue",
+    cause: "completion_semantic_validation",
+  });
+  expect(firstStop && "enforcementAttempt" in firstStop).toBe(false);
+  const secondStop = (await client.nativeStop("model_stop", true)).nativeStop;
+  expect(secondStop).toMatchObject({
+    decision: "continue",
+    cause: "completion_semantic_validation",
+  });
+  expect(secondStop && "enforcementAttempt" in secondStop).toBe(false);
+  await expect(
+    client.completeStep({ change_set: true }),
+  ).resolves.toMatchObject({
+    completed: true,
+  });
+});
+
+test("reported completion infrastructure failure preserves work without consuming omission enforcement", async () => {
+  const value = await createFixture(0);
+  const { client } = await bind(value);
+  await client.reportCompletionFailure({
+    kind: "infrastructure",
+    code: "bridge_timeout",
+    message: "The completion response was not observable.",
+  });
+
+  const stop = (await client.nativeStop("model_stop", true)).nativeStop;
+  expect(stop).toMatchObject({
+    decision: "continue",
+    cause: "completion_infrastructure",
+  });
+  expect(stop && "enforcementAttempt" in stop).toBe(false);
+});
+
+test("ambiguous response loss reconciles status without replaying completion", async () => {
+  const value = await createFixture();
+  const bound = await bind(value);
+  const goodDescriptor = JSON.parse(
+    await Bun.file(controlDescriptorPath(bound.lineage)).text(),
+  );
+  const stablePath = join(value.root, "rotating-control.json");
+  let received = 0;
+  const responseLossServer = createServer((socket) => {
+    socket.once("data", async () => {
+      received += 1;
+      await writeFile(stablePath, JSON.stringify(goodDescriptor));
+      socket.end();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    responseLossServer.once("error", reject);
+    responseLossServer.listen(0, "127.0.0.1", resolve);
+  });
+  cleanups.push(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        responseLossServer.close((error) =>
+          error ? reject(error) : resolve(),
+        ),
+      ),
+  );
+  const address = responseLossServer.address();
+  if (!address || typeof address === "string")
+    throw new Error("response-loss server has no port");
+  await writeFile(
+    stablePath,
+    JSON.stringify({
+      ...goodDescriptor,
+      endpoint: { ...goodDescriptor.endpoint, port: address.port },
+    }),
+  );
+
+  let failure: unknown;
+  try {
+    await new HarnessControlClient(stablePath).completeStep({
+      change_set: true,
+    });
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({
+    kind: "infrastructure",
+    code: "invalid_bridge_response",
+  });
+  expect(received).toBe(1);
+  expect(await bound.client.completionStatus()).toMatchObject({
+    completed: false,
+  });
+});
+
+test("a retained client follows atomic descriptor rotation while copied credentials stay fenced", async () => {
+  const value = await createFixture();
+  const bound = await bind(value);
+  const stalePath = join(value.root, "copied-control.json");
+  await writeFile(
+    stalePath,
+    await Bun.file(controlDescriptorPath(bound.lineage)).text(),
+  );
+
+  await value.authority.bind(
+    bound.dispatch,
+    value.registry.getLineage(bound.lineage.lineageId),
+  );
+
+  await expect(bound.client.completionStatus()).resolves.toMatchObject({
+    completed: false,
+  });
+  await expect(
+    new HarnessControlClient(stalePath).completionStatus(),
+  ).rejects.toMatchObject({ code: "unknown_control_context" });
+});
+
 test("attention and native Stop enforcement share the same bound authority", async () => {
   const value = await createFixture(2);
   const { client } = await bind(value);
@@ -204,10 +333,18 @@ test("attention and native Stop enforcement share the same bound authority", asy
 
   expect(
     (await client.nativeStop("model_stop", true)).nativeStop,
-  ).toMatchObject({ decision: "continue", enforcementAttempt: 1 });
+  ).toMatchObject({
+    decision: "continue",
+    cause: "completion_omitted",
+    enforcementAttempt: 1,
+  });
   expect(
     (await client.nativeStop("model_stop", true)).nativeStop,
-  ).toMatchObject({ decision: "continue", enforcementAttempt: 2 });
+  ).toMatchObject({
+    decision: "continue",
+    cause: "completion_omitted",
+    enforcementAttempt: 2,
+  });
   expect(
     (await client.nativeStop("model_stop", true)).nativeStop,
   ).toMatchObject({ decision: "contract_violation", enforcementAttempt: 3 });
@@ -231,6 +368,49 @@ test("native Stop preserves a legitimately pending HumanAttention Attempt", asyn
     sessionState: "waiting_for_human",
     attention: { attentionId: requested.attention?.attentionId },
     activeActionId: dispatch.action.action_id,
+  });
+});
+
+test("Stop preserves work when completion infrastructure is unavailable", async () => {
+  const value = await createFixture();
+  const bound = await bind(value);
+  await value.server.stop();
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      resolve(
+        import.meta.dir,
+        "..",
+        "src",
+        "harnesses",
+        "control",
+        "bridge-cli.ts",
+      ),
+      "hook",
+      "stop",
+    ],
+    {
+      env: {
+        ...process.env,
+        QE_HARNESS_CONTROL_PATH: controlDescriptorPath(bound.lineage),
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  child.stdin.write(
+    JSON.stringify({ terminationReason: "model_stop", fullyIdle: true }),
+  );
+  child.stdin.end();
+  const [stdout, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    child.exited,
+  ]);
+  expect(exitCode).toBe(0);
+  expect(JSON.parse(stdout)).toMatchObject({
+    decision: "continue",
+    reason: expect.stringContaining("infrastructure"),
   });
 });
 

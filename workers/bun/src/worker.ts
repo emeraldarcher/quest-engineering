@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { rename, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import { arch, platform } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
@@ -13,6 +20,7 @@ import {
   type DispatchRecord,
   DispatchRegistry,
   type HarnessLineage,
+  turnLifecycle,
 } from "./dispatch/registry.ts";
 import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
 import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
@@ -20,10 +28,12 @@ import { HarnessControlServer } from "./harnesses/control/server.ts";
 import { FakeHarness } from "./harnesses/fake/adapter.ts";
 import { PiHarness } from "./harnesses/pi/adapter.ts";
 import { HarnessRegistry } from "./harnesses/registry.ts";
+import { structuredResultExists } from "./harnesses/turn-lifecycle.ts";
 import type { AgentHarness } from "./harnesses/types.ts";
 import { decodeExecuteAction } from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
+  JsonValue,
   ReconcileDispatch,
   ReconcileSession,
   WorkerCapabilities,
@@ -46,6 +56,15 @@ import {
   RunWorktreeRegistry,
 } from "./workspace/run-worktrees.ts";
 
+interface WorkerInfrastructure {
+  ensureInfrastructure(): Promise<unknown>;
+}
+
+interface WorkerDependencies {
+  infrastructure?: WorkerInfrastructure;
+  harnesses?: AgentHarness[];
+}
+
 export class QuestEngineeringWorker {
   readonly registry: DispatchRegistry;
   readonly executor: DispatchExecutor;
@@ -56,9 +75,20 @@ export class QuestEngineeringWorker {
   private readonly harnessControlServer: HarnessControlServer;
   private readonly channel: PhoenixWorkerChannel;
   private readonly capabilities: WorkerCapabilities;
+  private readonly herdr: WorkerInfrastructure | null;
   private stopping = false;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private recoveryScanActive = false;
+  private readyGeneration: number | null = null;
+  private registration: {
+    generation: number;
+    operation: Promise<void>;
+  } | null = null;
+  private reconciliation: {
+    generation: number;
+    operation: Promise<void>;
+  } | null = null;
+  private reconciliationDirtyGeneration: number | null = null;
   private readonly sessionReports = new Map<string, Promise<boolean>>();
   private readonly sourceCandidates = new Map<
     string,
@@ -73,20 +103,34 @@ export class QuestEngineeringWorker {
     }
   >();
 
-  constructor(private readonly config: WorkerConfig) {
+  constructor(
+    private readonly config: WorkerConfig,
+    dependencies: WorkerDependencies = {},
+  ) {
     this.worktrees = new RunWorktreeRegistry(config);
     this.deliveries = new RunDeliveryRegistry(config, this.worktrees);
-    const harnesses: AgentHarness[] =
+    const provider =
       config.provider === "fake"
+        ? null
+        : (dependencies.infrastructure ??
+          new LocalHerdrConnectionProvider(config.herdrSession, {
+            workerId: config.workerId,
+            dataRoot: config.dataRoot,
+          }));
+    this.herdr = provider;
+    const harnesses: AgentHarness[] =
+      dependencies.harnesses ??
+      (config.provider === "fake"
         ? [new FakeHarness(config.fakeOutputs, config.fakeDelayMs)]
         : (config.enabledHarnesses ?? ["pi", "antigravity"]).map((kind) => {
             const host = new HerdrTerminalBackend(
-              new LocalHerdrConnectionProvider(config.herdrSession),
+              provider as LocalHerdrConnectionProvider,
+              kind,
             );
             return kind === "antigravity"
               ? new AntigravityHarness(host, config)
               : new PiHarness(host, config);
-          });
+          }));
     this.harnesses = new HarnessRegistry(harnesses);
     const defaultHarness = harnesses[0];
     if (!defaultHarness) throw new Error("Worker has no enabled harnesses.");
@@ -107,8 +151,11 @@ export class QuestEngineeringWorker {
       config.workerToken,
       capabilities,
       {
-        onProtocol: (message) => this.handleProtocol(message),
-        onRegistered: (response) => this.onRegistered(response),
+        onProtocol: (message, generation) =>
+          this.handleProtocol(message, generation),
+        onRegistered: (response, generation) =>
+          this.onRegistered(response, generation),
+        onDisconnected: (generation) => this.onDisconnected(generation),
         onSuperseded: () => {
           console.warn(
             "Worker connection was superseded by a newer generation; stopping this controller.",
@@ -126,8 +173,13 @@ export class QuestEngineeringWorker {
     );
   }
 
-  async run(): Promise<void> {
+  async prepareForStartup(): Promise<void> {
+    await this.herdr?.ensureInfrastructure();
     await this.refreshHarnessCapabilities();
+  }
+
+  async run(): Promise<void> {
+    await this.prepareForStartup();
     await this.harnessControlServer.start();
     await this.executor.recoverAll();
     while (!this.stopping) {
@@ -148,6 +200,12 @@ export class QuestEngineeringWorker {
 
   private async refreshHarnessCapabilities(): Promise<void> {
     const discoveries = await this.harnesses.discover();
+    for (const discovery of discoveries) {
+      if (discovery.integration.status !== "ready")
+        console.warn(
+          `${discovery.displayName} is not schedulable: ${discovery.integration.detail}`,
+        );
+    }
     const discovered = workerCapabilities(
       this.config,
       platform(),
@@ -181,6 +239,7 @@ export class QuestEngineeringWorker {
 
   private async handleProtocol(
     message: Record<string, unknown>,
+    generation: number,
   ): Promise<void> {
     if (message.type === "discover_workspace_sources") {
       await this.reportWorkspaceSources();
@@ -306,12 +365,62 @@ export class QuestEngineeringWorker {
       await this.resolveUncertainDispatch(message);
       return;
     }
+    if (message.type === "retire_dispatch_for_recovery") {
+      const actionId = String(message.action_id ?? "");
+      const failure = message.failure;
+      if (
+        !actionId ||
+        !failure ||
+        typeof failure !== "object" ||
+        Array.isArray(failure)
+      )
+        throw new Error("Invalid recovery retirement command.");
+      await this.executor.retireForRecovery(
+        actionId,
+        failure as Record<string, JsonValue>,
+      );
+      return;
+    }
+    if (message.type === "authorize_dispatch_prompt") {
+      const actionId = String(message.action_id ?? "");
+      if (!actionId) throw new Error("Invalid prompt authorization command.");
+      await this.executor.authorizePrompt(actionId);
+      return;
+    }
     if (message.type === "execute_action") {
+      await this.awaitClaimReadiness(generation);
       const action = decodeExecuteAction(message, this.config.workerId);
       assertExecutionSupported(action, this.capabilities);
       const worktree = await this.worktrees.verify(
         action.execution.execution_workspace.worktree_id,
       );
+      const retainedWorkSource = this.retainedWorkRecoverySource(action);
+      if (retainedWorkSource) {
+        try {
+          await this.verifyRetainedWorkRecovery(
+            retainedWorkSource,
+            worktree,
+            action.operational_recovery?.continuation_mode ?? "fresh",
+          );
+        } catch {
+          await this.channel.sendProtocol({
+            type: "step_failed",
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            worker_id: this.config.workerId,
+            action_id: action.action_id,
+            occurrence_id: action.occurrence_id,
+            attempt_id: action.attempt_id,
+            failure: {
+              code: "retained_work_recovery_preflight_failed",
+              reason: "retained_work_recovery_preflight_failed",
+              classification: "operator_recovery_required",
+              message:
+                "The retained-work recovery preflight failed before native process launch; no model prompt was submitted.",
+            },
+          });
+          return;
+        }
+      }
       if (worktree.state !== "ready")
         throw new Error(`Run worktree is fenced in ${worktree.state}.`);
       if (
@@ -354,48 +463,45 @@ export class QuestEngineeringWorker {
       return;
     }
     if (message.type === "reconcile_request") {
-      const dispatches = this.registry.reconcilePayloads();
-      const sessions = this.registry.listLineages().flatMap((lineage) => {
-        const dispatch = this.registry
-          .list()
-          .filter((item) => item.lineageId === lineage.lineageId)
-          .at(-1);
-        return dispatch
-          ? [harnessSessionPayload(dispatch, lineage, this.executor)]
-          : [];
-      });
-      const response = await this.channel.sendProtocol({
-        type: "reconcile_state",
-        protocol_version: WORKER_PROTOCOL_VERSION,
-        worker_id: this.config.workerId,
-        dispatches,
-        sessions,
-      });
-      if (response.result === "reconciled") {
-        for (const dispatch of this.registry.list()) {
-          if (dispatch.state === "completed")
-            this.registry.acknowledgeServerCompletion(
-              dispatch.action.action_id,
-            );
-        }
-        const resolutions = Array.isArray(response.dispatch_resolutions)
-          ? response.dispatch_resolutions
-          : [];
-        for (const resolution of resolutions) {
-          if (resolution && typeof resolution === "object")
-            await this.resolveUncertainDispatch(
-              resolution as Record<string, unknown>,
-            );
-        }
-      }
+      await this.reconcileControlPlane(generation);
     }
   }
 
-  private async onRegistered(response: Record<string, unknown>): Promise<void> {
+  private onRegistered(
+    response: Record<string, unknown>,
+    generation: number,
+  ): Promise<void> {
+    this.readyGeneration = null;
+    const operation = this.initializeRegistration(response, generation);
+    this.registration = { generation, operation };
+    return operation;
+  }
+
+  private async initializeRegistration(
+    response: Record<string, unknown>,
+    generation: number,
+  ): Promise<void> {
     applyBindingReconciliation(
       this.config,
       this.capabilities,
       response.workspace_binding_reconciliation,
+    );
+    await this.reconcileControlPlane(generation);
+    if (!this.channel.isCurrentGeneration(generation))
+      throw new Error(
+        "Worker registration generation changed during reconciliation.",
+      );
+
+    this.readyGeneration = generation;
+    if (this.reconciliationDirtyGeneration === generation)
+      await this.reconcileControlPlane(generation);
+    // Reconstruct discovery/readiness from source authority; it is not a raw
+    // outbound replay and does not gate already-durable dispatch recovery.
+    void this.reportWorkspaceSources().catch((error) =>
+      console.warn(
+        "Workspace source discovery failed",
+        error instanceof Error ? error.message : String(error),
+      ),
     );
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = setInterval(() => {
@@ -410,18 +516,114 @@ export class QuestEngineeringWorker {
     }, this.config.heartbeatMs);
     this.heartbeat.unref?.();
     void this.scanRecoveryRequests();
-    // Publish the bounded authorized-root catalog on every registration so a
-    // discovery request racing the join acknowledgement cannot be lost.
-    void this.reportWorkspaceSources().catch((error) =>
-      console.warn(
-        "Workspace source discovery failed",
-        error instanceof Error ? error.message : String(error),
-      ),
+  }
+
+  private onDisconnected(generation: number): void {
+    if (this.readyGeneration === generation) this.readyGeneration = null;
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+
+  private async awaitClaimReadiness(generation: number): Promise<void> {
+    const registration = this.registration;
+    if (!registration || registration.generation !== generation)
+      throw new Error(
+        "Worker claim arrived outside its registration generation.",
+      );
+    await registration.operation;
+    if (
+      this.readyGeneration !== generation ||
+      !this.channel.isCurrentGeneration(generation)
+    )
+      throw new Error("Worker claim generation is no longer authoritative.");
+  }
+
+  private reconcileControlPlane(generation: number): Promise<void> {
+    if (this.reconciliation && this.reconciliation.generation === generation)
+      return this.reconciliation.operation;
+
+    const operation = this.publishReconciliation(generation).finally(() => {
+      if (this.reconciliation?.operation === operation)
+        this.reconciliation = null;
+    });
+    this.reconciliation = { generation, operation };
+    return operation;
+  }
+
+  private async publishReconciliation(generation: number): Promise<void> {
+    do {
+      if (!this.channel.isCurrentGeneration(generation))
+        throw new Error(
+          "Cannot reconcile a stale Worker connection generation.",
+        );
+      this.reconciliationDirtyGeneration = null;
+      const dispatches = this.registry.reconcilePayloads();
+      const allDispatches = this.registry.list();
+      const sessions = this.registry.listLineages().flatMap((lineage) => {
+        const dispatch = allDispatches
+          .filter((item) => item.lineageId === lineage.lineageId)
+          .at(-1);
+        return dispatch
+          ? [harnessSessionPayload(dispatch, lineage, this.executor)]
+          : [];
+      });
+      const response = await this.channel.sendProtocol({
+        type: "reconcile_state",
+        protocol_version: WORKER_PROTOCOL_VERSION,
+        worker_id: this.config.workerId,
+        dispatches,
+        sessions,
+      });
+      if (response.result !== "reconciled")
+        throw new Error(
+          "Control plane did not acknowledge Worker reconciliation.",
+        );
+
+      const completionActionIds = Array.isArray(response.completion_action_ids)
+        ? response.completion_action_ids
+        : [];
+      for (const actionId of completionActionIds) {
+        if (typeof actionId !== "string") continue;
+        const dispatch = this.registry.get(actionId);
+        if (dispatch.state === "completed")
+          this.registry.acknowledgeServerCompletion(actionId);
+      }
+
+      const resolutions = Array.isArray(response.dispatch_resolutions)
+        ? response.dispatch_resolutions
+        : [];
+      for (const resolution of resolutions) {
+        if (resolution && typeof resolution === "object")
+          await this.resolveUncertainDispatch(
+            resolution as Record<string, unknown>,
+          );
+      }
+
+      const promptAuthorizations = Array.isArray(response.prompt_authorizations)
+        ? response.prompt_authorizations
+        : [];
+      for (const actionId of promptAuthorizations) {
+        if (typeof actionId === "string")
+          await this.executor.authorizePrompt(actionId);
+      }
+    } while (
+      this.reconciliationDirtyGeneration === generation &&
+      this.channel.isCurrentGeneration(generation)
     );
   }
 
+  private markReconciliationDirty(): void {
+    const generation = this.channel.currentGeneration();
+    if (generation !== null) this.reconciliationDirtyGeneration = generation;
+  }
+
+  private controlPlaneReady(): boolean {
+    const generation = this.channel.currentGeneration();
+    return generation !== null && this.readyGeneration === generation;
+  }
+
   private async scanRecoveryRequests(): Promise<void> {
-    if (this.recoveryScanActive || !this.channel.isRegistered()) return;
+    if (this.recoveryScanActive || !this.controlPlaneReady()) return;
     this.recoveryScanActive = true;
     try {
       for (const lineage of this.registry.listLineages()) {
@@ -789,6 +991,131 @@ export class QuestEngineeringWorker {
     });
   }
 
+  private retainedWorkRecoverySource(
+    action: ReturnType<typeof decodeExecuteAction>,
+  ): DispatchRecord | null {
+    const recovery = action.operational_recovery;
+    if (recovery?.authorization_kind !== "human") return null;
+    return (
+      this.registry.list().find((dispatch) => {
+        if (
+          dispatch.action.attempt_id !== recovery.source_attempt_id ||
+          dispatch.action.run_id !== action.run_id ||
+          dispatch.action.occurrence_id !== action.occurrence_id
+        )
+          return false;
+        if (recovery.continuation_mode === "fresh")
+          return (
+            (dispatch.state === "uncertain" &&
+              dispatch.failure?.code === "harness_contract_violation") ||
+            (dispatch.state === "failed" &&
+              [
+                "execution_environment_recovery_required",
+                "pre_authorization_native_activity",
+              ].includes(String(dispatch.failure?.code ?? "")))
+          );
+        return (
+          dispatch.state === "failed" &&
+          dispatch.lineageId === recovery.retained_lineage_id &&
+          !dispatch.promptIntentAt &&
+          !dispatch.promptAcceptedAt &&
+          !dispatch.nativeActivityAt &&
+          !dispatch.stalledAt &&
+          !dispatch.settledAt &&
+          prePromptControlFailure(dispatch.failure)
+        );
+      }) ?? null
+    );
+  }
+
+  private async verifyRetainedWorkRecovery(
+    source: DispatchRecord,
+    worktree: RunWorktreeRecord,
+    continuationMode: "fresh" | "retained",
+  ): Promise<void> {
+    if (
+      source.action.execution.execution_workspace.worktree_id !==
+        worktree.worktreeId ||
+      source.action.execution.execution_workspace.canonical_root !==
+        worktree.canonicalRoot ||
+      source.action.execution.execution_workspace.workspace_binding_id !==
+        worktree.bindingId
+    )
+      throw new Error(
+        "The retained worktree does not match the source Attempt ownership.",
+      );
+    const before = await retainedDiffFingerprint(worktree.canonicalRoot);
+    if (!before.changed)
+      throw new Error(
+        "The retained worktree has no implementation changes to recover.",
+      );
+    if (await structuredResultExists(source.resultDirectory))
+      throw new Error(
+        "The source Attempt already has a structured result; recovery would duplicate completion.",
+      );
+    const conflicting = this.registry
+      .list()
+      .find(
+        (dispatch) =>
+          dispatch.action.action_id !== source.action.action_id &&
+          ["accepted", "running"].includes(dispatch.state) &&
+          dispatch.action.execution.execution_workspace.worktree_id ===
+            worktree.worktreeId,
+      );
+    if (conflicting)
+      throw new Error(
+        `The retained worktree is owned by active Attempt ${conflicting.action.attempt_id}.`,
+      );
+    if (!source.lineageId)
+      throw new Error("The source Attempt has no retained harness lineage.");
+    const lineage = this.registry.getLineage(source.lineageId);
+    if (
+      lineage.activeActionId &&
+      lineage.activeActionId !== source.action.action_id
+    )
+      throw new Error("Another Attempt owns the retained harness lineage.");
+    const harness = this.harnesses.get(lineage.harnessKind);
+    if (continuationMode === "retained") {
+      if (
+        lineage.sessionState !== "retained" ||
+        lineage.activeActionId !== null ||
+        lineage.nativeSession
+      )
+        throw new Error(
+          "The prepared source process is not an unowned conversation-free retained lineage.",
+        );
+    } else {
+      if (!harness.proveInactiveForFreshRecovery)
+        throw new Error(
+          "The source harness cannot authoritatively prove native-process absence.",
+        );
+      if (!(await harness.proveInactiveForFreshRecovery(lineage)))
+        throw new Error(
+          "The source native process is still present; fresh recovery is unsafe.",
+        );
+      const inspection = await harness.inspect(lineage);
+      if (!["retained", "unavailable"].includes(inspection.state))
+        throw new Error(
+          `The inactive source session projected ${inspection.state}; fresh recovery is unsafe.`,
+        );
+      await harness.clearActiveMetadata(source, lineage);
+      const projected = this.registry.updateSession(
+        lineage.lineageId,
+        inspection.state,
+        null,
+        inspection.lastActivityAt,
+        inspection.intervention,
+      );
+      await this.reportHarnessSession(source, projected);
+    }
+
+    const after = await retainedDiffFingerprint(worktree.canonicalRoot);
+    if (after.digest !== before.digest)
+      throw new Error(
+        "The retained worktree changed during recovery preflight.",
+      );
+  }
+
   private async resolveUncertainDispatch(
     message: Record<string, unknown>,
   ): Promise<void> {
@@ -854,7 +1181,10 @@ export class QuestEngineeringWorker {
     const operation = previous
       .catch(() => false)
       .then(async () => {
-        if (!this.channel.isRegistered()) return false;
+        if (!this.controlPlaneReady()) {
+          this.markReconciliationDirty();
+          return false;
+        }
         try {
           await this.channel.sendProtocol({
             type: "session_state",
@@ -883,7 +1213,10 @@ export class QuestEngineeringWorker {
     dispatch: ReconcileDispatch,
     type: DispatchReportType,
   ): Promise<boolean> {
-    if (!this.channel.isRegistered()) return false;
+    if (!this.controlPlaneReady()) {
+      this.markReconciliationDirty();
+      return false;
+    }
     try {
       if (type === "step_completed" || type === "step_failed") {
         const local = this.registry.get(dispatch.action_id);
@@ -948,6 +1281,10 @@ function harnessSessionPayload(
       terminal = null;
     }
   }
+  const turn = turnLifecycle(dispatch, lineage.sessionState, lineage.attention);
+  const physicalProcess = executor.physicalProcessTransition(
+    dispatch.action.action_id,
+  );
   return {
     session_id: lineage.lineageId,
     action_id: dispatch.action.action_id,
@@ -1021,6 +1358,35 @@ function harnessSessionPayload(
       : null,
     started_at: lineage.startedAt,
     last_activity_at: lineage.lastActivityAt,
+    turn: {
+      phase: turn.phase,
+      prompt_intent_at: turn.promptIntentAt,
+      prompt_accepted_at: turn.promptAcceptedAt,
+      native_activity_at: turn.nativeActivityAt,
+      stalled_at: turn.stalledAt,
+      settled_at: turn.settledAt,
+      ...(physicalProcess
+        ? {
+            physical_process: {
+              mode: physicalProcess.mode,
+              source_action_id: physicalProcess.sourceActionId,
+              source_attempt_id: physicalProcess.sourceAttemptId,
+              target_action_id: physicalProcess.targetActionId,
+              target_attempt_id: physicalProcess.targetAttemptId,
+              source_lineage_id: physicalProcess.sourceLineageId,
+              target_lineage_id: physicalProcess.targetLineageId,
+              herdr_session: physicalProcess.herdrSession,
+              herdr_session_incarnation:
+                physicalProcess.herdrSessionIncarnation,
+              workspace_id: physicalProcess.workspaceId,
+              pane_id: physicalProcess.paneId,
+              terminal_id: physicalProcess.terminalId,
+              agent_name: physicalProcess.agentName,
+              recorded_at: physicalProcess.recordedAt,
+            },
+          }
+        : {}),
+    },
   };
 }
 
@@ -1118,6 +1484,64 @@ function githubRepository(output: string): string | null {
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
+export async function retainedDiffFingerprint(
+  root: string,
+): Promise<{ changed: boolean; digest: string }> {
+  const run = async (args: string[]): Promise<Uint8Array> => {
+    const child = Bun.spawn(["git", "-C", root, ...args], {
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).arrayBuffer(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    if (exitCode !== 0)
+      throw new Error(
+        `Retained-work recovery preflight could not inspect Git state: ${stderr.trim() || `git exited ${exitCode}`}`,
+      );
+    return new Uint8Array(stdout);
+  };
+  const [status, diff, untracked] = await Promise.all([
+    run(["status", "--porcelain=v2", "-z", "--untracked-files=all"]),
+    run(["diff", "--binary", "--no-ext-diff", "HEAD", "--"]),
+    run(["ls-files", "--others", "--exclude-standard", "-z"]),
+  ]);
+  const hash = createHash("sha256")
+    .update(status)
+    .update(Uint8Array.of(0))
+    .update(diff);
+  for (const relativePath of new TextDecoder()
+    .decode(untracked)
+    .split("\0")
+    .filter(Boolean)
+    .sort()) {
+    const path = resolve(root, relativePath);
+    if (!contained(root, path))
+      throw new Error(
+        "Git reported an untracked path outside the retained worktree.",
+      );
+    const metadata = await lstat(path);
+    hash.update(Uint8Array.of(0)).update(relativePath).update(Uint8Array.of(0));
+    if (metadata.isSymbolicLink()) hash.update(await readlink(path));
+    else if (metadata.isFile()) {
+      const physicalPath = await realpath(path);
+      if (!contained(root, physicalPath))
+        throw new Error(
+          "An untracked recovery file resolves outside the retained worktree.",
+        );
+      hash.update(await readFile(physicalPath));
+    } else
+      throw new Error(
+        "The retained worktree contains an unsupported untracked file type.",
+      );
+  }
+  const digest = hash.digest("hex");
+  return { changed: status.byteLength > 0 || diff.byteLength > 0, digest };
+}
+
 function safeDeliveryMessage(code: string): string {
   const messages: Record<string, string> = {
     git_identity_missing: "Git commit identity is not configured.",
@@ -1212,6 +1636,18 @@ async function writeRecoveryResult(
     { encoding: "utf8", mode: 0o600, flag: "wx" },
   );
   await rename(temporary, path);
+}
+
+function prePromptControlFailure(
+  failure: Record<string, JsonValue> | null,
+): boolean {
+  return Boolean(
+    failure &&
+      (failure.code === "execution_control_readiness_failed" ||
+        failure.reason === "execution_control_readiness_failed" ||
+        failure.message ===
+          "Antigravity did not launch the QE MCP child with the active bridge context."),
+  );
 }
 
 function dispatchPayload(

@@ -15,6 +15,7 @@ import {
   writeStepResultAtomic,
 } from "./result-envelope.ts";
 import {
+  type CompletionFailure,
   HARNESS_CONTROL_PROTOCOL_VERSION,
   type HarnessControlDescriptor,
   HarnessControlError,
@@ -30,6 +31,7 @@ interface BoundControlContext {
   requests: Map<string, HarnessControlResult>;
   enforcementAttempts: number;
   contractViolation: string | null;
+  lastCompletionFailure: CompletionFailure | null;
 }
 
 export interface HarnessControlEndpoint {
@@ -81,6 +83,7 @@ export class HarnessControlAuthority {
       requests: new Map(),
       enforcementAttempts: 0,
       contractViolation: null,
+      lastCompletionFailure: null,
     };
     this.contexts.set(contextToken, context);
     this.tokenByLineage.set(lineage.lineageId, contextToken);
@@ -165,6 +168,9 @@ export class HarnessControlAuthority {
     switch (operation.type) {
       case "complete_step":
         return this.complete(context, operation.outputs, requestId);
+      case "report_completion_failure":
+        context.lastCompletionFailure = operation.failure;
+        return { accepted: true, completed: false };
       case "request_human_assistance":
         return this.requestAttention(context, operation);
       case "resolve_human_assistance":
@@ -189,6 +195,12 @@ export class HarnessControlAuthority {
         return {
           accepted: true,
           completed: await hasStepResult(context.dispatch),
+          binding: {
+            actionId: context.dispatch.action.action_id,
+            attemptId: context.dispatch.action.attempt_id,
+            lineageId: context.lineageId,
+            resultNonce: context.dispatch.resultNonce,
+          },
           ...(lineage.attention ? { attention: lineage.attention } : {}),
           intervention: lineage.intervention,
           ...(context.contractViolation
@@ -209,11 +221,15 @@ export class HarnessControlAuthority {
     try {
       validateOutputs(context.dispatch.action.declared_outputs, outputs);
     } catch (error) {
-      throw new HarnessControlError(
-        "invalid_step_result",
-        error instanceof Error ? error.message : String(error),
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      context.lastCompletionFailure = {
+        kind: "semantic_validation",
+        code: "invalid_step_result",
+        message,
+      };
+      throw new HarnessControlError("invalid_step_result", message);
     }
+    context.lastCompletionFailure = null;
     if (await hasStepResult(context.dispatch))
       throw new HarnessControlError(
         "replayed_request",
@@ -371,6 +387,23 @@ export class HarnessControlAuthority {
         intervention: lineage.intervention,
         nativeStop: { decision: "allow" },
       };
+    if (context.lastCompletionFailure) {
+      const semantic =
+        context.lastCompletionFailure.kind === "semantic_validation";
+      return {
+        accepted: true,
+        completed: false,
+        nativeStop: {
+          decision: "continue",
+          cause: semantic
+            ? "completion_semantic_validation"
+            : "completion_infrastructure",
+          reason: semantic
+            ? `Quest Engineering rejected the submitted Step result (${context.lastCompletionFailure.code}): ${context.lastCompletionFailure.message} Correct the declared outputs and call qe_complete_step again; do not repeat completed implementation work.`
+            : `Quest Engineering completion infrastructure rejected the submission (${context.lastCompletionFailure.code}): ${context.lastCompletionFailure.message} Preserve the completed work and retry qe_complete_step after the local bridge recovers.`,
+        },
+      };
+    }
     context.enforcementAttempts += 1;
     if (context.enforcementAttempts <= this.maxStopEnforcements)
       return {
@@ -378,9 +411,10 @@ export class HarnessControlAuthority {
         completed: false,
         nativeStop: {
           decision: "continue",
+          cause: "completion_omitted",
           enforcementAttempt: context.enforcementAttempts,
           reason:
-            "Quest Engineering has not received a valid structured Step result. Continue the execution and submit the declared outputs through the QE completion tool before stopping.",
+            "Quest Engineering has not received a structured Step result. Submit the already-completed work's declared outputs through qe_complete_step before stopping; do not repeat implementation work.",
         },
       };
     const reason =

@@ -15,6 +15,10 @@ export type HarnessControlOperation =
       outputs: Record<string, JsonValue>;
     }
   | {
+      type: "report_completion_failure";
+      failure: CompletionFailure;
+    }
+  | {
       type: "request_human_assistance";
       category: HumanAttentionCategory;
       message: string;
@@ -55,14 +59,40 @@ export interface HarnessControlRequest {
   operation: HarnessControlOperation;
 }
 
+export type CompletionFailureKind =
+  | "semantic_validation"
+  | "stale_context"
+  | "infrastructure";
+
+export interface CompletionFailure {
+  kind: CompletionFailureKind;
+  code: HarnessControlErrorCode;
+  message: string;
+}
+
 export type NativeStopDecision =
   | { decision: "allow" }
-  | { decision: "continue"; reason: string; enforcementAttempt: number }
+  | {
+      decision: "continue";
+      reason: string;
+      cause:
+        | "completion_omitted"
+        | "completion_semantic_validation"
+        | "completion_infrastructure";
+      enforcementAttempt?: number;
+    }
   | {
       decision: "contract_violation";
       reason: string;
       enforcementAttempt: number;
     };
+
+export interface HarnessControlBinding {
+  actionId: string;
+  attemptId: string;
+  lineageId: string;
+  resultNonce: string;
+}
 
 export interface HarnessControlResult {
   accepted: true;
@@ -72,6 +102,7 @@ export interface HarnessControlResult {
   attention?: HumanAttention;
   intervention?: HumanInterventionLifecycle | null;
   nativeStop?: NativeStopDecision;
+  binding?: HarnessControlBinding;
 }
 
 export interface HarnessControlSuccess {
@@ -89,6 +120,8 @@ export type HarnessControlErrorCode =
   | "invalid_step_result"
   | "invalid_attention"
   | "bridge_unavailable"
+  | "bridge_timeout"
+  | "invalid_bridge_response"
   | "harness_contract_violation";
 
 export interface HarnessControlFailure {
@@ -118,5 +151,15 @@ export class HarnessControlError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+export class HarnessCompletionError extends HarnessControlError {
+  constructor(
+    readonly kind: CompletionFailureKind,
+    code: HarnessControlErrorCode,
+    message: string,
+  ) {
+    super(code, message);
   }
 }

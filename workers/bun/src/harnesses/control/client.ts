@@ -5,7 +5,10 @@ import {
   readControlDescriptor,
 } from "./descriptor.ts";
 import {
+  type CompletionFailure,
   HARNESS_CONTROL_PROTOCOL_VERSION,
+  HarnessCompletionError,
+  type HarnessControlDescriptor,
   HarnessControlError,
   type HarnessControlOperation,
   type HarnessControlResponse,
@@ -27,11 +30,49 @@ export class HarnessControlClient {
     return new HarnessControlClient(path);
   }
 
-  completeStep(
+  async completeStep(
     outputs: Record<string, JsonValue>,
     requestId: string = crypto.randomUUID(),
+  ): Promise<HarnessControlResult> {
+    try {
+      return await this.call({ type: "complete_step", outputs }, requestId);
+    } catch (error) {
+      const known =
+        error instanceof HarnessControlError
+          ? error
+          : new HarnessControlError(
+              "bridge_unavailable",
+              "Quest Engineering completion infrastructure failed.",
+            );
+      if (known.code === "invalid_step_result")
+        throw new HarnessCompletionError(
+          "semantic_validation",
+          known.code,
+          known.message,
+        );
+      if (completionInfrastructureCode(known.code)) {
+        try {
+          const status = await this.completionStatus();
+          if (status.completed)
+            return { accepted: true, completed: true, duplicate: true };
+        } catch {
+          // The original typed infrastructure failure remains authoritative.
+        }
+        throw new HarnessCompletionError(
+          staleContextCode(known.code) ? "stale_context" : "infrastructure",
+          known.code,
+          known.message,
+        );
+      }
+      throw known;
+    }
+  }
+
+  reportCompletionFailure(
+    failure: CompletionFailure,
+    requestId: string = crypto.randomUUID(),
   ) {
-    return this.call({ type: "complete_step", outputs }, requestId);
+    return this.call({ type: "report_completion_failure", failure }, requestId);
   }
 
   requestHumanAssistance(
@@ -83,25 +124,38 @@ export class HarnessControlClient {
     operation: HarnessControlOperation,
     requestId: string = crypto.randomUUID(),
   ): Promise<HarnessControlResult> {
-    const descriptor = await readControlDescriptor(this.descriptorPath);
-    const request = {
-      protocolVersion: HARNESS_CONTROL_PROTOCOL_VERSION,
-      bridgeGeneration: descriptor.bridgeGeneration,
-      contextToken: descriptor.contextToken,
-      requestId,
-      operation,
-    };
-    const response = await send(
-      descriptor.endpoint.port,
-      `${JSON.stringify(request)}\n`,
-    );
-    if (!response.ok)
-      throw new HarnessControlError(
-        response.error.code,
-        response.error.message,
-      );
-    return response.result;
+    const first = await readControlDescriptor(this.descriptorPath);
+    try {
+      return await callDescriptor(first, operation, requestId);
+    } catch (error) {
+      if (!(error instanceof HarnessControlError) || !refreshable(error.code))
+        throw error;
+      const current = await readControlDescriptor(this.descriptorPath);
+      if (sameCredentials(first, current)) throw error;
+      return callDescriptor(current, operation, requestId);
+    }
   }
+}
+
+async function callDescriptor(
+  descriptor: HarnessControlDescriptor,
+  operation: HarnessControlOperation,
+  requestId: string,
+): Promise<HarnessControlResult> {
+  const request = {
+    protocolVersion: HARNESS_CONTROL_PROTOCOL_VERSION,
+    bridgeGeneration: descriptor.bridgeGeneration,
+    contextToken: descriptor.contextToken,
+    requestId,
+    operation,
+  };
+  const response = await send(
+    descriptor.endpoint.port,
+    `${JSON.stringify(request)}\n`,
+  );
+  if (!response.ok)
+    throw new HarnessControlError(response.error.code, response.error.message);
+  return response.result;
 }
 
 async function send(
@@ -111,34 +165,105 @@ async function send(
   return new Promise((resolve, reject) => {
     const socket = createConnection({ host: "127.0.0.1", port });
     let input = "";
-    const fail = () => {
+    let settled = false;
+    let connected = false;
+    const fail = (
+      code: "bridge_unavailable" | "bridge_timeout" | "invalid_bridge_response",
+    ) => {
+      if (settled) return;
+      settled = true;
       socket.destroy();
       reject(
         new HarnessControlError(
-          "bridge_unavailable",
-          "Quest Engineering harness control bridge is unavailable.",
+          code,
+          code === "bridge_timeout"
+            ? "Quest Engineering harness control bridge timed out."
+            : code === "invalid_bridge_response"
+              ? "Quest Engineering harness control response was lost."
+              : "Quest Engineering harness control bridge is unavailable.",
         ),
       );
     };
     socket.setEncoding("utf8");
-    socket.setTimeout(10_000, fail);
-    socket.once("error", fail);
-    socket.once("connect", () => socket.write(payload));
+    socket.setTimeout(10_000, () => fail("bridge_timeout"));
+    socket.once("error", () =>
+      fail(connected ? "invalid_bridge_response" : "bridge_unavailable"),
+    );
+    socket.once("connect", () => {
+      connected = true;
+      socket.write(payload);
+    });
     socket.on("data", (chunk: string) => {
       input += chunk;
       const newline = input.indexOf("\n");
       if (newline < 0) return;
+      if (settled) return;
+      settled = true;
       socket.destroy();
       try {
-        resolve(JSON.parse(input.slice(0, newline)) as HarnessControlResponse);
+        resolve(decodeResponse(JSON.parse(input.slice(0, newline))));
       } catch {
         reject(
           new HarnessControlError(
-            "invalid_request",
+            "invalid_bridge_response",
             "Harness control response is invalid.",
           ),
         );
       }
     });
+    socket.once("end", () => {
+      if (!settled)
+        fail(connected ? "invalid_bridge_response" : "bridge_unavailable");
+    });
   });
+}
+
+function decodeResponse(value: unknown): HarnessControlResponse {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("invalid response");
+  const response = value as Partial<HarnessControlResponse>;
+  if (response.protocolVersion !== HARNESS_CONTROL_PROTOCOL_VERSION)
+    throw new Error("invalid response");
+  if (response.ok === true && response.result)
+    return response as HarnessControlResponse;
+  if (
+    response.ok === false &&
+    response.error &&
+    typeof response.error.code === "string" &&
+    typeof response.error.message === "string"
+  )
+    return response as HarnessControlResponse;
+  throw new Error("invalid response");
+}
+
+function sameCredentials(
+  left: HarnessControlDescriptor,
+  right: HarnessControlDescriptor,
+): boolean {
+  return (
+    left.endpoint.port === right.endpoint.port &&
+    left.bridgeGeneration === right.bridgeGeneration &&
+    left.contextToken === right.contextToken
+  );
+}
+
+function refreshable(code: string): boolean {
+  return staleContextCode(code) || code === "bridge_unavailable";
+}
+function staleContextCode(code: string): boolean {
+  return [
+    "bridge_generation_mismatch",
+    "unknown_control_context",
+    "stale_control_context",
+  ].includes(code);
+}
+function completionInfrastructureCode(code: string): boolean {
+  return (
+    staleContextCode(code) ||
+    [
+      "bridge_unavailable",
+      "bridge_timeout",
+      "invalid_bridge_response",
+    ].includes(code)
+  );
 }

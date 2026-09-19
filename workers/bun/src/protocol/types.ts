@@ -141,6 +141,16 @@ export type DispatchState =
   | "uncertain";
 export type LocalDispatchState = DispatchState;
 
+export type ExecutionTurnPhase =
+  | "preparing"
+  | "prompt_intent"
+  | "waiting_for_activity"
+  | "working"
+  | "blocked"
+  | "stalled"
+  | "settled"
+  | "uncertain";
+
 export interface ReconcileSession {
   session_id: string;
   action_id: string;
@@ -152,8 +162,10 @@ export interface ReconcileSession {
   harness_display_name: string;
   state:
     | "starting"
+    | "waiting_for_activity"
     | "running"
     | "waiting_for_human"
+    | "stalled"
     | "recovering"
     | "retained"
     | "closed"
@@ -204,6 +216,30 @@ export interface ReconcileSession {
   } | null;
   started_at: string;
   last_activity_at: string;
+  turn: {
+    phase: ExecutionTurnPhase;
+    prompt_intent_at: string | null;
+    prompt_accepted_at: string | null;
+    native_activity_at: string | null;
+    stalled_at: string | null;
+    settled_at: string | null;
+    physical_process?: {
+      mode: "prepared_process_adopted" | "fresh_process_fallback";
+      source_action_id: string;
+      source_attempt_id: string;
+      target_action_id: string;
+      target_attempt_id: string;
+      source_lineage_id: string;
+      target_lineage_id: string;
+      herdr_session: string | null;
+      herdr_session_incarnation: string | null;
+      workspace_id: string | null;
+      pane_id: string | null;
+      terminal_id: string | null;
+      agent_name: string | null;
+      recorded_at: string;
+    };
+  };
 }
 
 export interface ReconcileDispatch {

@@ -8,6 +8,7 @@ import type {
 import type {
   HostedAgent,
   HostedExecutionRef,
+  NativeSessionRef,
   TerminalAttachmentDescriptor,
 } from "../session-host/types.ts";
 
@@ -51,8 +52,10 @@ export interface HarnessDiscovery {
 }
 export type HarnessSessionState =
   | "starting"
+  | "waiting_for_activity"
   | "running"
   | "waiting_for_human"
+  | "stalled"
   | "recovering"
   | "retained"
   | "closed"
@@ -72,6 +75,8 @@ export class OperationalExecutionError extends Error {
   constructor(
     message: string,
     readonly classification: OperationalFailureClassification,
+    readonly code?: string,
+    readonly evidence?: Record<string, JsonValue>,
   ) {
     super(message);
   }
@@ -148,8 +153,38 @@ export interface HarnessInspection {
   lastActivityAt: string;
 }
 
+export interface PreAuthorizationActivity {
+  observedAt: string;
+  nativeSession: NativeSessionRef | null;
+  evidence: "native_session" | "native_user_message";
+}
+
+export interface PromptEvidenceCursor {
+  kind: "pi_transcript" | "antigravity_log";
+  cursor: number;
+  promptHash: string;
+}
+
 export type HarnessEvent =
+  | {
+      type: "prompt_baseline";
+      evidence: PromptEvidenceCursor;
+      inspection: HarnessInspection;
+    }
+  | {
+      type: "prompt_accepted";
+      acceptedAt: string;
+      inspection: HarnessInspection;
+    }
+  | {
+      type: "native_activity";
+      observedAt: string;
+      inspection: HarnessInspection;
+    }
+  | { type: "stalled"; observedAt: string; inspection: HarnessInspection }
+  | { type: "settled"; observedAt: string; inspection: HarnessInspection }
   | { type: "inspection"; inspection: HarnessInspection }
+  /** Backward-compatible synthetic-harness event: native work is active. */
   | { type: "running"; inspection: HarnessInspection }
   | { type: "output"; inspection: HarnessInspection };
 
@@ -165,6 +200,11 @@ export interface HarnessRecoveredExecution {
   /** Present when recovery created a new terminal/process incarnation. */
   ref?: HostedExecutionRef;
   detail: string;
+}
+
+export interface HarnessKnownDispatch {
+  dispatch: DispatchRecord;
+  lineage: HarnessLineage;
 }
 
 export interface HarnessAdoptionCandidate {
@@ -195,17 +235,31 @@ export interface AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution>;
+  /** Side-effect-free proof that a terminal pre-prompt process can change Attempt ownership. */
+  provePreparedProcessAdoption?(
+    source: DispatchRecord,
+    target: DispatchRecord,
+    lineage: HarnessLineage,
+  ): Promise<void>;
   /** Native readiness after interactive launch and before prompt intent. */
   ready?(
     dispatch: DispatchRecord,
     execution: HarnessPreparedExecution,
   ): Promise<void>;
+  /** Side-effect-free proof that no native user turn bypassed an authorization gate. */
+  observePreAuthorizationActivity?(
+    lineage: HarnessLineage,
+  ): Promise<PreAuthorizationActivity | null>;
   sendInputAndCollect(
     dispatch: DispatchRecord,
     execution: HarnessPreparedExecution,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>>;
+  /** Noninteractive physical retirement used only by an authorized recovery transition. */
+  retire?(lineage: HarnessLineage): Promise<void>;
   interrupt?(lineage: HarnessLineage): Promise<void>;
+  /** Side-effect-free, authoritative absence proof required before fresh retained-work recovery. */
+  proveInactiveForFreshRecovery?(lineage: HarnessLineage): Promise<boolean>;
   inspect(lineage: HarnessLineage): Promise<HarnessInspection>;
   close(lineage: HarnessLineage): Promise<void>;
 
@@ -220,7 +274,9 @@ export interface AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<void>;
-  discoverAdoptionCandidates(): Promise<HarnessAdoptionCandidate[]>;
+  discoverAdoptionCandidates(
+    known?: readonly HarnessKnownDispatch[],
+  ): Promise<HarnessAdoptionCandidate[]>;
   attachment?(lineage: HarnessLineage): TerminalAttachmentDescriptor;
   disconnect(): void;
 }

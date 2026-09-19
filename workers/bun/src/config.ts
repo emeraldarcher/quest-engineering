@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
@@ -48,6 +49,8 @@ export interface WorkerConfig {
   heartbeatMs: number;
   reconnectMs: number;
   resultTimeoutMs: number;
+  /** Nonterminal liveness threshold; crossing it never authorizes a retry. */
+  promptActivityStallMs?: number;
   provider: "pi" | "fake";
   enabledHarnesses?: Array<"pi" | "antigravity" | "fake">;
   fakeOutputs: Record<string, JsonValue>;
@@ -60,6 +63,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const controlPlaneUrl = required(env, "QE_CONTROL_PLANE_URL");
   const workerId = required(env, "QE_WORKER_ID");
   const workerToken = required(env, "QE_WORKER_TOKEN");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workerId))
+    throw new Error("QE_WORKER_ID is invalid.");
   const dataRoot = absolute(
     env.QE_WORKER_DATA_ROOT?.trim() || ".quest-engineering-worker",
     "QE_WORKER_DATA_ROOT",
@@ -98,7 +103,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     "QE_MAX_CONCURRENCY",
   );
   const herdrSession = validateHerdrSessionName(
-    env.QE_HERDR_SESSION?.trim() || "quest-engineering-worker",
+    env.QE_HERDR_SESSION?.trim() || defaultHerdrSessionName(workerId),
   );
   const heartbeatMs = positiveInteger(
     env.QE_HEARTBEAT_MS ?? "10000",
@@ -111,6 +116,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const resultTimeoutMs = positiveInteger(
     env.QE_RESULT_TIMEOUT_MS ?? "21600000",
     "QE_RESULT_TIMEOUT_MS",
+  );
+  const promptActivityStallMs = positiveInteger(
+    env.QE_PROMPT_ACTIVITY_STALL_MS ?? "30000",
+    "QE_PROMPT_ACTIVITY_STALL_MS",
   );
   const provider = env.QE_WORKER_PROVIDER === "fake" ? "fake" : "pi";
   const enabledHarnesses =
@@ -142,8 +151,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   }
   if (!["ws:", "wss:"].includes(parsed.protocol))
     throw new Error("QE_CONTROL_PLANE_URL must use ws:// or wss://.");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workerId))
-    throw new Error("QE_WORKER_ID is invalid.");
 
   return {
     controlPlaneUrl,
@@ -168,6 +175,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     heartbeatMs,
     reconnectMs,
     resultTimeoutMs,
+    promptActivityStallMs,
     provider,
     enabledHarnesses: [...enabledHarnesses],
     fakeOutputs,
@@ -179,6 +187,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       ? { gitAuthorEmail: env.QE_GIT_AUTHOR_EMAIL.trim() }
       : {}),
   };
+}
+
+export function defaultHerdrSessionName(workerId: string): string {
+  const readable =
+    workerId
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[._-]+|[._-]+$/g, "")
+      .slice(0, 32) || "worker";
+  const hash = createHash("sha256").update(workerId).digest("hex").slice(0, 10);
+  return validateHerdrSessionName(`qe-worker-${readable}-${hash}`);
 }
 
 function parseAllowedRoots(encoded: string | undefined): AuthorizedRoot[] {

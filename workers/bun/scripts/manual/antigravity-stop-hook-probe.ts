@@ -140,6 +140,7 @@ async function runProbe(preflightOnly: boolean): Promise<void> {
       name: agentName,
       integrationKind: "agy",
       args: agyArgs,
+      expectedTokens: manualProbeOwnership(agentName),
       timeoutMs: 90_000,
     });
     console.log(`Initial Herdr state: ${launched.status}`);
@@ -458,6 +459,16 @@ function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function manualProbeOwnership(agentName: string): Record<string, string> {
+  return {
+    qe_owner: "quest-engineering-worker",
+    qe_worker_id: "manual-antigravity-probe",
+    qe_lineage_id: agentName,
+    qe_ownership_token: "quest-engineering-worker/v1",
+    qe_session_incarnation: `manual-probe:${agentName}`,
+  };
 }
 
 function required(name: string): string {

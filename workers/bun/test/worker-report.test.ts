@@ -1,6 +1,18 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ReconcileDispatch } from "../src/protocol/types.ts";
-import { dispatchReportMessage } from "../src/worker.ts";
+import {
+  dispatchReportMessage,
+  retainedDiffFingerprint,
+} from "../src/worker.ts";
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
 
 const dispatch: ReconcileDispatch = {
   action_id: "action-1",
@@ -45,6 +57,36 @@ test("uncertain dispatch state includes the structured failure required by proto
       message: "Pi settled without a structured step result.",
     },
   });
+});
+
+test("retained recovery fingerprints tracked and untracked content without changing it", async () => {
+  const parent = join(process.cwd(), ".pi", "tmp");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "retained-diff-"));
+  roots.push(root);
+  const git = async (...args: string[]) => {
+    const child = Bun.spawn(["git", "-C", root, ...args], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const error = await new Response(child.stderr).text();
+    if ((await child.exited) !== 0) throw new Error(error);
+  };
+  await git("init", "-q");
+  await git("config", "user.name", "QE Test");
+  await git("config", "user.email", "qe@example.invalid");
+  await writeFile(join(root, "tracked.txt"), "base\n");
+  await git("add", "tracked.txt");
+  await git("commit", "-qm", "base");
+  await writeFile(join(root, "tracked.txt"), "changed\n");
+  await writeFile(join(root, "untracked.txt"), "one\n");
+
+  const first = await retainedDiffFingerprint(root);
+  const repeated = await retainedDiffFingerprint(root);
+  expect(first.changed).toBe(true);
+  expect(repeated.digest).toBe(first.digest);
+  await writeFile(join(root, "untracked.txt"), "two\n");
+  expect((await retainedDiffFingerprint(root)).digest).not.toBe(first.digest);
 });
 
 test("uncertain dispatch state receives an object fallback failure", () => {

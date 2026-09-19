@@ -101,9 +101,12 @@ const registry = new DispatchRegistry(
   join(config.dataRoot, "dispatches.sqlite"),
   config.dataRoot,
 );
-const host = new HerdrTerminalBackend(
-  new LocalHerdrConnectionProvider(config.herdrSession),
+const connectionProvider = new LocalHerdrConnectionProvider(
+  config.herdrSession,
+  { workerId: config.workerId, dataRoot: config.dataRoot },
 );
+await connectionProvider.ensureInfrastructure();
+const host = new HerdrTerminalBackend(connectionProvider, "pi");
 const provider = new PiHarness(host, config);
 const executor = new DispatchExecutor(registry, provider, async () => false);
 

@@ -22,10 +22,13 @@ if (process.argv[2] === "--child") {
     join(config.dataRoot, "dispatches.sqlite"),
     config.dataRoot,
   );
+  const connectionProvider = new LocalHerdrConnectionProvider(
+    config.herdrSession,
+    { workerId: config.workerId, dataRoot: config.dataRoot },
+  );
+  await connectionProvider.ensureInfrastructure();
   const provider = new PiHarness(
-    new HerdrTerminalBackend(
-      new LocalHerdrConnectionProvider(config.herdrSession),
-    ),
+    new HerdrTerminalBackend(connectionProvider, "pi"),
     config,
   );
   const executor = new DispatchExecutor(registry, provider, async () => false);
@@ -220,9 +223,12 @@ registry = new DispatchRegistry(
 const before = registry.get("restart-action");
 const lineageBefore = registry.getLineage(before.lineageId as string);
 registry.close();
-const inspectionHost = new HerdrTerminalBackend(
-  new LocalHerdrConnectionProvider(config.herdrSession),
+const inspectionProvider = new LocalHerdrConnectionProvider(
+  config.herdrSession,
+  { workerId: config.workerId, dataRoot: config.dataRoot },
 );
+await inspectionProvider.ensureInfrastructure();
+const inspectionHost = new HerdrTerminalBackend(inspectionProvider, "pi");
 const agentsBefore = (await inspectionHost.snapshot()).agents.filter(
   (agent) => agent.tokens?.qe_lineage_id === lineageBefore.lineageId,
 );

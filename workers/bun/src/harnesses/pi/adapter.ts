@@ -8,11 +8,12 @@ import {
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
 import type { JsonValue } from "../../protocol/types.ts";
-import { findAgent, HerdrApiError } from "../../session-host/herdr/client.ts";
+import { HerdrApiError } from "../../session-host/herdr/client.ts";
 import type {
   HostedAgent,
   HostedExecutionRef,
   HostedPane,
+  NativeSessionRef,
   TerminalSessionBackend,
 } from "../../session-host/types.ts";
 import {
@@ -29,17 +30,31 @@ import {
   writeControlAtomic,
 } from "../control/result-envelope.ts";
 import { harnessPromptFor } from "../prompt.ts";
+import {
+  ambiguousPromptError,
+  errorProvesPromptSubmission,
+  observePiNativeActivity,
+  persistedPromptEvidence,
+  promptActivityStallMs,
+  promptEvidenceCursor,
+  reconcileAmbiguousPrompt,
+  structuredResultExists,
+  uncertainPrompt,
+  waitingForActivitySince,
+} from "../turn-lifecycle.ts";
 import type {
   AgentHarness,
   HarnessAdoptionCandidate,
   HarnessCapabilities,
   HarnessEvent,
   HarnessInspection,
+  HarnessKnownDispatch,
   HarnessPreparedExecution,
   HarnessRecoveredExecution,
   HumanAttention,
   HumanAttentionCategory,
   HumanInterventionLifecycle,
+  PromptEvidenceCursor,
 } from "../types.ts";
 import { discoverPiModels } from "./discovery.ts";
 
@@ -126,6 +141,28 @@ export class PiHarness implements AgentHarness {
         models: [],
         capabilities: { ...this.capabilities, structuredResult: false },
       };
+    const backend = await this.host.readiness();
+    if (!backend.ready)
+      return {
+        kind: this.kind,
+        displayName: this.displayName,
+        strategy: this.integrationStrategy,
+        integration: {
+          status:
+            backend.status === "unavailable"
+              ? ("unavailable" as const)
+              : backend.missingCapabilities.every(
+                    (capability) => capability === "integration.pi.current",
+                  )
+                ? ("missing_control_bridge" as const)
+                : ("incompatible_version" as const),
+          detail: backendReadinessDetail(backend),
+          installed: true,
+          authenticated: false,
+        },
+        models: [],
+        capabilities: { ...this.capabilities, structuredResult: false },
+      };
     try {
       const discovered = await this.discoverModels();
       return {
@@ -136,11 +173,15 @@ export class PiHarness implements AgentHarness {
           status: discovered.authenticated
             ? ("ready" as const)
             : ("auth_required" as const),
-          detail:
+          detail: [
+            backendReadinessDetail(backend),
             discovered.diagnostics.join(" ") ||
-            (discovered.authenticated
-              ? "Pi native extension integration and configured model scope are ready."
-              : "Pi has no authenticated models in its configured scope."),
+              (discovered.authenticated
+                ? "Pi native extension integration and configured model scope are ready."
+                : "Pi has no authenticated models in its configured scope."),
+          ]
+            .filter(Boolean)
+            .join(" "),
           installed: true,
           authenticated: discovered.authenticated,
         },
@@ -172,6 +213,12 @@ export class PiHarness implements AgentHarness {
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     this.assertIntegration();
+    const sessionIncarnation = requireSessionIncarnation(this.host);
+    const physicalLineage = {
+      ...lineage,
+      herdrSession: this.host.sessionName,
+      herdrSessionIncarnation: sessionIncarnation,
+    };
     const cwd = executionCwd(this.config, dispatch);
     mkdirSync(cwd, { recursive: true });
     const executionWorkspace = dispatch.action.execution.execution_workspace;
@@ -189,7 +236,9 @@ export class PiHarness implements AgentHarness {
       QE_ARTIFACT_ROOT: executionArtifactRoot(this.config),
     };
     const workspaceId = await this.ensureWorkspace(environment, cwd);
+    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     const snapshot = await this.host.snapshot();
+    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     const workspaceAgents = snapshot.agents.filter(
       (agent) => agent.workspaceId === workspaceId,
     );
@@ -207,24 +256,47 @@ export class PiHarness implements AgentHarness {
         environment,
       });
     }
+    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     const agentName = agentNameFor(
       lineage.lineageId,
       dispatch.action.semantic_step_key,
     );
+    const launchTokens = provenance(
+      this.config.workerId,
+      dispatch,
+      physicalLineage,
+      true,
+    );
+    await writeControlAtomic(physicalLineage.resultControlPath, {
+      protocolVersion: 1,
+      workerId: dispatch.action.worker_id,
+      lineageId: physicalLineage.lineageId,
+      action: dispatch.action,
+      nonce: dispatch.resultNonce,
+      resultDirectory: dispatch.resultDirectory,
+    });
     await this.host.reportMetadata({
       paneId: pane.paneId,
       title: displayLabel(dispatch),
-      tokens: provenance(this.config.workerId, dispatch, lineage, true),
+      tokens: launchTokens,
     });
     const agent = await this.host.startAgent({
       paneId: pane.paneId,
       name: agentName,
       integrationKind: "pi",
       args: this.piArgs(dispatch, agentName),
+      expectedTokens: launchTokens,
     });
+    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     return {
-      lineage,
-      ref: refFor(this.host.sessionName, agentName, pane, agent),
+      lineage: physicalLineage,
+      ref: refFor(
+        this.host.sessionName,
+        sessionIncarnation,
+        agentName,
+        pane,
+        agent,
+      ),
       agent,
     };
   }
@@ -237,23 +309,17 @@ export class PiHarness implements AgentHarness {
       !lineage.agentName ||
       !lineage.paneId ||
       !lineage.workspaceId ||
-      lineage.herdrSession !== this.host.sessionName
+      lineage.herdrSession !== this.host.sessionName ||
+      !lineage.herdrSessionIncarnation ||
+      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
     ) {
       throw new Error(
         "Continuation lineage has no complete Herdr execution reference.",
       );
     }
-    const snapshot = await this.host.snapshot();
-    const agent = findAgent(snapshot, {
-      paneId: lineage.paneId,
-      ...(lineage.terminalId ? { terminalId: lineage.terminalId } : {}),
-      agentName: lineage.agentName,
-    });
-    if (
-      !agent ||
-      agent.tokens?.qe_lineage_id !== lineage.lineageId ||
-      agent.tokens.qe_ownership_token !== lineage.ownershipToken
-    ) {
+    const agent = await this.findExactLiveAgent(lineage);
+    assertCurrentSessionIncarnation(this.host, lineage.herdrSessionIncarnation);
+    if (!agent) {
       throw new Error(
         "The exact continued Herdr/Pi execution is missing or has incompatible provenance.",
       );
@@ -267,6 +333,7 @@ export class PiHarness implements AgentHarness {
       lineage,
       ref: refFor(
         this.host.sessionName,
+        lineage.herdrSessionIncarnation,
         lineage.agentName,
         {
           workspaceId: agent.workspaceId,
@@ -294,69 +361,56 @@ export class PiHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
-    let working: HostedAgent;
-    try {
-      working = await this.host.prompt(
-        execution.ref.agentName,
-        piPromptFor(
-          dispatch,
-          materializeExecutionArtifacts(this.config, dispatch),
-        ),
-        { until: ["working", "blocked", "unknown"], timeoutMs: 30_000 },
-      );
-      onEvent({
-        type: "running",
-        inspection: this.inspectionFor(execution.lineage, working),
-      });
-    } catch (error) {
-      if (!backendUnavailable(error)) throw error;
-      const recovered = await this.recoverUntilAvailable(execution.lineage);
-      if (!recovered.agent) throw new Error(recovered.detail);
-      working = recovered.agent;
-      if (["working", "blocked", "unknown"].includes(working.status))
-        onEvent({
-          type: "running",
-          inspection: this.inspectionFor(execution.lineage, working),
-        });
-    }
-    const settled = await this.waitUntilSettled(
+    const prompt = piPromptFor(
+      dispatch,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    const transcriptPath = piTranscriptPath(
+      execution.agent.nativeSession ?? execution.ref.nativeSession ?? undefined,
+    );
+    const evidence = await promptEvidenceCursor(
+      "pi_transcript",
+      transcriptPath ?? "",
+      prompt,
+    );
+    onEvent({
+      type: "prompt_baseline",
+      evidence,
+      inspection: this.inspectionFor(execution.lineage, execution.agent),
+    });
+    return this.submitAndCollect(
+      dispatch,
       execution.lineage,
-      working,
+      execution.ref.paneId,
+      execution.agent,
+      prompt,
+      evidence,
       onEvent,
     );
-    if (settled.status === "unknown")
-      throw new Error(
-        "Pi lifecycle became unknown before structured completion.",
-      );
-    return (await collectStepResult(dispatch)).envelope.outputs;
   }
 
   async recover(lineage: HarnessLineage): Promise<HarnessRecoveredExecution> {
+    if (
+      !lineage.herdrSessionIncarnation ||
+      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
+    )
+      return {
+        found: false,
+        detail:
+          "The original Pi execution belongs to another Herdr session incarnation.",
+      };
     if (!lineage.agentName || !lineage.paneId)
       return {
         found: false,
         detail: "Lineage has no launched agent reference.",
       };
-    const snapshot = await this.host.snapshot();
-    const agent = findAgent(snapshot, {
-      paneId: lineage.paneId,
-      ...(lineage.terminalId ? { terminalId: lineage.terminalId } : {}),
-      agentName: lineage.agentName,
-    });
+    const agent = await this.findExactLiveAgent(lineage);
     if (!agent)
       return {
         found: false,
-        detail: "Herdr is available but the original agent is missing.",
+        detail:
+          "Herdr cannot verify the original Pi agent with its durable lineage provenance.",
       };
-    if (
-      agent.tokens?.qe_lineage_id !== lineage.lineageId ||
-      agent.tokens.qe_ownership_token !== lineage.ownershipToken
-    ) {
-      return {
-        found: false,
-        detail: "Herdr agent provenance does not match the durable lineage.",
-      };
-    }
     return {
       found: true,
       agent,
@@ -370,15 +424,35 @@ export class PiHarness implements AgentHarness {
     agent: HostedAgent,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
-    if (!lineage.agentName)
-      throw new Error("Recovered lineage has no agent name.");
-    const settled = await this.waitUntilSettled(lineage, agent, onEvent);
-    if (!["idle", "done"].includes(settled.status))
-      throw new Error(`Recovered Pi settled in ${settled.status} state.`);
-    return (await collectStepResult(dispatch)).envelope.outputs;
+    if (!lineage.paneId)
+      throw new Error("Recovered lineage has no agent pane.");
+    const prompt = piPromptFor(
+      dispatch,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    const evidence =
+      persistedPromptEvidence(dispatch, "pi_transcript", prompt) ??
+      (await promptEvidenceCursor(
+        "pi_transcript",
+        piTranscriptPath(
+          agent.nativeSession ?? lineage.nativeSession ?? undefined,
+        ) ?? "",
+        prompt,
+      ));
+    return this.collectPromptLifecycle(
+      dispatch,
+      lineage,
+      lineage.paneId,
+      agent,
+      prompt,
+      evidence,
+      onEvent,
+    );
   }
 
-  async discoverAdoptionCandidates(): Promise<HarnessAdoptionCandidate[]> {
+  async discoverAdoptionCandidates(
+    known: readonly HarnessKnownDispatch[] = [],
+  ): Promise<HarnessAdoptionCandidate[]> {
     const snapshot = await this.host.snapshot();
     const candidates: HarnessAdoptionCandidate[] = [];
     for (const agent of snapshot.agents) {
@@ -390,7 +464,8 @@ export class PiHarness implements AgentHarness {
         tokens.qe_active_state !== "active" ||
         !tokens.qe_active_action_id ||
         !tokens.qe_ownership_token ||
-        !agent.name
+        !tokens.qe_session_incarnation ||
+        tokens.qe_session_incarnation !== this.host.sessionIncarnation()
       )
         continue;
       const resultControlPath = join(
@@ -399,14 +474,55 @@ export class PiHarness implements AgentHarness {
         tokens.qe_lineage_id,
         "result-control.json",
       );
-      if (!existsSync(resultControlPath)) continue;
       try {
-        const control = await readControl(resultControlPath);
+        const persisted = known.find(
+          (item) =>
+            item.lineage.lineageId === tokens.qe_lineage_id &&
+            item.lineage.ownershipToken === tokens.qe_ownership_token &&
+            item.dispatch.resultNonce === tokens.qe_result_nonce &&
+            (!item.lineage.herdrSessionIncarnation ||
+              item.lineage.herdrSessionIncarnation ===
+                tokens.qe_session_incarnation),
+        );
+        const control = existsSync(resultControlPath)
+          ? await readControl(resultControlPath)
+          : persisted
+            ? {
+                workerId: persisted.dispatch.action.worker_id,
+                lineageId: persisted.lineage.lineageId,
+                action: persisted.dispatch.action,
+                nonce: persisted.dispatch.resultNonce,
+                resultDirectory: persisted.dispatch.resultDirectory,
+              }
+            : null;
+        if (!control) continue;
+        const expectedAgentName =
+          tokens.qe_agent_name ??
+          persisted?.lineage.agentName ??
+          agentNameFor(control.lineageId, control.action.semantic_step_key);
+        const agentNamePrefix = `qe-${createHash("sha256")
+          .update(control.lineageId)
+          .digest("hex")
+          .slice(0, 12)}-`;
         if (
+          !expectedAgentName.startsWith(agentNamePrefix) ||
           control.workerId !== this.config.workerId ||
           control.lineageId !== tokens.qe_lineage_id ||
-          control.action.action_id !== tokens.qe_active_action_id ||
-          control.nonce !== tokens.qe_result_nonce
+          control.action.run_id !== tokens.qe_run_id ||
+          control.nonce !== tokens.qe_result_nonce ||
+          (tokens.qe_action_hash
+            ? tokens.qe_action_hash !== identityHash(control.action.action_id)
+            : !tokens.qe_active_action_id ||
+              !control.action.action_id.startsWith(
+                tokens.qe_active_action_id,
+              )) ||
+          (tokens.qe_occurrence_hash !== undefined &&
+            tokens.qe_occurrence_hash !==
+              identityHash(control.action.occurrence_id)) ||
+          (tokens.qe_attempt_hash !== undefined &&
+            tokens.qe_attempt_hash !==
+              identityHash(control.action.attempt_id)) ||
+          (agent.name !== undefined && agent.name !== expectedAgentName)
         )
           continue;
         candidates.push({
@@ -434,11 +550,12 @@ export class PiHarness implements AgentHarness {
             ownershipToken: tokens.qe_ownership_token,
             activeActionId: control.action.action_id,
             herdrSession: this.host.sessionName,
+            herdrSessionIncarnation: tokens.qe_session_incarnation,
             workspaceId: agent.workspaceId,
             tabId: agent.tabId ?? null,
             paneId: agent.paneId,
             terminalId: agent.terminalId ?? null,
-            agentName: agent.name,
+            agentName: expectedAgentName,
             nativeSession: agent.nativeSession ?? null,
           },
         });
@@ -488,13 +605,13 @@ export class PiHarness implements AgentHarness {
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
-    if (!lineage.agentName)
+    if (!lineage.paneId)
       throw new Error("Harness session has no live agent target.");
-    await this.host.sendKeys(lineage.agentName, ["esc"]);
+    await this.host.sendKeys(lineage.paneId, ["esc"]);
   }
 
   async inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
-    if (!lineage.agentName)
+    if (!lineage.paneId)
       return {
         state: "unavailable",
         agent: null,
@@ -505,7 +622,7 @@ export class PiHarness implements AgentHarness {
     try {
       return this.inspectionFor(
         lineage,
-        await this.host.inspectAgentState(lineage.agentName),
+        await this.host.inspectAgentState(lineage.paneId),
       );
     } catch {
       return {
@@ -519,8 +636,8 @@ export class PiHarness implements AgentHarness {
   }
 
   async close(lineage: HarnessLineage): Promise<void> {
-    if (!lineage.agentName) return;
-    await this.host.sendKeys(lineage.agentName, ["ctrl+c", "ctrl+c"]);
+    if (!lineage.paneId) return;
+    await this.host.sendKeys(lineage.paneId, ["ctrl+c", "ctrl+c"]);
   }
 
   disconnect(): void {
@@ -528,67 +645,271 @@ export class PiHarness implements AgentHarness {
     this.host.disconnect();
   }
 
-  private async waitUntilSettled(
+  private async submitAndCollect(
+    dispatch: DispatchRecord,
     lineage: HarnessLineage,
+    target: string,
     initial: HostedAgent,
+    prompt: string,
+    evidence: PromptEvidenceCursor,
     onEvent: (event: HarnessEvent) => void,
-  ): Promise<HostedAgent> {
+  ): Promise<Record<string, JsonValue>> {
     let current = initial;
-    let inspection = this.inspectionFor(lineage, current);
-    onEvent({ type: "inspection", inspection });
-    while (
-      !["idle", "done"].includes(current.status) ||
-      interventionIsPending(inspection.intervention)
-    ) {
+    let acceptedAt: string;
+    try {
+      // No `until` clause: Herdr acknowledges submission without imposing its
+      // five-second terminal-state heuristic on QE's semantic lifecycle.
+      current = await this.host.prompt(target, prompt);
+      acceptedAt = new Date().toISOString();
+    } catch (error) {
+      if (errorProvesPromptSubmission(error)) {
+        acceptedAt = new Date().toISOString();
+        current = await this.host.inspectAgentState(target);
+      } else if (ambiguousPromptError(error)) {
+        const resolution = await reconcileAmbiguousPrompt({
+          observe: () =>
+            this.nativeActivity(target, current, prompt, evidence).then(
+              (value) => value.activity,
+            ),
+          resultExists: () => structuredResultExists(dispatch.resultDirectory),
+          timeoutMs: promptActivityStallMs(this.config),
+        });
+        if (resolution === "settled") {
+          const outputs = (await collectStepResult(dispatch)).envelope.outputs;
+          acceptedAt = new Date().toISOString();
+          onEvent({
+            type: "prompt_accepted",
+            acceptedAt,
+            inspection: waitingInspection(
+              this.inspectionFor(lineage, current),
+              "waiting_for_activity",
+            ),
+          });
+          onEvent({
+            type: "settled",
+            observedAt: new Date().toISOString(),
+            inspection: this.inspectionFor(lineage, current),
+          });
+          return outputs;
+        }
+        if (!resolution) throw uncertainPrompt(error);
+        acceptedAt = resolution.observedAt ?? new Date().toISOString();
+      } else throw error;
+    }
+    onEvent({
+      type: "prompt_accepted",
+      acceptedAt,
+      inspection: waitingInspection(
+        this.inspectionFor(lineage, current),
+        "waiting_for_activity",
+      ),
+    });
+    return this.collectPromptLifecycle(
+      dispatch,
+      lineage,
+      target,
+      current,
+      prompt,
+      evidence,
+      onEvent,
+      acceptedAt,
+    );
+  }
+
+  private async collectPromptLifecycle(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+    target: string,
+    initial: HostedAgent,
+    prompt: string,
+    evidence: PromptEvidenceCursor,
+    onEvent: (event: HarnessEvent) => void,
+    acceptedAt = dispatch.promptAcceptedAt,
+  ): Promise<Record<string, JsonValue>> {
+    let current = initial;
+    let nativeActivity = Boolean(dispatch.nativeActivityAt);
+    let stalled = Boolean(dispatch.stalledAt && !nativeActivity);
+    let previousInspection = "";
+    if (!acceptedAt) {
+      const resolution = await reconcileAmbiguousPrompt({
+        observe: () =>
+          this.nativeActivity(target, current, prompt, evidence).then(
+            (value) => value.activity,
+          ),
+        resultExists: () => structuredResultExists(dispatch.resultDirectory),
+        timeoutMs: promptActivityStallMs(this.config),
+      });
+      if (resolution === "settled") {
+        const outputs = (await collectStepResult(dispatch)).envelope.outputs;
+        const inspection = this.inspectionFor(lineage, current);
+        acceptedAt = new Date().toISOString();
+        onEvent({
+          type: "prompt_accepted",
+          acceptedAt,
+          inspection: waitingInspection(inspection, "waiting_for_activity"),
+        });
+        onEvent({
+          type: "settled",
+          observedAt: new Date().toISOString(),
+          inspection,
+        });
+        return outputs;
+      }
+      if (!resolution)
+        throw uncertainPrompt(
+          new Error("restart found prompt intent without submission evidence"),
+        );
+      acceptedAt = resolution.observedAt ?? new Date().toISOString();
+      onEvent({
+        type: "prompt_accepted",
+        acceptedAt,
+        inspection: waitingInspection(
+          this.inspectionFor(lineage, current),
+          "waiting_for_activity",
+        ),
+      });
+    }
+    while (true) {
       if (this.stopped)
         throw new HerdrApiError(
           "controller_disconnected",
           "Worker detached while Herdr retained the Pi execution.",
         );
-      try {
-        if (!lineage.agentName)
-          throw new Error("Harness lineage has no agent name.");
-        current = await this.host.observeAgentState(lineage.agentName, {
-          until: nextObservedStates(current.status),
-          timeoutMs: this.config.resultTimeoutMs,
+      if (await structuredResultExists(dispatch.resultDirectory)) {
+        const outputs = (await collectStepResult(dispatch)).envelope.outputs;
+        const inspection = this.inspectionFor(lineage, current);
+        onEvent({
+          type: "settled",
+          observedAt: new Date().toISOString(),
+          inspection,
         });
-      } catch (error) {
-        if (interventionIsPending(inspection.intervention) && timedOut(error)) {
-          if (!lineage.agentName)
-            throw new Error("Harness lineage has no agent name.");
-          current = await this.host.inspectAgentState(lineage.agentName);
+        return outputs;
+      }
+      const observation = await this.nativeActivity(
+        target,
+        current,
+        prompt,
+        evidence,
+      );
+      current = observation.agent;
+      let inspection = this.inspectionFor(lineage, current);
+      const structuredActivity =
+        readAttentionControl(lineage).structured.state === "requested";
+      if (
+        !nativeActivity &&
+        (observation.activity.working || structuredActivity)
+      ) {
+        nativeActivity = true;
+        const running = waitingInspection(inspection, "running");
+        onEvent({
+          type: "native_activity",
+          observedAt:
+            observation.activity.observedAt ?? new Date().toISOString(),
+          inspection: running,
+        });
+        previousInspection = inspectionFingerprint(running);
+      }
+      if (nativeActivity) {
+        if (
+          ["idle", "done"].includes(current.status) &&
+          !interventionIsPending(inspection.intervention)
+        ) {
+          const outputs = (await collectStepResult(dispatch)).envelope.outputs;
+          onEvent({
+            type: "settled",
+            observedAt: new Date().toISOString(),
+            inspection,
+          });
+          return outputs;
+        }
+        const fingerprint = inspectionFingerprint(inspection);
+        if (fingerprint !== previousInspection) {
+          onEvent({ type: "inspection", inspection });
+          previousInspection = fingerprint;
+        }
+      } else {
+        const state = waitingForActivitySince(
+          acceptedAt,
+          promptActivityStallMs(this.config),
+        );
+        inspection = waitingInspection(inspection, state);
+        if (state === "stalled" && !stalled) {
+          stalled = true;
+          onEvent({
+            type: "stalled",
+            observedAt: new Date().toISOString(),
+            inspection,
+          });
+          previousInspection = inspectionFingerprint(inspection);
         } else {
-          if (!backendUnavailable(error)) throw error;
-          const recovered = await this.recoverUntilAvailable(lineage);
-          if (!recovered.agent) throw new Error(recovered.detail);
-          current = recovered.agent;
+          const fingerprint = inspectionFingerprint(inspection);
+          if (fingerprint !== previousInspection) {
+            onEvent({ type: "inspection", inspection });
+            previousInspection = fingerprint;
+          }
         }
       }
-      inspection = this.inspectionFor(lineage, current);
-      onEvent({ type: "inspection", inspection });
-      if (current.status === "unknown" || current.status === "done")
-        await Bun.sleep(500);
+      await Bun.sleep(100);
     }
-    return current;
   }
 
-  private async recoverUntilAvailable(
+  private async findExactLiveAgent(
     lineage: HarnessLineage,
-  ): Promise<HarnessRecoveredExecution> {
-    while (!this.stopped) {
-      try {
-        const recovered = await this.recover(lineage);
-        if (!recovered.found) return recovered;
-        return recovered;
-      } catch (error) {
-        if (!backendUnavailable(error)) throw error;
-        await Bun.sleep(1_000);
-      }
+  ): Promise<HostedAgent | null> {
+    if (
+      !lineage.agentName ||
+      !lineage.paneId ||
+      !lineage.herdrSessionIncarnation ||
+      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
+    )
+      return null;
+    let agent: HostedAgent;
+    try {
+      agent = await this.host.inspectAgentState(lineage.paneId);
+    } catch (error) {
+      if (error instanceof HerdrApiError && error.code === "agent_not_found")
+        return null;
+      throw error;
     }
-    throw new HerdrApiError(
-      "controller_disconnected",
-      "Worker detached while Herdr retained the Pi execution.",
-    );
+    if (
+      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation() ||
+      agent.agent !== "pi" ||
+      agent.paneId !== lineage.paneId ||
+      (lineage.terminalId &&
+        agent.terminalId !== undefined &&
+        agent.terminalId !== lineage.terminalId) ||
+      (agent.name !== undefined && agent.name !== lineage.agentName) ||
+      agent.tokens?.qe_lineage_id !== lineage.lineageId ||
+      agent.tokens.qe_ownership_token !== lineage.ownershipToken ||
+      agent.tokens.qe_session_incarnation !== lineage.herdrSessionIncarnation
+    )
+      return null;
+    return agent;
+  }
+
+  private async nativeActivity(
+    target: string,
+    fallback: HostedAgent,
+    prompt: string,
+    evidence: PromptEvidenceCursor,
+  ): Promise<{
+    agent: HostedAgent;
+    activity: Awaited<ReturnType<typeof observePiNativeActivity>>;
+  }> {
+    const agent = await this.host
+      .inspectAgentState(target)
+      .catch(() => fallback);
+    const path = piTranscriptPath(agent.nativeSession);
+    return {
+      agent,
+      activity: path
+        ? await observePiNativeActivity({
+            transcriptPath: path,
+            evidence,
+            prompt,
+          })
+        : { working: false, observedAt: null },
+    };
   }
 
   private async ensureWorkspace(
@@ -869,14 +1190,21 @@ function provenance(
     qe_worker_id: workerId,
     qe_lineage_id: lineage.lineageId,
     qe_provider: "pi",
+    qe_agent_name:
+      lineage.agentName ??
+      agentNameFor(lineage.lineageId, dispatch.action.semantic_step_key),
     qe_ownership_token: lineage.ownershipToken,
+    ...(lineage.herdrSessionIncarnation
+      ? { qe_session_incarnation: lineage.herdrSessionIncarnation }
+      : {}),
     ...(active
       ? {
           qe_active_state: "active",
           qe_active_action_id: dispatch.action.action_id,
+          qe_action_hash: identityHash(dispatch.action.action_id),
           qe_run_id: dispatch.action.run_id,
-          qe_occurrence_id: dispatch.action.occurrence_id,
-          qe_attempt_id: dispatch.action.attempt_id,
+          qe_occurrence_hash: identityHash(dispatch.action.occurrence_id),
+          qe_attempt_hash: identityHash(dispatch.action.attempt_id),
           qe_semantic_step_key: dispatch.action.semantic_step_key,
           qe_result_nonce: dispatch.resultNonce,
         }
@@ -889,12 +1217,14 @@ function provenance(
 }
 function refFor(
   sessionName: string,
+  sessionIncarnation: string,
   agentName: string,
   pane: HostedPane,
   agent: HostedAgent,
 ): HostedExecutionRef {
   return {
     sessionName,
+    sessionIncarnation,
     workspaceId: pane.workspaceId,
     tabId: pane.tabId,
     paneId: pane.paneId,
@@ -905,6 +1235,28 @@ function refFor(
     ...(agent.nativeSession ? { nativeSession: agent.nativeSession } : {}),
   };
 }
+function requireSessionIncarnation(host: TerminalSessionBackend): string {
+  const incarnation = host.sessionIncarnation();
+  if (!incarnation)
+    throw new Error(
+      "QE-owned Herdr infrastructure has no session incarnation.",
+    );
+  return incarnation;
+}
+function assertCurrentSessionIncarnation(
+  host: TerminalSessionBackend,
+  expected: string,
+): void {
+  if (host.sessionIncarnation() !== expected)
+    throw new HerdrApiError(
+      "backend_unavailable",
+      "The Herdr session changed physical incarnation during Pi startup.",
+    );
+}
+function identityHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function agentNameFor(lineageId: string, semanticStepKey: string): string {
   const slug =
     semanticStepKey
@@ -922,17 +1274,36 @@ function displayLabel(dispatch: DispatchRecord): string {
 function samePath(left: string | undefined, right: string): boolean {
   return Boolean(left && resolve(left) === resolve(right));
 }
-function backendUnavailable(error: unknown): boolean {
-  return (
-    error instanceof HerdrApiError &&
-    ["backend_unavailable", "controller_disconnected"].includes(error.code)
-  );
+function piTranscriptPath(
+  session: NativeSessionRef | undefined,
+): string | null {
+  return session?.source === "pi" && session.kind === "path"
+    ? session.value
+    : null;
 }
 
-function timedOut(error: unknown): boolean {
+function waitingInspection(
+  inspection: HarnessInspection,
+  state: "waiting_for_activity" | "running" | "stalled",
+): HarnessInspection {
+  return { ...inspection, state };
+}
+
+function inspectionFingerprint(inspection: HarnessInspection): string {
+  return [
+    inspection.state,
+    inspection.agent?.status ?? "none",
+    inspection.attention?.attentionId ?? "none",
+    inspection.intervention?.state ?? "none",
+  ].join(":");
+}
+
+function backendReadinessDetail(
+  readiness: Awaited<ReturnType<TerminalSessionBackend["readiness"]>>,
+): string {
   return (
-    error instanceof HerdrApiError &&
-    ["timeout", "wait_timeout"].includes(error.code)
+    readiness.diagnostics.map((diagnostic) => diagnostic.message).join(" ") ||
+    `Herdr backend contract is ready for ${readiness.harnessKind}.`
   );
 }
 
@@ -940,19 +1311,4 @@ function interventionIsPending(
   intervention: HumanInterventionLifecycle | null,
 ): boolean {
   return Boolean(intervention && intervention.state !== "resumed");
-}
-
-function nextObservedStates(
-  status: HostedAgent["status"],
-): HostedAgent["status"][] {
-  switch (status) {
-    case "blocked":
-      return ["working", "idle", "done", "unknown"];
-    case "idle":
-      return ["working", "blocked", "done", "unknown"];
-    case "done":
-      return ["working", "blocked", "idle", "unknown"];
-    default:
-      return ["idle", "done", "blocked", "unknown"];
-  }
 }

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
@@ -9,8 +9,9 @@ import {
   antigravityPromptFor,
 } from "../src/harnesses/antigravity/adapter.ts";
 import {
+  ANTIGRAVITY_TESTED_VERSION,
+  discoverAntigravityModels,
   parseAntigravityModelCatalog,
-  SUPPORTED_ANTIGRAVITY_VERSION,
 } from "../src/harnesses/antigravity/discovery.ts";
 import {
   controlDescriptorPath,
@@ -28,12 +29,14 @@ import type {
   HarnessCapabilities,
   HarnessEvent,
 } from "../src/harnesses/types.ts";
+import { HerdrApiError } from "../src/session-host/herdr/client.ts";
 import type {
   HostedAgent,
   HostedAgentStatus,
   HostedExecutionRef,
   HostedPane,
   HostedSnapshot,
+  SessionBackendReadiness,
   TerminalAttachmentDescriptor,
   TerminalSessionBackend,
 } from "../src/session-host/types.ts";
@@ -124,10 +127,13 @@ async function fixture(
     exitCode: 0,
     stdout:
       args[0] === "--version"
-        ? `${SUPPORTED_ANTIGRAVITY_VERSION}\n`
-        : args[0] === "models"
-          ? (selection.modelsOutput ?? "gemini-test-high\tGemini Test (High)\n")
-          : `qe stdio enabled ${process.execPath} ${resolve(import.meta.dir, "..", "src", "harnesses", "control", "mcp-server.ts")}\n`,
+        ? `${ANTIGRAVITY_TESTED_VERSION}\n`
+        : args[0] === "--help"
+          ? "--conversation --effort --log-file --model --prompt-interactive\n"
+          : args[0] === "models"
+            ? (selection.modelsOutput ??
+              "gemini-test-high\tGemini Test (High)\n")
+            : `qe stdio enabled ${process.execPath} ${resolve(import.meta.dir, "..", "src", "harnesses", "control", "mcp-server.ts")}\n`,
     stderr: "",
   });
   const harness = new AntigravityHarness(host, config, { runNativeCommand });
@@ -149,6 +155,102 @@ async function fixture(
     },
   };
 }
+
+test("tested Antigravity provenance is ready when its native contract passes", async () => {
+  const result = await discoverAntigravityModels(
+    antigravityDiscoveryRunner(ANTIGRAVITY_TESTED_VERSION),
+  );
+  expect(result).toMatchObject({
+    installed: true,
+    authenticated: true,
+    compatible: true,
+    version: ANTIGRAVITY_TESTED_VERSION,
+    missingCapabilities: [],
+  });
+});
+
+test("pre-authorization observation detects a native user turn without sending input", async () => {
+  const value = await fixture();
+  const logPath = join(
+    value.root,
+    "lineages",
+    value.lineage.lineageId,
+    "antigravity.log",
+  );
+  await appendFile(
+    logPath,
+    "I0918 19:06:44.382500 server.go:1786] Sending user message to conversation 1d48881c-5f10-43a0-9b87-234344a2dd8e (items=1, media=0)\n",
+  );
+
+  expect(
+    await value.harness.observePreAuthorizationActivity(value.lineage),
+  ).toMatchObject({
+    nativeSession: {
+      source: "antigravity",
+      agent: "agy",
+      kind: "id",
+      value: "1d48881c-5f10-43a0-9b87-234344a2dd8e",
+    },
+    evidence: "native_user_message",
+  });
+  await value.close();
+});
+
+test("newer Antigravity provenance remains ready when its native contract passes", async () => {
+  const result = await discoverAntigravityModels(
+    antigravityDiscoveryRunner("1.2.3"),
+  );
+  expect(result).toMatchObject({
+    authenticated: true,
+    compatible: true,
+    version: "1.2.3",
+    missingCapabilities: [],
+  });
+  expect(result.diagnostics).toContainEqual(
+    expect.stringContaining("newer than QE's human-tested 1.2.2 provenance"),
+  );
+});
+
+test("newer Antigravity provenance missing a required native capability fails specifically", async () => {
+  const result = await discoverAntigravityModels(
+    antigravityDiscoveryRunner("1.2.3", "--conversation"),
+  );
+  expect(result.compatible).toBe(false);
+  expect(result.missingCapabilities).toContain("native.conversation_resume");
+  expect(result.diagnostics).toContainEqual(
+    expect.stringContaining("native.conversation_resume"),
+  );
+});
+
+test("malformed Antigravity version provenance fails closed without inference", async () => {
+  const result = await discoverAntigravityModels(
+    antigravityDiscoveryRunner("not-a-version"),
+  );
+  expect(result).toMatchObject({
+    installed: true,
+    authenticated: false,
+    compatible: false,
+    version: "not-a-version",
+    missingCapabilities: ["native.version_provenance"],
+  });
+});
+
+test("malformed Antigravity model metadata fails closed without inference", async () => {
+  const run = antigravityDiscoveryRunner("1.2.3");
+  const result = await discoverAntigravityModels(async (args) =>
+    args[0] === "models"
+      ? { exitCode: 0, stdout: "not-a-model-record\n", stderr: "" }
+      : run(args),
+  );
+  expect(result).toMatchObject({
+    authenticated: false,
+    compatible: false,
+    missingCapabilities: ["native.model_catalog"],
+  });
+  expect(result.diagnostics).toContainEqual(
+    expect.stringContaining("malformed or empty native model metadata"),
+  );
+});
 
 test("native model discovery distinguishes enumerated, unsupported, and conflicting effort", () => {
   expect(
@@ -192,11 +294,46 @@ gemini-conflict-low\tGemini Conflict (High)
   });
 });
 
+test("Antigravity discovery fails only its harness when its Herdr integration is unavailable", async () => {
+  const value = await fixture();
+  try {
+    value.host.backendReadiness = {
+      ...readyBackend("antigravity"),
+      status: "incompatible",
+      ready: false,
+      missingCapabilities: ["integration.antigravity.current"],
+      diagnostics: [
+        {
+          code: "missing_capability",
+          capability: "integration.antigravity.current",
+          message:
+            "Herdr integration 'antigravity_cli' is not available and current.",
+        },
+      ],
+    };
+    const discovery = await value.harness.discover();
+    expect(discovery.integration.status).toBe("missing_control_bridge");
+    expect(discovery.integration.detail).toContain("antigravity_cli");
+    expect(discovery.capabilities.structuredResult).toBe(false);
+  } finally {
+    await value.close();
+  }
+});
+
 test("interactive launch pins model and effort, proves readiness, and keeps the live TUI attachable", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
     expect(value.host.startRequests).toHaveLength(1);
+    expect(Object.keys(value.host.agent.tokens ?? {})).toHaveLength(14);
+    expect(value.host.agent.tokens?.qe_agent_name).toBe(
+      execution.ref.agentName,
+    );
+    expect(value.host.agent.tokens?.qe_action_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(value.host.agent.tokens?.qe_occurrence_hash).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
+    expect(value.host.agent.tokens?.qe_attempt_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(value.host.startRequests[0]?.args.includes("--print")).toBe(false);
     expect(value.host.startRequests[0]?.args.includes("--tools")).toBe(false);
     expect(
@@ -213,10 +350,19 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
         "high",
       ]),
     });
+    const hooks = JSON.parse(
+      await Bun.file(join(value.workspace, ".agents", "hooks.json")).text(),
+    );
+    expect(hooks["qe-worker-stop-v1"].Stop).toEqual([
+      expect.objectContaining({
+        command: expect.stringContaining("hook stop"),
+      }),
+    ]);
     await value.harness.ready(value.dispatch, execution);
     await value.authority.bind(value.dispatch, value.lineage);
     value.registry.recordHost(value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
+      herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,
       paneId: execution.ref.paneId,
       ...(execution.ref.terminalId
@@ -236,6 +382,169 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
     });
   } finally {
     await value.close();
+  }
+});
+
+test("inference authorization keeps the prepared MCP child across descriptor rotation", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    const descriptorPath = controlDescriptorPath(value.lineage);
+    const before = await readControlDescriptor(descriptorPath);
+    value.registry.updateSession(value.lineage.lineageId, "waiting_for_human", {
+      attentionId: "authorize-inference",
+      category: "needs_confirmation",
+      message: "Authorize Builder inference.",
+      requestedAt: new Date().toISOString(),
+    });
+
+    value.registry.updateSession(value.lineage.lineageId, "starting", null);
+    await value.authority.bind(value.dispatch, value.lineage);
+    const after = await readControlDescriptor(descriptorPath);
+    expect(after.contextToken).not.toBe(before.contextToken);
+
+    const evidencePath = value.host.environment[QE_MCP_STARTUP_EVIDENCE_ENV];
+    if (!evidencePath)
+      throw new Error("fixture has no MCP startup evidence path");
+    const startup = JSON.parse(
+      (await Bun.file(evidencePath).text()).trim(),
+    ) as Record<string, unknown>;
+    await writeFile(
+      evidencePath,
+      `${JSON.stringify({ ...startup, recordedAt: "2000-01-01T00:00:00.000Z" })}\n`,
+    );
+
+    await value.harness.ready(value.dispatch, execution);
+    expect(value.host.startRequests).toHaveLength(1);
+    value.host.onPrompt = async () => {
+      await new HarnessControlClient(descriptorPath).completeStep({
+        change_set: { status: "authorized" },
+      });
+    };
+    expect(
+      await value.harness.sendInputAndCollect(
+        value.dispatch,
+        execution,
+        () => undefined,
+      ),
+    ).toEqual({ change_set: { status: "authorized" } });
+    expect(value.host.promptCalls).toBe(1);
+  } finally {
+    await value.close();
+  }
+});
+
+test("prepared pre-prompt Antigravity adoption requires exact idle conversation-free provenance", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    delete value.host.agent.nativeSession;
+    value.host.agent.cwd = value.workspace;
+    value.registry.recordHost(value.lineage.lineageId, {
+      herdrSession: execution.ref.sessionName,
+      herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
+      workspaceId: execution.ref.workspaceId,
+      ...(execution.ref.tabId ? { tabId: execution.ref.tabId } : {}),
+      paneId: execution.ref.paneId,
+      ...(execution.ref.terminalId
+        ? { terminalId: execution.ref.terminalId }
+        : {}),
+      agentName: execution.ref.agentName,
+    });
+    value.registry.occupy(
+      value.lineage.lineageId,
+      value.dispatch.action.action_id,
+    );
+    const source = value.registry.fail(value.dispatch.action.action_id, {
+      code: "execution_control_readiness_failed",
+      classification: "operator_recovery_required",
+    });
+    const targetAction = action({
+      action_id: "prepared-target",
+      attempt_id: "prepared-attempt-4",
+      operational_recovery: {
+        epoch_number: 3,
+        attempt_in_epoch: 1,
+        attempt_allowance: 2,
+        authorization_kind: "human",
+        continuation_mode: "retained",
+        retained_lineage_id: value.lineage.lineageId,
+        source_attempt_id: source.action.attempt_id,
+        request_id: "prepared-adoption-request",
+      },
+    });
+    targetAction.execution.configuration = {
+      ...source.action.execution.configuration,
+    };
+    targetAction.execution.execution_workspace = {
+      ...source.action.execution.execution_workspace,
+    };
+    targetAction.execution.logical_workspace = {
+      ...source.action.execution.logical_workspace,
+    };
+    targetAction.execution.context.logical_lineage_id =
+      source.action.execution.context.logical_lineage_id;
+    const target = value.registry.accept(targetAction).dispatch;
+    const retained = value.registry.getLineage(value.lineage.lineageId);
+
+    await expect(
+      value.harness.provePreparedProcessAdoption(source, target, retained),
+    ).resolves.toBeUndefined();
+
+    const hookPath = join(value.workspace, ".agents", "hooks.json");
+    const hooks = await Bun.file(hookPath).text();
+    await Bun.write(hookPath, "{}\n");
+    await expect(
+      value.harness.provePreparedProcessAdoption(source, target, retained),
+    ).rejects.toMatchObject({ code: "prepared_process_adoption_rejected" });
+    await Bun.write(hookPath, hooks);
+
+    value.host.agent.status = "working";
+    await expect(
+      value.harness.provePreparedProcessAdoption(source, target, retained),
+    ).rejects.toMatchObject({ code: "prepared_process_adoption_rejected" });
+  } finally {
+    await value.close();
+  }
+});
+
+test("fresh retained-work recovery uses the same generic launch contract as a normal Attempt", async () => {
+  const normal = await fixture();
+  const recovery = await fixture();
+  recovery.dispatch.action.operational_recovery = {
+    epoch_number: 1,
+    attempt_in_epoch: 1,
+    attempt_allowance: 2,
+    authorization_kind: "human",
+    continuation_mode: "fresh",
+    retained_lineage_id: null,
+    source_attempt_id: "attempt-1",
+    request_id: "recovery-request",
+  };
+  try {
+    await normal.harness.start(normal.dispatch, normal.lineage);
+    await recovery.harness.start(recovery.dispatch, recovery.lineage);
+    const normalizeArgs = (args: string[]) =>
+      args.map((value, index) =>
+        args[index - 1] === "--log-file" ? "<lineage-log>" : value,
+      );
+    expect(normalizeArgs(normal.host.startRequests[0]?.args ?? [])).toEqual(
+      normalizeArgs(recovery.host.startRequests[0]?.args ?? []),
+    );
+    expect(Object.keys(normal.host.environment).sort()).toEqual(
+      Object.keys(recovery.host.environment).sort(),
+    );
+    const normalHooks = JSON.parse(
+      await Bun.file(join(normal.workspace, ".agents", "hooks.json")).text(),
+    );
+    const recoveryHooks = JSON.parse(
+      await Bun.file(join(recovery.workspace, ".agents", "hooks.json")).text(),
+    );
+    expect(recoveryHooks).toEqual(normalHooks);
+  } finally {
+    await Promise.all([normal.close(), recovery.close()]);
   }
 });
 
@@ -324,7 +633,9 @@ test("semantic MCP completion is authoritative even while Herdr still projects w
     );
     expect(outputs).toEqual({ change_set: { status: "ok" } });
     expect(value.host.agent.status).toBe("working");
-    expect(events.some((event) => event.type === "running")).toBe(true);
+    expect(events.some((event) => event.type === "prompt_accepted")).toBe(true);
+    expect(events.some((event) => event.type === "settled")).toBe(true);
+    expect(value.host.promptOptions).toBeUndefined();
     expect(
       (
         await new HarnessControlClient(
@@ -332,6 +643,56 @@ test("semantic MCP completion is authoritative even while Herdr still projects w
         ).nativeStop("NO_TOOL_CALL", true)
       ).nativeStop,
     ).toEqual({ decision: "allow" });
+  } finally {
+    await value.close();
+  }
+});
+
+test("accepted prompt can become stalled and later work without uncertainty or resubmission", async () => {
+  const value = await fixture();
+  try {
+    value.config.promptActivityStallMs = 5;
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    await value.authority.bind(value.dispatch, value.lineage);
+    let nativeTurn: Promise<void> | null = null;
+    value.host.onPrompt = async () => {
+      nativeTurn = (async () => {
+        await Bun.sleep(150);
+        await appendFile(
+          join(
+            value.root,
+            "lineages",
+            value.lineage.lineageId,
+            "antigravity.log",
+          ),
+          "Sending user message to conversation 22222222-2222-4222-8222-222222222222 (items=1, media=0)\n",
+        );
+        await Bun.sleep(150);
+        await new HarnessControlClient(
+          controlDescriptorPath(value.lineage),
+        ).completeStep({ change_set: { status: "delayed" } });
+      })();
+    };
+    const events: HarnessEvent[] = [];
+    const outputs = await value.harness.sendInputAndCollect(
+      value.dispatch,
+      execution,
+      (event) => events.push(event),
+    );
+    await nativeTurn;
+
+    expect(outputs).toEqual({ change_set: { status: "delayed" } });
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "prompt_accepted",
+        "stalled",
+        "native_activity",
+        "settled",
+      ]),
+    );
+    expect(value.host.promptCalls).toBe(1);
+    expect(value.host.promptOptions).toBeUndefined();
   } finally {
     await value.close();
   }
@@ -391,6 +752,7 @@ test("native blocked state projects stable HumanAttention and takeover identity"
     const execution = await value.harness.start(value.dispatch, value.lineage);
     value.registry.recordHost(value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
+      herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,
       paneId: execution.ref.paneId,
       ...(execution.ref.terminalId
@@ -428,6 +790,7 @@ test("recovery adopts only the exact surviving TUI and verified native conversat
     const execution = await value.harness.start(value.dispatch, value.lineage);
     value.registry.recordHost(value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
+      herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,
       paneId: execution.ref.paneId,
       ...(execution.ref.terminalId
@@ -446,15 +809,15 @@ test("recovery adopts only the exact surviving TUI and verified native conversat
       found: true,
       agent: { name: execution.ref.agentName },
     });
-    value.host.agent.tokens = {
-      ...value.host.agent.tokens,
-      qe_ownership_token: "wrong",
-    };
+    value.host.sessionIncarnationId = "replacement-session-incarnation";
     value.host.removeAgentOnSnapshot = true;
     const relaunched = await value.harness.recover(persisted);
     expect(relaunched).toMatchObject({
       found: true,
-      ref: { agentName: expect.stringContaining("qe-agy-") },
+      ref: {
+        agentName: expect.stringContaining("qe-agy-"),
+        sessionIncarnation: "replacement-session-incarnation",
+      },
       agent: {
         nativeSession: { value: "conversation-1" },
       },
@@ -479,6 +842,8 @@ test("a Worker restart can adopt exact active Antigravity terminal provenance", 
       nonce: value.dispatch.resultNonce,
       resultDirectory: value.dispatch.resultDirectory,
     });
+    delete value.host.agent.name;
+    delete value.host.agent.tokens?.qe_action_hash;
     const candidates = await value.harness.discoverAdoptionCandidates();
     expect(candidates).toHaveLength(1);
     expect(candidates[0]).toMatchObject({
@@ -488,6 +853,42 @@ test("a Worker restart can adopt exact active Antigravity terminal provenance", 
         nativeSession: { value: "conversation-1" },
       },
     });
+  } finally {
+    await value.close();
+  }
+});
+
+test("fresh recovery requires authoritative native-process absence", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    const sourceLineage = {
+      ...execution.lineage,
+      agentName: execution.ref.agentName,
+      paneId: execution.ref.paneId,
+      terminalId: execution.ref.terminalId ?? null,
+      workspaceId: execution.ref.workspaceId,
+      tabId: execution.ref.tabId ?? null,
+    };
+    expect(
+      await value.harness.proveInactiveForFreshRecovery(sourceLineage),
+    ).toBe(false);
+
+    value.host.inspectError = new HerdrApiError(
+      "agent_not_found",
+      "The source agent exited.",
+    );
+    expect(
+      await value.harness.proveInactiveForFreshRecovery(sourceLineage),
+    ).toBe(true);
+
+    value.host.inspectError = new HerdrApiError(
+      "backend_unavailable",
+      "Herdr is unavailable.",
+    );
+    await expect(
+      value.harness.proveInactiveForFreshRecovery(sourceLineage),
+    ).rejects.toThrow("Herdr is unavailable");
   } finally {
     await value.close();
   }
@@ -506,9 +907,63 @@ test("prompt keeps Class behavior separate and names only the semantic completio
   }
 });
 
+test("fresh retained-work recovery tells Antigravity to preserve the diff and complete normally", async () => {
+  const value = await fixture();
+  try {
+    const prompt = antigravityPromptFor({
+      action: {
+        ...value.dispatch.action,
+        operational_recovery: {
+          epoch_number: 1,
+          attempt_in_epoch: 1,
+          attempt_allowance: 2,
+          authorization_kind: "human",
+          continuation_mode: "fresh",
+          retained_lineage_id: null,
+          source_attempt_id: value.dispatch.action.attempt_id,
+          request_id: "fresh-recovery-request",
+        },
+      },
+    });
+    expect(prompt).toContain("retained-work recovery");
+    expect(prompt).toContain(
+      "no native coding-agent conversation is being continued",
+    );
+    expect(prompt).toContain("Do not reset, clean, overwrite");
+    expect(prompt).toContain("qe_complete_step exactly once");
+  } finally {
+    await value.close();
+  }
+});
+
+function antigravityDiscoveryRunner(version: string, omittedHelpFlag?: string) {
+  return async (args: string[]) => ({
+    exitCode: 0,
+    stdout:
+      args[0] === "--version"
+        ? `${version}\n`
+        : args[0] === "--help"
+          ? [
+              "--conversation",
+              "--effort",
+              "--log-file",
+              "--model",
+              "--prompt-interactive",
+            ]
+              .filter((flag) => flag !== omittedHelpFlag)
+              .join(" ")
+          : "gemini-test-high\tGemini Test (High)\n",
+    stderr: "",
+  });
+}
+
 class FakeAntigravityHost implements TerminalSessionBackend {
   readonly backendKind = "herdr";
   readonly sessionName = "test-herdr";
+  sessionIncarnationId = "test-session-incarnation";
+  sessionIncarnation() {
+    return this.sessionIncarnationId;
+  }
   readonly startRequests: Array<{
     paneId: string;
     name: string;
@@ -518,8 +973,14 @@ class FakeAntigravityHost implements TerminalSessionBackend {
   readonly panes: HostedPane[];
   agent: HostedAgent;
   onPrompt: (() => Promise<void>) | null = null;
+  promptOptions:
+    | { until?: HostedAgentStatus[]; timeoutMs?: number }
+    | undefined;
+  promptCalls = 0;
   removeAgentOnSnapshot = false;
-  private environment: Record<string, string> = {};
+  inspectError: Error | null = null;
+  backendReadiness = readyBackend("antigravity");
+  environment: Record<string, string> = {};
   private pendingTokens: Record<string, string> = {};
 
   constructor(private readonly cwd: string) {
@@ -533,6 +994,10 @@ class FakeAntigravityHost implements TerminalSessionBackend {
       },
     ];
     this.agent = this.newAgent("not-started", "pane-1", "terminal-1");
+  }
+
+  async readiness(): Promise<SessionBackendReadiness> {
+    return this.backendReadiness;
   }
 
   async snapshot(): Promise<HostedSnapshot> {
@@ -608,6 +1073,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
             .update(descriptorPath)
             .digest("hex"),
           bridgeAcceptedContext: true,
+          recordedAt: new Date().toISOString(),
         })}\n`,
       );
     }
@@ -623,6 +1089,8 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     _text: string,
     _options?: { until?: HostedAgentStatus[]; timeoutMs?: number },
   ): Promise<HostedAgent> {
+    this.promptCalls += 1;
+    this.promptOptions = _options;
     this.agent.status = "working";
     await this.onPrompt?.();
     return this.agent;
@@ -631,7 +1099,11 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     return this.agent;
   }
   async inspectAgentState(): Promise<HostedAgent> {
+    if (this.inspectError) throw this.inspectError;
     return this.agent;
+  }
+  async closePane(paneId: string): Promise<void> {
+    if (this.agent.paneId === paneId) this.agent.status = "done";
   }
   async sendKeys(_target: string, _keys: string[]): Promise<void> {}
   attachment(ref: HostedExecutionRef): TerminalAttachmentDescriptor {
@@ -670,4 +1142,23 @@ class FakeAntigravityHost implements TerminalSessionBackend {
       tokens: {},
     };
   }
+}
+
+function readyBackend(harnessKind: string): SessionBackendReadiness {
+  return {
+    backendKind: "herdr",
+    harnessKind,
+    status: "ready",
+    ready: true,
+    capabilities: [],
+    missingCapabilities: [],
+    diagnostics: [],
+    provenance: {
+      version: "test",
+      protocol: 999,
+      testedProtocol: 22,
+      endpointGeneration: 1,
+      serverGeneration: "test-generation",
+    },
+  };
 }
