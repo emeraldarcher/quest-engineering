@@ -6,6 +6,7 @@ defmodule QuestEngineering.Server.RunProjection do
   alias QuestEngineering.Server.DeliveryEligibility
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.ExecutionSessionStore
+  alias QuestEngineering.Server.ExecutionStatus
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OperationalAttemptAttribution
@@ -121,7 +122,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
     %{
       id: run.id,
-      status: run_state(run.status, states),
+      status: ExecutionStatus.run_state(run.status, states),
       launched_at: iso(launch.inserted_at),
       revision: revision,
       launch: %{id: launch.id},
@@ -262,7 +263,8 @@ defmodule QuestEngineering.Server.RunProjection do
     action = Map.get(execution.action_by_attempt, occurrence.current_attempt_id)
     scheduled = action && Map.get(execution.scheduled_by_action, action.id)
     dispatch = action && Map.get(execution.dispatch_by_action, action.id)
-    state = occurrence_state(occurrence.status, scheduled, dispatch)
+    session = action && persisted_session(action.id, execution)
+    state = ExecutionStatus.step_state(occurrence.status, scheduled, dispatch, session)
     member = if scheduled, do: member(snapshot, scheduled.member_key), else: nil
     attempts = attempts(occurrence, execution, run)
     current_attempt = Enum.find(attempts, &(&1.id == occurrence.current_attempt_id))
@@ -289,12 +291,42 @@ defmodule QuestEngineering.Server.RunProjection do
     }
   end
 
-  defp recovery("uncertain", dispatch, _attempt) do
+  defp recovery(
+         _state,
+         %WorkerDispatch{prompt_authorized_at: nil},
+         %{
+           operational: %{recovery_kind: "human"},
+           session: %{
+             state: "waiting_for_human",
+             native_identity: %{conversation_id: nil},
+             attention: %{"category" => "needs_confirmation"},
+             turn: %{"prompt_intent_at" => nil}
+           }
+         }
+       ) do
     %{
-      can_retry: OperationalRecovery.same_epoch_retry_available?(dispatch.action_id),
-      can_mark_failed: true,
+      can_retry: false,
+      can_mark_failed: false,
       can_human_retry: false,
       can_retry_fresh: false,
+      can_authorize_prompt: true,
+      can_recover_pre_prompt: false,
+      message:
+        "Recovery ready. Existing implementation retained. Native worker prepared. Authorization is required to begin Builder inference."
+    }
+  end
+
+  defp recovery("uncertain", dispatch, _attempt) do
+    retained_work_recovery =
+      get_in(dispatch.failure || %{}, ["code"]) == "harness_contract_violation"
+
+    %{
+      can_retry:
+        not retained_work_recovery and
+          OperationalRecovery.same_epoch_retry_available?(dispatch.action_id),
+      can_mark_failed: not retained_work_recovery,
+      can_human_retry: false,
+      can_retry_fresh: retained_work_recovery,
       message:
         get_in(dispatch.failure, ["message"]) ||
           "The Worker could not prove whether this attempt completed."
@@ -302,25 +334,72 @@ defmodule QuestEngineering.Server.RunProjection do
   end
 
   defp recovery("failed", dispatch, attempt) do
-    classification = get_in(dispatch && dispatch.failure, ["classification"])
+    failure = dispatch && dispatch.failure
+    classification = get_in(failure, ["classification"])
     retained_available = retained_session_available?(attempt)
+    pre_prompt_retained = retained_available and pre_prompt?(attempt)
+    contaminated = pre_authorization_contamination?(failure)
+
+    pre_prompt_process =
+      pre_prompt_retained and not contaminated and pre_prompt_control_failure?(failure)
+
     recoverable = classification != "terminal_not_recoverable"
 
     %{
       can_retry: false,
       can_mark_failed: false,
-      can_human_retry: recoverable and retained_available,
-      can_retry_fresh: recoverable,
+      can_human_retry:
+        human_retry_available?(recoverable, retained_available, pre_prompt_retained),
+      can_retry_fresh:
+        recoverable and
+          (contaminated or fresh_retry_available?(recoverable, pre_prompt_retained)),
+      can_recover_pre_prompt: pre_prompt_recovery_available?(recoverable, pre_prompt_process),
       retained_session_available: retained_available,
       classification: classification || "operator_recovery_required",
       epoch_exhausted: epoch_exhausted?(classification, attempt),
-      message:
-        get_in(dispatch && dispatch.failure, ["message"]) ||
-          "The operational Attempt failed."
+      message: recovery_message(pre_prompt_process, failure)
     }
   end
 
   defp recovery(_state, _dispatch, _attempt), do: nil
+
+  defp pre_prompt?(%{session: %{turn: %{"prompt_intent_at" => nil}}}), do: true
+  defp pre_prompt?(_attempt), do: false
+
+  defp human_retry_available?(recoverable, retained, pre_prompt),
+    do: recoverable and retained and not pre_prompt
+
+  defp fresh_retry_available?(recoverable, pre_prompt),
+    do: recoverable and not pre_prompt
+
+  defp pre_prompt_recovery_available?(recoverable, pre_prompt),
+    do: recoverable and pre_prompt
+
+  defp pre_prompt_control_failure?(failure) when is_map(failure) do
+    failure["code"] == "execution_control_readiness_failed" or
+      failure["reason"] == "execution_control_readiness_failed" or
+      legacy_pre_prompt_control_failure?(failure)
+  end
+
+  defp pre_prompt_control_failure?(_failure), do: false
+
+  defp pre_authorization_contamination?(failure) when is_map(failure),
+    do: failure["code"] == "pre_authorization_native_activity"
+
+  defp pre_authorization_contamination?(_failure), do: false
+
+  defp legacy_pre_prompt_control_failure?(failure),
+    do:
+      failure["message"] ==
+        "Antigravity did not launch the QE MCP child with the active bridge context."
+
+  defp recovery_message(true, _failure) do
+    "Execution control failed before prompt submission. The prepared native process and existing implementation can be recovered into a new immutable Attempt."
+  end
+
+  defp recovery_message(false, failure) do
+    get_in(failure, ["message"]) || "The operational Attempt failed."
+  end
 
   defp retained_session_available?(%{
          session: %{state: "retained", attachment: %{available: true}}
@@ -336,20 +415,6 @@ defmodule QuestEngineering.Server.RunProjection do
        do: used >= allowance
 
   defp epoch_exhausted?(_classification, _attempt), do: false
-
-  defp occurrence_state(:pending, _scheduled, _dispatch), do: "pending"
-  defp occurrence_state(:completed, _scheduled, _dispatch), do: "completed"
-  defp occurrence_state(:failed, _scheduled, _dispatch), do: "failed"
-  defp occurrence_state(:dispatched, _scheduled, %{state: "uncertain"}), do: "uncertain"
-  defp occurrence_state(:dispatched, %{state: "failed"}, _dispatch), do: "failed"
-  defp occurrence_state(:dispatched, _scheduled, %{state: "failed"}), do: "failed"
-  defp occurrence_state(:dispatched, _scheduled, %{state: "running"}), do: "running"
-
-  defp occurrence_state(:dispatched, _scheduled, %{state: state})
-       when state in ["claimed", "dispatched", "acknowledged"], do: "scheduled"
-
-  defp occurrence_state(:dispatched, %{}, _dispatch), do: "scheduled"
-  defp occurrence_state(:dispatched, _scheduled, _dispatch), do: "waiting"
 
   defp performer(action, plan_step, run) do
     requirement = (action && action.performer_requirement) || (plan_step && plan_step.performer)
@@ -396,7 +461,7 @@ defmodule QuestEngineering.Server.RunProjection do
     %{
       id: attempt.id,
       number: attempt.number,
-      state: attempt_state(attempt, facts.scheduled, facts.dispatch),
+      state: attempt_state(attempt, facts.scheduled, facts.dispatch, facts.session),
       started_at: started_at(facts),
       finished_at: finished_at(facts),
       outputs: outputs,
@@ -415,11 +480,13 @@ defmodule QuestEngineering.Server.RunProjection do
     dispatch = action && Map.get(execution.dispatch_by_action, action.id)
     attribution = action && Map.get(execution.attribution_by_action, action.id)
     epoch = attribution && Map.get(execution.epoch_by_id, attribution.epoch_id)
+    session = action && persisted_session(action.id, execution)
 
     %{
       action: action,
       scheduled: scheduled,
       dispatch: dispatch,
+      session: session,
       attribution: attribution,
       epoch: epoch
     }
@@ -441,6 +508,8 @@ defmodule QuestEngineering.Server.RunProjection do
       attempt_allowance: epoch.attempt_allowance,
       policy_source: epoch.policy_source,
       continuation_mode: epoch.continuation_mode,
+      source_attempt_id: epoch.source_attempt_id,
+      retained_lineage_id: epoch.retained_lineage_id,
       recovery_authorized_at: iso(epoch.authorized_at)
     }
   end
@@ -473,6 +542,13 @@ defmodule QuestEngineering.Server.RunProjection do
 
       _ ->
         nil
+    end
+  end
+
+  defp persisted_session(action_id, execution) do
+    case Map.get(execution.session_by_action, action_id) do
+      {persisted, _worker} -> persisted
+      nil -> nil
     end
   end
 
@@ -523,6 +599,7 @@ defmodule QuestEngineering.Server.RunProjection do
       capabilities: capability_projection(session.capabilities),
       attachment: attachment_projection(session, worker, current_usage, available),
       attention: if(current_usage, do: session.attention, else: nil),
+      turn: session.turn,
       started_at: iso(session.started_at),
       last_activity_at: iso(session.last_activity_at),
       events:
@@ -580,12 +657,22 @@ defmodule QuestEngineering.Server.RunProjection do
       reason: attachment_unavailable_reason(session, worker, available),
       can_observe: available and get_in(session.terminal, ["supports_observation"]) == true,
       can_takeover:
-        available and current_usage and session.state == "waiting_for_human" and
-          get_in(session.terminal, ["supports_takeover"]) == true,
+        available and current_usage and
+          get_in(session.terminal, ["supports_takeover"]) == true and
+          not pre_prompt_authorization_pending?(session),
       can_recover:
         available and current_usage and session.state == "retained" and
           get_in(session.terminal, ["supports_takeover"]) == true
     }
+  end
+
+  defp pre_prompt_authorization_pending?(session) do
+    attention_id = get_in(session.attention || %{}, ["attention_id"])
+
+    session.state == "waiting_for_human" and
+      get_in(session.attention || %{}, ["category"]) == "needs_confirmation" and
+      is_binary(attention_id) and String.starts_with?(attention_id, "qe-prompt-authorization-") and
+      is_nil(get_in(session.turn || %{}, ["prompt_intent_at"]))
   end
 
   defp attachment_unavailable_reason(_session, %{status: status}, _available)
@@ -603,13 +690,19 @@ defmodule QuestEngineering.Server.RunProjection do
   defp attachment_unavailable_reason(_session, _worker, false), do: "attachment_unavailable"
   defp attachment_unavailable_reason(_session, _worker, true), do: nil
 
-  defp attempt_state(_attempt, _scheduled, %{state: "uncertain"}), do: "uncertain"
-
-  defp attempt_state(_attempt, _scheduled, %{failure: %{"code" => "operator_retry_requested"}}),
+  defp attempt_state(_attempt, _scheduled, %{state: "uncertain"}, _session),
     do: "uncertain"
 
-  defp attempt_state(attempt, scheduled, dispatch) do
-    occurrence_state(attempt.status, scheduled, dispatch)
+  defp attempt_state(
+         _attempt,
+         _scheduled,
+         %{failure: %{"code" => "operator_retry_requested"}},
+         _session
+       ),
+       do: "uncertain"
+
+  defp attempt_state(attempt, scheduled, dispatch, session) do
+    ExecutionStatus.step_state(attempt.status, scheduled, dispatch, session)
   end
 
   defp attempt_outputs(
@@ -727,20 +820,20 @@ defmodule QuestEngineering.Server.RunProjection do
 
   defp issue(_, _dispatch), do: nil
 
-  defp run_state(:failed, _states), do: "failed"
-  defp run_state(:completed, _states), do: "completed"
-
-  defp run_state(:running, states) do
-    Enum.find(
-      ["uncertain", "failed", "running", "scheduled", "waiting", "pending"],
-      "pending",
-      &(&1 in states)
-    )
-  end
-
   defp counts(states) do
     Enum.reduce(
-      ["pending", "waiting", "scheduled", "running", "completed", "failed", "uncertain"],
+      [
+        "pending",
+        "waiting",
+        "scheduled",
+        "waiting_for_activity",
+        "running",
+        "blocked",
+        "stalled",
+        "completed",
+        "failed",
+        "uncertain"
+      ],
       %{},
       fn state, counts ->
         Map.put(counts, state, Enum.count(states, &(&1 == state)))
@@ -810,6 +903,8 @@ defmodule QuestEngineering.Server.RunProjection do
         attempt_allowance: epoch.attempt_allowance,
         policy_source: epoch.policy_source,
         continuation_mode: epoch.continuation_mode,
+        source_attempt_id: epoch.source_attempt_id,
+        retained_lineage_id: epoch.retained_lineage_id,
         authorized_at: iso(epoch.authorized_at),
         attempts_scheduled: length(attempts)
       }

@@ -132,7 +132,9 @@ defmodule QuestEngineering.Server.Reconciler do
   end
 
   defp apply_observed(worker_id, generation, %{state: :completed} = item) do
-    CompletionAdapter.complete(worker_id, generation, item)
+    with {:ok, result} <- CompletionAdapter.complete(worker_id, generation, item) do
+      {:ok, Map.put(result, :reconciled_completion_action_id, item.action_id)}
+    end
   end
 
   defp apply_observed(worker_id, generation, %{state: :failed} = item) do

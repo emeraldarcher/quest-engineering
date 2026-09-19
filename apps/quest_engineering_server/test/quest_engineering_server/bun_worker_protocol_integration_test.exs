@@ -6,6 +6,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias QuestEngineering.Core.Product.ModelRef
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.QuestLaunch
@@ -16,6 +17,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RuntimeStore
+  alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerStore
   alias QuestEngineering.Server.WorkspaceControl
 
@@ -144,6 +146,155 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         assert_eventually(fn ->
           match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
         end)
+    end
+  end
+
+  test "real Bun Worker fences a lost topic, rejoins, and reconciles active local work once" do
+    case System.find_executable("bun") do
+      nil ->
+        IO.puts("Bun Worker reconnect integration skipped: bun executable is unavailable")
+
+      bun ->
+        root = Path.expand("../../../..", __DIR__)
+        previous_workspaces = Application.get_env(:quest_engineering_server, :workspaces)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+        start_supervised!({QuestEngineering.Server.Dispatcher, claim_owner: "bun-reconnect-test"})
+        start_supervised!(QuestEngineering.Server.RunWorkspaceProvisioner)
+        start_supervised!({QuestEngineering.Server.Scheduler, claim_owner: "bun-reconnect-test"})
+
+        worker_root =
+          Path.join(root, ".pi/tmp/bun-worker-reconnect-#{System.unique_integer([:positive])}")
+
+        source_root = Path.join(worker_root, "source")
+        File.mkdir_p!(source_root)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# reconnect fixture\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
+        worker_id = "bun-reconnect-#{System.unique_integer([:positive])}"
+        {quest, workspace} = product_fixture()
+
+        Application.put_env(:quest_engineering_server, :workspaces, %{workspace.id => source_root})
+
+        binding_id = Ecto.UUID.generate()
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: worker_root,
+              max_access: "read_write",
+              discover_depth: 1,
+              allow_unconfined_shell: true
+            }
+          ])
+
+        bindings =
+          Jason.encode!([
+            %{
+              binding_id: binding_id,
+              workspace_id: workspace.id,
+              authorized_root_key: "repository",
+              source_repository_root: source_root,
+              max_access: "read_write",
+              allow_unconfined_shell: true
+            }
+          ])
+
+        port =
+          Port.open({:spawn_executable, bun}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: [
+              Path.join(root, "workers/bun/src/main.ts"),
+              "--qe-test-worker=#{worker_id}"
+            ],
+            cd: String.to_charlist(root),
+            env: [
+              {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+              {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+              {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_WORKSPACE_BINDINGS_JSON", String.to_charlist(bindings)},
+              {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+              {~c"QE_WORKER_PROVIDER", ~c"fake"},
+              {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"},
+              {~c"QE_FAKE_DELAY_MS", ~c"1000"},
+              {~c"QE_RECONNECT_MS", ~c"10"}
+            ]
+          ])
+
+        on_exit(fn ->
+          stop_worker_process(port, worker_id)
+          File.rm_rf!(worker_root)
+
+          Application.put_env(
+            :quest_engineering_server,
+            :workspaces,
+            previous_workspaces || %{}
+          )
+        end)
+
+        assert_eventually(fn ->
+          match?(
+            {:ok, %{status: "connected", connection_generation: 1}},
+            WorkerStore.fetch(worker_id)
+          )
+        end)
+
+        assert {:ok, launched} = LaunchQuest.launch(quest.id)
+        [action] = launched.actions
+
+        assert_eventually(fn ->
+          match?(%{state: "ready"}, Repo.get(RunWorkspaceAssignment, launched.run_id))
+        end)
+
+        assert_eventually(fn ->
+          match?({:ok, %{state: :running}}, DispatchStore.fetch(action.id))
+        end)
+
+        assert {:ok, %{pid: channel_pid, generation: 1}} =
+                 WorkerConnections.lookup(worker_id)
+
+        GenServer.stop(channel_pid, :normal)
+
+        assert_eventually(fn ->
+          match?(
+            {:ok, %{status: "connected", connection_generation: generation}}
+            when generation >= 2,
+            WorkerStore.fetch(worker_id)
+          )
+        end)
+
+        assert_eventually(fn ->
+          match?({:ok, %{revision: 1}}, RuntimeStore.fetch_run(launched.run_id))
+        end)
+
+        assert {:ok, %{state: :completed}} = DispatchStore.fetch(action.id)
+
+        {dispatch_count, 0} =
+          System.cmd("sqlite3", [
+            Path.join(worker_root, "dispatches.sqlite"),
+            "SELECT count(*) FROM dispatches WHERE action_id='#{action.id}'"
+          ])
+
+        assert String.trim(dispatch_count) == "1"
     end
   end
 

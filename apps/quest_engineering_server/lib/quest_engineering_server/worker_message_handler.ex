@@ -1,6 +1,8 @@
 defmodule QuestEngineering.Server.WorkerMessageHandler do
   @moduledoc "Application adapter for validated, generation-fenced Worker messages."
 
+  require Logger
+
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DeliveryCoordinator
   alias QuestEngineering.Server.DeliveryStore
@@ -140,6 +142,8 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
   def handle(worker_id, generation, %{type: :session_state, session: session}) do
     with {:ok, persisted} <- ExecutionSessionStore.record(worker_id, generation, session) do
+      ProductChangeNotifier.notify(["quests", "runs"])
+
       {:ok,
        %{
          "type" => "message_result",
@@ -179,6 +183,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     with :ok <- validate_identity(worker_id, message),
          {:ok, dispatch} <-
            DispatchStore.mark_uncertain(worker_id, generation, message.action_id, message.failure) do
+      ProductChangeNotifier.notify(["quests", "runs"])
       notify_action(message.action_id)
       {:ok, response(:dispatch_uncertain, dispatch)}
     end
@@ -197,8 +202,10 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
            ExecutionSessionStore.reconcile(worker_id, generation, sessions || []),
          {:ok, reconciliation} <- Reconciler.reconcile(worker_id, generation, dispatches) do
       _ = Dispatcher.redeliver(worker_id, generation)
+      prompt_authorizations = DispatchStore.prompt_authorizations_for_worker(worker_id)
       Scheduler.wake_all()
       Enum.each(Reconciler.run_ids_for_worker(worker_id), &RunChangeNotifier.notify/1)
+      ProductChangeNotifier.notify(["quests", "runs"])
 
       {:ok,
        %{
@@ -207,8 +214,15 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          "result" => "reconciled",
          "observed_count" => length(reconciliation.observed),
          "anomaly_count" => length(reconciliation.anomalies),
+         "completion_action_ids" =>
+           reconciliation.observed
+           |> Enum.flat_map(fn
+             %{reconciled_completion_action_id: action_id} -> [action_id]
+             _other -> []
+           end),
          "dispatch_resolutions" =>
-           Enum.filter(reconciliation.observed, &Map.has_key?(&1, :resolution))
+           Enum.filter(reconciliation.observed, &Map.has_key?(&1, :resolution)),
+         "prompt_authorizations" => prompt_authorizations
        }}
     end
   end
@@ -239,6 +253,16 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   defp failure(worker_id, generation, message) do
     with :ok <- validate_identity(worker_id, message),
          {:ok, result} <- OperationalFailure.record(worker_id, generation, message) do
+      case OperationalRecovery.finalize_requested(message.action_id) do
+        {:error, error} ->
+          Logger.error(
+            "Could not finalize requested operational recovery for #{message.action_id}: #{inspect(error)}"
+          )
+
+        _other ->
+          :ok
+      end
+
       Scheduler.wake_all()
       ProductChangeNotifier.notify(["quests", "runs"])
       notify_action(message.action_id)

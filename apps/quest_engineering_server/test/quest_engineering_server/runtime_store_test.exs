@@ -227,14 +227,22 @@ defmodule QuestEngineering.Server.RuntimeStoreTest do
     end)
   end
 
-  test "decodes allowlisted closed atoms on a cold recovery path and rejects open atoms" do
-    assert {:ok, :fresh} = RuntimeCodec.decode(%{"$atom" => "fresh"})
+  test "decodes cold-start runtime and struct-field atoms and rejects unknown atoms" do
+    for name <- ~w(
+          fresh artifact attempt occurrence region scope gate_key subject_input git_remote local_git
+        ) do
+      assert {:ok, atom} = RuntimeCodec.decode(%{"$atom" => name})
+      assert Atom.to_string(atom) == name
+    end
 
     unknown = "unknown_runtime_atom_#{System.unique_integer([:positive])}"
+    _existing_but_disallowed = String.to_atom(unknown)
 
     assert {:error,
-            %PersistenceError{type: :invalid_persisted_term, details: %{reason: :unknown_atom}}} =
-             RuntimeCodec.decode(%{"$atom" => unknown})
+            %PersistenceError{
+              type: :invalid_persisted_term,
+              details: %{reason: :unknown_atom, atom: ^unknown}
+            }} = RuntimeCodec.decode(%{"$atom" => unknown})
   end
 
   test "returns a structured error for an unsupported snapshot version" do

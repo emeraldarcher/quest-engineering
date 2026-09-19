@@ -59,6 +59,12 @@ defmodule QuestEngineering.ServerWeb.Router do
     get "/runs/:id/changes", RunController, :changes
     post "/runs/:id/execution/retry", RunController, :retry_execution
     post "/runs/:id/execution/recover-fresh", RunController, :recover_execution_fresh
+
+    post "/runs/:id/execution/recover-pre-prompt-process",
+         RunController,
+         :recover_pre_prompt_process
+
+    post "/runs/:id/execution/authorize-prompt", RunController, :authorize_execution_prompt
     post "/runs/:id/execution/mark-failed", RunController, :mark_execution_failed
     post "/runs/:id/delivery/retry", RunController, :retry_delivery
     post "/runs/:id/worktree/cleanup", RunController, :cleanup

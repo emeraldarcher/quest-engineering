@@ -3,9 +3,9 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
   Versioned JSON-compatible codec for trusted internal runtime data.
 
   Structs, atoms, tuples, and maps are explicitly tagged. Struct decoding is
-  restricted to the core data-model allowlist, and atom decoding only resolves
-  atoms that already exist in the VM. No executable or opaque BEAM terms are
-  accepted.
+  restricted to the core data-model allowlist, and atom decoding is restricted
+  to an explicit closed set of runtime values and allowlisted struct fields. No
+  executable or opaque BEAM terms are accepted.
   """
 
   alias QuestEngineering.Core.ExecutionPlan
@@ -141,14 +141,19 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
     Until
   ]
   @modules_by_name Map.new(@struct_modules, &{Atom.to_string(&1), &1})
-  @closed_atoms ~w(
-    active carried check checking class completed continue_from current definition dispatched enumerated
-    equals exact execute_step exhausted failed fresh high inline low medium native_permissions none otherwise
-    pending read_only read_write remediating root running same_as step_completed step_failed
-    step_retry_requested unsupported
+  @runtime_atoms ~w(
+    active artifact attempt carried check checking checks class completed continue_from current definition
+    dispatched enumerated equals exact execute_step exhausted failed fresh git_remote high inline local_git low
+    medium native_permissions none occurrence otherwise pending read_only read_write region remediating root running
+    same_as scope step_completed step_failed step_retry_requested subject_artifact_id subject_kind unsupported
     until_exhausted
   )a
-  @closed_atoms_by_name Map.new(@closed_atoms, &{Atom.to_string(&1), &1})
+  @struct_field_atoms @struct_modules
+                      |> Enum.flat_map(fn module -> module.__struct__() |> Map.keys() end)
+                      |> Enum.reject(&(&1 == :__struct__))
+  @closed_atoms_by_name (@runtime_atoms ++ @struct_field_atoms)
+                        |> Enum.uniq()
+                        |> Map.new(&{Atom.to_string(&1), &1})
 
   @spec snapshot_version() :: pos_integer()
   def snapshot_version, do: @snapshot_version
@@ -213,14 +218,9 @@ defmodule QuestEngineering.Server.Persistence.RuntimeCodec do
 
   defp decode_term(%{"$atom" => name}) when is_binary(name) do
     case Map.fetch(@closed_atoms_by_name, name) do
-      {:ok, atom} ->
-        {:ok, atom}
-
-      :error ->
-        {:ok, String.to_existing_atom(name)}
+      {:ok, atom} -> {:ok, atom}
+      :error -> invalid_term(%{reason: :unknown_atom, atom: name})
     end
-  rescue
-    ArgumentError -> invalid_term(%{reason: :unknown_atom, atom: name})
   end
 
   defp decode_term(%{"$tuple" => values}) when is_list(values) do

@@ -9,6 +9,11 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
     field :action_id, :string
     field :worker_id, :string
     field :worker_slot, :integer
+    field :slot_released_at, :utc_datetime_usec
+    field :operational_recovery_request_id, :string
+    field :operational_recovery_requested_at, :utc_datetime_usec
+    field :prompt_authorization_request_id, :string
+    field :prompt_authorized_at, :utc_datetime_usec
     field :state, :string
     field :payload_hash, :string
     field :claim_owner, :string
@@ -30,6 +35,11 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
       :action_id,
       :worker_id,
       :worker_slot,
+      :slot_released_at,
+      :operational_recovery_request_id,
+      :operational_recovery_requested_at,
+      :prompt_authorization_request_id,
+      :prompt_authorized_at,
       :state,
       :payload_hash,
       :claim_owner,
@@ -64,6 +74,12 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
     |> foreign_key_constraint(:action_id)
     |> foreign_key_constraint(:worker_id)
     |> unique_constraint(:action_id, name: :worker_dispatches_action_id_index)
+    |> unique_constraint(:operational_recovery_request_id,
+      name: :worker_dispatches_operational_recovery_request_index
+    )
+    |> unique_constraint(:prompt_authorization_request_id,
+      name: :worker_dispatches_prompt_authorization_request_index
+    )
     |> unique_constraint([:worker_id, :worker_slot], name: :worker_dispatches_active_slot_index)
     |> check_constraint(:state, name: :worker_dispatches_state_valid)
     |> check_constraint(:worker_slot, name: :worker_dispatches_slot_valid)

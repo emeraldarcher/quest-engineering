@@ -3,6 +3,8 @@ defmodule QuestEngineering.Server.Scheduler do
 
   use GenServer
 
+  require Logger
+
   alias QuestEngineering.Server.Dispatcher
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Repo
@@ -60,7 +62,8 @@ defmodule QuestEngineering.Server.Scheduler do
       {:waiting, _reasons} ->
         {:noreply, next_state}
 
-      {:error, _error} ->
+      {:error, error} ->
+        Logger.error("Scheduling failed for Run #{run_id}: #{inspect(error)}")
         {:noreply, next_state}
     end
   end

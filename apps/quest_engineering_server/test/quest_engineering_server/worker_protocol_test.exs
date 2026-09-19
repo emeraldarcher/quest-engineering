@@ -229,7 +229,15 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
           "requested_at" => "2026-09-06T00:00:00Z"
         },
         "started_at" => "2026-09-06T00:00:00Z",
-        "last_activity_at" => "2026-09-06T00:00:01Z"
+        "last_activity_at" => "2026-09-06T00:00:01Z",
+        "turn" => %{
+          "phase" => "blocked",
+          "prompt_intent_at" => "2026-09-06T00:00:00Z",
+          "prompt_accepted_at" => "2026-09-06T00:00:00.100Z",
+          "native_activity_at" => "2026-09-06T00:00:00.500Z",
+          "stalled_at" => nil,
+          "settled_at" => nil
+        }
       }
     }
 
@@ -240,7 +248,8 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                 state: :waiting_for_human,
                 attention: attention,
                 intervention: intervention,
-                capabilities: capabilities
+                capabilities: capabilities,
+                turn: turn
               }
             }} = WorkerProtocol.decode_worker_message(payload, @worker_id)
 
@@ -248,6 +257,22 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert attention["interaction"]["resume_command"] == "/qe-resume"
     assert intervention["state"] == "intervention_pending"
     assert capabilities["conversational_takeover"]
+    assert turn["phase"] == "blocked"
+    assert turn["prompt_accepted_at"] == "2026-09-06T00:00:00.100Z"
+
+    for {state, expected} <- [
+          {"waiting_for_activity", :waiting_for_activity},
+          {"stalled", :stalled}
+        ] do
+      lifecycle =
+        payload
+        |> put_in(["session", "state"], state)
+        |> put_in(["session", "attention"], nil)
+        |> put_in(["session", "intervention"], nil)
+
+      assert {:ok, %{session: %{state: ^expected}}} =
+               WorkerProtocol.decode_worker_message(lifecycle, @worker_id)
+    end
 
     invalid = put_in(payload, ["session", "attention", "category"], "provider-prose")
 

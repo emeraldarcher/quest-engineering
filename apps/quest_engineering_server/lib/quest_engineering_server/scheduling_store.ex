@@ -426,8 +426,11 @@ defmodule QuestEngineering.Server.SchedulingStore do
     used =
       Repo.all(
         from dispatch in WorkerDispatch,
+          join: scheduled in ScheduledActionExecution,
+          on: scheduled.action_id == dispatch.action_id,
           where:
-            dispatch.worker_id == ^worker.id and dispatch.state in ^@reserved_dispatch_states,
+            dispatch.worker_id == ^worker.id and dispatch.state in ^@reserved_dispatch_states and
+              is_nil(dispatch.slot_released_at) and scheduled.state == "active",
           select: dispatch.worker_slot
       )
       |> MapSet.new()

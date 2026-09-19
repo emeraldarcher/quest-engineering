@@ -85,6 +85,28 @@ defmodule QuestEngineering.Core.SpecDrivenRuntimeTest do
     assert length(region.check_scope_ids) == 1
   end
 
+  test "human recovery appends an Attempt without rewriting prior Attempt status" do
+    {:ok, plan} = Compiler.compile(plan_then_implement(2))
+    {:ok, run, [planning]} = Runtime.start(plan, "plan-human-recovery")
+    {:ok, run, [review]} = complete(run, planning, %{"plan" => "v1"})
+
+    before =
+      Enum.find(run.occurrences[review.occurrence_id].attempts, &(&1.id == review.attempt_id))
+
+    {:ok, recovered_run, [recovery]} =
+      Runtime.transition(run, Runtime.recovery_requested(review))
+
+    historical =
+      Enum.find(
+        recovered_run.occurrences[review.occurrence_id].attempts,
+        &(&1.id == review.attempt_id)
+      )
+
+    assert historical == before
+    assert recovery.occurrence_id == review.occurrence_id
+    assert recovery.attempt_id != review.attempt_id
+  end
+
   test "Review Verdict cannot accept a different immutable subject" do
     {:ok, plan} = Compiler.compile(plan_then_implement(1))
     {:ok, run, [planning]} = Runtime.start(plan, "wrong-subject")
