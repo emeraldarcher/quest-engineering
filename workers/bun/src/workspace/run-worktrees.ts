@@ -166,7 +166,11 @@ export class RunWorktreeRegistry {
     this.persistRequest(request, commonDir, target);
     return this.locks.run(commonDir, async () => {
       const current = this.required(request.worktree_id);
-      if (current.state === "ready") return this.verify(request.worktree_id);
+      // The per-common-dir lock already serializes physical provisioning. A
+      // duplicate request must not recursively acquire that same non-reentrant
+      // lock through verify(). The first successful provision verified before
+      // persisting ready, so its durable record is the idempotent response.
+      if (current.state === "ready") return current;
       if (["attention_required", "failed", "removed"].includes(current.state))
         return current;
       try {

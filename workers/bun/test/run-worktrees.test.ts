@@ -24,6 +24,10 @@ test("isolates simultaneous Runs and serializes linked bindings by Git common di
 
   expect(first.state).toBe("ready");
   expect(second.state).toBe("ready");
+  const replay = await registry.provision(
+    request("1", workspace(1), binding(1)),
+  );
+  expect(replay).toEqual(first);
   expect(first.canonicalRoot).not.toBe(second.canonicalRoot);
   expect(first.branchName).not.toBe(second.branchName);
   expect(first.gitCommonDir).toBe(second.gitCommonDir);
