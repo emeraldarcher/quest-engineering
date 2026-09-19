@@ -2,9 +2,9 @@
 
 ## Status
 
-This document records the Phase 0.5 preservation boundary. It does not implement an execution-environment backend and does not authorize cleanup of the original dirty checkout, retained Run worktrees, Worker state, Herdr sessions, or databases.
+This document records the preservation boundary and phased transition. Phase 1 on `phase1/execution-environment-backend` adds only the Worker-internal execution-environment contract, Fake backend, conformance suite, documentation, and an un-wired HostNative compatibility adapter. It does not authorize cleanup of the original dirty checkout, retained Run worktrees, Worker state, Herdr sessions, or databases.
 
-The clean implementation baseline is `preserve/generic-qe-post-multiharness`. The proposed implementation branch is `phase1/execution-environment-backend`, created from that baseline only after the preservation commits and repository gates are accepted.
+The clean implementation baseline is commit `430908ecf216f796ea2e038615e9b21c00f71a53` on `preserve/generic-qe-post-multiharness`. Phase 1 does not merge either preservation/reference branch. See [execution environment backend architecture](execution-environment-backend.md) for the implemented contract and ownership semantics.
 
 ## Authoritative migration history
 
@@ -64,7 +64,7 @@ Add `ExecutionEnvironmentBackend` as a third orthogonal concern:
 
 Herdr remains host-native and attaches to the backend-selected interactive command. `HarnessControlAuthority` remains Worker-owned; only a narrow attempt-scoped MCP/control relay enters the environment.
 
-The first production backend should be hardened ordinary Docker because it offers a mature API, explicit security controls, reproducible digest-pinned images, lower startup/resource overhead, and no Docker-account runtime gate. Docker Sandboxes remains a second backend/pilot with stronger VM isolation and private Docker state, guarded by live capability probes in addition to version checks.
+The intended production backend is SBX with one microVM per Run and a private filesystem, Git state, HOME/cache/temp, container runtime, harness processes, and controlled bridge/network/credentials. Phase 1 does not implement or invoke SBX lifecycle. The generic contract deliberately exposes no SBX CLI naming or Docker-specific object shape.
 
 ## Run-scoped environment contract
 
@@ -101,18 +101,13 @@ Preserve the feature's semantics while replacing host access assumptions:
 
 Port the discovery branch in small semantic commits after `ExecutionEnvironmentBackend` exists. Resolve the overlapping server protocol, Worker protocol/configuration, Worker lifecycle, scheduler, and integration tests manually; do not use a direct merge as conflict resolution.
 
-## Phase 1 sequence
+## Phase boundaries
 
-1. Introduce the backend interface and typed environment identity while retaining `HostNative` behavior unchanged.
-2. Move workspace/process path construction behind the backend without changing harness semantics.
-3. Implement hardened ordinary Docker with digest-pinned images and private import/export.
-4. Route Herdr attachment and the attempt-scoped control relay through the selected environment.
-5. Add restart reconciliation, ownership, capacity, network, credential, and export tests.
-6. Port discovery/actionability semantics using environment admission and Delivery policy.
-7. Retire HostNative-only Antigravity policy code only after isolated parity and migration gates pass.
-8. Pilot Docker Sandboxes as a separate backend after ordinary Docker is operational.
+Phase 1 freezes the generic contract and ownership rules. It adds deterministic Fake and compatibility implementations and reusable conformance tests, but production dispatch continues to use the baseline workspace, harness, Herdr, recovery, and control paths directly.
 
-Each step must preserve the generic lifecycle and recovery tests, add backend contract tests, and pass formatting, warning-free compilation, dependency checks, Elixir tests, Credo, Worker checks/tests, client checks/tests, and `git diff --check`.
+Phase 2 may integrate an environment lease into Worker dispatch only after durable environment identity/incarnation ownership, restart adoption, launcher-wrapper provenance, readiness/capacity, and guest path/control translation are designed. Actual SBX provisioning, private source/Git materialization, credential and network enforcement, and isolated container-runtime proof belong after the generic boundary is accepted.
+
+The discovery/actionability feature must be ported later in small semantic commits after the isolated environment and private-Git model exist. The host-native Antigravity archive remains reference-only. Every phase must preserve the generic lifecycle and recovery tests and pass the applicable repository gates.
 
 ## Cleanup hold
 
