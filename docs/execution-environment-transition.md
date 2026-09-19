@@ -2,9 +2,9 @@
 
 ## Status
 
-This document records the preservation boundary and phased transition. Phase 1 on `phase1/execution-environment-backend` adds only the Worker-internal execution-environment contract, Fake backend, conformance suite, documentation, and an un-wired HostNative compatibility adapter. It does not authorize cleanup of the original dirty checkout, retained Run worktrees, Worker state, Herdr sessions, or databases.
+This document records the preservation boundary and phased transition. Phase 1 on `phase1/execution-environment-backend` added the Worker-internal contract, Fake backend, conformance suite, documentation, and un-wired HostNative adapter. Phase 2, based on Phase-1 commit `f4298557af70356eb8cef775ea0ac4b8cc55dbcc`, adds an un-wired durable SBX implementation for disposable fixtures. Neither phase authorizes cleanup of the original dirty checkout, retained Run worktrees, Worker state, Herdr sessions, or databases.
 
-The clean implementation baseline is commit `430908ecf216f796ea2e038615e9b21c00f71a53` on `preserve/generic-qe-post-multiharness`. Phase 1 does not merge either preservation/reference branch. See [execution environment backend architecture](execution-environment-backend.md) for the implemented contract and ownership semantics.
+The original clean implementation baseline remains commit `430908ecf216f796ea2e038615e9b21c00f71a53` on `preserve/generic-qe-post-multiharness`. No preservation/reference branch is merged. See [execution environment backend architecture](execution-environment-backend.md) for the implemented contract, ownership authority, security checks, and remaining Phase-3 gate.
 
 ## Authoritative migration history
 
@@ -64,7 +64,7 @@ Add `ExecutionEnvironmentBackend` as a third orthogonal concern:
 
 Herdr remains host-native and attaches to the backend-selected interactive command. `HarnessControlAuthority` remains Worker-owned; only a narrow attempt-scoped MCP/control relay enters the environment.
 
-The intended production backend is SBX with one microVM per Run and a private filesystem, Git state, HOME/cache/temp, container runtime, harness processes, and controlled bridge/network/credentials. Phase 1 does not implement or invoke SBX lifecycle. The generic contract deliberately exposes no SBX CLI naming or Docker-specific object shape.
+The intended production backend is SBX with one microVM per Run and a private filesystem, Git state, HOME/cache/temp, container runtime, harness processes, and controlled bridge/network/credentials. Phase 2 implements lifecycle, persistence, restart adoption, generic exec, host launcher wrapping, private HOME/filesystem checks, deny-all networking, disabled ambient credentials, and private Docker proof for disposable fixtures. It does not implement private Git, bridge credentials, provider egress, or production execution. The generic contract deliberately exposes no SBX CLI naming or Docker-specific object shape.
 
 ## Run-scoped environment contract
 
@@ -105,7 +105,9 @@ Port the discovery branch in small semantic commits after `ExecutionEnvironmentB
 
 Phase 1 freezes the generic contract and ownership rules. It adds deterministic Fake and compatibility implementations and reusable conformance tests, but production dispatch continues to use the baseline workspace, harness, Herdr, recovery, and control paths directly.
 
-Phase 2 may integrate an environment lease into Worker dispatch only after durable environment identity/incarnation ownership, restart adoption, launcher-wrapper provenance, readiness/capacity, and guest path/control translation are designed. Actual SBX provisioning, private source/Git materialization, credential and network enforcement, and isolated container-runtime proof belong after the generic boundary is accepted.
+Phase 2 implements but does not wire `SbxExecutionEnvironmentBackend`. Its Worker-local SQLite store commits creation intent before SBX mutation and retains incarnation history; it is separate from Product/PostgreSQL protocol state and requires no Product migration. The immutable v1 profile has a tested v0.43.0 compatibility floor, no host mounts, skills off, empty MCP, disabled credential variables, scoped deny-all policy, fixed guest paths, and conservative 1-CPU/1-GiB/private-Docker resources. Adoption requires durable record + native UUID/name/agent + guest marker. Real disposable tests prove private Docker child execution and PTY sizing without model inference.
+
+Phase 3 is the earliest production-integration phase. It must design private source/Git materialization and export, attempt-scoped control translation, credential refresh/revocation, exact egress grants, scheduler capacity, whole-store startup reconciliation, and operator-visible failure handling before dispatch can acquire a lease. It must not reinterpret a backend recovery as QE authorization or allow an environment to select an Attempt, lineage, prompt, model, or Delivery.
 
 The discovery/actionability feature must be ported later in small semantic commits after the isolated environment and private-Git model exist. The host-native Antigravity archive remains reference-only. Every phase must preserve the generic lifecycle and recovery tests and pass the applicable repository gates.
 
