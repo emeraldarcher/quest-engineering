@@ -62,7 +62,7 @@ export interface EnvironmentSpec {
     projectId?: string;
     access: "none" | "read_only" | "read_write";
     materialization: {
-      kind: "existing_workspace" | "frozen_import";
+      kind: "existing_workspace" | "frozen_import" | "disposable_fixture";
       sourceIdentity: string;
       frozenBase: {
         kind: string;
@@ -108,6 +108,8 @@ export interface EnvironmentCommand {
   /** Path in the environment namespace; defaults to paths.workspace. */
   cwd?: string;
   environment?: Readonly<Record<string, string>>;
+  /** Backend operation timeout; expiration fails without changing command meaning. */
+  timeoutMs?: number;
 }
 
 export interface EnvironmentCommandResult {
@@ -130,7 +132,13 @@ export interface HostLaunchDescriptor {
   };
 }
 
-export type EnvironmentLifecycleState = "running" | "stopped" | "removed";
+export type EnvironmentLifecycleState =
+  | "running"
+  | "stopped"
+  | "removed"
+  | "missing"
+  | "incompatible"
+  | "degraded";
 
 export interface EnvironmentInspection {
   ref: EnvironmentRef;
@@ -139,6 +147,16 @@ export interface EnvironmentInspection {
   specDigest: string;
   paths: EnvironmentPathMap;
   capabilities: readonly EnvironmentCapability[];
+  specMatches?: boolean;
+  profileMatches?: boolean;
+  diagnostics?: readonly EnvironmentReadinessDiagnostic[];
+  provenance?: {
+    implementationVersion?: string;
+    nativeVersion?: string;
+    nativeRevision?: string;
+    nativeApiVersion?: string;
+    profile?: EnvironmentProfileIdentity;
+  };
 }
 
 export type EnvironmentReadinessStatus =
@@ -160,6 +178,11 @@ export interface EnvironmentReadiness {
   provenance: {
     contractVersion: number;
     implementationVersion?: string;
+    nativeVersion?: string;
+    nativeRevision?: string;
+    nativeApiVersion?: string;
+    testedNativeVersion?: string;
+    testedNativeApiVersion?: string;
   };
 }
 
@@ -200,6 +223,14 @@ export type EnvironmentBackendErrorCode =
   | "stale_environment_ref"
   | "incompatible_environment_spec"
   | "environment_requirements_unmet"
+  | "backend_unavailable"
+  | "backend_incompatible"
+  | "environment_identity_mismatch"
+  | "environment_spec_mismatch"
+  | "environment_unhealthy"
+  | "environment_creation_ambiguous"
+  | "operation_timeout"
+  | "operation_failed"
   | "environment_not_usable"
   | "environment_removed"
   | "environment_operation_failed"

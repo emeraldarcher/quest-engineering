@@ -5,6 +5,7 @@ import type {
   EnvironmentLease,
   EnvironmentSpec,
   ExecutionEnvironmentBackend,
+  HostLaunchDescriptor,
 } from "../src/execution-environment/types.ts";
 
 export interface ExecutionEnvironmentConformanceFixture {
@@ -13,6 +14,15 @@ export interface ExecutionEnvironmentConformanceFixture {
   secondarySpec: EnvironmentSpec;
   command(label: string): EnvironmentCommand;
   expectedResult(label: string): EnvironmentCommandResult;
+  containerRuntimeMode?: string | null;
+  recoverStartsStopped?: boolean;
+  pathsAreNamespaceLocal?: boolean;
+  specMismatchCode?: string;
+  assertLauncher?(
+    descriptor: HostLaunchDescriptor,
+    lease: EnvironmentLease,
+    requested: EnvironmentCommand,
+  ): void;
 }
 
 export interface ExecutionEnvironmentConformanceContext {
@@ -45,22 +55,27 @@ export function executionEnvironmentConformance(
   extensions: ExecutionEnvironmentConformanceExtensions = {},
 ): void {
   test(`${name} environment conformance: readiness and capabilities`, async () => {
-    const { backend } = await create();
+    const { backend, containerRuntimeMode = "unavailable" } = await create();
     const readiness = await backend.readiness();
     expect(readiness.backendKind).toBe(backend.kind);
     expect(readiness.status).toBe("ready");
     expect(readiness.ready).toBe(true);
     expect(readiness.provenance.contractVersion).toBe(1);
     expect(readiness.capabilities.length).toBeGreaterThan(0);
-    expect(
-      readiness.capabilities.find(
-        (capability) => capability.kind === "container_runtime",
-      )?.mode,
-    ).toBe("unavailable");
+    if (containerRuntimeMode !== null)
+      expect(
+        readiness.capabilities.find(
+          (capability) => capability.kind === "container_runtime",
+        )?.mode,
+      ).toBe(containerRuntimeMode);
   });
 
   test(`${name} environment conformance: ensure is exact and idempotent`, async () => {
-    const { backend, primarySpec } = await create();
+    const {
+      backend,
+      primarySpec,
+      specMismatchCode = "incompatible_environment_spec",
+    } = await create();
     const [first, second] = await Promise.all([
       backend.ensure(primarySpec),
       backend.ensure(structuredClone(primarySpec)),
@@ -71,13 +86,17 @@ export function executionEnvironmentConformance(
     const incompatible = structuredClone(primarySpec);
     incompatible.profile.digest = "sha256:incompatible";
     await expect(backend.ensure(incompatible)).rejects.toMatchObject({
-      code: "incompatible_environment_spec",
+      code: specMismatchCode,
       operation: "ensure",
     });
   });
 
   test(`${name} environment conformance: recover requires exact ref and spec`, async () => {
-    const { backend, primarySpec } = await create();
+    const {
+      backend,
+      primarySpec,
+      specMismatchCode = "incompatible_environment_spec",
+    } = await create();
     const lease = await backend.ensure(primarySpec);
     expect((await backend.recover(lease.ref, primarySpec)).ref).toEqual(
       lease.ref,
@@ -88,7 +107,7 @@ export function executionEnvironmentConformance(
     await expect(
       backend.recover(lease.ref, incompatible),
     ).rejects.toMatchObject({
-      code: "incompatible_environment_spec",
+      code: specMismatchCode,
       operation: "recover",
     });
     await expect(
@@ -103,7 +122,8 @@ export function executionEnvironmentConformance(
   });
 
   test(`${name} environment conformance: inspect, stop, and remove`, async () => {
-    const { backend, primarySpec } = await create();
+    const fixture = await create();
+    const { backend, primarySpec } = fixture;
     const lease = await backend.ensure(primarySpec);
     expect(await backend.inspect(lease.ref)).toMatchObject({
       ref: lease.ref,
@@ -117,23 +137,28 @@ export function executionEnvironmentConformance(
       state: "stopped",
       usable: false,
     });
-    await expect(backend.recover(lease.ref, primarySpec)).rejects.toMatchObject(
-      {
+    if (fixture.recoverStartsStopped) {
+      expect((await backend.recover(lease.ref, primarySpec)).ref).toEqual(
+        lease.ref,
+      );
+    } else {
+      await expect(
+        backend.recover(lease.ref, primarySpec),
+      ).rejects.toMatchObject({
         code: "environment_not_usable",
-      },
-    );
+      });
+    }
 
     const restarted = await backend.ensure(primarySpec);
     expect(restarted.ref).toEqual(lease.ref);
     await backend.remove(lease.ref);
     await backend.remove(lease.ref);
-    expect(await backend.inspect(lease.ref)).toMatchObject({
-      state: "removed",
-      usable: false,
+    await expect(backend.inspect(lease.ref)).rejects.toMatchObject({
+      code: "stale_environment_ref",
     });
     await expect(backend.recover(lease.ref, primarySpec)).rejects.toMatchObject(
       {
-        code: "environment_not_usable",
+        code: "stale_environment_ref",
       },
     );
   });
@@ -161,12 +186,15 @@ export function executionEnvironmentConformance(
   });
 
   test(`${name} environment conformance: launcher carries exact provenance`, async () => {
-    const { backend, primarySpec, command } = await create();
+    const fixture = await create();
+    const { backend, primarySpec, command } = fixture;
     const lease = await backend.ensure(primarySpec);
     const requested = command("launcher");
     const descriptor = await lease.launcher(requested);
     expect(descriptor.executable.length).toBeGreaterThan(0);
-    expect(descriptor.cwd).toBe(requested.cwd ?? lease.paths.workspace);
+    if (fixture.assertLauncher)
+      fixture.assertLauncher(descriptor, lease, requested);
+    else expect(descriptor.cwd).toBe(requested.cwd ?? lease.paths.workspace);
     expect(descriptor.io).toBe("pty");
     expect(descriptor.provenance).toEqual({
       kind: "execution_environment",
@@ -182,15 +210,17 @@ export function executionEnvironmentConformance(
   });
 
   test(`${name} environment conformance: concurrent Run environments stay distinct`, async () => {
+    const fixture = await create();
     const { backend, primarySpec, secondarySpec, command, expectedResult } =
-      await create();
+      fixture;
     const [primary, secondary] = await Promise.all([
       backend.ensure(primarySpec),
       backend.ensure(secondarySpec),
     ]);
     expect(primary.ref.runId).not.toBe(secondary.ref.runId);
     expect(primary.ref.environmentId).not.toBe(secondary.ref.environmentId);
-    expect(primary.paths.workspace).not.toBe(secondary.paths.workspace);
+    if (!fixture.pathsAreNamespaceLocal)
+      expect(primary.paths.workspace).not.toBe(secondary.paths.workspace);
 
     const [primaryResult, secondaryResult] = await Promise.all([
       primary.exec(command("primary")),

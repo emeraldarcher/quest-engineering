@@ -177,5 +177,6 @@ function copyCommand(command: EnvironmentCommand): EnvironmentCommand {
     args: [...command.args],
     ...(command.cwd ? { cwd: command.cwd } : {}),
     ...(command.environment ? { environment: { ...command.environment } } : {}),
+    ...(command.timeoutMs ? { timeoutMs: command.timeoutMs } : {}),
   };
 }

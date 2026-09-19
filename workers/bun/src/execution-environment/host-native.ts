@@ -128,13 +128,32 @@ export class HostNativeExecutionEnvironmentBackend extends TrackedExecutionEnvir
         stdout: "pipe",
         stderr: "pipe",
       });
+      let timedOut = false;
+      let forceTimer: ReturnType<typeof setTimeout> | null = null;
+      const timer = command.timeoutMs
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGTERM");
+            forceTimer = setTimeout(() => child.kill("SIGKILL"), 1_000);
+          }, command.timeoutMs)
+        : null;
       const [stdout, stderr, exitCode] = await Promise.all([
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
         child.exited,
-      ]);
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+        if (forceTimer) clearTimeout(forceTimer);
+      });
+      if (timedOut)
+        throw new EnvironmentBackendError(
+          "operation_timeout",
+          `Host-native command timed out after ${command.timeoutMs}ms.`,
+          "exec",
+        );
       return { exitCode, stdout, stderr };
     } catch (error) {
+      if (error instanceof EnvironmentBackendError) throw error;
       throw new EnvironmentBackendError(
         "environment_operation_failed",
         error instanceof Error ? error.message : String(error),

@@ -232,7 +232,8 @@ export abstract class TrackedExecutionEnvironmentBackend
     }
     if (
       canonicalJson(binding.ref) !== canonicalJson(requested) ||
-      currentKey !== requestedKey
+      currentKey !== requestedKey ||
+      (binding.state === "removed" && operation !== "remove")
     )
       throw new EnvironmentBackendError(
         "stale_environment_ref",
@@ -418,6 +419,7 @@ function copyCommand(command: EnvironmentCommand): EnvironmentCommand {
     args: [...command.args],
     ...(command.cwd ? { cwd: command.cwd } : {}),
     ...(command.environment ? { environment: { ...command.environment } } : {}),
+    ...(command.timeoutMs ? { timeoutMs: command.timeoutMs } : {}),
   };
 }
 
