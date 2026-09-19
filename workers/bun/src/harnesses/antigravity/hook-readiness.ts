@@ -51,15 +51,9 @@ export async function installAntigravityCommandHook(
 ): Promise<void> {
   const config = await readHookConfigOrEmpty(hookConfigPath);
   const named = optionalRecord(config[spec.name]) ?? {};
-  const events = Array.isArray(named[spec.event])
-    ? [...(named[spec.event] as unknown[])]
-    : [];
-  const expected = commandEntry(spec);
-  if (!events.some((entry) => sameCommandEntry(entry, expected)))
-    events.push(expected);
   const updated = {
     ...config,
-    [spec.name]: { ...named, [spec.event]: events },
+    [spec.name]: { ...named, [spec.event]: [commandEntry(spec)] },
   };
   await writeJsonAtomic(hookConfigPath, updated);
 }
@@ -116,7 +110,7 @@ export async function inspectAntigravityCommandHook(
   return {
     hookConfigPresent: true,
     namespacedHookPresent: named !== null,
-    eventRegistered: events.length > 0,
+    eventRegistered: events.length === 1,
     commandMatches: record?.command === spec.command,
     timeoutMatches: record?.timeout === spec.timeoutSeconds,
     namedHookCount: Object.keys(config).length,
