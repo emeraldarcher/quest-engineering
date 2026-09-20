@@ -1,4 +1,15 @@
-import { isAbsolute } from "node:path";
+import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import {
   type MaterializedEnvironment,
   type TrackedEnvironmentBinding,
@@ -8,6 +19,8 @@ import type {
   EnvironmentCapability,
   EnvironmentCommand,
   EnvironmentCommandResult,
+  EnvironmentFileRead,
+  EnvironmentFileWrite,
   EnvironmentPathMap,
   EnvironmentReadiness,
   EnvironmentRef,
@@ -161,6 +174,88 @@ export class HostNativeExecutionEnvironmentBackend extends TrackedExecutionEnvir
       );
     }
   }
+
+  protected override async writeFileInEnvironment(
+    binding: Readonly<TrackedEnvironmentBinding>,
+    input: EnvironmentFileWrite,
+  ): Promise<void> {
+    await assertHostTransferPath(binding.paths, input.path, false);
+    await mkdir(dirname(input.path), { recursive: true });
+    const temporary = `${input.path}.qe-transfer-${randomUUID()}`;
+    try {
+      await writeFile(temporary, input.data, {
+        mode: input.mode ?? 0o600,
+        flag: "wx",
+      });
+      await rename(temporary, input.path);
+      if (input.mode !== undefined) await chmod(input.path, input.mode);
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
+  }
+
+  protected override async readFileInEnvironment(
+    binding: Readonly<TrackedEnvironmentBinding>,
+    input: EnvironmentFileRead,
+  ): Promise<Uint8Array> {
+    await assertHostTransferPath(binding.paths, input.path, true);
+    const metadata = await lstat(input.path);
+    if (!metadata.isFile() || metadata.isSymbolicLink())
+      throw new EnvironmentBackendError(
+        "environment_operation_failed",
+        "Host-native transfer source must be a regular file.",
+        "transfer",
+      );
+    if (metadata.size > input.maxBytes)
+      throw new EnvironmentBackendError(
+        "environment_operation_failed",
+        `Environment file exceeds the ${input.maxBytes}-byte transfer bound.`,
+        "transfer",
+      );
+    return new Uint8Array(await readFile(input.path));
+  }
+}
+
+async function assertHostTransferPath(
+  paths: EnvironmentPathMap,
+  path: string,
+  mustExist: boolean,
+): Promise<void> {
+  const parent = dirname(path);
+  let ancestor = parent;
+  while (!existsSync(ancestor) && dirname(ancestor) !== ancestor)
+    ancestor = dirname(ancestor);
+  const existingAncestor = existsSync(ancestor) ? realpathSync(ancestor) : null;
+  const roots = Object.values(paths)
+    .filter((root) => existsSync(root))
+    .map((root) => realpathSync(root));
+  if (existingAncestor) {
+    const contained = roots.some((root) => {
+      const candidate = relative(root, existingAncestor);
+      return (
+        candidate === "" ||
+        (!candidate.startsWith("..") && !isAbsolute(candidate))
+      );
+    });
+    if (!contained)
+      throw new EnvironmentBackendError(
+        "environment_operation_failed",
+        "Host-native transfer resolves outside the lease path map.",
+        "transfer",
+      );
+  }
+  if (mustExist && !existsSync(path))
+    throw new EnvironmentBackendError(
+      "environment_operation_failed",
+      "Host-native transfer source does not exist.",
+      "transfer",
+    );
+  if (!isAbsolute(resolve(path)))
+    throw new EnvironmentBackendError(
+      "environment_operation_failed",
+      "Host-native transfer path is invalid.",
+      "transfer",
+    );
 }
 
 function definedProcessEnvironment(): Record<string, string> {

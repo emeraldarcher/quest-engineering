@@ -8,6 +8,8 @@ import type {
   EnvironmentCapability,
   EnvironmentCommand,
   EnvironmentCommandResult,
+  EnvironmentFileRead,
+  EnvironmentFileWrite,
   EnvironmentReadiness,
   EnvironmentRef,
   EnvironmentSpec,
@@ -32,6 +34,7 @@ export interface FakeExecutionEnvironmentBackendOptions {
 export class FakeExecutionEnvironmentBackend extends TrackedExecutionEnvironmentBackend {
   private readonly failures = new Map<EnvironmentBackendOperation, Error[]>();
   private readonly executionHistory = new Map<string, EnvironmentCommand[]>();
+  private readonly files = new Map<string, Uint8Array>();
   private readonly backendCapabilities: readonly EnvironmentCapability[];
 
   constructor(
@@ -159,6 +162,40 @@ export class FakeExecutionEnvironmentBackend extends TrackedExecutionEnvironment
       stderr: "",
     };
   }
+
+  protected override async writeFileInEnvironment(
+    binding: Readonly<TrackedEnvironmentBinding>,
+    input: EnvironmentFileWrite,
+  ): Promise<void> {
+    this.files.set(
+      fileKey(binding.ref, input.path),
+      new Uint8Array(input.data),
+    );
+  }
+
+  protected override async readFileInEnvironment(
+    binding: Readonly<TrackedEnvironmentBinding>,
+    input: EnvironmentFileRead,
+  ): Promise<Uint8Array> {
+    const data = this.files.get(fileKey(binding.ref, input.path));
+    if (!data)
+      throw new EnvironmentBackendError(
+        "environment_operation_failed",
+        `Fake environment file is missing: ${input.path}.`,
+        "transfer",
+      );
+    if (data.byteLength > input.maxBytes)
+      throw new EnvironmentBackendError(
+        "environment_operation_failed",
+        `Environment file exceeds the ${input.maxBytes}-byte transfer bound.`,
+        "transfer",
+      );
+    return new Uint8Array(data);
+  }
+}
+
+function fileKey(ref: EnvironmentRef, path: string): string {
+  return `${historyKey(ref)}\0${path}`;
 }
 
 function historyKey(ref: EnvironmentRef): string {

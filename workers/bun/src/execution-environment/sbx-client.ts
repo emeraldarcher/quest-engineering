@@ -66,6 +66,16 @@ export interface SbxClient {
     command: EnvironmentCommand,
     options?: SbxExecOptions,
   ): Promise<EnvironmentCommandResult>;
+  copyTo(
+    sandboxName: string,
+    hostPath: string,
+    guestPath: string,
+  ): Promise<void>;
+  copyFrom(
+    sandboxName: string,
+    guestPath: string,
+    hostPath: string,
+  ): Promise<void>;
   stop(sandboxName: string): Promise<void>;
   remove(sandboxName: string): Promise<void>;
   launcherArgs(
@@ -257,6 +267,26 @@ export class CliSbxClient implements SbxClient {
         redactArgs(args),
       );
     return result;
+  }
+
+  async copyTo(
+    sandboxName: string,
+    hostPath: string,
+    guestPath: string,
+  ): Promise<void> {
+    await this.invoke(["cp", hostPath, `${sandboxName}:${guestPath}`], {
+      timeoutMs: 5 * 60_000,
+    });
+  }
+
+  async copyFrom(
+    sandboxName: string,
+    guestPath: string,
+    hostPath: string,
+  ): Promise<void> {
+    await this.invoke(["cp", `${sandboxName}:${guestPath}`, hostPath], {
+      timeoutMs: 5 * 60_000,
+    });
   }
 
   async stop(sandboxName: string): Promise<void> {

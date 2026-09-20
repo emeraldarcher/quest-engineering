@@ -73,6 +73,28 @@ test("CLI errors redact environment values from retained command arguments", asy
   expect(JSON.stringify(error)).not.toContain("must-not-escape");
 });
 
+test("CLI client constructs exact host-to-guest and guest-to-host copy operations", async () => {
+  const calls: string[][] = [];
+  const client = new CliSbxClient("/fake/sbx", async (request) => {
+    calls.push([...request.args]);
+    return { exitCode: 0, stdout: "", stderr: "" };
+  });
+  await client.copyTo(
+    "qe-test",
+    "/worker/source.bundle",
+    "/qe/state/import.bundle",
+  );
+  await client.copyFrom(
+    "qe-test",
+    "/qe/state/export.bundle",
+    "/worker/export.bundle",
+  );
+  expect(calls).toEqual([
+    ["cp", "/worker/source.bundle", "qe-test:/qe/state/import.bundle"],
+    ["cp", "qe-test:/qe/state/export.bundle", "/worker/export.bundle"],
+  ]);
+});
+
 test("CLI launcher arguments preserve structured guest cwd and environment", () => {
   const client = new CliSbxClient("/fake/sbx");
   expect(

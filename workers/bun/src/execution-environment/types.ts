@@ -6,7 +6,8 @@ export type EnvironmentBackendOperation =
   | "stop"
   | "remove"
   | "launcher"
-  | "exec";
+  | "exec"
+  | "transfer";
 
 export interface EnvironmentProfileIdentity {
   /** Stable, versioned profile name, for example qe-execution-v1. */
@@ -118,6 +119,29 @@ export interface EnvironmentCommandResult {
   stderr: string;
 }
 
+export const MAX_ENVIRONMENT_FILE_BYTES = 512 * 1024 * 1024;
+
+export interface EnvironmentFileWrite {
+  /** Absolute path in the environment namespace. */
+  path: string;
+  data: Uint8Array;
+  /** POSIX permission bits applied after an atomic write when supported. */
+  mode?: number;
+}
+
+export interface EnvironmentFileRead {
+  /** Absolute path in the environment namespace. */
+  path: string;
+  /** Mandatory bound enforced before returning bytes to the Worker. */
+  maxBytes: number;
+}
+
+export interface EnvironmentFileReceipt {
+  path: string;
+  byteLength: number;
+  sha256: string;
+}
+
 export interface HostLaunchDescriptor {
   /** Host-visible launcher. It may be the command itself or a backend wrapper. */
   executable: string;
@@ -195,8 +219,14 @@ export interface EnvironmentLease {
   readonly paneEnvironment: Readonly<Record<string, string>>;
   /** Describe a host PTY launch into this environment. */
   launcher(command: EnvironmentCommand): Promise<HostLaunchDescriptor>;
-  /** Worker-controlled noninteractive execution, not an agent shell tool. */
+  /** Worker-controlled noninteractive execution as the environment user. */
   exec(command: EnvironmentCommand): Promise<EnvironmentCommandResult>;
+  /** Privileged control-plane execution. Never exposed as an agent tool. */
+  workerExec(command: EnvironmentCommand): Promise<EnvironmentCommandResult>;
+  /** Bounded, incarnation-fenced Worker-to-environment transfer. */
+  writeFile(input: EnvironmentFileWrite): Promise<EnvironmentFileReceipt>;
+  /** Bounded, incarnation-fenced environment-to-Worker transfer. */
+  readFile(input: EnvironmentFileRead): Promise<Uint8Array>;
 }
 
 /**

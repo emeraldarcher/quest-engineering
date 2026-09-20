@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type {
   SbxClient,
   SbxCreateRequest,
@@ -38,6 +41,7 @@ export interface FakeSbxState {
   rules: SbxPolicyRule[];
   sshForwarding: boolean;
   mcpServerCount: number;
+  files: Map<string, Uint8Array>;
 }
 
 export function fakeSbxState(): FakeSbxState {
@@ -70,6 +74,7 @@ export function fakeSbxState(): FakeSbxState {
     ],
     sshForwarding: false,
     mcpServerCount: 0,
+    files: new Map(),
   };
 }
 
@@ -161,13 +166,33 @@ export class FakeSbxClient implements SbxClient {
         "exec",
       ]);
     sandbox.status = "running";
+    const transferPath = command.environment?.QE_PATH;
+    const transferStaging = command.environment?.QE_STAGING;
+    if (transferPath && transferStaging) {
+      const staged = this.state.files.get(`${sandboxName}\0${transferStaging}`);
+      if (staged) {
+        this.state.files.set(`${sandboxName}\0${transferPath}`, staged);
+        this.state.files.delete(`${sandboxName}\0${transferStaging}`);
+      }
+    }
+    const transferData = transferPath
+      ? this.state.files.get(`${sandboxName}\0${transferPath}`)
+      : undefined;
+    const transferProof = transferData
+      ? JSON.stringify({
+          regular: true,
+          size: transferData.byteLength,
+          sha256: createHash("sha256").update(transferData).digest("hex"),
+        })
+      : null;
     const exitCode = command.executable.includes("false") ? 1 : 0;
     const result = {
       exitCode,
       stdout:
-        command.executable.includes("echo") && command.args.length > 0
+        transferProof ??
+        (command.executable.includes("echo") && command.args.length > 0
           ? `${command.args.join(" ")}\n`
-          : "",
+          : ""),
       stderr: exitCode === 0 ? "" : "synthetic failure\n",
     };
     if (exitCode !== 0 && !options.allowNonZero)
@@ -177,6 +202,33 @@ export class FakeSbxClient implements SbxClient {
         ["exec"],
       );
     return result;
+  }
+
+  async copyTo(
+    sandboxName: string,
+    hostPath: string,
+    guestPath: string,
+  ): Promise<void> {
+    if (!this.state.sandboxes.has(sandboxName))
+      throw new SbxClientError("operation_failed", "sandbox not found", ["cp"]);
+    this.state.files.set(
+      `${sandboxName}\0${guestPath}`,
+      new Uint8Array(await readFile(hostPath)),
+    );
+  }
+
+  async copyFrom(
+    sandboxName: string,
+    guestPath: string,
+    hostPath: string,
+  ): Promise<void> {
+    const data = this.state.files.get(`${sandboxName}\0${guestPath}`);
+    if (!data)
+      throw new SbxClientError("operation_failed", "sandbox file not found", [
+        "cp",
+      ]);
+    await mkdir(dirname(hostPath), { recursive: true });
+    await writeFile(hostPath, data);
   }
 
   async stop(sandboxName: string): Promise<void> {

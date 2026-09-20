@@ -1,9 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isAbsolute, relative, resolve as resolvePath } from "node:path";
 import type {
   EnvironmentBackendOperation,
   EnvironmentCapability,
   EnvironmentCommand,
   EnvironmentCommandResult,
+  EnvironmentFileRead,
+  EnvironmentFileReceipt,
+  EnvironmentFileWrite,
   EnvironmentInspection,
   EnvironmentLease,
   EnvironmentPathMap,
@@ -12,7 +16,10 @@ import type {
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
 } from "./types.ts";
-import { EnvironmentBackendError } from "./types.ts";
+import {
+  EnvironmentBackendError,
+  MAX_ENVIRONMENT_FILE_BYTES,
+} from "./types.ts";
 
 export interface TrackedEnvironmentBinding {
   ref: EnvironmentRef;
@@ -175,6 +182,23 @@ export abstract class TrackedExecutionEnvironmentBackend
     command: EnvironmentCommand,
   ): Promise<EnvironmentCommandResult>;
 
+  protected workerExecInEnvironment(
+    binding: Readonly<TrackedEnvironmentBinding>,
+    command: EnvironmentCommand,
+  ): Promise<EnvironmentCommandResult> {
+    return this.execInEnvironment(binding, command);
+  }
+
+  protected abstract writeFileInEnvironment(
+    binding: Readonly<TrackedEnvironmentBinding>,
+    input: EnvironmentFileWrite,
+  ): Promise<void>;
+
+  protected abstract readFileInEnvironment(
+    binding: Readonly<TrackedEnvironmentBinding>,
+    input: EnvironmentFileRead,
+  ): Promise<Uint8Array>;
+
   private lease(binding: TrackedEnvironmentBinding): EnvironmentLease {
     const ref = copyRef(binding.ref);
     return {
@@ -199,6 +223,37 @@ export abstract class TrackedExecutionEnvironmentBackend
           current,
           copyCommand(validateCommand(command)),
         );
+      },
+      workerExec: async (command) => {
+        await this.beforeOperation("exec");
+        const current = this.resolve(ref, "exec");
+        this.assertUsable(current, "exec");
+        return this.workerExecInEnvironment(
+          current,
+          copyCommand(validateCommand(command)),
+        );
+      },
+      writeFile: async (input) => {
+        await this.beforeOperation("transfer");
+        const current = this.resolve(ref, "transfer");
+        this.assertUsable(current, "transfer");
+        const request = validateFileWrite(current.paths, input);
+        await this.writeFileInEnvironment(current, request);
+        return fileReceipt(request.path, request.data);
+      },
+      readFile: async (input) => {
+        await this.beforeOperation("transfer");
+        const current = this.resolve(ref, "transfer");
+        this.assertUsable(current, "transfer");
+        const request = validateFileRead(current.paths, input);
+        const data = await this.readFileInEnvironment(current, request);
+        if (data.byteLength > request.maxBytes)
+          throw new EnvironmentBackendError(
+            "environment_operation_failed",
+            `Environment file exceeds the ${request.maxBytes}-byte transfer bound.`,
+            "transfer",
+          );
+        return new Uint8Array(data);
       },
     };
   }
@@ -385,6 +440,84 @@ function validateCommand(command: EnvironmentCommand): EnvironmentCommand {
     );
   canonicalJson(command);
   return command;
+}
+
+function validateFileWrite(
+  paths: EnvironmentPathMap,
+  input: EnvironmentFileWrite,
+): EnvironmentFileWrite {
+  validateTransferPath(paths, input.path);
+  if (
+    !(input.data instanceof Uint8Array) ||
+    input.data.byteLength > MAX_ENVIRONMENT_FILE_BYTES
+  )
+    throw new EnvironmentBackendError(
+      "environment_operation_failed",
+      `Environment file transfer data must be bytes no larger than ${MAX_ENVIRONMENT_FILE_BYTES}.`,
+      "transfer",
+    );
+  if (
+    input.mode !== undefined &&
+    (!Number.isSafeInteger(input.mode) || input.mode < 0 || input.mode > 0o777)
+  )
+    throw new EnvironmentBackendError(
+      "environment_operation_failed",
+      "Environment file mode must be valid POSIX permission bits.",
+      "transfer",
+    );
+  return {
+    path: input.path,
+    data: new Uint8Array(input.data),
+    ...(input.mode === undefined ? {} : { mode: input.mode }),
+  };
+}
+
+function validateFileRead(
+  paths: EnvironmentPathMap,
+  input: EnvironmentFileRead,
+): EnvironmentFileRead {
+  validateTransferPath(paths, input.path);
+  if (
+    !Number.isSafeInteger(input.maxBytes) ||
+    input.maxBytes < 0 ||
+    input.maxBytes > MAX_ENVIRONMENT_FILE_BYTES
+  )
+    throw new EnvironmentBackendError(
+      "environment_operation_failed",
+      "Environment file transfer bound must be a non-negative safe integer.",
+      "transfer",
+    );
+  return { ...input };
+}
+
+function validateTransferPath(paths: EnvironmentPathMap, path: string): void {
+  if (!isAbsolute(path))
+    throw new EnvironmentBackendError(
+      "environment_operation_failed",
+      "Environment transfer paths must be absolute.",
+      "transfer",
+    );
+  const target = resolvePath(path);
+  const contained = Object.values(paths).some((root) => {
+    const candidate = relative(resolvePath(root), target);
+    return (
+      candidate !== "" && !candidate.startsWith("..") && !isAbsolute(candidate)
+    );
+  });
+  if (!contained)
+    throw new EnvironmentBackendError(
+      "environment_operation_failed",
+      "Environment transfer path is outside the lease path map or names a path-map root.",
+      "transfer",
+    );
+}
+
+function fileReceipt(path: string, data: Uint8Array): EnvironmentFileReceipt {
+  return {
+    path,
+    byteLength: data.byteLength,
+    sha256: createHash("sha256").update(data).digest("hex"),
+  };
 }
 
 function ownerKey(workerId: string, runId: string): string {

@@ -96,6 +96,34 @@ test("Fake environment backend injects each operation failure once", async () =>
   expect((await backend.inspect(lease.ref)).state).toBe("running");
 });
 
+test("Fake environment backend fences bounded file transfer by incarnation and path map", async () => {
+  const backend = new FakeExecutionEnvironmentBackend();
+  const first = await backend.ensure(spec("run-transfer"));
+  const path = `${first.paths.state}/imports/source.bundle`;
+  const data = new TextEncoder().encode("private bundle");
+  expect(await first.writeFile({ path, data, mode: 0o600 })).toMatchObject({
+    path,
+    byteLength: data.byteLength,
+  });
+  expect(await first.readFile({ path, maxBytes: data.byteLength })).toEqual(
+    data,
+  );
+  await expect(first.readFile({ path, maxBytes: 1 })).rejects.toMatchObject({
+    code: "environment_operation_failed",
+    operation: "transfer",
+  });
+  await expect(
+    first.writeFile({ path: "/host/escape", data }),
+  ).rejects.toMatchObject({ operation: "transfer" });
+
+  await backend.remove(first.ref);
+  await backend.ensure(spec("run-transfer"));
+  await expect(first.readFile({ path, maxBytes: 100 })).rejects.toMatchObject({
+    code: "stale_environment_ref",
+    operation: "transfer",
+  });
+});
+
 test("Fake environment backend keeps exec history per incarnation", async () => {
   const backend = new FakeExecutionEnvironmentBackend();
   const first = await backend.ensure(spec("run-history-1"));

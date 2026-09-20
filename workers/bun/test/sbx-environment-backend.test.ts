@@ -92,6 +92,21 @@ test("creation disables ambient credential variables and carries only ownership 
   expect(environment).not.toHaveProperty("QE_WORKER_TOKEN");
 });
 
+test("lease transfers verify bytes and reject paths outside the canonical guest map", async () => {
+  const fixture = await setup();
+  const lease = await fixture.backend.ensure(sbxSpec("run-transfer"));
+  const path = `${lease.paths.state}/imports/source.bundle`;
+  const data = new TextEncoder().encode("bundle bytes");
+  expect(await lease.writeFile({ path, data, mode: 0o600 })).toMatchObject({
+    path,
+    byteLength: data.byteLength,
+  });
+  expect(await lease.readFile({ path, maxBytes: 1024 })).toEqual(data);
+  await expect(
+    lease.writeFile({ path: "/host/escape", data }),
+  ).rejects.toMatchObject({ operation: "transfer" });
+});
+
 test("creation response loss reconciles the deterministic physical identity", async () => {
   const fixture = await setup();
   fixture.state.loseCreateResponse = true;

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join, posix, resolve } from "node:path";
 import type {
   SbxClient,
   SbxNativeVersion,
@@ -32,6 +33,8 @@ import type {
   EnvironmentBackendOperation,
   EnvironmentCapability,
   EnvironmentCommand,
+  EnvironmentFileRead,
+  EnvironmentFileWrite,
   EnvironmentInspection,
   EnvironmentLease,
   EnvironmentReadiness,
@@ -40,7 +43,10 @@ import type {
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
 } from "./types.ts";
-import { EnvironmentBackendError } from "./types.ts";
+import {
+  EnvironmentBackendError,
+  MAX_ENVIRONMENT_FILE_BYTES,
+} from "./types.ts";
 
 export interface SbxExecutionEnvironmentBackendOptions {
   workerId: string;
@@ -58,7 +64,7 @@ export interface SbxExecutionEnvironmentBackendOptions {
   ownerWaitAttempts?: number;
 }
 
-/** Durable Run-owned Docker Sandboxes lifecycle. Not wired to dispatch in Phase 2. */
+/** Durable Run-owned Docker Sandboxes lifecycle. Not wired to dispatch through Phase 3. */
 export class SbxExecutionEnvironmentBackend
   implements ExecutionEnvironmentBackend
 {
@@ -539,12 +545,191 @@ export class SbxExecutionEnvironmentBackend
           throw normalize(error, "exec");
         }
       },
+      workerExec: async (command) => {
+        validateCommand(command);
+        const current = await this.requireUsableLease(record, "exec");
+        try {
+          return await this.client.exec(
+            current.displayName,
+            withDefaultCwd(command),
+            { allowNonZero: true, user: "root" },
+          );
+        } catch (error) {
+          throw normalize(error, "exec");
+        }
+      },
+      writeFile: async (input) => {
+        validateFileWrite(input);
+        return this.writeLeaseFile(record, input);
+      },
+      readFile: async (input) => {
+        validateFileRead(input);
+        return this.readLeaseFile(record, input);
+      },
     };
+  }
+
+  private async writeLeaseFile(
+    leased: DurableEnvironmentRecord,
+    input: EnvironmentFileWrite,
+  ): Promise<{ path: string; byteLength: number; sha256: string }> {
+    const current = await this.requireUsableLease(leased, "transfer");
+    const expected = createHash("sha256").update(input.data).digest("hex");
+    const directory = await this.transferDirectory();
+    const localPath = join(directory, "payload");
+    const guestTransferRoot = `${posix.dirname(SBX_GUEST_PATHS.state)}/.qe-transfers`;
+    const guestStagingPath = `${guestTransferRoot}/${randomUUID()}`;
+    try {
+      await writeFile(localPath, input.data, { flag: "wx", mode: 0o600 });
+      await this.client.exec(
+        current.displayName,
+        {
+          executable: "/usr/bin/install",
+          args: [
+            "-d",
+            "-m",
+            "0700",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            guestTransferRoot,
+          ],
+        },
+        { user: "root" },
+      );
+      await this.client.exec(
+        current.displayName,
+        {
+          executable: "/usr/bin/python3",
+          args: [
+            "-c",
+            "import os,pathlib; root=pathlib.Path(os.environ['QE_ROOT']); parent=pathlib.Path(os.environ['QE_PARENT']); rel=parent.relative_to(root); current=root\nfor part in rel.parts:\n current=current/part\n if current.is_symlink(): raise RuntimeError('transfer parent contains symlink')\n current.mkdir(mode=0o700,exist_ok=True)\n if not current.is_dir(): raise RuntimeError('transfer parent is not directory')",
+          ],
+          environment: {
+            QE_PARENT: posix.dirname(input.path),
+            QE_ROOT: transferPathRoot(input.path),
+          },
+        },
+        { user: "root" },
+      );
+      await this.client.copyTo(
+        current.displayName,
+        localPath,
+        guestStagingPath,
+      );
+      const verification = await this.client.exec(
+        current.displayName,
+        {
+          executable: "/usr/bin/python3",
+          args: [
+            "-c",
+            "import hashlib,json,os,pathlib,stat; src=pathlib.Path(os.environ['QE_STAGING']); p=pathlib.Path(os.environ['QE_PATH']); s=src.lstat(); ok=stat.S_ISREG(s.st_mode) and not stat.S_ISLNK(s.st_mode); os.replace(src,p); os.chown(p,1000,1000); os.chmod(p,int(os.environ['QE_MODE'],8)); s=p.lstat(); print(json.dumps({'regular':ok and stat.S_ISREG(s.st_mode) and not stat.S_ISLNK(s.st_mode),'size':s.st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()},separators=(',',':')))",
+          ],
+          environment: {
+            QE_MODE: (input.mode ?? 0o600).toString(8),
+            QE_PATH: input.path,
+            QE_STAGING: guestStagingPath,
+          },
+        },
+        { user: "root" },
+      );
+      const proof = parseTransferProof(verification.stdout);
+      if (
+        !proof.regular ||
+        proof.size !== input.data.byteLength ||
+        proof.sha256 !== expected
+      )
+        throw new EnvironmentBackendError(
+          "environment_operation_failed",
+          "SBX write transfer hash or file identity did not verify.",
+          "transfer",
+        );
+      await this.requireUsableLease(leased, "transfer");
+      return {
+        path: input.path,
+        byteLength: input.data.byteLength,
+        sha256: expected,
+      };
+    } catch (error) {
+      throw normalize(error, "transfer");
+    } finally {
+      await this.requireUsableLease(leased, "transfer")
+        .then((exact) =>
+          this.client.exec(
+            exact.displayName,
+            { executable: "/bin/rm", args: ["-f", guestStagingPath] },
+            { user: "root", allowNonZero: true },
+          ),
+        )
+        .catch(() => undefined);
+      await rm(directory, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  private async readLeaseFile(
+    leased: DurableEnvironmentRecord,
+    input: EnvironmentFileRead,
+  ): Promise<Uint8Array> {
+    const current = await this.requireUsableLease(leased, "transfer");
+    const directory = await this.transferDirectory();
+    const localPath = join(directory, "payload");
+    try {
+      const verification = await this.client.exec(
+        current.displayName,
+        {
+          executable: "/usr/bin/python3",
+          args: [
+            "-c",
+            "import hashlib,json,os,pathlib,stat; p=pathlib.Path(os.environ['QE_PATH']); s=p.lstat(); ok=stat.S_ISREG(s.st_mode) and not stat.S_ISLNK(s.st_mode); print(json.dumps({'regular':ok,'size':s.st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest() if ok else ''},separators=(',',':')))",
+          ],
+          environment: { QE_PATH: input.path },
+        },
+        { user: "root" },
+      );
+      const proof = parseTransferProof(verification.stdout);
+      if (!proof.regular || proof.size > input.maxBytes)
+        throw new EnvironmentBackendError(
+          "environment_operation_failed",
+          proof.regular
+            ? `Environment file exceeds the ${input.maxBytes}-byte transfer bound.`
+            : "SBX read transfer source is not a regular file.",
+          "transfer",
+        );
+      await this.client.copyFrom(current.displayName, input.path, localPath);
+      const data = new Uint8Array(await readFile(localPath));
+      const actual = createHash("sha256").update(data).digest("hex");
+      if (data.byteLength !== proof.size || actual !== proof.sha256)
+        throw new EnvironmentBackendError(
+          "environment_operation_failed",
+          "SBX read transfer changed during copy or failed hash verification.",
+          "transfer",
+        );
+      await this.requireUsableLease(leased, "transfer");
+      return data;
+    } catch (error) {
+      throw normalize(error, "transfer");
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  private async transferDirectory(): Promise<string> {
+    const root = join(resolve(this.options.dataRoot), "environment-transfers");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    return mkdtemp(join(root, "transfer-"));
   }
 
   private async requireUsableLease(
     leased: DurableEnvironmentRecord,
-    operation: Extract<EnvironmentBackendOperation, "launcher" | "exec">,
+    operation: Extract<
+      EnvironmentBackendOperation,
+      "launcher" | "exec" | "transfer"
+    >,
   ): Promise<DurableEnvironmentRecord> {
     const ref = refFor(leased);
     const current = this.requireCurrentRef(ref, operation);
@@ -712,10 +897,13 @@ export class SbxExecutionEnvironmentBackend
         "Resource policy is not the pinned Phase-2 SBX policy.",
         operation,
       );
-    if (spec.workspace.materialization.kind !== "disposable_fixture")
+    if (
+      spec.workspace.materialization.kind !== "disposable_fixture" &&
+      spec.workspace.materialization.kind !== "frozen_import"
+    )
       throw new EnvironmentBackendError(
         "environment_spec_mismatch",
-        "Phase-2 SBX supports disposable fixture workspaces only.",
+        "SBX supports disposable fixtures and Worker-controlled frozen imports only.",
         operation,
       );
     if (
@@ -1081,6 +1269,106 @@ function validateCommand(command: EnvironmentCommand): void {
       "operation_failed",
       "Environment command timeout must be a positive integer.",
     );
+}
+
+function validateFileWrite(input: EnvironmentFileWrite): void {
+  validateTransferPath(input.path);
+  if (
+    !(input.data instanceof Uint8Array) ||
+    input.data.byteLength > MAX_ENVIRONMENT_FILE_BYTES
+  )
+    throw new EnvironmentBackendError(
+      "operation_failed",
+      `Environment transfer data must be bytes no larger than ${MAX_ENVIRONMENT_FILE_BYTES}.`,
+      "transfer",
+    );
+  if (
+    input.mode !== undefined &&
+    (!Number.isSafeInteger(input.mode) || input.mode < 0 || input.mode > 0o777)
+  )
+    throw new EnvironmentBackendError(
+      "operation_failed",
+      "Environment transfer mode is invalid.",
+      "transfer",
+    );
+}
+
+function validateFileRead(input: EnvironmentFileRead): void {
+  validateTransferPath(input.path);
+  if (
+    !Number.isSafeInteger(input.maxBytes) ||
+    input.maxBytes < 0 ||
+    input.maxBytes > MAX_ENVIRONMENT_FILE_BYTES
+  )
+    throw new EnvironmentBackendError(
+      "operation_failed",
+      "Environment transfer bound is invalid.",
+      "transfer",
+    );
+}
+
+function validateTransferPath(path: string): void {
+  const normalized = posix.normalize(path);
+  const contained = Object.values(SBX_GUEST_PATHS).some(
+    (root) => normalized.startsWith(`${root}/`) && normalized !== root,
+  );
+  if (!posix.isAbsolute(path) || normalized !== path || !contained)
+    throw new EnvironmentBackendError(
+      "operation_failed",
+      "Environment transfer path is outside the canonical lease path map.",
+      "transfer",
+    );
+}
+
+function transferPathRoot(path: string): string {
+  const matches = Object.values(SBX_GUEST_PATHS)
+    .filter((root) => path.startsWith(`${root}/`))
+    .sort((left, right) => right.length - left.length);
+  const root = matches[0];
+  if (!root)
+    throw new EnvironmentBackendError(
+      "operation_failed",
+      "Environment transfer path has no canonical root.",
+      "transfer",
+    );
+  return root;
+}
+
+function parseTransferProof(value: string): {
+  regular: boolean;
+  size: number;
+  sha256: string;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new EnvironmentBackendError(
+      "operation_failed",
+      "SBX transfer proof was malformed.",
+      "transfer",
+    );
+  const proof = parsed as Record<string, unknown>;
+  if (
+    typeof proof.regular !== "boolean" ||
+    typeof proof.size !== "number" ||
+    !Number.isSafeInteger(proof.size) ||
+    proof.size < 0 ||
+    typeof proof.sha256 !== "string"
+  )
+    throw new EnvironmentBackendError(
+      "operation_failed",
+      "SBX transfer proof fields were malformed.",
+      "transfer",
+    );
+  return {
+    regular: proof.regular,
+    size: proof.size,
+    sha256: proof.sha256,
+  };
 }
 
 function normalize(
