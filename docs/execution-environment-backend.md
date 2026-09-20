@@ -2,9 +2,9 @@
 
 ## Status and scope
 
-Phase 1 introduced the Worker-internal execution-environment contract, deterministic test backend, conformance suite, and an un-wired host-native compatibility adapter. Phase 2 adds a real, durable `SbxExecutionEnvironmentBackend` for disposable fixtures and exercises it against Docker Sandboxes. It remains deliberately un-wired: production dispatch, Worker Protocol v7, Pi, Antigravity, Herdr, private Git materialization, the control bridge, and Product databases are unchanged.
+Phase 1 introduced the Worker-internal execution-environment contract, deterministic test backend, conformance suite, and an un-wired host-native compatibility adapter. Phase 2 added a real, durable `SbxExecutionEnvironmentBackend` and exercised it against Docker Sandboxes. Phase 3 adds the Worker-local private-Git workspace layer described in [Private Git inside Run-owned execution environments](private-git-sbx.md). Production dispatch, Worker Protocol v7, Pi, Antigravity, Herdr, the control bridge, Product databases, and Delivery remain unchanged.
 
-The target production topology remains one Run-scoped SBX microVM. Phase 2 proves the lifecycle, ownership, isolation, private-Docker, exec, and PTY-launch boundaries. Phase 3 must explicitly integrate those boundaries; the presence of the backend does not change current production behavior.
+The target production topology remains one Run-scoped SBX microVM. Phase 2 proves lifecycle, ownership, isolation, private-Docker, exec, and PTY-launch boundaries. Phase 3 proves frozen source import, private repository/worktree state, checkpoint/export/import, restart persistence, and environment-replacement restore. Neither backend nor workspace infrastructure changes current production behavior merely by existing.
 
 ## Orthogonal responsibilities
 
@@ -104,14 +104,18 @@ An `EnvironmentLease` is a verified currently usable binding. It exposes:
 - `EnvironmentPathMap` for workspace, state, control, HOME, cache, and temp in the environment namespace;
 - environment capabilities;
 - pane/process environment variables;
-- `launcher(command)`; and
-- `exec(command)`.
+- `launcher(command)`;
+- environment-user `exec(command)`;
+- privileged Worker-only `workerExec(command)`; and
+- bounded, hash-verified `writeFile`/`readFile` transfer.
 
-Harnesses must consume the path map instead of reconstructing host or guest paths. HostNative maps these entries to existing absolute host paths. SBX maps them to namespace-local guest paths (`/qe/workspaces/default`, `/qe/state`, `/qe/control`, `/home/agent`, its cache, and `/tmp/qe`). Identical guest path strings in two leases refer to different microVM namespaces.
+Harnesses must consume the path map instead of reconstructing host or guest paths. HostNative maps these entries to existing absolute host paths. SBX maps them to namespace-local guest paths (`/qe/workspaces/default`, `/qe/state`, `/qe/control`, `/home/agent`, its cache, and `/tmp/qe`). Identical guest path strings in two leases refer to different microVM namespaces. The Phase-3 workspace layer derives repository/workspace roots from this map and returns a `PrivateGitPathMap`; a harness must not guess `/qe/git` or physical-lineage paths.
 
 `launcher` returns a `HostLaunchDescriptor` containing a host-visible executable, arguments, working directory, environment overlay, PTY requirement, and exact environment/profile provenance. HostNative returns the direct command. SBX returns a Worker-controlled Bun wrapper that rechecks native UUID/name identity, enters the guest with structured arguments, requests interactive TTY mode, forwards resize/termination signals, and repairs an initially zero host PTY size before launch. Guest `HOME` is kept out of the host launcher environment. The descriptor exposes no SBX-specific shape to Herdr or an agent harness.
 
-`exec` is Worker-controlled, noninteractive command execution for setup and deterministic probes. It preserves argv, cwd, environment, stdout, stderr, and nonzero exit status. Timeouts terminate the CLI operation and escalate to a forced kill after a grace period. It is not the coding agent's shell/tool interface and grants no model authority.
+`exec` is Worker-controlled, noninteractive command execution as the environment user for setup and deterministic probes. `workerExec` is the privileged control-plane counterpart used for filesystem ownership and checkpoint setup; it is never an agent tool. Both preserve structured argv, cwd, environment, stdout, stderr, and nonzero exit status. Timeouts terminate the CLI operation and escalate to a forced kill after a grace period.
+
+`writeFile` and `readFile` provide bounded binary transfer only below a lease path-map root. SBX uses `sbx cp`, regular-file and path checks, a pre/post exact-incarnation fence, byte bounds, and SHA-256 verification; HostNative applies containment and symlink checks; Fake keeps bytes per incarnation. This generic mechanism exists because source/checkpoint transfer is an environment concern, while bundle/ref semantics remain in the private-Git workspace layer.
 
 ## Capabilities and profile identity
 
@@ -164,7 +168,7 @@ The backend never adopts by name alone after physical binding. Missing environme
 
 Environment verification proves the canonical layout and private HOME sentinel; absence of host `/Users` and unexpected virtiofs mounts; no host Docker socket or usable SSH agent; disabled ambient credential values; empty ambient MCP and active global/scoped deny-all network policy plus a harmless denied-egress probe; CPU and memory bounds; private Docker-root identity and disk size; and a scratch child-container proof. The v1 disposable resource policy enforces 1 CPU, 1 GiB memory, and a 1 GiB private Docker disk. SBX v0.43 does not expose enforceable root-disk or PID limits, so those limitations appear as inspection diagnostics rather than false capabilities.
 
-Phase 2 accepts only `disposable_fixture` workspace specs with no credential grants, egress requirements, or control channels. It does not clone/import repositories, create private Git state, launch Pi/Antigravity, attach Herdr, relay MCP/control traffic, or perform artifact export.
+The SBX backend accepts `disposable_fixture` and Worker-controlled `frozen_import` workspace specs with no credential grants, egress requirements, or control channels. The backend itself does not interpret repositories: Phase 3 layers source bundles, private Git, worktrees, and exports above a verified lease. It still does not launch Pi/Antigravity, attach Herdr, relay MCP/control traffic, or wire production artifact completion.
 
 ## Conformance suite
 
@@ -182,10 +186,12 @@ The reusable contract suite runs against Fake, HostNative, and SBX (with explici
 - noninteractive exec; and
 - concurrent Run identity/path/exec separation.
 
-The suite retains opt-in physical-proof extension points. Phase-2 SBX adds deterministic tests for readiness/version policy, SQLite migration/history, process-race reconciliation, restart adoption, create-response loss, stale/missing/conflicting identities, verifier fail-closed behavior, private Docker proof, network/credential checks, command timeout/redaction, and launcher construction. An opt-in `QE_LIVE_SBX=1 bun test test/sbx-live.test.ts` creates one disposable real sandbox and proves lifecycle, inspection, isolation capabilities, private Docker, generic exec, nonzero PTY dimensions, stopped recovery, and cleanup. It performs no paid inference.
+The suite retains opt-in physical-proof extension points. SBX deterministic tests cover readiness/version policy, SQLite migration/history, process-race reconciliation, restart adoption, create-response loss, stale/missing/conflicting identities, verifier fail-closed behavior, private Docker proof, network/credential checks, command timeout/redaction, launcher construction, and bounded transfer. `QE_LIVE_SBX=1 bun test test/sbx-live.test.ts` proves the Phase-2 lifecycle/PTY boundary. `QE_LIVE_SBX=1 bun test test/private-git-live.test.ts` proves Phase-3 import, private Git/worktrees, read-only enforcement, committed and uncommitted changes, restart persistence, checkpoint/export/import, replacement restore, source immutability, and cleanup. Neither test launches a harness or performs paid inference.
 
-## Phase-3 production gate
+## Phase-4 production gate
 
-Phase 3 may wire leases into dispatch only after it defines private source/Git import and export, control-relay translation, credential and narrow egress grants, scheduler capacity admission, startup reconciliation of all durable records, and failure/operator surfaces. Existing QE recovery remains authoritative; the backend must not authorize a new Attempt, lineage, prompt, or model action. `AgentHarness` and `TerminalSessionBackend` must continue to receive only generic paths, launch descriptors, and provenance rather than SBX lifecycle concepts.
+Phase 3 deliberately stops before production dispatch. Private source/Git import and export now exist, but Phase 4 still must integrate the returned physical-lineage path/access contract, attempt-scoped control translation, credentials and narrow provider egress, scheduler capacity, startup reconciliation, completion/export ordering, and operator-visible failure handling. Existing QE recovery remains authoritative; an environment or Git restore must not authorize a new Attempt, lineage, prompt, model action, semantic Artifact, or Delivery.
 
-Until that gate is approved, production dispatch continues to use the current host worktree/process path. The SBX backend has no import from dispatch, harness, Herdr, protocol, server, or UI modules.
+`AgentHarness` and `TerminalSessionBackend` must continue to receive generic paths, launch descriptors, access mode, and provenance rather than SBX lifecycle or bundle mechanics. Read-only launches must preserve the Phase-3 path/permission boundary; stronger concurrent-lineage isolation should use per-lineage execution principals. Semantic cross-harness handoff remains Artifact-only.
+
+Until that gate is approved, production dispatch continues to use the current host worktree/process path. SBX/private-Git modules have no import from dispatch, harness, Herdr, protocol, server, or UI modules.

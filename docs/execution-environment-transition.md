@@ -2,9 +2,9 @@
 
 ## Status
 
-This document records the preservation boundary and phased transition. Phase 1 on `phase1/execution-environment-backend` added the Worker-internal contract, Fake backend, conformance suite, documentation, and un-wired HostNative adapter. Phase 2, based on Phase-1 commit `f4298557af70356eb8cef775ea0ac4b8cc55dbcc`, adds an un-wired durable SBX implementation for disposable fixtures. Neither phase authorizes cleanup of the original dirty checkout, retained Run worktrees, Worker state, Herdr sessions, or databases.
+This document records the preservation boundary and phased transition. Phase 1 on `phase1/execution-environment-backend` added the Worker-internal contract, Fake backend, conformance suite, documentation, and un-wired HostNative adapter. Phase 2, based on Phase-1 commit `f4298557af70356eb8cef775ea0ac4b8cc55dbcc`, added an un-wired durable SBX implementation. Phase 3 adds un-wired Worker-local private Git materialization, worktrees, checkpoint/export/import, and replacement restore. None of these phases authorizes cleanup of the original dirty checkout, retained Run worktrees, Worker state, Herdr sessions, or databases.
 
-The original clean implementation baseline remains commit `430908ecf216f796ea2e038615e9b21c00f71a53` on `preserve/generic-qe-post-multiharness`. No preservation/reference branch is merged. See [execution environment backend architecture](execution-environment-backend.md) for the implemented contract, ownership authority, security checks, and remaining Phase-3 gate.
+The original clean implementation baseline remains commit `430908ecf216f796ea2e038615e9b21c00f71a53` on `preserve/generic-qe-post-multiharness`. No preservation/reference branch is merged. See [execution environment backend architecture](execution-environment-backend.md) for the implemented contract, ownership authority, security checks, and remaining Phase-4 gate.
 
 ## Authoritative migration history
 
@@ -64,7 +64,7 @@ Add `ExecutionEnvironmentBackend` as a third orthogonal concern:
 
 Herdr remains host-native and attaches to the backend-selected interactive command. `HarnessControlAuthority` remains Worker-owned; only a narrow attempt-scoped MCP/control relay enters the environment.
 
-The intended production backend is SBX with one microVM per Run and a private filesystem, Git state, HOME/cache/temp, container runtime, harness processes, and controlled bridge/network/credentials. Phase 2 implements lifecycle, persistence, restart adoption, generic exec, host launcher wrapping, private HOME/filesystem checks, deny-all networking, disabled ambient credentials, and private Docker proof for disposable fixtures. It does not implement private Git, bridge credentials, provider egress, or production execution. The generic contract deliberately exposes no SBX CLI naming or Docker-specific object shape.
+The intended production backend is SBX with one microVM per Run and a private filesystem, Git state, HOME/cache/temp, container runtime, harness processes, and controlled bridge/network/credentials. Phase 2 implements lifecycle, persistence, restart adoption, generic exec, host launcher wrapping, private HOME/filesystem checks, deny-all networking, disabled ambient credentials, and private Docker proof. Phase 3 adds generic bounded transfer/Worker control execution plus private Git above the lease. Bridge credentials, provider egress, harness launch, and production execution remain absent. The generic contract deliberately exposes no SBX CLI naming or Docker-specific object shape.
 
 ## Run-scoped environment contract
 
@@ -107,7 +107,9 @@ Phase 1 freezes the generic contract and ownership rules. It adds deterministic 
 
 Phase 2 implements but does not wire `SbxExecutionEnvironmentBackend`. Its Worker-local SQLite store commits creation intent before SBX mutation and retains incarnation history; it is separate from Product/PostgreSQL protocol state and requires no Product migration. The immutable v1 profile has a tested v0.43.0 compatibility floor, no host mounts, skills off, empty MCP, disabled credential variables, scoped deny-all policy, fixed guest paths, and conservative 1-CPU/1-GiB/private-Docker resources. Adoption requires durable record + native UUID/name/agent + guest marker. Real disposable tests prove private Docker child execution and PTY sizing without model inference.
 
-Phase 3 is the earliest production-integration phase. It must design private source/Git materialization and export, attempt-scoped control translation, credential refresh/revocation, exact egress grants, scheduler capacity, whole-store startup reconciliation, and operator-visible failure handling before dispatch can acquire a lease. It must not reinterpret a backend recovery as QE authorization or allow an environment to select an Attempt, lineage, prompt, model, or Delivery.
+Phase 3 implements and validates private source/Git infrastructure but deliberately does not integrate production. One Run environment owns one private bare repository domain; each PhysicalLineage owns a registered worktree. Exact source bundles support local-only commits without a network clone. Separate index/result trees preserve committed, staged, unstaged, and non-ignored untracked work. A verified four-ref checkpoint bundle plus canonical manifest is the authoritative environment-replacement and future Delivery handoff. See [Private Git inside Run-owned execution environments](private-git-sbx.md).
+
+Phase 4 is the earliest possible production-integration phase. It must integrate physical-lineage path/access, attempt-scoped control translation, credential refresh/revocation, exact egress grants, scheduler capacity, whole-store startup reconciliation, and operator-visible failure handling before dispatch can acquire a lease. It must order `qe_complete_step` behind physical export verification and must not reinterpret backend/Git recovery as QE authorization or allow an environment to select an Attempt, lineage, prompt, model, semantic handoff, or Delivery.
 
 The discovery/actionability feature must be ported later in small semantic commits after the isolated environment and private-Git model exist. The host-native Antigravity archive remains reference-only. Every phase must preserve the generic lifecycle and recovery tests and pass the applicable repository gates.
 
