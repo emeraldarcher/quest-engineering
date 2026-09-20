@@ -6,8 +6,10 @@
 Quest Engineering Worker
     -> AgentHarness
          -> PiHarness
+              -> SbxRunExecutionManager
+                   -> Run-owned SBX / private Git / guest Pi
     -> TerminalSessionBackend
-         -> HerdrTerminalBackend
+         -> HerdrTerminalBackend -> provenance-bound SBX PTY launcher
 ```
 
 Quest Engineering owns orchestration: Run, StepOccurrence, Attempt, Member, Worker-slot, context-lineage and worktree occupancy. `AgentHarness` owns coding-agent interaction and supplies rich provider-native assistance information where available. `TerminalSessionBackend` owns durable terminal topology, process transport, recovery, attachment, and actual terminal-agent blocked state. Pi, Claude Code, Codex and Antigravity are harnesses; Herdr is terminal/session infrastructure and is not a coding-agent provider. Quest Engineering correlates the harness and backend signals into one HumanAttention lifecycle per blocked episode.
@@ -24,7 +26,7 @@ The Worker contract advertises a harness kind, display name and independent capa
 - structured session/attention events;
 - provider-native session identity when it is safe to retain.
 
-`PiHarness` adapts the existing Pi lifecycle without changing fresh/continuation selection, result envelopes, output collection or crash recovery. `FakeHarness` deterministically simulates running, attention, resume, completion, interruption, failure/closure and recovery without invoking a provider.
+`PiHarness` adapts the existing Pi lifecycle without changing fresh/continuation selection, result envelopes, output collection or crash recovery. In production it prepares an exact Run-owned SBX lease and private-lineage Git worktree, then gives Herdr a host-visible `pi` wrapper whose only child is the provenance-bound guest launcher. Pi itself, its native extensions, model runtime, session file, tools, HOME, cache and working directory remain inside the guest. `FakeHarness` deterministically simulates running, attention, resume, completion, interruption, failure/closure and recovery without invoking a provider.
 
 A future harness implements this contract, maps its own native events to the small operational states, supplies only capabilities it actually supports, and provides a terminal launch specification to a compatible backend. Human handoff is harness lifecycle—not a Pi command in the QE core contract: automation yields, a human owns the native harness session, explicit hand-back occurs, and automation resumes. Claude Code might use an interactive REPL lifecycle; Codex might use CLI/app-server approval and steering mechanisms. Neither is implemented here. Provider prose and private provider data must not leak into Product contracts.
 
@@ -99,9 +101,9 @@ Waiting for a human does not terminalize the dispatch. The Worker dispatch remai
 
 A failed operational Attempt is different. Its session may remain retained for postmortem conversation without occupying an execution slot. `/qe-retry` writes a durable local request that the Worker validates and sends through generation-fenced Worker Protocol; Phoenix appends a human recovery epoch and the scheduler reacquires normal resources for a new Attempt under the same StepOccurrence. Valid retained Pi lineage is preferred, but unavailable or unverifiable continuity is never silently replaced. See `docs/retry-and-remediation.md`.
 
-Worker restart loads the SQLite dispatch/lineage and attention record. For either harness, Herdr provenance first locates the exact surviving process/pane using `session.snapshot`; `agent.get` inspection reconciles blocked/running state. Antigravity may otherwise resume only a verified native conversation ID into a new interactive terminal/process incarnation and must verify the returned identity. A currently blocked recovered agent restores HumanAttention. Worker Protocol v7 reports the same QE session ID under the new connection generation. Stale-generation projections cannot issue attachment descriptors.
+Worker restart loads the SQLite dispatch/lineage and attention record. For Pi, startup also reconciles every unfinished `sbx-run-executions.sqlite` record against the exact durable environment ref. Recovery re-verifies the immutable environment spec, frozen source, private repository/worktree identity and current control descriptor before relaying anything. It then locates the exact surviving Herdr wrapper/pane; an environment without the exact process, or a process without the exact environment, is not treated as continuity. For either harness, `agent.get` inspection reconciles blocked/running state. Antigravity may otherwise resume only a verified native conversation ID into a new interactive terminal/process incarnation and must verify the returned identity. A currently blocked recovered agent restores HumanAttention. Worker Protocol v7 reports the same QE session ID under the new connection generation. Stale-generation projections cannot issue attachment descriptors.
 
-Each lineage is observed independently. No global session lock is introduced, so assistance for one session does not pause another Worker slot or Quest.
+Each lineage is observed independently. Guest Pi writes only lifecycle/native-session identity and Product-safe control state to its Run-private control directory. The Worker relay forwards authenticated tool requests to the host loopback authority and reports lifecycle through Herdr; it never mirrors terminal text, chat, prompts, provider responses, credentials or the Pi transcript. Repeated relay failure is durable attention-required infrastructure state and tool calls time out fail-closed. No global session lock is introduced, so assistance for one session does not pause another Worker slot or Quest.
 
 ## Product projection and audit
 
