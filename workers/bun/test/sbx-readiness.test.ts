@@ -5,7 +5,7 @@ import {
 } from "../src/execution-environment/sbx-readiness.ts";
 import { FakeSbxClient, fakeSbxState } from "./sbx-support.ts";
 
-test("SBX readiness accepts the tested version and required global safeguards", async () => {
+test("SBX readiness accepts policy API availability and required host safeguards", async () => {
   const readiness = await inspectSbxReadiness(
     new FakeSbxClient(fakeSbxState()),
   );
@@ -77,12 +77,12 @@ test("SBX readiness permits newer semantic versions with an explicit warning", a
   );
 });
 
-test("SBX readiness fails closed for policy, SSH, or MCP exposure", async () => {
-  const missingPolicy = fakeSbxState();
-  missingPolicy.rules = [];
+test("SBX readiness permits empty global policy and fails closed for SSH or MCP exposure", async () => {
+  const sandboxScoped = fakeSbxState();
+  sandboxScoped.rules = [];
   expect(
-    await inspectSbxReadiness(new FakeSbxClient(missingPolicy)),
-  ).toMatchObject({ status: "unavailable", ready: false });
+    await inspectSbxReadiness(new FakeSbxClient(sandboxScoped)),
+  ).toMatchObject({ status: "ready", ready: true });
 
   const ssh = fakeSbxState();
   ssh.sshForwarding = true;

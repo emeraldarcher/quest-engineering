@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import type {
   SbxClient,
   SbxCreateRequest,
+  SbxDynamicSecretRequest,
   SbxExecOptions,
   SbxNativeVersion,
   SbxPolicyRule,
@@ -157,6 +158,13 @@ export class FakeSbxClient implements SbxClient {
       );
     }
   }
+
+  async setDynamicSecret(_request: SbxDynamicSecretRequest): Promise<void> {}
+
+  async removeDynamicSecret(
+    _sandboxName: string,
+    _placeholder: string,
+  ): Promise<void> {}
 
   async denyNetwork(
     sandboxName: string,

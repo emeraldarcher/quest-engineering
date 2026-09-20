@@ -73,6 +73,56 @@ test("CLI errors redact environment values from retained command arguments", asy
   expect(JSON.stringify(error)).not.toContain("must-not-escape");
 });
 
+test("CLI client registers a sandbox-scoped command secret without retaining resolver output", async () => {
+  const calls: string[][] = [];
+  const client = new CliSbxClient("/fake/sbx", async (request) => {
+    calls.push([...request.args]);
+    return { exitCode: 0, stdout: "", stderr: "" };
+  });
+  await client.setDynamicSecret({
+    sandboxName: "qe-test",
+    placeholder: "nonsecret-placeholder",
+    host: "chatgpt.com",
+    resolverCommand: "/trusted/credential-helper",
+    refreshInterval: "5m",
+  });
+  expect(calls).toEqual([
+    [
+      "secret",
+      "set-custom",
+      "--placeholder",
+      "nonsecret-placeholder",
+      "--host",
+      "chatgpt.com",
+      "--command",
+      "/trusted/credential-helper",
+      "--refresh",
+      "5m",
+      "--sandbox",
+      "qe-test",
+    ],
+  ]);
+
+  const failing = new CliSbxClient("/fake/sbx", async () => ({
+    exitCode: 1,
+    stdout: "actual-access-token",
+    stderr: "provider error with actual-access-token",
+  }));
+  const error = await failing
+    .setDynamicSecret({
+      sandboxName: "qe-test",
+      placeholder: "nonsecret-placeholder",
+      host: "chatgpt.com",
+      resolverCommand: "/trusted/credential-helper",
+      refreshInterval: "5m",
+    })
+    .catch((value: unknown) => value);
+  expect(JSON.stringify(error)).not.toContain("actual-access-token");
+  expect(error).toMatchObject({
+    args: expect.arrayContaining(["<redacted>"]),
+  });
+});
+
 test("CLI client constructs exact host-to-guest and guest-to-host copy operations", async () => {
   const calls: string[][] = [];
   const client = new CliSbxClient("/fake/sbx", async (request) => {

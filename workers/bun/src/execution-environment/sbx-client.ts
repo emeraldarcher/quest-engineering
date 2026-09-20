@@ -56,6 +56,14 @@ export interface SbxExecOptions {
   allowNonZero?: boolean;
 }
 
+export interface SbxDynamicSecretRequest {
+  sandboxName: string;
+  placeholder: string;
+  host: string;
+  resolverCommand: string;
+  refreshInterval: string;
+}
+
 export interface SbxClient {
   readonly executable: string;
   version(): Promise<SbxNativeVersion>;
@@ -64,6 +72,8 @@ export interface SbxClient {
   setting(key: string): Promise<SbxSetting>;
   registeredMcpServerCount(): Promise<number>;
   create(request: SbxCreateRequest): Promise<void>;
+  setDynamicSecret(request: SbxDynamicSecretRequest): Promise<void>;
+  removeDynamicSecret(sandboxName: string, placeholder: string): Promise<void>;
   denyNetwork(sandboxName: string, resources: readonly string[]): Promise<void>;
   exec(
     sandboxName: string,
@@ -254,6 +264,58 @@ export class CliSbxClient implements SbxClient {
     });
   }
 
+  async setDynamicSecret(request: SbxDynamicSecretRequest): Promise<void> {
+    const args = [
+      "secret",
+      "set-custom",
+      "--placeholder",
+      request.placeholder,
+      "--host",
+      request.host,
+      "--command",
+      request.resolverCommand,
+      "--refresh",
+      request.refreshInterval,
+      "--sandbox",
+      request.sandboxName,
+    ];
+    const result = await this.runner({
+      args,
+      timeoutMs: 2 * 60_000,
+    });
+    if (result.exitCode !== 0)
+      throw new SbxClientError(
+        "operation_failed",
+        `SBX rejected the sandbox-scoped Pi credential resolver (exit ${result.exitCode}).`,
+        redactArgs(args),
+      );
+  }
+
+  async removeDynamicSecret(
+    sandboxName: string,
+    placeholder: string,
+  ): Promise<void> {
+    const args = [
+      "secret",
+      "rm",
+      "--force",
+      "--sandbox",
+      sandboxName,
+      "--placeholder",
+      placeholder,
+    ];
+    const result = await this.runner({
+      args,
+      timeoutMs: this.defaultTimeoutMs,
+    });
+    if (result.exitCode !== 0)
+      throw new SbxClientError(
+        "operation_failed",
+        `SBX could not revoke the sandbox-scoped Pi credential resolver (exit ${result.exitCode}).`,
+        redactArgs(args),
+      );
+  }
+
   async denyNetwork(
     sandboxName: string,
     resources: readonly string[],
@@ -406,9 +468,15 @@ function redactArgs(args: readonly string[]): string[] {
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index] as string;
     result.push(value);
-    if (value === "--env" && args[index + 1] !== undefined) {
+    if (value === "--env" && args[index + 1]?.includes("=")) {
       const assignment = args[index + 1] as string;
       result.push(`${assignment.split("=", 1)[0]}=<redacted>`);
+      index += 1;
+    } else if (
+      (value === "--placeholder" || value === "--command") &&
+      args[index + 1] !== undefined
+    ) {
+      result.push("<redacted>");
       index += 1;
     }
   }

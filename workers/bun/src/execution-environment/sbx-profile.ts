@@ -60,33 +60,28 @@ export const SBX_EXECUTION_PROFILE_V1: EnvironmentProfileIdentity =
     digest: digest(SBX_EXECUTION_PROFILE_V1_DEFINITION),
   });
 
-export const SBX_PI_ACCESS_SENTINEL =
-  "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoicHJveHktbWFuYWdlZCJ9fQ.";
-export const SBX_PI_REFRESH_SENTINEL = "oai-ort01-qe-proxy-managed";
-export const SBX_PI_RUNTIME_NETWORK_TARGETS = Object.freeze([
-  "auth.openai.com",
-  "chatgpt.com",
-]);
+export const SBX_PI_RUNTIME_NETWORK_TARGETS = Object.freeze(["chatgpt.com"]);
 export const SBX_PI_INSTALL_NETWORK_TARGET = "registry.npmjs.org";
 export const SBX_PI_EXECUTABLE = "/opt/qe/pi/node_modules/.bin/pi";
 export const SBX_PI_DISCOVERY_SCRIPT =
   "/home/agent/.qe-profile/discover-models.mjs";
 export const SBX_PI_RUNTIME_PROBE = "/home/agent/.qe-profile/probe-runtime.mjs";
-export const SBX_PI_OAUTH_PROBE = "/home/agent/.qe-profile/probe-oauth.mjs";
+export const SBX_PI_RESOURCE_PROBE =
+  "/home/agent/.qe-profile/probe-resource.mjs";
 
 const SBX_PI_PROFILE_ASSETS = Object.freeze({
   "spec.yaml":
-    "605ebff364a89db43748894803b1baa5c0f3b91afd16bc5befccbd8ef0ebf77f",
+    "73ca505281eb9db003de7ba6dcbb53e67f58cc84a47f5d6fe1ec20f6f1bb14cd",
   "files/home/.qe-profile/package.json":
-    "2509a4c853734b756720519e56c841a93828964a713973955acab4c1367a7f42",
+    "e00290736ad2d76027395f4d19b0f3a78a0bf333fa7cf99fb370ab3025f00782",
   "files/home/.qe-profile/package-lock.json":
-    "019e8ba913ab25014cc90a64a4cd5c9d865f7988cb4a4ceb4388840cad8311af",
+    "e5d368409a3750b22ef795ef37acce7d12fed7750ec3e82f2222672341e15ce7",
   "files/home/.qe-profile/discover-models.mjs":
     "7ea06091e7377d63192595305daf142f6d4495a138e9c4612daf88f3c7e9e15d",
   "files/home/.qe-profile/probe-runtime.mjs":
-    "9d759a1341215249b472b817b842e4205a7128d489d2ab449f7be6d8c6b49310",
-  "files/home/.qe-profile/probe-oauth.mjs":
-    "cff96feb7dfebe505fca507ae1db2174ef76fe69c7e4cf560b788b33b33e5a86",
+    "26d4fa144c80060d0b9f5ca16ec633ec7ced71c89ada1657d4c091f782921856",
+  "files/home/.qe-profile/probe-resource.mjs":
+    "8e09fb53966502011ea184571c09aa49ed6d07c6369a5f7e7c7a50a5e1b8caf0",
 });
 
 export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
@@ -102,8 +97,8 @@ export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
   mounts: Object.freeze([]),
   skills: "off",
   staticMcpServers: Object.freeze([]),
-  credential: "host_owned_openai_oauth_proxy",
-  credentialEnvironment: "sentinels_only",
+  credential: "host_pi_oauth_dynamic_proxy",
+  credentialEnvironment: "sandbox_scoped_nonsecret_placeholder_only",
   network: Object.freeze({
     runtimeAllow: SBX_PI_RUNTIME_NETWORK_TARGETS,
     postInstallDeny: SBX_PI_INSTALL_NETWORK_TARGET,
@@ -113,7 +108,7 @@ export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
   compatibility: Object.freeze({
     mode: "capabilities",
     probe: SBX_PI_RUNTIME_PROBE,
-    oauthProbe: SBX_PI_OAUTH_PROBE,
+    resourceProbe: SBX_PI_RESOURCE_PROBE,
   }),
 });
 
@@ -128,7 +123,7 @@ export interface SbxExecutionProfile {
   agentReference: string;
   nativeAgent: string;
   networkMode: "deny_all" | "openai_subscription";
-  credentialMode: "none" | "openai_oauth";
+  credentialMode: "none" | "host_pi_oauth_dynamic_proxy";
   postCreateNetworkDenies: readonly string[];
 }
 
@@ -151,7 +146,7 @@ export const SBX_PI_PROFILE: SbxExecutionProfile = Object.freeze({
   agentReference: SBX_PI_PROFILE_ROOT,
   nativeAgent: "qe-pi-execution-v1",
   networkMode: "openai_subscription",
-  credentialMode: "openai_oauth",
+  credentialMode: "host_pi_oauth_dynamic_proxy",
   postCreateNetworkDenies: Object.freeze([SBX_PI_INSTALL_NETWORK_TARGET]),
 });
 

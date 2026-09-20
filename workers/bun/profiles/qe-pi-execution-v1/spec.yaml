@@ -12,33 +12,11 @@ sandbox:
     default: ["-l"]
     interactive: ["-l"]
 
-credentials:
-  - service: openai
-    description: Host-owned ChatGPT Plus/Pro subscription OAuth for Quest Engineering Pi openai-codex (never API-key billing)
-    required: true
-    oauth:
-      tokenEndpoint:
-        host: auth.openai.com
-        path: /oauth/token
-      resourceHosts:
-        - chatgpt.com
-      # Pi must decode an account identifier before sending a Codex request.
-      # This is a non-secret JWT-shaped sentinel; the host proxy owns and swaps
-      # the real bearer. Paid acceptance must verify the proxy/backend treatment
-      # of the sentinel account identifier before this profile is released.
-      sentinels:
-        accessToken: eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoicHJveHktbWFuYWdlZCJ9fQ.
-        refreshToken: oai-ort01-qe-proxy-managed
-      credentialFile:
-        path: "~/.pi/agent/auth.json"
-        template: |
-          {"openai-codex":{"type":"oauth","access":"{{.AccessToken}}","refresh":"{{.RefreshToken}}","expires":{{.ExpiresAt}}}}
-
 permissions:
   network:
     allow:
-      # Runtime OAuth refresh and subscription inference only.
-      - auth.openai.com
+      # Subscription resource requests only. Host-side Pi owns OAuth refresh;
+      # the guest cannot reach the token endpoint.
       - chatgpt.com
       # Used only by setup.install. The Worker installs a sandbox-scoped deny
       # for this host immediately after creation and verifies the runtime deny.
@@ -48,6 +26,12 @@ environment:
   variables:
     PI_CODING_AGENT_DIR: /home/agent/.pi/agent
     PI_TELEMETRY: "0"
+    # Runtime egress is intentionally closed to Pi's optional GitHub tool
+    # downloads; avoid retrying an operation that policy will reject.
+    PI_OFFLINE: "1"
+    # Pi runs on Node 22.22. Node fetch must opt into HTTPS_PROXY so SBX can
+    # replace the sandbox-scoped placeholder; it is never valid upstream.
+    NODE_USE_ENV_PROXY: "1"
     BROWSER: /bin/false
     GIT_TERMINAL_PROMPT: "0"
 

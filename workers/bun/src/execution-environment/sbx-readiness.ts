@@ -116,25 +116,14 @@ export async function inspectSbxReadiness(
 
   try {
     await client.list();
-    const [rules, ssh, mcpServers] = await Promise.all([
+    const [, ssh, mcpServers] = await Promise.all([
+      // Structured policy inventory proves the policy API is available. Exact
+      // deny/allow rules are Run-scoped and verified only after VM creation.
       client.policies(),
       client.setting("ssh.agentForwardingEnabled"),
       client.registeredMcpServerCount(),
     ]);
     const diagnostics: EnvironmentReadinessDiagnostic[] = [];
-    const denyAll = rules.some(
-      (rule) =>
-        rule.resourceType === "network" &&
-        rule.decision === "deny" &&
-        rule.status === "active" &&
-        rule.resources.includes("**"),
-    );
-    if (!denyAll)
-      diagnostics.push({
-        code: "missing_default_deny_network",
-        message:
-          "An active deny-all network rule is required; QE will not mutate global policy during readiness.",
-      });
     if (ssh.value !== false)
       diagnostics.push({
         code: "ssh_agent_forwarding_enabled",
@@ -160,7 +149,7 @@ export async function inspectSbxReadiness(
     const capabilities: EnvironmentCapability[] = [
       { kind: "environment_lifecycle", mode: "durable" },
       { kind: "environment_inventory", mode: "structured" },
-      { kind: "network_policy", mode: "deny_all" },
+      { kind: "network_policy", mode: "sandbox_scoped" },
       { kind: "ssh_agent_forwarding", mode: "disabled" },
       { kind: "ambient_mcp", mode: "unavailable" },
       { kind: "shared_skills", mode: "controllable" },

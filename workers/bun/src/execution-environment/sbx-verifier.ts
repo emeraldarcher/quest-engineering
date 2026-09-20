@@ -4,12 +4,15 @@ import type {
   SbxPolicyRule,
   SbxSandboxSummary,
 } from "./sbx-client.ts";
+import {
+  SBX_PI_PROXY_EXPIRY,
+  SBX_PI_PROXY_REFRESH_SENTINEL,
+} from "./sbx-pi-credential.ts";
 import type { SbxExecutionProfile, SbxResourcePolicy } from "./sbx-profile.ts";
 import {
   SBX_GUEST_PATHS,
-  SBX_PI_ACCESS_SENTINEL,
   SBX_PI_INSTALL_NETWORK_TARGET,
-  SBX_PI_REFRESH_SENTINEL,
+  SBX_PI_RESOURCE_PROBE,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
   SBX_PI_RUNTIME_PROBE,
   SBX_SHELL_PROFILE,
@@ -323,14 +326,14 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       executable: "/usr/bin/python3",
       args: [
         "-c",
-        "import json,os,pathlib,stat; paths=json.loads(os.environ['QE_PATHS']); marker=pathlib.Path(os.environ['QE_MARKER_PATH']); home=pathlib.Path(os.environ['QE_HOME_SENTINEL']); auth=pathlib.Path('/home/agent/.pi/agent/auth.json'); mounts=[]; host_users=False; docker_socket=False;\nfor line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():\n parts=line.split(); sep=parts.index('-'); mountpoint=parts[4].replace('\\040',' '); fstype=parts[sep+1]; mounts.append((mountpoint,fstype)); host_users=host_users or mountpoint.startswith('/Users/'); docker_socket=docker_socket or mountpoint=='/var/run/docker.sock'\ncred_keys=[k for k in os.environ if k.endswith('_API_KEY') or k.endswith('_TOKEN')]; bad_cred=any(os.environ[k] not in ('proxy-managed','none','') for k in cred_keys); oauth={};\ntry: oauth=json.loads(auth.read_text()).get('openai-codex',{})\nexcept Exception: pass\noauth_ok=oauth.get('type')=='oauth' and oauth.get('access')==os.environ['QE_ACCESS_SENTINEL'] and oauth.get('refresh')==os.environ['QE_REFRESH_SENTINEL'] and isinstance(oauth.get('expires'),(int,float)); ssh=os.environ.get('SSH_AUTH_SOCK',''); result={'marker':json.loads(marker.read_text()) if marker.is_file() else None,'directories':{k:pathlib.Path(v).is_dir() for k,v in paths.items()},'home':os.environ.get('HOME',''),'homeSentinel':home.read_text() if home.is_file() else None,'unexpectedVirtiofsMounts':[p for p,t in mounts if t=='virtiofs' and p not in ('/etc/hosts','/etc/resolv.conf')],'hostUsersMountVisible':host_users,'dockerSocketMounted':docker_socket,'sshAgentSocketUsable':bool(ssh and pathlib.Path(ssh).exists() and stat.S_ISSOCK(pathlib.Path(ssh).stat().st_mode)),'nonProxyCredentialValuePresent':bad_cred,'openaiCredentialMode':os.environ.get('SBX_CRED_OPENAI_MODE','none'),'piOAuthCredentialValid':oauth_ok}; print(json.dumps(result,separators=(',',':')))",
+        "import base64,json,os,pathlib,stat; paths=json.loads(os.environ['QE_PATHS']); marker=pathlib.Path(os.environ['QE_MARKER_PATH']); home=pathlib.Path(os.environ['QE_HOME_SENTINEL']); auth=pathlib.Path('/home/agent/.pi/agent/auth.json'); mounts=[]; host_users=False; docker_socket=False;\nfor line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines():\n parts=line.split(); sep=parts.index('-'); mountpoint=parts[4].replace('\\040',' '); fstype=parts[sep+1]; mounts.append((mountpoint,fstype)); host_users=host_users or mountpoint.startswith('/Users/'); docker_socket=docker_socket or mountpoint=='/var/run/docker.sock'\ncred_keys=[k for k in os.environ if k.endswith('_API_KEY') or k.endswith('_TOKEN')]; bad_cred=any(os.environ[k] not in ('proxy-managed','none','') for k in cred_keys); oauth={}; header={}; payload={}; parts=[];\ntry:\n oauth=json.loads(auth.read_text()).get('openai-codex',{}); parts=oauth.get('access','').split('.'); header=json.loads(base64.urlsafe_b64decode(parts[0]+'===')); payload=json.loads(base64.urlsafe_b64decode(parts[1]+'==='))\nexcept Exception: pass\naccount=payload.get('https://api.openai.com/auth',{}).get('chatgpt_account_id'); oauth_ok=set(oauth)=={'type','access','refresh','expires','accountId'} and oauth.get('type')=='oauth' and oauth.get('refresh')==os.environ['QE_REFRESH_SENTINEL'] and oauth.get('expires')==int(os.environ['QE_PROXY_EXPIRY']) and oauth.get('accountId')==account and isinstance(account,str) and bool(account) and len(parts)==3 and parts[2]==base64.urlsafe_b64encode(b'not-a-signature').decode().rstrip('=') and header=={'alg':'none','typ':'JWT','kid':'qe-sbx-host-managed-v1'} and payload.get('qe_sbx_proxy',{}).get('version')==1 and len(payload.get('qe_sbx_proxy',{}).get('sandbox',''))==32 and auth.is_file() and stat.S_IMODE(auth.stat().st_mode)==0o600; ssh=os.environ.get('SSH_AUTH_SOCK',''); result={'marker':json.loads(marker.read_text()) if marker.is_file() else None,'directories':{k:pathlib.Path(v).is_dir() for k,v in paths.items()},'home':os.environ.get('HOME',''),'homeSentinel':home.read_text() if home.is_file() else None,'unexpectedVirtiofsMounts':[p for p,t in mounts if t=='virtiofs' and p not in ('/etc/hosts','/etc/resolv.conf')],'hostUsersMountVisible':host_users,'dockerSocketMounted':docker_socket,'sshAgentSocketUsable':bool(ssh and pathlib.Path(ssh).exists() and stat.S_ISSOCK(pathlib.Path(ssh).stat().st_mode)),'nonProxyCredentialValuePresent':bad_cred,'openaiCredentialMode':'host_pi_oauth_dynamic_proxy' if oauth_ok else 'none','piOAuthCredentialValid':oauth_ok}; print(json.dumps(result,separators=(',',':')))",
       ],
       environment: {
         QE_PATHS: JSON.stringify(SBX_GUEST_PATHS),
         QE_MARKER_PATH: MARKER_PATH,
         QE_HOME_SENTINEL: HOME_SENTINEL_PATH,
-        QE_ACCESS_SENTINEL: SBX_PI_ACCESS_SENTINEL,
-        QE_REFRESH_SENTINEL: SBX_PI_REFRESH_SENTINEL,
+        QE_PROXY_EXPIRY: String(SBX_PI_PROXY_EXPIRY),
+        QE_REFRESH_SENTINEL: SBX_PI_PROXY_REFRESH_SENTINEL,
       },
     });
     const value = parseObject(result.stdout, "guest probe");
@@ -375,10 +378,13 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     policies: readonly SbxPolicyRule[],
     probe: GuestProbe,
   ): Promise<void> {
-    if (probe.openaiCredentialMode !== "oauth" || !probe.piOAuthCredentialValid)
+    if (
+      probe.openaiCredentialMode !== "host_pi_oauth_dynamic_proxy" ||
+      !probe.piOAuthCredentialValid
+    )
       throw new EnvironmentBackendError(
         "environment_requirements_unmet",
-        "Host-owned OpenAI OAuth is not bound to the Pi sandbox profile.",
+        "Host Pi OAuth is not bound through the sandbox-scoped dynamic proxy credential.",
         "ensure",
       );
     const activeNetwork = policies.filter(
@@ -415,11 +421,28 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       ))
     )
       throw unhealthy("The package registry remains reachable at runtime.");
-    for (const target of SBX_PI_RUNTIME_NETWORK_TARGETS)
-      if (!(await this.networkReachable(sandboxName, `https://${target}/`)))
-        throw unhealthy(
-          `Required OpenAI subscription endpoint is unreachable: ${target}.`,
-        );
+    if (
+      !(await this.networkDenied(
+        sandboxName,
+        "https://auth.openai.com/oauth/token",
+      ))
+    )
+      throw unhealthy("The guest can reach the OAuth token endpoint.");
+    const resource = await this.client.exec(sandboxName, {
+      executable: "/usr/bin/node",
+      args: [SBX_PI_RESOURCE_PROBE],
+      timeoutMs: 30_000,
+    });
+    const proof = parseObject(
+      resource.stdout,
+      "Pi subscription resource probe",
+    );
+    if (
+      proof.authenticated !== true ||
+      proof.status !== 200 ||
+      proof.hasModels !== true
+    )
+      throw unhealthy("The sandbox-scoped subscription resource proof failed.");
   }
 
   private async piCapabilities(
@@ -427,7 +450,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
   ): Promise<EnvironmentCapability[]> {
     const result = await this.client.exec(sandboxName, {
       executable: "/usr/bin/node",
-      args: [SBX_PI_RUNTIME_PROBE],
+      args: [SBX_PI_RUNTIME_PROBE, "/home/agent/.pi/agent/auth.json"],
       timeoutMs: 60_000,
     });
     const value = parseObject(result.stdout, "Pi runtime capability probe");
@@ -443,7 +466,12 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       capabilities.modelRuntime !== true ||
       capabilities.interactiveCli !== true ||
       capabilities.nativeExtensions !== true ||
-      capabilities.structuredTools !== true
+      capabilities.structuredTools !== true ||
+      capabilities.externallyManagedCredential !== true ||
+      capabilities.jwtAccountClaim !== true ||
+      capabilities.syntheticExpiry !== true ||
+      capabilities.guestRefreshDisabled !== true ||
+      capabilities.nodeProxyConfigured !== true
     )
       throw new EnvironmentBackendError(
         "backend_incompatible",
@@ -458,7 +486,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       },
       {
         kind: "credentials",
-        mode: "host_proxy_openai_oauth",
+        mode: "host_pi_oauth_dynamic_proxy",
       },
       {
         kind: "harness_runtime",
@@ -467,33 +495,6 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       },
       { kind: "control_channel", mode: "worker_file_mailbox_v1" },
     ];
-  }
-
-  private async networkReachable(
-    sandboxName: string,
-    target: string,
-  ): Promise<boolean> {
-    const result = await this.client.exec(
-      sandboxName,
-      {
-        executable: "/usr/bin/curl",
-        args: [
-          "--silent",
-          "--show-error",
-          "--output",
-          "/dev/null",
-          "--connect-timeout",
-          "3",
-          "--max-time",
-          "5",
-          "--request",
-          "HEAD",
-          target,
-        ],
-      },
-      { allowNonZero: true },
-    );
-    return result.exitCode === 0;
   }
 
   private async networkDenied(

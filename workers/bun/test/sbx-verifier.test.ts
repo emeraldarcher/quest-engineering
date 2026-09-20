@@ -81,7 +81,7 @@ test("live verifier fails closed on inherited credential material", async () => 
   ).rejects.toMatchObject({ code: "environment_unhealthy" });
 });
 
-test("Pi verifier requires sentinel-only OAuth, narrow egress, bootstrap denial, and runtime capabilities", async () => {
+test("Pi verifier requires a host-Pi dynamic credential, narrow egress, and disabled guest refresh", async () => {
   const client = new PiProbeClient();
   const verified = await new LiveSbxEnvironmentVerifier(
     client,
@@ -90,7 +90,7 @@ test("Pi verifier requires sentinel-only OAuth, narrow egress, bootstrap denial,
   ).initialize(piRecord(), piSandbox);
   expect(verified.capabilities).toEqual(
     expect.arrayContaining([
-      { kind: "credentials", mode: "host_proxy_openai_oauth" },
+      { kind: "credentials", mode: "host_pi_oauth_dynamic_proxy" },
       { kind: "network_policy", mode: "openai_subscription_only" },
       { kind: "control_channel", mode: "worker_file_mailbox_v1" },
     ]),
@@ -253,17 +253,15 @@ class PiProbeClient extends ProbeClient {
 
   override async policies() {
     return [
-      ...["auth.openai.com", "chatgpt.com", "registry.npmjs.org"].map(
-        (resource, index) => ({
-          id: `allow-${index}`,
-          scope: "global",
-          appliesTo: "all",
-          resourceType: "network" as const,
-          decision: "allow" as const,
-          resources: [resource],
-          status: "active" as const,
-        }),
-      ),
+      ...["chatgpt.com", "registry.npmjs.org"].map((resource, index) => ({
+        id: `allow-${index}`,
+        scope: "global",
+        appliesTo: "all",
+        resourceType: "network" as const,
+        decision: "allow" as const,
+        resources: [resource],
+        status: "active" as const,
+      })),
       {
         id: "deny-registry",
         scope: `sandbox:${piSandbox.name}`,
@@ -316,7 +314,7 @@ class PiProbeClient extends ProbeClient {
           dockerSocketMounted: false,
           sshAgentSocketUsable: false,
           nonProxyCredentialValuePresent: false,
-          openaiCredentialMode: "oauth",
+          openaiCredentialMode: "host_pi_oauth_dynamic_proxy",
           piOAuthCredentialValid: this.oauthValid,
         })}\n`,
       );
@@ -330,6 +328,13 @@ class PiProbeClient extends ProbeClient {
           Name: piSandbox.name,
         })}\n`,
       );
+    if (
+      command.executable === "/usr/bin/node" &&
+      command.args[0]?.includes("probe-resource")
+    )
+      return ok(
+        `${JSON.stringify({ authenticated: true, status: 200, hasModels: true })}\n`,
+      );
     if (command.executable === "/usr/bin/node")
       return ok(
         `${JSON.stringify({
@@ -342,17 +347,17 @@ class PiProbeClient extends ProbeClient {
             interactiveCli: true,
             nativeExtensions: true,
             structuredTools: true,
+            externallyManagedCredential: true,
+            jwtAccountClaim: true,
+            syntheticExpiry: true,
+            guestRefreshDisabled: true,
+            nodeProxyConfigured: true,
           },
           provenance: { piPackage: "0.84.2", node: "22.22.1", git: "2.53.0" },
         })}\n`,
       );
-    if (command.executable === "/usr/bin/curl") {
-      const target = command.args.at(-1) ?? "";
-      return target.includes("auth.openai.com") ||
-        target.includes("chatgpt.com")
-        ? ok()
-        : { exitCode: 6, stdout: "", stderr: "denied" };
-    }
+    if (command.executable === "/usr/bin/curl")
+      return { exitCode: 6, stdout: "", stderr: "denied" };
     return super.exec(sandboxName, command, options);
   }
 }

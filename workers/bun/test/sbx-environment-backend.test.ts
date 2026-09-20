@@ -95,14 +95,21 @@ test("creation disables ambient credential variables and carries only ownership 
   expect(environment).not.toHaveProperty("QE_WORKER_TOKEN");
 });
 
-test("repository-owned Pi kit gets exact runtime network and scoped bootstrap revocation", async () => {
+test("repository-owned Pi kit provisions one sandbox-scoped host resolver before verification", async () => {
   const root = await tempRoot();
   const state = fakeSbxState();
+  const provisioned: string[] = [];
   const value = new SbxExecutionEnvironmentBackend({
     workerId: "worker-sbx-test",
     dataRoot: root,
     client: new FakeSbxClient(state),
     verifier: new FakeSbxVerifier(state),
+    credentialProvisioner: {
+      provision: async (sandboxName) => {
+        provisioned.push(sandboxName);
+        return { placeholder: "nonsecret-proxy-placeholder" };
+      },
+    },
     executionProfile: SBX_PI_PROFILE,
   });
   backends.push(value);
@@ -132,6 +139,7 @@ test("repository-owned Pi kit gets exact runtime network and scoped bootstrap re
     agentReference: SBX_PI_PROFILE.agentReference,
     denyAllNetwork: false,
   });
+  expect(provisioned).toEqual([environmentName]);
   expect(
     state.rules.some(
       (rule) =>
@@ -310,12 +318,12 @@ test("inspection becomes degraded when backend security readiness regresses", as
   const lease = await fixture.backend.ensure(
     sbxSpec("run-readiness-regression"),
   );
-  fixture.state.rules = [];
+  fixture.state.sshForwarding = true;
   expect(await fixture.backend.inspect(lease.ref)).toMatchObject({
     state: "degraded",
     usable: false,
     diagnostics: expect.arrayContaining([
-      expect.objectContaining({ code: "missing_default_deny_network" }),
+      expect.objectContaining({ code: "ssh_agent_forwarding_enabled" }),
     ]),
   });
 });

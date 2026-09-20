@@ -761,7 +761,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         { kind: "host_filesystem", mode: "unexposed" },
         { kind: "container_runtime", mode: "isolated" },
         { kind: "harness_runtime", mode: "pi_native_extensions" },
-        { kind: "credentials", mode: "host_proxy_openai_oauth" },
+        { kind: "credentials", mode: "host_pi_oauth_dynamic_proxy" },
         { kind: "network_policy", mode: "openai_subscription_only" },
         { kind: "control_channel", mode: "worker_file_mailbox_v1" },
         { kind: "pty_launcher", mode: "available" },

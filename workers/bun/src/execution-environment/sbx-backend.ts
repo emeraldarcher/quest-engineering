@@ -8,6 +8,10 @@ import type {
 } from "./sbx-client.ts";
 import { CliSbxClient, SbxClientError } from "./sbx-client.ts";
 import {
+  type SbxPiCredentialProvision,
+  SbxPiCredentialProvisioner,
+} from "./sbx-pi-credential.ts";
+import {
   SBX_DISABLED_CREDENTIAL_ENVIRONMENT,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   type SBX_EXECUTION_PROFILE_V1,
@@ -53,12 +57,17 @@ import {
   MAX_ENVIRONMENT_FILE_BYTES,
 } from "./types.ts";
 
+export interface SbxCredentialProvisioner {
+  provision(sandboxName: string): Promise<SbxPiCredentialProvision>;
+}
+
 export interface SbxExecutionEnvironmentBackendOptions {
   workerId: string;
   dataRoot: string;
   client?: SbxClient;
   store?: ExecutionEnvironmentStore;
   verifier?: SbxEnvironmentVerifier;
+  credentialProvisioner?: SbxCredentialProvisioner;
   /** Legacy identity-only override retained for deterministic backend tests. */
   profile?: typeof SBX_EXECUTION_PROFILE_V1;
   executionProfile?: SbxExecutionProfile;
@@ -79,6 +88,7 @@ export class SbxExecutionEnvironmentBackend
   private readonly client: SbxClient;
   private readonly store: ExecutionEnvironmentStore;
   private readonly verifier: SbxEnvironmentVerifier;
+  private readonly credentialProvisioner: SbxCredentialProvisioner | undefined;
   private readonly profile: EnvironmentProfileIdentity;
   private readonly executionProfile: SbxExecutionProfile;
   private readonly resourcePolicy: SbxResourcePolicy;
@@ -112,6 +122,11 @@ export class SbxExecutionEnvironmentBackend
         this.resourcePolicy,
         this.executionProfile,
       );
+    this.credentialProvisioner =
+      this.executionProfile.credentialMode === "host_pi_oauth_dynamic_proxy"
+        ? (options.credentialProvisioner ??
+          new SbxPiCredentialProvisioner(this.client))
+        : undefined;
     this.processId = options.processId ?? process.pid;
     this.isProcessAlive = options.isProcessAlive ?? processAlive;
     this.reconciliationPollMs = options.reconciliationPollMs ?? 250;
@@ -170,6 +185,7 @@ export class SbxExecutionEnvironmentBackend
       const running = await this.startIfStopped(record, sandbox, "recover");
       let verified: SbxVerifiedEnvironment;
       try {
+        await this.credentialProvisioner?.provision(running.name);
         verified = await this.verifier.verify(record, running);
         this.assertCapabilities(spec, verified.capabilities, "recover");
       } catch (error) {
@@ -404,6 +420,7 @@ export class SbxExecutionEnvironmentBackend
       const running = await this.startIfStopped(record, sandbox, "ensure");
       let verified: SbxVerifiedEnvironment;
       try {
+        await this.credentialProvisioner?.provision(running.name);
         verified = await this.verifier.verify(record, running);
         this.assertCapabilities(spec, verified.capabilities, "ensure");
       } catch (error) {
@@ -507,6 +524,7 @@ export class SbxExecutionEnvironmentBackend
         sandbox.name,
         this.executionProfile.postCreateNetworkDenies,
       );
+      await this.credentialProvisioner?.provision(sandbox.name);
       verified = await this.verifier.initialize(record, sandbox);
       this.assertCapabilities(spec, verified.capabilities, "ensure");
     } catch (error) {
@@ -988,7 +1006,7 @@ export class SbxExecutionEnvironmentBackend
     if (!exactProviderNetwork || !exactCredential || !exactControl)
       throw new EnvironmentBackendError(
         "environment_requirements_unmet",
-        "Pi SBX requires exact OpenAI subscription egress, one opaque OAuth grant, and the attempt-scoped Worker mailbox relay.",
+        "Pi SBX requires exact ChatGPT subscription egress, one host-managed subscription grant, and the attempt-scoped Worker mailbox relay.",
         operation,
       );
   }
