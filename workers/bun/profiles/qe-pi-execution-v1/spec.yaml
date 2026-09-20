@@ -14,7 +14,7 @@ sandbox:
 
 credentials:
   - service: openai
-    description: Host-owned OpenAI Codex subscription OAuth for Quest Engineering Pi
+    description: Host-owned ChatGPT Plus/Pro subscription OAuth for Quest Engineering Pi openai-codex (never API-key billing)
     required: true
     oauth:
       tokenEndpoint:

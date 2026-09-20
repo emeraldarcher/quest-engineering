@@ -72,10 +72,11 @@ export const SBX_PI_EXECUTABLE = "/opt/qe/pi/node_modules/.bin/pi";
 export const SBX_PI_DISCOVERY_SCRIPT =
   "/home/agent/.qe-profile/discover-models.mjs";
 export const SBX_PI_RUNTIME_PROBE = "/home/agent/.qe-profile/probe-runtime.mjs";
+export const SBX_PI_OAUTH_PROBE = "/home/agent/.qe-profile/probe-oauth.mjs";
 
 const SBX_PI_PROFILE_ASSETS = Object.freeze({
   "spec.yaml":
-    "534cfbae822f0ab559b5eb779162fbffc46280a6f87a192eaf093b6ca1d312ac",
+    "605ebff364a89db43748894803b1baa5c0f3b91afd16bc5befccbd8ef0ebf77f",
   "files/home/.qe-profile/package.json":
     "2509a4c853734b756720519e56c841a93828964a713973955acab4c1367a7f42",
   "files/home/.qe-profile/package-lock.json":
@@ -84,6 +85,8 @@ const SBX_PI_PROFILE_ASSETS = Object.freeze({
     "7ea06091e7377d63192595305daf142f6d4495a138e9c4612daf88f3c7e9e15d",
   "files/home/.qe-profile/probe-runtime.mjs":
     "9d759a1341215249b472b817b842e4205a7128d489d2ab449f7be6d8c6b49310",
+  "files/home/.qe-profile/probe-oauth.mjs":
+    "cff96feb7dfebe505fca507ae1db2174ef76fe69c7e4cf560b788b33b33e5a86",
 });
 
 export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
@@ -110,6 +113,7 @@ export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
   compatibility: Object.freeze({
     mode: "capabilities",
     probe: SBX_PI_RUNTIME_PROBE,
+    oauthProbe: SBX_PI_OAUTH_PROBE,
   }),
 });
 
