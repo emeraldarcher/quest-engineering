@@ -142,7 +142,10 @@ export class FakeSbxClient implements SbxClient {
     this.state.sandboxes.set(request.name, {
       name: request.name,
       id,
-      agent: "shell",
+      agent:
+        request.agentReference && request.agentReference !== "shell"
+          ? request.agentReference.split("/").at(-1) || "shell"
+          : "shell",
       status: "running",
     });
     if (this.state.loseCreateResponse) {
@@ -153,6 +156,22 @@ export class FakeSbxClient implements SbxClient {
         ["create"],
       );
     }
+  }
+
+  async denyNetwork(
+    sandboxName: string,
+    resources: readonly string[],
+  ): Promise<void> {
+    this.state.rules.push({
+      id: `scoped-deny-${sandboxName}-${this.state.rules.length}`,
+      scope: `sandbox:${sandboxName}`,
+      appliesTo: `sandbox:${sandboxName}`,
+      resourceType: "network",
+      decision: "deny",
+      resources: [...resources],
+      status: "active",
+      sandboxId: sandboxName,
+    });
   }
 
   async exec(

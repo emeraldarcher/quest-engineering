@@ -9,7 +9,7 @@ const exact = sandboxes.find(
   (sandbox) =>
     sandbox.id === input.id &&
     sandbox.name === input.name &&
-    sandbox.agent === "shell" &&
+    sandbox.agent === input.agent &&
     sandbox.status === "running",
 );
 if (!exact) {
@@ -31,12 +31,16 @@ function parse(args: string[]): {
   sbx: string;
   name: string;
   id: string;
+  agent: string;
   command: EnvironmentCommand;
 } {
+  const separator = args.indexOf("--");
+  const optionArgs = separator < 0 ? args : args.slice(0, separator);
+  const commandTail = separator < 0 ? [] : args.slice(separator + 1);
   const values = new Map<string, string>();
-  for (let index = 0; index < args.length; index += 2) {
-    const key = args[index];
-    const value = args[index + 1];
+  for (let index = 0; index < optionArgs.length; index += 2) {
+    const key = optionArgs[index];
+    const value = optionArgs[index + 1];
     if (!key?.startsWith("--") || value === undefined)
       throw new Error("Malformed SBX launcher arguments.");
     values.set(key.slice(2), value);
@@ -44,6 +48,7 @@ function parse(args: string[]): {
   const sbx = required(values, "sbx");
   const name = required(values, "name");
   const id = required(values, "id");
+  const agent = values.get("agent") || "shell";
   let decoded: unknown;
   try {
     decoded = JSON.parse(
@@ -74,9 +79,10 @@ function parse(args: string[]): {
     sbx,
     name,
     id,
+    agent,
     command: {
       executable: command.executable,
-      args: [...command.args],
+      args: [...command.args, ...commandTail],
       ...(command.cwd ? { cwd: command.cwd } : {}),
       ...(command.environment
         ? { environment: { ...command.environment } }

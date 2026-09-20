@@ -39,6 +39,9 @@ export interface SbxSetting {
 
 export interface SbxCreateRequest {
   name: string;
+  /** Built-in agent name or repository-owned absolute kit path. */
+  agentReference?: string;
+  denyAllNetwork?: boolean;
   cpus: number;
   memory: string;
   privateDockerDisk: string;
@@ -61,6 +64,7 @@ export interface SbxClient {
   setting(key: string): Promise<SbxSetting>;
   registeredMcpServerCount(): Promise<number>;
   create(request: SbxCreateRequest): Promise<void>;
+  denyNetwork(sandboxName: string, resources: readonly string[]): Promise<void>;
   exec(
     sandboxName: string,
     command: EnvironmentCommand,
@@ -229,12 +233,12 @@ export class CliSbxClient implements SbxClient {
   async create(request: SbxCreateRequest): Promise<void> {
     const args = [
       "create",
-      "shell",
+      request.agentReference ?? "shell",
       "--name",
       request.name,
       "--skills=off",
       "--static-mcp=",
-      "--deny-network=**",
+      ...(request.denyAllNetwork === false ? [] : ["--deny-network=**"]),
       "--cpus",
       String(request.cpus),
       "--memory",
@@ -248,6 +252,21 @@ export class CliSbxClient implements SbxClient {
       },
       timeoutMs: 10 * 60_000,
     });
+  }
+
+  async denyNetwork(
+    sandboxName: string,
+    resources: readonly string[],
+  ): Promise<void> {
+    if (resources.length === 0) return;
+    await this.invoke([
+      "policy",
+      "deny",
+      "network",
+      "--sandbox",
+      sandboxName,
+      resources.join(","),
+    ]);
   }
 
   async exec(

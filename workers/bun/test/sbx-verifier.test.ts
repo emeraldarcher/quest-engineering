@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import type { SbxExecOptions } from "../src/execution-environment/sbx-client.ts";
-import { SBX_DISPOSABLE_RESOURCE_POLICY } from "../src/execution-environment/sbx-profile.ts";
+import {
+  SBX_DISPOSABLE_RESOURCE_POLICY,
+  SBX_PI_PROFILE,
+} from "../src/execution-environment/sbx-profile.ts";
 import { LiveSbxEnvironmentVerifier } from "../src/execution-environment/sbx-verifier.ts";
 import type { DurableEnvironmentRecord } from "../src/execution-environment/store.ts";
 import type {
@@ -77,6 +80,40 @@ test("live verifier fails closed on inherited credential material", async () => 
     ).initialize(record(), sandbox),
   ).rejects.toMatchObject({ code: "environment_unhealthy" });
 });
+
+test("Pi verifier requires sentinel-only OAuth, narrow egress, bootstrap denial, and runtime capabilities", async () => {
+  const client = new PiProbeClient();
+  const verified = await new LiveSbxEnvironmentVerifier(
+    client,
+    SBX_DISPOSABLE_RESOURCE_POLICY,
+    { ...SBX_PI_PROFILE, identity: piProfileIdentity },
+  ).initialize(piRecord(), piSandbox);
+  expect(verified.capabilities).toEqual(
+    expect.arrayContaining([
+      { kind: "credentials", mode: "host_proxy_openai_oauth" },
+      { kind: "network_policy", mode: "openai_subscription_only" },
+      { kind: "control_channel", mode: "worker_file_mailbox_v1" },
+    ]),
+  );
+
+  client.oauthValid = false;
+  await expect(
+    new LiveSbxEnvironmentVerifier(client, SBX_DISPOSABLE_RESOURCE_POLICY, {
+      ...SBX_PI_PROFILE,
+      identity: piProfileIdentity,
+    }).verify(piRecord(), piSandbox),
+  ).rejects.toMatchObject({ code: "environment_requirements_unmet" });
+});
+
+const piProfileIdentity = {
+  id: "qe-pi-execution-v1",
+  digest: "sha256:profile",
+};
+const piSandbox = {
+  ...sandbox,
+  name: "qe-pi-verifier-test",
+  agent: "qe-pi-execution-v1",
+};
 
 class ProbeClient extends FakeSbxClient {
   hostMountLeak = false;
@@ -204,6 +241,141 @@ class ProbeClient extends FakeSbxClient {
     if (command.executable === "/usr/bin/go") return ok("go version go1.25\n");
     return ok();
   }
+}
+
+class PiProbeClient extends ProbeClient {
+  oauthValid = true;
+
+  constructor() {
+    super();
+    this.state.sandboxes.set(piSandbox.name, { ...piSandbox });
+  }
+
+  override async policies() {
+    return [
+      ...["auth.openai.com", "chatgpt.com", "registry.npmjs.org"].map(
+        (resource, index) => ({
+          id: `allow-${index}`,
+          scope: "global",
+          appliesTo: "all",
+          resourceType: "network" as const,
+          decision: "allow" as const,
+          resources: [resource],
+          status: "active" as const,
+        }),
+      ),
+      {
+        id: "deny-registry",
+        scope: `sandbox:${piSandbox.name}`,
+        appliesTo: `sandbox:${piSandbox.name}`,
+        resourceType: "network" as const,
+        decision: "deny" as const,
+        resources: ["registry.npmjs.org"],
+        status: "active" as const,
+        sandboxId: piSandbox.name,
+      },
+    ];
+  }
+
+  override async exec(
+    sandboxName: string,
+    command: EnvironmentCommand,
+    options: SbxExecOptions = {},
+  ): Promise<EnvironmentCommandResult> {
+    const ok = (stdout = ""): EnvironmentCommandResult => ({
+      exitCode: 0,
+      stdout,
+      stderr: "",
+    });
+    const source = command.args[1] ?? "";
+    if (
+      command.executable === "/usr/bin/python3" &&
+      command.environment?.QE_MARKER_PATH &&
+      source.includes("'exists'")
+    )
+      return ok(`${JSON.stringify({ exists: true, marker: piMarker() })}\n`);
+    if (
+      command.executable === "/usr/bin/python3" &&
+      command.environment?.QE_PATHS
+    )
+      return ok(
+        `${JSON.stringify({
+          marker: piMarker(),
+          directories: {
+            workspace: true,
+            home: true,
+            state: true,
+            control: true,
+            cache: true,
+            temp: true,
+          },
+          home: "/home/agent",
+          homeSentinel: "incarnation-verifier",
+          unexpectedVirtiofsMounts: [],
+          hostUsersMountVisible: false,
+          dockerSocketMounted: false,
+          sshAgentSocketUsable: false,
+          nonProxyCredentialValuePresent: false,
+          openaiCredentialMode: "oauth",
+          piOAuthCredentialValid: this.oauthValid,
+        })}\n`,
+      );
+    if (command.executable === "/usr/bin/docker" && command.args[0] === "info")
+      return ok(
+        `${JSON.stringify({
+          DockerRootDir: "/var/lib/docker",
+          NCPU: 1,
+          MemTotal: 1_073_741_824,
+          ID: "private-docker-id",
+          Name: piSandbox.name,
+        })}\n`,
+      );
+    if (command.executable === "/usr/bin/node")
+      return ok(
+        `${JSON.stringify({
+          schemaVersion: 1,
+          compatible: true,
+          capabilities: {
+            nodeRuntime: true,
+            git: true,
+            modelRuntime: true,
+            interactiveCli: true,
+            nativeExtensions: true,
+            structuredTools: true,
+          },
+          provenance: { piPackage: "0.84.2", node: "22.22.1", git: "2.53.0" },
+        })}\n`,
+      );
+    if (command.executable === "/usr/bin/curl") {
+      const target = command.args.at(-1) ?? "";
+      return target.includes("auth.openai.com") ||
+        target.includes("chatgpt.com")
+        ? ok()
+        : { exitCode: 6, stdout: "", stderr: "denied" };
+    }
+    return super.exec(sandboxName, command, options);
+  }
+}
+
+function piRecord(): DurableEnvironmentRecord {
+  return {
+    ...record(),
+    displayName: piSandbox.name,
+    environmentId: piSandbox.id,
+    profileId: piProfileIdentity.id,
+    profileDigest: piProfileIdentity.digest,
+    nativeAgent: piSandbox.agent,
+  };
+}
+
+function piMarker() {
+  return {
+    ...marker(),
+    environmentId: piSandbox.id,
+    displayName: piSandbox.name,
+    profileId: piProfileIdentity.id,
+    profileDigest: piProfileIdentity.digest,
+  };
 }
 
 function record(): DurableEnvironmentRecord {

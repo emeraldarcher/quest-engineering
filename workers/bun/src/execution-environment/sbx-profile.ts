@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { lstat, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
   EnvironmentPathMap,
   EnvironmentProfileIdentity,
@@ -57,6 +59,128 @@ export const SBX_EXECUTION_PROFILE_V1: EnvironmentProfileIdentity =
     id: SBX_EXECUTION_PROFILE_V1_DEFINITION.id,
     digest: digest(SBX_EXECUTION_PROFILE_V1_DEFINITION),
   });
+
+export const SBX_PI_ACCESS_SENTINEL =
+  "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoicHJveHktbWFuYWdlZCJ9fQ.";
+export const SBX_PI_REFRESH_SENTINEL = "oai-ort01-qe-proxy-managed";
+export const SBX_PI_RUNTIME_NETWORK_TARGETS = Object.freeze([
+  "auth.openai.com",
+  "chatgpt.com",
+]);
+export const SBX_PI_INSTALL_NETWORK_TARGET = "registry.npmjs.org";
+export const SBX_PI_EXECUTABLE = "/opt/qe/pi/node_modules/.bin/pi";
+export const SBX_PI_DISCOVERY_SCRIPT =
+  "/home/agent/.qe-profile/discover-models.mjs";
+export const SBX_PI_RUNTIME_PROBE = "/home/agent/.qe-profile/probe-runtime.mjs";
+
+const SBX_PI_PROFILE_ASSETS = Object.freeze({
+  "spec.yaml":
+    "534cfbae822f0ab559b5eb779162fbffc46280a6f87a192eaf093b6ca1d312ac",
+  "files/home/.qe-profile/package.json":
+    "2509a4c853734b756720519e56c841a93828964a713973955acab4c1367a7f42",
+  "files/home/.qe-profile/package-lock.json":
+    "019e8ba913ab25014cc90a64a4cd5c9d865f7988cb4a4ceb4388840cad8311af",
+  "files/home/.qe-profile/discover-models.mjs":
+    "7ea06091e7377d63192595305daf142f6d4495a138e9c4612daf88f3c7e9e15d",
+  "files/home/.qe-profile/probe-runtime.mjs":
+    "9d759a1341215249b472b817b842e4205a7128d489d2ab449f7be6d8c6b49310",
+});
+
+export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
+  schemaVersion: 1,
+  id: "qe-pi-execution-v1",
+  backend: "docker-sandboxes",
+  kitSchemaVersion: "2",
+  kitName: "qe-pi-execution-v1",
+  baseImage:
+    "docker.io/docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919",
+  piPackage: "@earendil-works/pi-coding-agent@0.84.2",
+  assets: SBX_PI_PROFILE_ASSETS,
+  mounts: Object.freeze([]),
+  skills: "off",
+  staticMcpServers: Object.freeze([]),
+  credential: "host_owned_openai_oauth_proxy",
+  credentialEnvironment: "sentinels_only",
+  network: Object.freeze({
+    runtimeAllow: SBX_PI_RUNTIME_NETWORK_TARGETS,
+    postInstallDeny: SBX_PI_INSTALL_NETWORK_TARGET,
+  }),
+  sshAgentForwarding: "required_disabled",
+  paths: SBX_GUEST_PATHS,
+  compatibility: Object.freeze({
+    mode: "capabilities",
+    probe: SBX_PI_RUNTIME_PROBE,
+  }),
+});
+
+export const SBX_PI_EXECUTION_PROFILE_V1: EnvironmentProfileIdentity =
+  Object.freeze({
+    id: SBX_PI_EXECUTION_PROFILE_V1_DEFINITION.id,
+    digest: digest(SBX_PI_EXECUTION_PROFILE_V1_DEFINITION),
+  });
+
+export interface SbxExecutionProfile {
+  identity: EnvironmentProfileIdentity;
+  agentReference: string;
+  nativeAgent: string;
+  networkMode: "deny_all" | "openai_subscription";
+  credentialMode: "none" | "openai_oauth";
+  postCreateNetworkDenies: readonly string[];
+}
+
+export const SBX_SHELL_PROFILE: SbxExecutionProfile = Object.freeze({
+  identity: SBX_EXECUTION_PROFILE_V1,
+  agentReference: "shell",
+  nativeAgent: "shell",
+  networkMode: "deny_all",
+  credentialMode: "none",
+  postCreateNetworkDenies: Object.freeze([]),
+});
+
+export const SBX_PI_PROFILE_ROOT = resolve(
+  import.meta.dir,
+  "../../profiles/qe-pi-execution-v1",
+);
+
+export const SBX_PI_PROFILE: SbxExecutionProfile = Object.freeze({
+  identity: SBX_PI_EXECUTION_PROFILE_V1,
+  agentReference: SBX_PI_PROFILE_ROOT,
+  nativeAgent: "qe-pi-execution-v1",
+  networkMode: "openai_subscription",
+  credentialMode: "openai_oauth",
+  postCreateNetworkDenies: Object.freeze([SBX_PI_INSTALL_NETWORK_TARGET]),
+});
+
+export async function verifySbxProfileAssets(
+  profile: SbxExecutionProfile,
+): Promise<void> {
+  if (
+    profile.identity.id !== SBX_PI_EXECUTION_PROFILE_V1.id ||
+    profile.identity.digest !== SBX_PI_EXECUTION_PROFILE_V1.digest
+  )
+    return;
+  if (resolve(profile.agentReference) !== SBX_PI_PROFILE_ROOT)
+    throw new Error(
+      "The Pi SBX profile does not use the repository-owned kit.",
+    );
+  for (const [relativePath, expected] of Object.entries(
+    SBX_PI_PROFILE_ASSETS,
+  )) {
+    const path = resolve(SBX_PI_PROFILE_ROOT, relativePath);
+    const metadata = await lstat(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink())
+      throw new Error(
+        `Repository-owned Pi SBX profile asset is not a regular file: ${relativePath}.`,
+      );
+    const actual = createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex");
+    if (actual !== expected)
+      throw new Error(
+        `Repository-owned Pi SBX profile asset failed integrity verification: ${relativePath}.`,
+      );
+  }
+}
 
 export interface SbxResourcePolicy {
   identity: {

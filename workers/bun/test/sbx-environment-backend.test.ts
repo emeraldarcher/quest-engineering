@@ -7,6 +7,9 @@ import {
 } from "../src/execution-environment/sbx-backend.ts";
 import {
   SBX_EXECUTION_PROFILE_V1,
+  SBX_PI_EXECUTION_PROFILE_V1,
+  SBX_PI_PROFILE,
+  SBX_PI_RUNTIME_NETWORK_TARGETS,
   SBX_TESTED_REVISION,
   SBX_TESTED_VERSION,
 } from "../src/execution-environment/sbx-profile.ts";
@@ -90,6 +93,56 @@ test("creation disables ambient credential variables and carries only ownership 
     QE_WORKER_ID: "worker-sbx-test",
   });
   expect(environment).not.toHaveProperty("QE_WORKER_TOKEN");
+});
+
+test("repository-owned Pi kit gets exact runtime network and scoped bootstrap revocation", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const value = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client: new FakeSbxClient(state),
+    verifier: new FakeSbxVerifier(state),
+    executionProfile: SBX_PI_PROFILE,
+  });
+  backends.push(value);
+  const spec = sbxSpec("run-pi-profile");
+  spec.profile = { ...SBX_PI_EXECUTION_PROFILE_V1 };
+  spec.networkRequirements = [
+    {
+      capability: "model_provider",
+      targets: [...SBX_PI_RUNTIME_NETWORK_TARGETS],
+    },
+  ];
+  spec.credentialGrants = [
+    {
+      grantId: "host-openai",
+      kind: "openai-codex-oauth",
+      scope: "subscription",
+    },
+  ];
+  spec.controlChannels = [{ kind: "worker_file_mailbox_v1", required: true }];
+  const lease = await value.ensure(spec);
+  const environmentName = sbxEnvironmentName(
+    lease.ref.workerId,
+    lease.ref.runId,
+  );
+  expect(state.createRequests[0]).toMatchObject({
+    name: environmentName,
+    agentReference: SBX_PI_PROFILE.agentReference,
+    denyAllNetwork: false,
+  });
+  expect(
+    state.rules.some(
+      (rule) =>
+        rule.scope === `sandbox:${environmentName}` &&
+        rule.decision === "deny" &&
+        rule.resources.includes("registry.npmjs.org"),
+    ),
+  ).toBe(true);
+  expect((await lease.launcher(sbxCommand("pi"))).args).toContain(
+    SBX_PI_PROFILE.nativeAgent,
+  );
 });
 
 test("lease transfers verify bytes and reject paths outside the canonical guest map", async () => {

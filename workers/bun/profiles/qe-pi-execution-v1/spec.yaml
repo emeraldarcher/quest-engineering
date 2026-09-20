@@ -1,0 +1,74 @@
+schemaVersion: "2"
+kind: sandbox
+name: qe-pi-execution-v1
+version: "1.0.0"
+displayName: Quest Engineering Pi execution
+# The multi-platform base index, package lock, setup, credential contract, and
+# runtime probes are repository-owned inputs to the Worker profile digest.
+sandbox:
+  image: "docker.io/docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919"
+  entrypoint: ["/bin/bash"]
+  command:
+    default: ["-l"]
+    interactive: ["-l"]
+
+credentials:
+  - service: openai
+    description: Host-owned OpenAI Codex subscription OAuth for Quest Engineering Pi
+    required: true
+    oauth:
+      tokenEndpoint:
+        host: auth.openai.com
+        path: /oauth/token
+      resourceHosts:
+        - chatgpt.com
+      # Pi must decode an account identifier before sending a Codex request.
+      # This is a non-secret JWT-shaped sentinel; the host proxy owns and swaps
+      # the real bearer. Paid acceptance must verify the proxy/backend treatment
+      # of the sentinel account identifier before this profile is released.
+      sentinels:
+        accessToken: eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoicHJveHktbWFuYWdlZCJ9fQ.
+        refreshToken: oai-ort01-qe-proxy-managed
+      credentialFile:
+        path: "~/.pi/agent/auth.json"
+        template: |
+          {"openai-codex":{"type":"oauth","access":"{{.AccessToken}}","refresh":"{{.RefreshToken}}","expires":{{.ExpiresAt}}}}
+
+permissions:
+  network:
+    allow:
+      # Runtime OAuth refresh and subscription inference only.
+      - auth.openai.com
+      - chatgpt.com
+      # Used only by setup.install. The Worker installs a sandbox-scoped deny
+      # for this host immediately after creation and verifies the runtime deny.
+      - registry.npmjs.org
+
+environment:
+  variables:
+    PI_CODING_AGENT_DIR: /home/agent/.pi/agent
+    PI_TELEMETRY: "0"
+    BROWSER: /bin/false
+    GIT_TERMINAL_PROMPT: "0"
+
+setup:
+  install:
+    - command: |
+        set -eu
+        install -d -m 0755 /opt/qe/pi
+        install -m 0644 /home/agent/.qe-profile/package.json /opt/qe/pi/package.json
+        install -m 0644 /home/agent/.qe-profile/package-lock.json /opt/qe/pi/package-lock.json
+        cd /opt/qe/pi
+        npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        chown -R root:root /opt/qe/pi
+        chmod -R go-w /opt/qe/pi
+        install -d -m 0700 -o 1000 -g 1000 /home/agent/.pi/agent
+      user: "0"
+      description: Install the lockfile-pinned Pi runtime into a root-owned prefix
+
+agentInstructions:
+  filename: AGENTS.md
+  content: |
+    This is a Quest Engineering Run-owned execution environment. The Worker
+    supplies the exact workspace, tools, extensions, prompt, and completion
+    authority for each Attempt.

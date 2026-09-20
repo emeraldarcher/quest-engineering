@@ -10,9 +10,13 @@ import { CliSbxClient, SbxClientError } from "./sbx-client.ts";
 import {
   SBX_DISABLED_CREDENTIAL_ENVIRONMENT,
   SBX_DISPOSABLE_RESOURCE_POLICY,
-  SBX_EXECUTION_PROFILE_V1,
+  type SBX_EXECUTION_PROFILE_V1,
   SBX_GUEST_PATHS,
+  SBX_PI_RUNTIME_NETWORK_TARGETS,
+  SBX_SHELL_PROFILE,
+  type SbxExecutionProfile,
   type SbxResourcePolicy,
+  verifySbxProfileAssets,
 } from "./sbx-profile.ts";
 import {
   DEFAULT_SBX_VERSION_POLICY,
@@ -37,6 +41,7 @@ import type {
   EnvironmentFileWrite,
   EnvironmentInspection,
   EnvironmentLease,
+  EnvironmentProfileIdentity,
   EnvironmentReadiness,
   EnvironmentRef,
   EnvironmentSpec,
@@ -54,7 +59,9 @@ export interface SbxExecutionEnvironmentBackendOptions {
   client?: SbxClient;
   store?: ExecutionEnvironmentStore;
   verifier?: SbxEnvironmentVerifier;
+  /** Legacy identity-only override retained for deterministic backend tests. */
   profile?: typeof SBX_EXECUTION_PROFILE_V1;
+  executionProfile?: SbxExecutionProfile;
   resourcePolicy?: SbxResourcePolicy;
   versionPolicy?: SbxVersionPolicy;
   processId?: number;
@@ -72,7 +79,8 @@ export class SbxExecutionEnvironmentBackend
   private readonly client: SbxClient;
   private readonly store: ExecutionEnvironmentStore;
   private readonly verifier: SbxEnvironmentVerifier;
-  private readonly profile: typeof SBX_EXECUTION_PROFILE_V1;
+  private readonly profile: EnvironmentProfileIdentity;
+  private readonly executionProfile: SbxExecutionProfile;
   private readonly resourcePolicy: SbxResourcePolicy;
   private readonly versionPolicy: SbxVersionPolicy;
   private readonly processId: number;
@@ -88,13 +96,22 @@ export class SbxExecutionEnvironmentBackend
     this.client = options.client ?? new CliSbxClient();
     this.store =
       options.store ?? new ExecutionEnvironmentStore(options.dataRoot);
-    this.profile = options.profile ?? SBX_EXECUTION_PROFILE_V1;
+    this.executionProfile =
+      options.executionProfile ??
+      (options.profile
+        ? { ...SBX_SHELL_PROFILE, identity: options.profile }
+        : SBX_SHELL_PROFILE);
+    this.profile = this.executionProfile.identity;
     this.resourcePolicy =
       options.resourcePolicy ?? SBX_DISPOSABLE_RESOURCE_POLICY;
     this.versionPolicy = options.versionPolicy ?? DEFAULT_SBX_VERSION_POLICY;
     this.verifier =
       options.verifier ??
-      new LiveSbxEnvironmentVerifier(this.client, this.resourcePolicy);
+      new LiveSbxEnvironmentVerifier(
+        this.client,
+        this.resourcePolicy,
+        this.executionProfile,
+      );
     this.processId = options.processId ?? process.pid;
     this.isProcessAlive = options.isProcessAlive ?? processAlive;
     this.reconciliationPollMs = options.reconciliationPollMs ?? 250;
@@ -108,6 +125,7 @@ export class SbxExecutionEnvironmentBackend
 
   async ensure(spec: EnvironmentSpec): Promise<EnvironmentLease> {
     this.validateSpec(spec, "ensure");
+    await verifySbxProfileAssets(this.executionProfile);
     const owner = ownerKey(spec.workerId, spec.runId);
     return this.withOwner(owner, async () => {
       const readiness = await this.requireReadiness("ensure");
@@ -140,6 +158,7 @@ export class SbxExecutionEnvironmentBackend
     spec: EnvironmentSpec,
   ): Promise<EnvironmentLease> {
     this.validateSpec(spec, "recover");
+    await verifySbxProfileAssets(this.executionProfile);
     return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
       const record = this.requireCurrentRef(ref, "recover");
       const digest = environmentSpecDigest(spec);
@@ -202,7 +221,11 @@ export class SbxExecutionEnvironmentBackend
       native = await this.client.version();
       assertReadinessProvenance(readiness, native, "inspect");
       const sandboxes = await this.client.list();
-      const identity = locateSandbox(record, sandboxes);
+      const identity = locateSandbox(
+        record,
+        sandboxes,
+        this.executionProfile.nativeAgent,
+      );
       if (identity.kind === "missing") {
         const missing = this.store.markState(record.recordId, "missing", [
           {
@@ -319,7 +342,11 @@ export class SbxExecutionEnvironmentBackend
       } catch (error) {
         throw normalize(error, "remove");
       }
-      const identity = locateSandbox(record, sandboxes);
+      const identity = locateSandbox(
+        record,
+        sandboxes,
+        this.executionProfile.nativeAgent,
+      );
       if (identity.kind === "mismatch")
         throw identityMismatch(identity.message, "remove");
       if (identity.kind === "exact") {
@@ -328,7 +355,11 @@ export class SbxExecutionEnvironmentBackend
         } catch (error) {
           let remaining: LocatedSandbox;
           try {
-            remaining = locateSandbox(record, await this.client.list());
+            remaining = locateSandbox(
+              record,
+              await this.client.list(),
+              this.executionProfile.nativeAgent,
+            );
           } catch {
             throw normalize(error, "remove");
           }
@@ -339,7 +370,11 @@ export class SbxExecutionEnvironmentBackend
       }
       let remaining: LocatedSandbox;
       try {
-        remaining = locateSandbox(record, await this.client.list());
+        remaining = locateSandbox(
+          record,
+          await this.client.list(),
+          this.executionProfile.nativeAgent,
+        );
       } catch (error) {
         throw normalize(error, "remove");
       }
@@ -426,6 +461,8 @@ export class SbxExecutionEnvironmentBackend
       try {
         await this.client.create({
           name: record.displayName,
+          agentReference: this.executionProfile.agentReference,
+          denyAllNetwork: this.executionProfile.networkMode === "deny_all",
           cpus: this.resourcePolicy.cpus,
           memory: this.resourcePolicy.memory,
           privateDockerDisk: this.resourcePolicy.privateDockerDisk,
@@ -458,14 +495,18 @@ export class SbxExecutionEnvironmentBackend
         "SBX create returned without a discoverable deterministic environment.",
         "ensure",
       );
-    if (sandbox.agent !== "shell")
+    if (sandbox.agent !== this.executionProfile.nativeAgent)
       throw identityMismatch(
-        `Deterministic SBX name belongs to agent ${sandbox.agent}, not shell.`,
+        `Deterministic SBX name belongs to agent ${sandbox.agent}, not ${this.executionProfile.nativeAgent}.`,
         "ensure",
       );
 
     let verified: SbxVerifiedEnvironment;
     try {
+      await this.client.denyNetwork(
+        sandbox.name,
+        this.executionProfile.postCreateNetworkDenies,
+      );
       verified = await this.verifier.initialize(record, sandbox);
       this.assertCapabilities(spec, verified.capabilities, "ensure");
     } catch (error) {
@@ -516,6 +557,8 @@ export class SbxExecutionEnvironmentBackend
             current.displayName,
             "--id",
             current.environmentId as string,
+            "--agent",
+            this.executionProfile.nativeAgent,
             "--command",
             Buffer.from(JSON.stringify(requested)).toString("base64"),
           ],
@@ -796,7 +839,11 @@ export class SbxExecutionEnvironmentBackend
     } catch (error) {
       throw normalize(error, operation);
     }
-    const identity = locateSandbox(record, sandboxes);
+    const identity = locateSandbox(
+      record,
+      sandboxes,
+      this.executionProfile.nativeAgent,
+    );
     if (identity.kind === "missing") {
       this.store.markState(record.recordId, "missing", [
         {
@@ -906,14 +953,42 @@ export class SbxExecutionEnvironmentBackend
         "SBX supports disposable fixtures and Worker-controlled frozen imports only.",
         operation,
       );
-    if (
-      spec.credentialGrants.length > 0 ||
-      spec.networkRequirements.length > 0 ||
-      spec.controlChannels.length > 0
-    )
+    if (this.executionProfile.credentialMode === "none") {
+      if (
+        spec.credentialGrants.length > 0 ||
+        spec.networkRequirements.length > 0 ||
+        spec.controlChannels.length > 0
+      )
+        throw new EnvironmentBackendError(
+          "environment_requirements_unmet",
+          "The shell SBX profile does not materialize credentials, egress grants, or control channels.",
+          operation,
+        );
+      return;
+    }
+    const providerTargets = spec.networkRequirements
+      .filter((requirement) => requirement.capability === "model_provider")
+      .flatMap((requirement) => [...requirement.targets])
+      .sort();
+    const expectedTargets = [...SBX_PI_RUNTIME_NETWORK_TARGETS].sort();
+    const exactProviderNetwork =
+      spec.networkRequirements.length === 1 &&
+      providerTargets.length === expectedTargets.length &&
+      providerTargets.every(
+        (target, index) => target === expectedTargets[index],
+      );
+    const exactCredential =
+      spec.credentialGrants.length === 1 &&
+      spec.credentialGrants[0]?.kind === "openai-codex-oauth" &&
+      spec.credentialGrants[0]?.scope === "subscription";
+    const exactControl =
+      spec.controlChannels.length === 1 &&
+      spec.controlChannels[0]?.kind === "worker_file_mailbox_v1" &&
+      spec.controlChannels[0]?.required === true;
+    if (!exactProviderNetwork || !exactCredential || !exactControl)
       throw new EnvironmentBackendError(
         "environment_requirements_unmet",
-        "Phase-2 SBX does not materialize credentials, egress grants, or control channels.",
+        "Pi SBX requires exact OpenAI subscription egress, one opaque OAuth grant, and the attempt-scoped Worker mailbox relay.",
         operation,
       );
   }
@@ -1099,7 +1174,11 @@ export class SbxExecutionEnvironmentBackend
     for (let attempt = 0; attempt < this.reconciliationAttempts; attempt += 1) {
       let identity: LocatedSandbox;
       try {
-        identity = locateSandbox(record, await this.client.list());
+        identity = locateSandbox(
+          record,
+          await this.client.list(),
+          this.executionProfile.nativeAgent,
+        );
       } catch (error) {
         throw normalize(error, operation);
       }
@@ -1158,6 +1237,7 @@ type LocatedSandbox =
 function locateSandbox(
   record: DurableEnvironmentRecord,
   sandboxes: readonly SbxSandboxSummary[],
+  expectedAgent = "shell",
 ): LocatedSandbox {
   const byId = record.environmentId
     ? sandboxes.find((sandbox) => sandbox.id === record.environmentId)
@@ -1173,12 +1253,11 @@ function locateSandbox(
     !byName ||
     byId.id !== byName.id ||
     byId.name !== record.displayName ||
-    byId.agent !== "shell"
+    byId.agent !== expectedAgent
   )
     return {
       kind: "mismatch",
-      message:
-        "SBX native ID, deterministic name, or shell-agent identity conflicts with durable ownership.",
+      message: `SBX native ID, deterministic name, or ${expectedAgent}-agent identity conflicts with durable ownership.`,
     };
   return { kind: "exact", sandbox: byId };
 }
