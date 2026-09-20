@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
+import { join } from "node:path";
 import type { JsonValue } from "../../protocol/types.ts";
 import {
   HARNESS_CONTROL_PATH_ENV,
@@ -15,8 +18,13 @@ import {
   type HarnessControlResult,
 } from "./types.ts";
 
+export const SBX_CONTROL_MAILBOX_ENV = "QE_SBX_CONTROL_MAILBOX";
+
 export class HarnessControlClient {
-  constructor(private readonly descriptorPath: string) {}
+  constructor(
+    private readonly descriptorPath: string,
+    private readonly mailboxRoot?: string,
+  ) {}
 
   static fromEnvironment(
     env: NodeJS.ProcessEnv = process.env,
@@ -27,7 +35,10 @@ export class HarnessControlClient {
         "bridge_unavailable",
         `${HARNESS_CONTROL_PATH_ENV} is missing.`,
       );
-    return new HarnessControlClient(path);
+    return new HarnessControlClient(
+      path,
+      env[SBX_CONTROL_MAILBOX_ENV]?.trim() || undefined,
+    );
   }
 
   async completeStep(
@@ -124,6 +135,13 @@ export class HarnessControlClient {
     operation: HarnessControlOperation,
     requestId: string = crypto.randomUUID(),
   ): Promise<HarnessControlResult> {
+    if (this.mailboxRoot)
+      return callMailbox(
+        this.descriptorPath,
+        this.mailboxRoot,
+        operation,
+        requestId,
+      );
     const first = await readControlDescriptor(this.descriptorPath);
     try {
       return await callDescriptor(first, operation, requestId);
@@ -156,6 +174,78 @@ async function callDescriptor(
   if (!response.ok)
     throw new HarnessControlError(response.error.code, response.error.message);
   return response.result;
+}
+
+export async function forwardHarnessControlPayload(
+  descriptorPath: string,
+  payload: string,
+): Promise<string> {
+  const descriptor = await readControlDescriptor(descriptorPath);
+  const response = await send(descriptor.endpoint.port, payload);
+  return `${JSON.stringify(response)}\n`;
+}
+
+async function callMailbox(
+  descriptorPath: string,
+  mailboxRoot: string,
+  operation: HarnessControlOperation,
+  requestId: string,
+): Promise<HarnessControlResult> {
+  const descriptor = await readControlDescriptor(descriptorPath);
+  const request = {
+    protocolVersion: HARNESS_CONTROL_PROTOCOL_VERSION,
+    bridgeGeneration: descriptor.bridgeGeneration,
+    contextToken: descriptor.contextToken,
+    requestId,
+    operation,
+  };
+  const key = createHash("sha256").update(requestId).digest("hex");
+  const requests = join(mailboxRoot, "requests");
+  const responses = join(mailboxRoot, "responses");
+  await mkdir(requests, { recursive: true });
+  await mkdir(responses, { recursive: true });
+  const requestPath = join(requests, `${key}.json`);
+  const responsePath = join(responses, `${key}.json`);
+  await rm(responsePath, { force: true });
+  const temporary = `${requestPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(request)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
+  await rename(temporary, requestPath);
+  const deadline = Date.now() + 15_000;
+  try {
+    while (Date.now() < deadline) {
+      try {
+        const response = decodeResponse(
+          JSON.parse(await readFile(responsePath, "utf8")),
+        );
+        if (!response.ok)
+          throw new HarnessControlError(
+            response.error.code,
+            response.error.message,
+          );
+        return response.result;
+      } catch (error) {
+        if (
+          error instanceof HarnessControlError ||
+          (error as NodeJS.ErrnoException).code !== "ENOENT"
+        )
+          throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new HarnessControlError(
+      "bridge_timeout",
+      "Quest Engineering sandbox control mailbox timed out.",
+    );
+  } finally {
+    await Promise.all([
+      rm(requestPath, { force: true }),
+      rm(responsePath, { force: true }),
+    ]).catch(() => undefined);
+  }
 }
 
 async function send(

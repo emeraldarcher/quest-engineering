@@ -160,7 +160,7 @@ export interface PreAuthorizationActivity {
 }
 
 export interface PromptEvidenceCursor {
-  kind: "pi_transcript" | "antigravity_log";
+  kind: "pi_transcript" | "pi_runtime_state" | "antigravity_log";
   cursor: number;
   promptHash: string;
 }
@@ -263,7 +263,10 @@ export interface AgentHarness {
   inspect(lineage: HarnessLineage): Promise<HarnessInspection>;
   close(lineage: HarnessLineage): Promise<void>;
 
-  recover?(lineage: HarnessLineage): Promise<HarnessRecoveredExecution>;
+  recover?(
+    lineage: HarnessLineage,
+    dispatch?: DispatchRecord,
+  ): Promise<HarnessRecoveredExecution>;
   waitAndCollect?(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,

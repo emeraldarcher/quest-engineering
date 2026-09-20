@@ -120,6 +120,20 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
     }
   }
 
+  async reportAgentState(input: {
+    paneId: string;
+    state: "idle" | "working" | "blocked";
+    sequence: number;
+    nativeSession?: import("../types.ts").NativeSessionRef;
+  }): Promise<void> {
+    const client = await this.client();
+    try {
+      await client.reportAgentState(input);
+    } finally {
+      this.clients.delete(client);
+    }
+  }
+
   async startAgent(input: {
     paneId: string;
     name: string;

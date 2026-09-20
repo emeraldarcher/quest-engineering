@@ -224,6 +224,12 @@ test("fingerprint, checkpoint, export, host import, and replacement restore pres
   expect(imported.resultTree).toBe(fingerprint.resultTree);
   expect(imported.importedRefs).toHaveLength(4);
   expect(
+    await validateAndImportPrivateGitExport({
+      changeExport,
+      fixtureGitDir: join(importRoot, "fixture.git"),
+    }),
+  ).toEqual(imported);
+  expect(
     await fileExists(join(importRoot, "fixture.git", "hooks", "pre-commit")),
   ).toBe(false);
   expect(

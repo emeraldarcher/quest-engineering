@@ -411,7 +411,7 @@ export class DispatchExecutor {
           "Prompt may have been submitted but no agent reference was persisted.",
         );
       }
-      const recovered = await this.recoverExecution(lineage);
+      const recovered = await this.recoverExecution(lineage, dispatch);
       if (!recovered.found || !recovered.agent)
         throw new Error(recovered.detail);
       if (recovered.ref) {
@@ -809,13 +809,14 @@ export class DispatchExecutor {
 
   private recoverExecution(
     lineage: HarnessLineage,
+    dispatch: DispatchRecord,
   ): Promise<HarnessRecoveredExecution> {
     const harness = this.harnessForLineage(lineage);
     if (!harness.capabilities.retainedSessionRecovery || !harness.recover)
       throw new Error(
         `Harness ${harness.kind} does not support retained-session recovery.`,
       );
-    return harness.recover(lineage);
+    return harness.recover(lineage, dispatch);
   }
 
   private waitAndCollect(

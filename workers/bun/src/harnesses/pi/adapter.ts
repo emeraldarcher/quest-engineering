@@ -7,6 +7,10 @@ import {
   type HarnessLineage,
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
+import type {
+  PreparedSbxPiExecution,
+  SbxRunExecutionManager,
+} from "../../execution-environment/sbx-run.ts";
 import type { JsonValue } from "../../protocol/types.ts";
 import { HerdrApiError } from "../../session-host/herdr/client.ts";
 import type {
@@ -57,6 +61,9 @@ import type {
   PromptEvidenceCursor,
 } from "../types.ts";
 import { discoverPiModels } from "./discovery.ts";
+import { mappedPiTools } from "./tools.ts";
+
+export { mappedPiTools } from "./tools.ts";
 
 export class PiHarness implements AgentHarness {
   readonly kind = "pi";
@@ -88,6 +95,12 @@ export class PiHarness implements AgentHarness {
   private readonly assistanceExtensionPath: string;
   private readonly attentionCorrelator = new HumanAttentionCorrelator();
   private readonly discoverModels: typeof discoverPiModels;
+  private readonly executionManager: SbxRunExecutionManager | undefined;
+  private readonly sbxExecutions = new Map<string, PreparedSbxPiExecution>();
+  private readonly sbxExecutionsByPane = new Map<
+    string,
+    PreparedSbxPiExecution
+  >();
   private stopped = false;
 
   constructor(
@@ -99,9 +112,11 @@ export class PiHarness implements AgentHarness {
       permissionExtensionPath?: string;
       assistanceExtensionPath?: string;
       discoverModels?: typeof discoverPiModels;
+      executionManager?: SbxRunExecutionManager;
     } = {},
   ) {
     this.discoverModels = paths.discoverModels ?? discoverPiModels;
+    this.executionManager = paths.executionManager;
     this.integrationPath = resolve(
       paths.integrationPath ??
         join(
@@ -142,7 +157,13 @@ export class PiHarness implements AgentHarness {
         capabilities: { ...this.capabilities, structuredResult: false },
       };
     const backend = await this.host.readiness();
-    if (!backend.ready)
+    const guestRelaySatisfiesIntegration =
+      Boolean(this.executionManager) &&
+      backend.missingCapabilities.length > 0 &&
+      backend.missingCapabilities.every(
+        (capability) => capability === "integration.pi.current",
+      );
+    if (!backend.ready && !guestRelaySatisfiesIntegration)
       return {
         kind: this.kind,
         displayName: this.displayName,
@@ -164,7 +185,9 @@ export class PiHarness implements AgentHarness {
         capabilities: { ...this.capabilities, structuredResult: false },
       };
     try {
-      const discovered = await this.discoverModels();
+      const discovered = this.executionManager
+        ? await this.executionManager.discover()
+        : await this.discoverModels();
       return {
         kind: this.kind,
         displayName: this.displayName,
@@ -219,10 +242,19 @@ export class PiHarness implements AgentHarness {
       herdrSession: this.host.sessionName,
       herdrSessionIncarnation: sessionIncarnation,
     };
-    const cwd = executionCwd(this.config, dispatch);
+    const hostArtifacts = materializeExecutionArtifacts(this.config, dispatch);
+    const sbx = this.executionManager
+      ? await this.executionManager.prepare(
+          dispatch,
+          physicalLineage,
+          hostArtifacts,
+        )
+      : null;
+    if (sbx) this.sbxExecutions.set(lineage.lineageId, sbx);
+    const cwd = sbx?.hostCwd ?? executionCwd(this.config, dispatch);
     mkdirSync(cwd, { recursive: true });
     const executionWorkspace = dispatch.action.execution.execution_workspace;
-    const environment = {
+    const environment = sbx?.paneEnvironment ?? {
       [HARNESS_CONTROL_PATH_ENV]: controlDescriptorPath(lineage),
       QE_RESULT_CONTROL_PATH: lineage.resultControlPath,
       QE_ATTENTION_CONTROL_PATH: attentionControlPath(lineage),
@@ -275,6 +307,7 @@ export class PiHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
+    await sbx?.syncControl();
     await this.host.reportMetadata({
       paneId: pane.paneId,
       title: displayLabel(dispatch),
@@ -284,9 +317,11 @@ export class PiHarness implements AgentHarness {
       paneId: pane.paneId,
       name: agentName,
       integrationKind: "pi",
-      args: this.piArgs(dispatch, agentName),
+      args: this.piArgs(dispatch, agentName, sbx),
       expectedTokens: launchTokens,
     });
+    sbx?.startRelay(this.host, agent.paneId);
+    if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     return {
       lineage: physicalLineage,
@@ -317,7 +352,22 @@ export class PiHarness implements AgentHarness {
         "Continuation lineage has no complete Herdr execution reference.",
       );
     }
+    const sbx = this.executionManager
+      ? await this.executionManager.prepare(
+          dispatch,
+          lineage,
+          materializeExecutionArtifacts(this.config, dispatch),
+        )
+      : null;
+    if (sbx) {
+      this.sbxExecutions.set(lineage.lineageId, sbx);
+      await sbx.syncControl();
+    }
     const agent = await this.findExactLiveAgent(lineage);
+    if (agent) {
+      sbx?.startRelay(this.host, agent.paneId);
+      if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
+    }
     assertCurrentSessionIncarnation(this.host, lineage.herdrSessionIncarnation);
     if (!agent) {
       throw new Error(
@@ -361,18 +411,27 @@ export class PiHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
+    const sbx = this.sbxExecutions.get(execution.lineage.lineageId);
+    await sbx?.syncControl();
     const prompt = piPromptFor(
       dispatch,
-      materializeExecutionArtifacts(this.config, dispatch),
+      sbx?.materializedArtifacts ??
+        materializeExecutionArtifacts(this.config, dispatch),
     );
     const transcriptPath = piTranscriptPath(
       execution.agent.nativeSession ?? execution.ref.nativeSession ?? undefined,
     );
-    const evidence = await promptEvidenceCursor(
-      "pi_transcript",
-      transcriptPath ?? "",
-      prompt,
-    );
+    const evidence = sbx
+      ? {
+          kind: "pi_runtime_state" as const,
+          cursor: await sbx.activityCursor(),
+          promptHash: createHash("sha256").update(prompt).digest("hex"),
+        }
+      : await promptEvidenceCursor(
+          "pi_transcript",
+          transcriptPath ?? "",
+          prompt,
+        );
     onEvent({
       type: "prompt_baseline",
       evidence,
@@ -389,7 +448,10 @@ export class PiHarness implements AgentHarness {
     );
   }
 
-  async recover(lineage: HarnessLineage): Promise<HarnessRecoveredExecution> {
+  async recover(
+    lineage: HarnessLineage,
+    dispatch?: DispatchRecord,
+  ): Promise<HarnessRecoveredExecution> {
     if (
       !lineage.herdrSessionIncarnation ||
       lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
@@ -404,7 +466,23 @@ export class PiHarness implements AgentHarness {
         found: false,
         detail: "Lineage has no launched agent reference.",
       };
+    const sbx =
+      this.executionManager && dispatch
+        ? await this.executionManager.prepare(
+            dispatch,
+            lineage,
+            materializeExecutionArtifacts(this.config, dispatch),
+          )
+        : null;
+    if (sbx) {
+      this.sbxExecutions.set(lineage.lineageId, sbx);
+      await sbx.syncControl();
+    }
     const agent = await this.findExactLiveAgent(lineage);
+    if (agent) {
+      sbx?.startRelay(this.host, agent.paneId);
+      if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
+    }
     if (!agent)
       return {
         found: false,
@@ -426,19 +504,26 @@ export class PiHarness implements AgentHarness {
   ): Promise<Record<string, JsonValue>> {
     if (!lineage.paneId)
       throw new Error("Recovered lineage has no agent pane.");
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
     const prompt = piPromptFor(
       dispatch,
-      materializeExecutionArtifacts(this.config, dispatch),
+      sbx?.materializedArtifacts ??
+        materializeExecutionArtifacts(this.config, dispatch),
     );
-    const evidence =
-      persistedPromptEvidence(dispatch, "pi_transcript", prompt) ??
-      (await promptEvidenceCursor(
-        "pi_transcript",
-        piTranscriptPath(
-          agent.nativeSession ?? lineage.nativeSession ?? undefined,
-        ) ?? "",
-        prompt,
-      ));
+    const evidence = sbx
+      ? (persistedPromptEvidence(dispatch, "pi_runtime_state", prompt) ?? {
+          kind: "pi_runtime_state" as const,
+          cursor: await sbx.activityCursor(),
+          promptHash: createHash("sha256").update(prompt).digest("hex"),
+        })
+      : (persistedPromptEvidence(dispatch, "pi_transcript", prompt) ??
+        (await promptEvidenceCursor(
+          "pi_transcript",
+          piTranscriptPath(
+            agent.nativeSession ?? lineage.nativeSession ?? undefined,
+          ) ?? "",
+          prompt,
+        )));
     return this.collectPromptLifecycle(
       dispatch,
       lineage,
@@ -570,6 +655,9 @@ export class PiHarness implements AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<void> {
+    await this.sbxExecutions.get(lineage.lineageId)?.stopRelay();
+    this.sbxExecutions.delete(lineage.lineageId);
+    if (lineage.paneId) this.sbxExecutionsByPane.delete(lineage.paneId);
     if (!lineage.paneId) return;
     try {
       await this.host.reportMetadata({
@@ -636,12 +724,19 @@ export class PiHarness implements AgentHarness {
   }
 
   async close(lineage: HarnessLineage): Promise<void> {
+    await this.sbxExecutions.get(lineage.lineageId)?.stopRelay();
+    this.sbxExecutions.delete(lineage.lineageId);
+    if (lineage.paneId) this.sbxExecutionsByPane.delete(lineage.paneId);
     if (!lineage.paneId) return;
     await this.host.sendKeys(lineage.paneId, ["ctrl+c", "ctrl+c"]);
   }
 
   disconnect(): void {
     this.stopped = true;
+    for (const execution of this.sbxExecutions.values())
+      void execution.stopRelay();
+    this.sbxExecutions.clear();
+    this.sbxExecutionsByPane.clear();
     this.host.disconnect();
   }
 
@@ -899,6 +994,25 @@ export class PiHarness implements AgentHarness {
     const agent = await this.host
       .inspectAgentState(target)
       .catch(() => fallback);
+    if (evidence.kind === "pi_runtime_state") {
+      const relayed = this.sbxExecutionsByPane
+        .get(target)
+        ?.observedActivityAfter(evidence.cursor);
+      return {
+        agent,
+        activity: {
+          working:
+            Boolean(relayed) ||
+            agent.status === "working" ||
+            agent.status === "blocked",
+          observedAt:
+            relayed ??
+            (agent.status === "working" || agent.status === "blocked"
+              ? new Date().toISOString()
+              : null),
+        },
+      };
+    }
     const path = piTranscriptPath(agent.nativeSession);
     return {
       agent,
@@ -934,7 +1048,11 @@ export class PiHarness implements AgentHarness {
     return pane.workspaceId;
   }
 
-  private piArgs(dispatch: DispatchRecord, agentName: string): string[] {
+  private piArgs(
+    dispatch: DispatchRecord,
+    agentName: string,
+    sbx?: PreparedSbxPiExecution | null,
+  ): string[] {
     const configuration = dispatch.action.execution.configuration;
     if (
       configuration.tool_policy.kind !== "exact" ||
@@ -948,14 +1066,18 @@ export class PiHarness implements AgentHarness {
         ? []
         : ["--thinking", configuration.reasoning]),
       "--no-extensions",
-      "--extension",
-      this.integrationPath,
-      "--extension",
-      this.resultExtensionPath,
-      "--extension",
-      this.permissionExtensionPath,
-      "--extension",
-      this.assistanceExtensionPath,
+      ...(sbx
+        ? sbx.extensionPaths.flatMap((path) => ["--extension", path])
+        : [
+            "--extension",
+            this.integrationPath,
+            "--extension",
+            this.resultExtensionPath,
+            "--extension",
+            this.permissionExtensionPath,
+            "--extension",
+            this.assistanceExtensionPath,
+          ]),
       "--no-skills",
       "--no-prompt-templates",
       "--no-context-files",
@@ -972,6 +1094,7 @@ export class PiHarness implements AgentHarness {
   }
 
   private missingIntegration(): string | null {
+    if (this.executionManager) return null;
     if (!existsSync(this.integrationPath))
       return "Official Herdr Pi integration is missing; run 'herdr integration install pi' manually.";
     if (!existsSync(this.resultExtensionPath))
@@ -995,13 +1118,18 @@ export class PiHarness implements AgentHarness {
       structured: control.structured,
       persistedAttention: lineage.attention,
     });
-    const state = attention
-      ? "waiting_for_human"
-      : agent.status === "working"
-        ? "running"
-        : agent.status === "unknown"
-          ? "recovering"
-          : "retained";
+    const infrastructureFailure = this.executionManager?.failureCode(
+      lineage.lineageId,
+    );
+    const state = infrastructureFailure
+      ? "unavailable"
+      : attention
+        ? "waiting_for_human"
+        : agent.status === "working"
+          ? "running"
+          : agent.status === "unknown"
+            ? "recovering"
+            : "retained";
     return {
       state,
       agent,
@@ -1139,37 +1267,6 @@ export function piPromptFor(
     humanAssistanceInstruction:
       "- In Pi, use qe_request_human_assistance with a stable category and concise message. Use interaction conversational_intervention when normal multi-turn discussion is required; automation resumes only after /qe-resume. Use confirmation only for a simple completed/not-completed gate.",
   });
-}
-
-export function mappedPiTools(
-  dispatch: Pick<DispatchRecord, "action">,
-): string[] {
-  const policy = dispatch.action.execution.configuration.tool_policy;
-  if (policy.kind !== "exact")
-    throw new Error("Pi requires an exact tool policy.");
-  const { tools } = policy;
-  const workspace = dispatch.action.execution.execution_workspace;
-  const mapped = new Set<string>([
-    "qe_step_result",
-    "qe_request_human_assistance",
-  ]);
-  if (workspace.access !== "none") {
-    if (tools.includes("workspace.filesystem")) {
-      mapped.add("read");
-      if (workspace.access === "read_write") {
-        mapped.add("edit");
-        mapped.add("write");
-      }
-    }
-    if (tools.includes("workspace.search")) {
-      mapped.add("grep");
-      mapped.add("find");
-      mapped.add("ls");
-    }
-    if (tools.includes("terminal.shell") && workspace.access === "read_write")
-      mapped.add("bash");
-  }
-  return [...mapped];
 }
 
 function executionCwd(config: WorkerConfig, dispatch: DispatchRecord): string {

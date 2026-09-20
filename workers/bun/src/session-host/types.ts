@@ -134,6 +134,13 @@ export interface TerminalSessionBackend {
     title: string;
     tokens: Record<string, string>;
   }): Promise<void>;
+  /** Report guest-native Pi lifecycle through the host-owned Herdr socket. */
+  reportAgentState?(input: {
+    paneId: string;
+    state: "idle" | "working" | "blocked";
+    sequence: number;
+    nativeSession?: NativeSessionRef;
+  }): Promise<void>;
   startAgent(input: {
     paneId: string;
     name: string;

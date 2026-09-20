@@ -32,11 +32,20 @@ interface BoundControlContext {
   enforcementAttempts: number;
   contractViolation: string | null;
   lastCompletionFailure: CompletionFailure | null;
+  operationTail: Promise<void>;
 }
 
 export interface HarnessControlEndpoint {
   host: "127.0.0.1";
   port: number;
+}
+
+export interface StructuredCompletionBoundary {
+  verifyAndBind(input: {
+    dispatch: DispatchRecord;
+    lineageId: string;
+    outputs: Record<string, JsonValue>;
+  }): Promise<Record<string, JsonValue>>;
 }
 
 /**
@@ -53,6 +62,7 @@ export class HarnessControlAuthority {
   constructor(
     private readonly registry: DispatchRegistry,
     private readonly maxStopEnforcements = 2,
+    private readonly completionBoundary?: StructuredCompletionBoundary,
   ) {}
 
   setEndpoint(endpoint: HarnessControlEndpoint): void {
@@ -84,6 +94,7 @@ export class HarnessControlAuthority {
       enforcementAttempts: 0,
       contractViolation: null,
       lastCompletionFailure: null,
+      operationTail: Promise.resolve(),
     };
     this.contexts.set(contextToken, context);
     this.tokenByLineage.set(lineage.lineageId, contextToken);
@@ -120,12 +131,31 @@ export class HarnessControlAuthority {
         "unknown_control_context",
         "Harness control context is unknown or has been invalidated.",
       );
-    const replay = context.requests.get(input.requestId);
-    if (replay) return { ...replay, duplicate: true };
-    this.assertCurrent(context);
-    const result = await this.apply(context, input.operation, input.requestId);
-    context.requests.set(input.requestId, result);
-    return result;
+    const previous = context.operationTail;
+    let release: () => void = () => undefined;
+    context.operationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      if (this.contexts.get(input.contextToken) !== context)
+        throw new HarnessControlError(
+          "stale_control_context",
+          "Harness control context rotated while the request was pending.",
+        );
+      const replay = context.requests.get(input.requestId);
+      if (replay) return { ...replay, duplicate: true };
+      this.assertCurrent(context);
+      const result = await this.apply(
+        context,
+        input.operation,
+        input.requestId,
+      );
+      context.requests.set(input.requestId, result);
+      return result;
+    } finally {
+      release();
+    }
   }
 
   failure(error: unknown): HarnessControlResponse {
@@ -235,6 +265,28 @@ export class HarnessControlAuthority {
         "replayed_request",
         "This Attempt already has a structured Step result.",
       );
+    let boundOutputs = outputs;
+    if (this.completionBoundary) {
+      try {
+        boundOutputs = await this.completionBoundary.verifyAndBind({
+          dispatch: context.dispatch,
+          lineageId: context.lineageId,
+          outputs,
+        });
+        validateOutputs(context.dispatch.action.declared_outputs, boundOutputs);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        context.lastCompletionFailure = {
+          kind: "infrastructure",
+          code: "invalid_bridge_response",
+          message,
+        };
+        throw new HarnessControlError(
+          "invalid_bridge_response",
+          `Physical workspace export verification failed: ${message}`,
+        );
+      }
+    }
     const action = context.dispatch.action;
     const envelope: StepResultEnvelope = {
       protocolVersion: STEP_RESULT_PROTOCOL_VERSION,
@@ -246,7 +298,7 @@ export class HarnessControlAuthority {
       attemptId: action.attempt_id,
       nonce: context.dispatch.resultNonce,
       createdAt: new Date().toISOString(),
-      outputs,
+      outputs: boundOutputs,
     };
     await writeStepResultAtomic(
       context.dispatch.resultDirectory,

@@ -22,6 +22,7 @@ import {
   type HarnessLineage,
   turnLifecycle,
 } from "./dispatch/registry.ts";
+import { SbxRunExecutionManager } from "./execution-environment/sbx-run.ts";
 import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
 import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
 import { HarnessControlServer } from "./harnesses/control/server.ts";
@@ -76,6 +77,7 @@ export class QuestEngineeringWorker {
   private readonly channel: PhoenixWorkerChannel;
   private readonly capabilities: WorkerCapabilities;
   private readonly herdr: WorkerInfrastructure | null;
+  private readonly sbxExecutionManager: SbxRunExecutionManager | null;
   private stopping = false;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private recoveryScanActive = false;
@@ -118,6 +120,12 @@ export class QuestEngineeringWorker {
             dataRoot: config.dataRoot,
           }));
     this.herdr = provider;
+    this.sbxExecutionManager =
+      config.provider !== "fake" &&
+      !dependencies.harnesses &&
+      (config.enabledHarnesses ?? ["pi", "antigravity"]).includes("pi")
+        ? new SbxRunExecutionManager(config, this.worktrees)
+        : null;
     const harnesses: AgentHarness[] =
       dependencies.harnesses ??
       (config.provider === "fake"
@@ -129,7 +137,11 @@ export class QuestEngineeringWorker {
             );
             return kind === "antigravity"
               ? new AntigravityHarness(host, config)
-              : new PiHarness(host, config);
+              : new PiHarness(host, config, {
+                  ...(this.sbxExecutionManager
+                    ? { executionManager: this.sbxExecutionManager }
+                    : {}),
+                });
           }));
     this.harnesses = new HarnessRegistry(harnesses);
     const defaultHarness = harnesses[0];
@@ -140,7 +152,11 @@ export class QuestEngineeringWorker {
       defaultHarness.kind,
       (kind) => this.harnesses.get(kind).capabilities,
     );
-    this.harnessControl = new HarnessControlAuthority(this.registry);
+    this.harnessControl = new HarnessControlAuthority(
+      this.registry,
+      2,
+      this.sbxExecutionManager ?? undefined,
+    );
     this.harnessControlServer = new HarnessControlServer(this.harnessControl);
     // Harness and terminal transport are composed once per long-lived Worker.
     const capabilities = workerCapabilities(config, platform(), arch());
@@ -175,6 +191,12 @@ export class QuestEngineeringWorker {
 
   async prepareForStartup(): Promise<void> {
     await this.herdr?.ensureInfrastructure();
+    const reconciliation =
+      await this.sbxExecutionManager?.reconcileDurableOwnership();
+    if (reconciliation?.length)
+      console.warn(
+        `SBX execution reconciliation requires attention: ${reconciliation.join(" ")}`,
+      );
     await this.refreshHarnessCapabilities();
   }
 
@@ -232,6 +254,7 @@ export class QuestEngineeringWorker {
     this.channel.close();
     this.executor.disconnect();
     await this.harnessControlServer.stop();
+    await this.sbxExecutionManager?.close();
     this.registry.close();
     this.deliveries.close();
     this.worktrees.close();

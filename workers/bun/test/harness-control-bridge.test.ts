@@ -1,5 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
@@ -7,7 +14,10 @@ import {
   controlDescriptorPath,
   HarnessControlAuthority,
 } from "../src/harnesses/control/authority.ts";
-import { HarnessControlClient } from "../src/harnesses/control/client.ts";
+import {
+  forwardHarnessControlPayload,
+  HarnessControlClient,
+} from "../src/harnesses/control/client.ts";
 import { collectStepResult } from "../src/harnesses/control/result-envelope.ts";
 import { HarnessControlServer } from "../src/harnesses/control/server.ts";
 import { action } from "./support.ts";
@@ -70,6 +80,38 @@ test("one generic bridge validates and records a structured Step result", async 
   ).rejects.toMatchObject({
     code: "replayed_request",
   });
+});
+
+test("sandbox mailbox relays the unchanged bound request to host authority", async () => {
+  const value = await createFixture();
+  const bound = await bind(value);
+  const mailbox = join(value.root, "guest-mailbox");
+  const client = new HarnessControlClient(
+    controlDescriptorPath(bound.lineage),
+    mailbox,
+  );
+  const pending = client.completionStatus();
+  let names: string[] = [];
+  for (let attempt = 0; attempt < 20 && names.length === 0; attempt += 1) {
+    await Bun.sleep(10);
+    names = await readdir(join(mailbox, "requests")).catch(() => []);
+  }
+  expect(names).toHaveLength(1);
+  const name = names[0] as string;
+  const payload = await readFile(join(mailbox, "requests", name), "utf8");
+  expect(JSON.parse(payload)).toMatchObject({
+    bridgeGeneration: expect.any(String),
+    contextToken: expect.any(String),
+    operation: { type: "completion_status" },
+  });
+  const response = await forwardHarnessControlPayload(
+    controlDescriptorPath(bound.lineage),
+    payload,
+  );
+  await mkdir(join(mailbox, "responses"), { recursive: true });
+  await writeFile(join(mailbox, "responses", name), response);
+  expect(await pending).toMatchObject({ accepted: true, completed: false });
+  expect(await readdir(join(mailbox, "requests"))).toEqual([]);
 });
 
 test("invalid output sets never become successful completion", async () => {

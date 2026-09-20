@@ -61,6 +61,12 @@ export interface HerdrControlClient {
     displayAgent?: string;
     tokens?: Record<string, string>;
   }): Promise<void>;
+  reportAgentState(input: {
+    paneId: string;
+    state: "idle" | "working" | "blocked";
+    sequence: number;
+    nativeSession?: NativeSessionRef;
+  }): Promise<void>;
   startAgent(input: AgentLaunchInput): Promise<HostedAgent>;
   prompt(
     target: string,
@@ -284,6 +290,37 @@ export class HerdrSocketClient implements HerdrControlClient {
       ...(input.title ? { title: input.title } : {}),
       ...(input.displayAgent ? { display_agent: input.displayAgent } : {}),
       ...(input.tokens ? { tokens: input.tokens } : {}),
+    });
+  }
+
+  async reportAgentState(input: {
+    paneId: string;
+    state: "idle" | "working" | "blocked";
+    sequence: number;
+    nativeSession?: NativeSessionRef;
+  }): Promise<void> {
+    const session = input.nativeSession;
+    if (session)
+      await this.request("pane.report_agent_session", {
+        pane_id: input.paneId,
+        source: "quest-engineering:sbx-pi",
+        agent: "pi",
+        seq: input.sequence * 2,
+        ...(session.kind === "path"
+          ? { agent_session_path: session.value }
+          : { agent_session_id: session.value }),
+      });
+    await this.request("pane.report_agent", {
+      pane_id: input.paneId,
+      source: "quest-engineering:sbx-pi",
+      agent: "pi",
+      state: input.state,
+      seq: input.sequence * 2 + 1,
+      ...(session?.kind === "path"
+        ? { agent_session_path: session.value }
+        : session
+          ? { agent_session_id: session.value }
+          : {}),
     });
   }
 

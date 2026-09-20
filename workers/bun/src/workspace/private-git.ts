@@ -1273,28 +1273,26 @@ export async function validateAndImportPrivateGitExport(input: {
 }): Promise<HostImportResult> {
   const changeExport = await validateExportFiles(input.changeExport);
   const manifest = changeExport.manifest;
-  if (existsSync(input.fixtureGitDir)) {
-    const entries = await Array.fromAsync(
-      new Bun.Glob("**/*").scan({ cwd: input.fixtureGitDir, dot: true }),
-    );
-    if (entries.length > 0)
-      throw coded(
-        "host_import_mismatch",
-        "Host import destination must be an empty isolated fixture.",
-      );
-  }
+  const existingEntries = existsSync(input.fixtureGitDir)
+    ? await Array.fromAsync(
+        new Bun.Glob("**/*").scan({ cwd: input.fixtureGitDir, dot: true }),
+      )
+    : [];
+  const existing = existingEntries.length > 0;
   await mkdir(input.fixtureGitDir, { recursive: true });
-  await hostGit(input.fixtureGitDir, [
-    "init",
-    "--bare",
-    `--object-format=${manifest.repository.objectFormat}`,
-  ]);
-  await hostGit(input.fixtureGitDir, [
-    "config",
-    "--local",
-    "core.hooksPath",
-    "/dev/null",
-  ]);
+  if (!existing) {
+    await hostGit(input.fixtureGitDir, [
+      "init",
+      "--bare",
+      `--object-format=${manifest.repository.objectFormat}`,
+    ]);
+    await hostGit(input.fixtureGitDir, [
+      "config",
+      "--local",
+      "core.hooksPath",
+      "/dev/null",
+    ]);
+  }
   await hostGit(input.fixtureGitDir, [
     "bundle",
     "verify",
@@ -1306,12 +1304,13 @@ export async function validateAndImportPrivateGitExport(input: {
   const importedRefs: string[] = [];
   for (const [name, source] of Object.entries(manifest.refs).sort()) {
     const target = `${prefix}/${name}`;
-    await hostGit(input.fixtureGitDir, [
-      "fetch",
-      "--no-tags",
-      changeExport.bundlePath,
-      `+${source}:${target}`,
-    ]);
+    if (!existing)
+      await hostGit(input.fixtureGitDir, [
+        "fetch",
+        "--no-tags",
+        changeExport.bundlePath,
+        `+${source}:${target}`,
+      ]);
     importedRefs.push(target);
   }
   await hostGit(input.fixtureGitDir, ["fsck", "--strict", "--no-dangling"]);
