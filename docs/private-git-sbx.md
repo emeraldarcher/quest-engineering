@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 3 adds independently testable Worker infrastructure for private Git materialization, physical-lineage worktrees, deterministic workspace fingerprints, checkpoints, export, restore, and isolated host-fixture import. It is not imported by production dispatch, Pi, Antigravity, Herdr, the server, protocol, Delivery, or UI.
+Phase 3 added independently testable Worker infrastructure for private Git materialization, physical-lineage worktrees, deterministic workspace fingerprints, checkpoints, export, restore, and isolated host-fixture import. Phase 4 wires that infrastructure into production Pi dispatch and Run delivery materialization; Antigravity, server protocol, and UI semantics remain unchanged.
 
 The implementation is `workers/bun/src/workspace/private-git.ts` with durable state in `private-git-store.ts`. It is a workspace layer above `EnvironmentLease`, not an execution-environment backend capability. An SBX machine can exist without a repository and a Run can materialize more than one repository in future, so no gratuitous `private_git` capability was added to the environment contract.
 
@@ -182,7 +182,7 @@ This preserves uncommitted work without `git stash`. Ignored output is intention
 
 `validateAndImportPrivateGitExport` accepts only an empty isolated bare fixture. It verifies manifest/export/checkpoint/fingerprint hashes, bundle bytes, exact refs, `git bundle verify`, strict object validity, base commit/tree, result tree, changed paths, safe tree paths, and the no-submodule/no-LFS policy. It fetches only four namespaced refs and then requires the complete fixture ref set to equal those refs. It installs no remote, credentials, user identity, signing config, or imported hooks.
 
-Future Delivery receives this validated accepted export—not a sandbox path or model description. Delivery may then create a Worker/server-controlled host branch/worktree, import exact objects, and publish with controlled credentials. The sandbox agent never receives the host repository, publication credentials, push authority, or PR API authority.
+Delivery receives this validated accepted export—not a sandbox path or model description. The Worker materializes exact objects and the result tree in the Run-owned isolated host repository; controlled Delivery code alone may use separately recorded publication authority. The configured source repository remains read-only authority and is never a Run branch/worktree or retained writable remote. The sandbox agent never receives the host repository, publication credentials, push authority, or PR API authority.
 
 Physical sharing inside a Run does not change semantic Tactic handoff. Cross-harness context remains typed Artifacts. Seeing the same private filesystem is not an implicit semantic handoff.
 

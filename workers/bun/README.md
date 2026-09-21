@@ -8,6 +8,7 @@ The Bun Worker is the sole filesystem authority for Worker Protocol v7. Phoenix 
 QE_CONTROL_PLANE_URL=ws://127.0.0.1:4000/worker/websocket
 QE_WORKER_ID=stable-worker-id
 QE_WORKER_TOKEN=...
+QE_HERDR_BIN=/absolute/pinned/herdr
 QE_ALLOWED_ROOTS_JSON=[{"key":"code","path":"/absolute/code","max_access":"read_write","discover_depth":4,"allow_unconfined_shell":false}]
 QE_WORKER_HARNESSES=pi,antigravity
 ```
@@ -24,7 +25,7 @@ QE_MAX_CONCURRENCY=1
 QE_PROMPT_ACTIVITY_STALL_MS=30000
 ```
 
-`QE_HERDR_SESSION` is an optional explicit override. Omit it to use the collision-resistant session name derived from `QE_WORKER_ID`.
+`QE_HERDR_BIN` is required in production. It must be one absolute executable path; Worker startup canonicalizes it and uses that exact binary for every Herdr CLI and server subprocess. There is no `herdr` PATH fallback. `QE_HERDR_SESSION` is an optional explicit override. Omit it to use the collision-resistant session name derived from `QE_WORKER_ID`.
 
 Pi's model catalog is always discovered from the authenticated runtime inside the execution profile; it is not baked into the profile. Omit `QE_EXECUTOR_MODELS` for the normal unrestricted dynamic catalog. A present empty value is an explicit deny-all scope and makes the harness unschedulable. A nonempty comma-separated list applies an exact `provider/model` allowlist over the discovered catalog, preserving native model identities, catalog order, and independently discovered reasoning capability. It never enables provider fallback or substitutes a missing model.
 
@@ -49,14 +50,14 @@ If Product storage no longer contains a binding's logical Workspace, the server 
 Before any Action, including `workspace_access: none`:
 
 1. Phoenix pins the Run to one Worker and one source binding.
-2. Bun resolves committed source `HEAD` and records the full object ID.
-3. Bun creates `qe/run/<stable-id>` using `git worktree add -b` under `QE_WORKTREE_ROOT`.
-4. Bun verifies canonical top-level, Git common directory, registration, and branch.
+2. Bun locks the source Git common directory, resolves committed source `HEAD`, and records the full object ID and optional publication authority.
+3. Bun initializes a Worker-owned isolated repository under `QE_WORKTREE_ROOT`, fetches the exact local base OID without retaining the source as a remote, and creates `qe/run/<stable-id>` only inside that isolated repository.
+4. Bun verifies canonical top-level, isolated Git common directory, branch, exact base, and absence of source linkage.
 5. Phoenix schedules only after the durable ready report.
 
-Git metadata mutations are serialized by canonical Git common directory, including linked source worktrees. Dirty source changes are allowed but excluded and reported. Missing, corrupt, or branch-switched Run worktrees are fenced; they are never silently repaired, relocated, or recreated.
+The configured source repository is read authority, never staging storage. Provisioning, replay, injected failure, and cleanup must leave its `HEAD`, symbolic `HEAD`, all refs, packed refs, index, status, config, hooks, and working files unchanged. Local-only, unpushed base commits remain supported because the OID is copied from the authorized local object database. A publication remote is copied only when its canonical identity differs from the source. Legacy records whose Git common directory points at the source are fenced as `run_worktree_legacy_source_linked`; cleanup recursively removes only the isolated Run repository.
 
-Terminal worktrees are retained. There is no automatic GC.
+Dirty source changes are allowed but excluded and reported. Missing, corrupt, branch-switched, or source-linked Run repositories are never silently repaired, relocated, or recreated. Terminal Run repositories are retained. There is no automatic GC.
 
 ## Filesystem access
 
@@ -72,13 +73,15 @@ Continuation requires exact harness kind, model, resolved reasoning capability/v
 
 `AgentHarness` owns coding-agent semantics and `TerminalSessionBackend` owns terminal transport. `HarnessRegistry` hosts Pi and interactive-first Antigravity concurrently over Herdr; Herdr is not a provider. One QE lineage may span several Attempts while native conversation and terminal/process incarnation remain distinct provenance.
 
-Herdr compatibility is capability-based. Endpoint protocol generation 1, introduced by Herdr 0.9, is the coarse floor because it is Herdr's stable endpoint-compatibility boundary; older servers require replacement. Socket protocol 22 is the newest QE-tested provenance, not an allowlist or ceiling. A newer protocol remains schedulable when native wire/endpoint status, live ping identity, API operation metadata, safely decoded session snapshot, canonical lifecycle states, and the selected harness's current Herdr integration all pass. Readiness probes are side-effect free: they never create a workspace, pane, agent, prompt, or model run. Mutating operation support is proven from Herdr API metadata and its response is decoded when actual execution exercises it. Readiness evidence is tied to the observed server socket generation and discarded after replacement or transport failure.
+Herdr compatibility is capability-based. Endpoint protocol generation 1, introduced by Herdr 0.9, is the coarse floor because it is Herdr's stable endpoint-compatibility boundary; older servers require replacement. Socket protocol 22 is the newest QE-tested provenance, not an allowlist or ceiling. A newer protocol remains schedulable when native wire/endpoint status, live ping identity, API operation metadata, safely decoded session snapshot, canonical lifecycle states, and the selected harness's current Herdr integration all pass. Pi additionally requires live `ping.capabilities.agent_explicit_launch=true` and `agent.start.command` in API schema metadata. Readiness probes are side-effect free: they never create a workspace, pane, agent, prompt, or model run. Mutating operation support is proven from Herdr API metadata and its response is decoded when actual execution exercises it. Readiness evidence is tied to the observed server socket generation and discarded after replacement or transport failure.
 
 Worker startup explicitly ensures Herdr infrastructure before harness/model discovery. The default named session combines a normalized `QE_WORKER_ID` with a stable hash suffix; `QE_HERDR_SESSION` remains an explicit override subject to the same ownership checks. QE claims a session with a primary record at `<QE_WORKER_DATA_ROOT>/herdr-session-ownership.json`, a corroborating `.qe-worker-owner.json` marker in Herdr's session directory, and non-authoritative live workspace metadata. The durable records retain the full Worker ID; IDs beyond Herdr's metadata-value bound use a collision-resistant SHA-256 token only in that live corroboration layer. Missing corroboration may be repaired only from matching durable ownership plus the same physical session directory. Any conflicting or foreign same-name evidence fails closed. Clean-slate creation generates a QE session incarnation; Worker/server reconnects preserve it, while deleted/recreated Herdr storage gets a new incarnation. Herdr server/socket generation is separate compatibility provenance and may change without changing incarnation. Normal shutdown disconnects clients but does not stop or delete the session. The default session name combines a normalized readable Worker-ID prefix with a fixed SHA-256 suffix and is dynamically shortened against both of Herdr's default Unix sockets (`herdr.sock` and the longer `herdr-client.sock`), reserving the terminating-byte boundary of macOS `sockaddr_un.sun_path`. An explicit name that exceeds the same physical path contract fails before server launch. Herdr 0.9's named-session lifecycle owns one bootstrap workspace/root shell pane; if a clean headless snapshot has not materialized it yet, infrastructure ensure initializes that same non-execution bootstrap so it can publish ownership metadata. Ensure creates no QE execution pane, agent, prompt, or model work.
 
 The QE-facing backend contract uses semantic capabilities: backend health/identity and endpoint compatibility, session inventory and decoding, terminal topology/metadata/shell readiness, interactive agent launch, prompting, inspection and logical input, canonical lifecycle states, and integration discovery. Launch metadata must distinguish `launch_pending` acknowledgement from authoritative native materialization. Pi additionally requires server-owned agent state observation plus a current `pi` integration. Antigravity independently requires a current `antigravity_cli` integration. A missing harness-specific capability disables only that harness. Protocols newer than 22 receive a `newer_than_tested_but_compatible` diagnostic after verification and remain ready.
 
 Pi and Antigravity share one idempotent Herdr launch state machine. It resolves the deterministic name first, accepts a full inline agent as a fast path, and otherwise reconciles the stable pane plus native kind and exact Worker/Run/Action-hash/lineage/ownership/session-incarnation tokens until the agent materializes. It adopts that exact agent after a lost response or restart. A same-name foreign agent fails closed. A nonce-bound launch/control record is written before `agent.start` without marking prompt intent or invoking the model. A second `agent.start` is allowed only when bounded inventory and shell state prove absence; unresolved outcomes become non-auto-retryable `uncertain`, and prompt submission never occurs during reconciliation.
+
+Production Pi supplies `agent.start.command` from the exact Run lease. Herdr executes its absolute launcher directly with literal argv, cwd, environment additions, and PTY I/O; `kind=pi` remains only the managed identity. QE never installs a host `pi` wrapper or modifies `PATH`, and an SBX launch never falls back to direct host Pi. Before launch, the Worker validates guest ownership/binding/executable/workspace/control/extension paths and durably records launcher entrypoint hash, host argv digest, guest argv digest, environment/profile identity, and PhysicalLineage. Guest Pi then attests exact Worker, Run, environment UUID/incarnation, profile, lineage, private workspace/cwd, `HOME`, and required paths through the lifecycle relay. No prompt is authorized until attestation passes. `environment_launch_mismatch`, `environment_attestation_failed`, and `agent_explicit_launch_failed` are deterministic infrastructure failures.
 
 Prompt lifecycle is durable and separate from Herdr's terminal-state heuristic: `prompt_intent` is recorded before transport, `prompt_accepted` only after submission acknowledgement, `waiting_for_activity` follows while native evidence is absent, `working` requires the harness's own append-only evidence, `blocked` requires structured attention, and an authorized result settles the turn. Pi uses the exact post-baseline native transcript turn; Antigravity uses its post-baseline native conversation handoff log. Herdr `idle`, `working`, terminal text, and process presence do not independently prove semantic activity. Herdr's five-second `agent_prompt_stalled` response proves submission, not semantic failure, so adapters call prompt submission without an `until` gate and continue observation. `QE_PROMPT_ACTIVITY_STALL_MS` only changes when waiting is visibly labeled `stalled`; it never fails the Attempt, authorizes a retry, or converts the turn to `uncertain`. Only an unresolved transport outcome at the submission boundary becomes `agent_prompt_uncertain`. Exact-lineage recovery never repeats an accepted prompt.
 
@@ -103,6 +106,8 @@ bun run check
 bun test
 bun run integration:herdr-pi
 bun run integration:worker-restart
+QE_RUN_HERDR_STARTUP_LIVE=1 QE_HERDR_BIN=/absolute/patched/herdr bun test test/herdr-startup-live.test.ts
+QE_RUN_SBX_HERDR_LIVE=1 QE_HERDR_BIN=/absolute/patched/herdr QE_SBX_BIN=/absolute/sbx bun test test/sbx-herdr-live.test.ts
 ```
 
-The real-provider gates require existing Herdr/Pi authentication and are never run with the fake provider.
+The Herdr startup stress gate creates no execution agents and must report zero prompts. The SBX/Herdr gate is launch-only: it performs authenticated model-resource discovery, starts and attests guest Pi, proves restart adoption/attachment/private Docker/shell restoration and a hostile host-`pi` PATH trap, and must report `prompts: 0` and `providerCycles: 0`. The real-provider gates require existing Herdr/Pi subscription authentication and are never run with the fake provider.

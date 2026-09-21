@@ -12,7 +12,8 @@ Pi, Antigravity, Claude Code, Codex, and future coding harnesses keep ownership 
 - **`AgentHarness` adapters** discover native readiness and models, pin execution configuration, translate lifecycle and session identity, and advertise only capabilities they actually support.
 - **The QE Harness Control Bridge** is one Worker-local semantic control authority for structured completion, attention, state, yield/resume, and bounded completion enforcement.
 - **Native shims** are deliberately thin. A Pi extension, an Antigravity MCP tool or Stop hook, and a future native RPC client all forward to the same control bridge. MCP is an adapter transport, not the QE harness protocol.
-- **`TerminalSessionBackend` / Herdr** owns terminal creation, persistence, attachment, and native terminal-state observation. It is not the harness contract.
+- **`TerminalSessionBackend` / Herdr** owns terminal creation, persistence, attachment, native terminal-state observation, and exact PTY process transport. It executes an environment-selected `HostLaunchDescriptor`; it does not select a harness executable through `PATH` and is not the harness contract.
+- **`ExecutionEnvironmentBackend`** owns filesystem/HOME/Git/network/credential isolation and translates a guest command into an exact absolute host launcher. For production Pi, that launcher is the only process Herdr may execute.
 - **Native coding harnesses** remain the model clients and own their UX, tools, accounts, and provider access.
 
 ## Control and trust
@@ -22,6 +23,8 @@ The bridge is a loopback-only Worker process service. Before each native executi
 Native operations do not supply QE identity. For example, `complete_step` supplies only semantic outputs. The Worker authority adds and validates execution identity, declared outputs, nonce, lineage occupancy, and current Attempt state. A new Attempt rotates the capability even when it retains the same physical conversation. Old generations, stale Attempts, replayed requests, and cross-lineage capabilities are rejected.
 
 The loopback endpoint is not exposed through Phoenix, has no database credentials, and never exposes the Worker control-plane token. There is no mutable global “current run.” Concurrent Pi and Antigravity sessions each receive a distinct bound capability.
+
+Production Pi adds a pre-prompt physical-attestation gate below this semantic capability. The Worker verifies the Run-owned environment and required guest paths before launch; the guest extension then attests exact Worker, Run, environment UUID/incarnation, profile, PhysicalLineage, private workspace/cwd, `HOME`, ownership marker, launch-binding marker, and immutable extension/control paths. Pi cannot become promptable until that attestation matches. A wrong launcher, stale environment, host Pi process, or mismatched guest fails closed as infrastructure and cannot authorize inference.
 
 ## Correctness and liveness
 
@@ -39,7 +42,7 @@ Adapters describe their implementation strategy internally:
 - `structured_headless`
 - `terminal_only`
 
-Pi remains `native_extension`; it is not migrated to MCP. Antigravity is finalized as interactive-first `hooks_plus_structured_tool`: every active Attempt owns an always-live native Antigravity TUI under Herdr, the semantic-only `qe_complete_step` MCP tool transports outputs, and the Stop hook enforces bridge-authorized completion. The proven headless → interactive → headless transition remains a secondary recovery/diagnostic capability, never the default. A terminal-only adapter may be observable and attachable, but cannot be advertised for QE execution without structured completion.
+Pi remains `native_extension`; it is not migrated to MCP. Its extensions and Pi process execute inside the Run-owned environment, while a narrow Worker relay maps attested guest lifecycle/control files to the host authority and Herdr. Herdr's generic explicit managed-launch API preserves `kind=pi` as semantic identity while independently selecting the absolute environment launcher; executable choice never comes from the integration name. Antigravity is finalized as interactive-first `hooks_plus_structured_tool`: every active Attempt owns an always-live native Antigravity TUI under Herdr, the semantic-only `qe_complete_step` MCP tool transports outputs, and the Stop hook enforces bridge-authorized completion. The proven headless → interactive → headless transition remains a secondary recovery/diagnostic capability, never the default. A terminal-only adapter may be observable and attachable, but cannot be advertised for QE execution without structured completion.
 
 ## State authority
 
