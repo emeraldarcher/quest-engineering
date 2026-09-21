@@ -56,6 +56,61 @@ const PI_EXTENSION_ENTRIES = [
   "sbx-herdr-state-extension.ts",
 ] as const;
 
+export interface DiscoveredPiModelCatalog {
+  models: HarnessModelCapability[];
+  diagnostics: string[];
+  authenticated: boolean;
+}
+
+export function applyConfiguredPiModelScope(
+  discovered: DiscoveredPiModelCatalog,
+  configured: readonly { provider: string; model: string }[] | undefined,
+): DiscoveredPiModelCatalog {
+  const total = discovered.models.length;
+  if (configured === undefined)
+    return {
+      models: [...discovered.models],
+      authenticated: discovered.authenticated && total > 0,
+      diagnostics: [
+        ...discovered.diagnostics,
+        total > 0
+          ? `QE model scope is omitted; retained all ${total} dynamically discovered model(s).`
+          : "Dynamic Pi discovery returned zero compatible models; QE model scope is omitted.",
+      ],
+    };
+
+  if (configured.length === 0)
+    return {
+      models: [],
+      authenticated: false,
+      diagnostics: [
+        ...discovered.diagnostics,
+        ...(total === 0
+          ? ["Dynamic Pi discovery returned zero compatible models."]
+          : []),
+        `QE model scope is explicitly empty; policy retained 0 of ${total} dynamically discovered model(s).`,
+      ],
+    };
+
+  const allowed = new Set(
+    configured.map((model) => `${model.provider}/${model.model}`),
+  );
+  const models = discovered.models.filter((model) =>
+    allowed.has(`${model.provider}/${model.model}`),
+  );
+  const diagnostic =
+    total === 0
+      ? "Dynamic Pi discovery returned zero compatible models; the configured QE model scope could not be applied."
+      : models.length === 0
+        ? `Configured QE model scope retained 0 of ${total} dynamically discovered model(s); policy excluded the entire discovered catalog.`
+        : `Configured QE model scope retained ${models.length} of ${total} dynamically discovered model(s).`;
+  return {
+    models,
+    authenticated: discovered.authenticated && models.length > 0,
+    diagnostics: [...discovered.diagnostics, diagnostic],
+  };
+}
+
 export interface PreparedSbxPiExecution {
   lease: EnvironmentLease;
   workspace: PrivateLineageWorkspace;
@@ -159,25 +214,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         this.config.executorModels ??
         (this.config.piModel
           ? [splitConfiguredModel(this.config.piModel)]
-          : null);
-      if (!configured) return discovered;
-      const allowed = new Set(
-        configured.map((model) => `${model.provider}/${model.model}`),
-      );
-      const models = discovered.models.filter((model) =>
-        allowed.has(`${model.provider}/${model.model}`),
-      );
-      return {
-        models,
-        authenticated: discovered.authenticated && models.length > 0,
-        diagnostics:
-          models.length > 0
-            ? discovered.diagnostics
-            : [
-                ...discovered.diagnostics,
-                "No authenticated in-sandbox Pi model matches the configured Worker scope.",
-              ],
-      };
+          : undefined);
+      return applyConfiguredPiModelScope(discovered, configured);
     } finally {
       if (lease) await this.backend.remove(lease.ref).catch(() => undefined);
     }

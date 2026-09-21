@@ -131,7 +131,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       ? (["fake"] as const)
       : harnesses(env.QE_WORKER_HARNESSES ?? "pi,antigravity");
   const executorModels = models(
-    env.QE_EXECUTOR_MODELS ?? env.QE_PI_MODEL,
+    env.QE_EXECUTOR_MODELS !== undefined
+      ? env.QE_EXECUTOR_MODELS
+      : env.QE_PI_MODEL,
     provider,
   );
   const reasoningLevels = reasoning(
@@ -171,7 +173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     ),
     workspaceBindingsPath,
     worktreeRoot,
-    executorModels,
+    ...(executorModels === undefined ? {} : { executorModels }),
     reasoningLevels,
     dataRoot,
     ...(env.QE_PI_MODEL?.trim() ? { piModel: env.QE_PI_MODEL.trim() } : {}),
@@ -441,11 +443,12 @@ function csv(value: string | undefined): string[] {
 function models(
   value: string | undefined,
   provider: "pi" | "fake",
-): Array<{ provider: string; model: string }> {
+): Array<{ provider: string; model: string }> | undefined {
+  if (value === undefined)
+    return provider === "fake"
+      ? [{ provider: "fake", model: "test" }]
+      : undefined;
   const configured = csv(value);
-  if (configured.length === 0 && provider === "fake")
-    return [{ provider: "fake", model: "test" }];
-  if (configured.length === 0) return [];
   return configured.map((entry) => {
     const separator = entry.indexOf("/");
     if (separator < 1 || separator === entry.length - 1)

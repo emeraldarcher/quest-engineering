@@ -22,7 +22,9 @@ export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
       config.executorModels ??
       (config.piModel
         ? [splitModel(config.piModel)]
-        : [{ provider: config.provider, model: "test" }])
+        : config.provider === "fake"
+          ? [{ provider: "fake", model: "test" }]
+          : [])
     ).map((model) => ({
       ...model,
       display_name: `${model.provider}/${model.model}`,

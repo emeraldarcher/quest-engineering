@@ -26,6 +26,8 @@ QE_PROMPT_ACTIVITY_STALL_MS=30000
 
 `QE_HERDR_SESSION` is an optional explicit override. Omit it to use the collision-resistant session name derived from `QE_WORKER_ID`.
 
+Pi's model catalog is always discovered from the authenticated runtime inside the execution profile; it is not baked into the profile. Omit `QE_EXECUTOR_MODELS` for the normal unrestricted dynamic catalog. A present empty value is an explicit deny-all scope and makes the harness unschedulable. A nonempty comma-separated list applies an exact `provider/model` allowlist over the discovered catalog, preserving native model identities, catalog order, and independently discovered reasoning capability. It never enables provider fallback or substitutes a missing model.
+
 Bindings created through control-plane discovery are stored in `workspace-bindings.json`. Physical Run mappings and Git provenance are stored with SQLite `synchronous=FULL` in `run-worktrees.sqlite`. Dispatch, harness-neutral QE lineage, harness kind, native conversation identity, QE physical Herdr session incarnation, activity, and unresolved HumanAttention are stored in `dispatches.sqlite`.
 
 `QE_MAX_CONCURRENCY` is the number of simultaneous execution slots advertised by this long-lived host; it defaults conservatively to `1`. Set `QE_MAX_CONCURRENCY=2` explicitly on a development/staging Worker to allow two otherwise-eligible Actions to execute at once. Worker slots are independent of Product Member occupancy: with an Engineering Pair, Run A's reviewer and Run B's builder may use two slots concurrently, while the same `{squad_id, member_key}` builder may not execute for both Runs at once.

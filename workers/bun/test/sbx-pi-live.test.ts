@@ -25,6 +25,7 @@ import {
   SBX_PI_RESOURCE_PROBE,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
 } from "../src/execution-environment/sbx-profile.ts";
+import { applyConfiguredPiModelScope } from "../src/execution-environment/sbx-run.ts";
 import type {
   EnvironmentLease,
   EnvironmentSpec,
@@ -164,13 +165,69 @@ test.skipIf(!enabled)(
       expect(discovery.exitCode).toBe(0);
       const value = JSON.parse(discovery.stdout) as {
         authenticated: boolean;
-        models: Array<{ provider: string; model: string }>;
+        diagnostics: string[];
+        models: Array<{
+          provider: string;
+          model: string;
+          displayName: string;
+          reasoning: string[];
+        }>;
       };
       expect(value.authenticated).toBe(true);
       expect(value.models.length).toBeGreaterThan(0);
       expect(
         value.models.every((model) => model.provider === "openai-codex"),
       ).toBe(true);
+      const workerCatalog = applyConfiguredPiModelScope(
+        {
+          authenticated: value.authenticated,
+          diagnostics: value.diagnostics,
+          models: value.models.map((model) => ({
+            provider: model.provider,
+            model: model.model,
+            displayName: model.displayName,
+            reasoningCapability:
+              model.reasoning.length > 0
+                ? { kind: "enumerated" as const, values: model.reasoning }
+                : { kind: "unsupported" as const },
+          })),
+        },
+        undefined,
+      );
+      expect(workerCatalog.authenticated).toBe(true);
+      expect(workerCatalog.models).toHaveLength(value.models.length);
+      expect(workerCatalog.models.map((model) => model.model)).toEqual(
+        value.models.map((model) => model.model),
+      );
+      expect(
+        workerCatalog.models.some(
+          (model) =>
+            model.reasoningCapability.kind === "enumerated" &&
+            model.reasoningCapability.values.length > 0,
+        ),
+      ).toBe(true);
+      const runtime = await lease.exec({
+        executable: "/usr/bin/node",
+        args: [
+          "-e",
+          "const fs=require('fs');const p='/opt/qe/pi/node_modules/@earendil-works/pi-coding-agent/package.json';process.stdout.write(JSON.parse(fs.readFileSync(p,'utf8')).version)",
+        ],
+      });
+      expect(runtime.exitCode).toBe(0);
+      console.log(
+        JSON.stringify({
+          event: "sbx_pi_dynamic_discovery_no_inference",
+          models: workerCatalog.models.map((model) => ({
+            provider: model.provider,
+            model: model.model,
+            reasoningCapability: model.reasoningCapability,
+          })),
+          piVersion: runtime.stdout.trim(),
+          profile: SBX_PI_EXECUTION_PROFILE_V1,
+          configuredModelScope: "omitted",
+          providerCycles: 0,
+        }),
+      );
 
       await proveMailboxRoundTrip(lease);
       await provePiTuiReadinessWithoutInference(
