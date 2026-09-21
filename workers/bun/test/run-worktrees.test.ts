@@ -1,6 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  readlink,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { join, relative } from "node:path";
 import { workerCapabilities } from "../src/capabilities.ts";
 import type { WorkerConfig } from "../src/config.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
@@ -12,10 +22,12 @@ afterEach(async () => {
   );
 });
 
-test("isolates simultaneous Runs and serializes linked bindings by Git common directory", async () => {
+test("isolates simultaneous Runs without linking or mutating source Git metadata", async () => {
   const fixture = await setup();
   const registry = new RunWorktreeRegistry(fixture.config);
   await writeFile(join(fixture.source, "dirty-only.txt"), "excluded\n");
+  const sourceBefore = await repositorySnapshot(fixture.source);
+  const linkedBefore = await repositorySnapshot(fixture.linked);
 
   const [first, second] = await Promise.all([
     registry.provision(request("1", workspace(1), binding(1))),
@@ -30,11 +42,25 @@ test("isolates simultaneous Runs and serializes linked bindings by Git common di
   expect(replay).toEqual(first);
   expect(first.canonicalRoot).not.toBe(second.canonicalRoot);
   expect(first.branchName).not.toBe(second.branchName);
-  expect(first.gitCommonDir).toBe(second.gitCommonDir);
+  expect(first.gitCommonDir).not.toBe(second.gitCommonDir);
+  expect(first.gitCommonDir).toBe(join(first.canonicalRoot, ".git"));
+  expect(second.gitCommonDir).toBe(join(second.canonicalRoot, ".git"));
   expect(first.sourceDirtyExcluded).toBe(true);
+  expect(first.baseRevision).toBe(sourceBefore.head);
   expect(
     await Bun.file(join(first.canonicalRoot, "dirty-only.txt")).exists(),
   ).toBe(false);
+  expect(await repositorySnapshot(fixture.source)).toEqual(sourceBefore);
+  expect(await repositorySnapshot(fixture.linked)).toEqual(linkedBefore);
+  expect(
+    await output([
+      "git",
+      "-C",
+      fixture.source,
+      "for-each-ref",
+      "--format=%(refname)",
+    ]),
+  ).not.toContain("refs/heads/qe/run/");
 
   await command([
     "git",
@@ -70,7 +96,60 @@ test("isolates simultaneous Runs and serializes linked bindings by Git common di
     restarted.get(request("3", workspace(2), binding(2)).worktree_id),
   ).toBe(null);
   expect((await restarted.cleanup(second.worktreeId)).state).toBe("removed");
+  expect(await repositorySnapshot(fixture.source)).toEqual(sourceBefore);
+  expect(await repositorySnapshot(fixture.linked)).toEqual(linkedBefore);
   restarted.close();
+});
+
+test("rejects a publication remote that aliases the source Git common directory", async () => {
+  const fixture = await setup();
+  await command([
+    "git",
+    "-C",
+    fixture.linked,
+    "remote",
+    "add",
+    "origin",
+    fixture.source,
+  ]);
+  const sourceBefore = await repositorySnapshot(fixture.source);
+  const linkedBefore = await repositorySnapshot(fixture.linked);
+  const registry = new RunWorktreeRegistry(fixture.config);
+
+  const failed = await registry.provision(
+    request("4", workspace(2), binding(2)),
+  );
+
+  expect(failed.state).toBe("attention_required");
+  expect(failed.failureCode).toBe("run_worktree_git_mismatch");
+  expect(await repositorySnapshot(fixture.source)).toEqual(sourceBefore);
+  expect(await repositorySnapshot(fixture.linked)).toEqual(linkedBefore);
+  registry.close();
+});
+
+test("injected isolated staging failure leaves every source authority unchanged", async () => {
+  const fixture = await setup();
+  await command([
+    "git",
+    "-C",
+    fixture.source,
+    "remote",
+    "add",
+    "origin",
+    fixture.source,
+  ]);
+  const before = await repositorySnapshot(fixture.source);
+  const registry = new RunWorktreeRegistry(fixture.config);
+
+  const failed = await registry.provision(
+    request("3", workspace(1), binding(1)),
+  );
+
+  expect(failed.state).toBe("attention_required");
+  expect(failed.failureCode).toBe("run_worktree_git_mismatch");
+  expect(await repositorySnapshot(fixture.source)).toEqual(before);
+  expect(before.refs).not.toContain("refs/heads/qe/run/");
+  registry.close();
 });
 
 function request(id: string, workspaceId: string, bindingId: string) {
@@ -175,8 +254,125 @@ async function setup() {
     fakeDelayMs: 0,
   };
   await mkdir(config.worktreeRoot, { recursive: true });
-  return { root, source, config };
+  return { root, source, linked, config };
 }
+
+interface RepositorySnapshot {
+  head: string;
+  headRef: string;
+  refs: string;
+  packedRefs: string;
+  index: string;
+  status: string;
+  config: string;
+  hooks: string[];
+  workingFiles: string[];
+}
+
+async function repositorySnapshot(root: string): Promise<RepositorySnapshot> {
+  const commonDirectory = await output([
+    "git",
+    "-C",
+    root,
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  ]);
+  const indexPath = await output([
+    "git",
+    "-C",
+    root,
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-path",
+    "index",
+  ]);
+  return {
+    head: await output(["git", "-C", root, "rev-parse", "HEAD"]),
+    headRef: await output(["git", "-C", root, "symbolic-ref", "HEAD"]),
+    refs: await output([
+      "git",
+      "-C",
+      root,
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+    ]),
+    packedRefs: await digestFileOrMissing(join(commonDirectory, "packed-refs")),
+    index: await digestFileOrMissing(indexPath),
+    status: await output([
+      "git",
+      "-C",
+      root,
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+    ]),
+    config: await digestFileOrMissing(join(commonDirectory, "config")),
+    hooks: await treeSnapshot(join(commonDirectory, "hooks"), commonDirectory),
+    workingFiles: await treeSnapshot(root, root, new Set([".git"])),
+  };
+}
+
+async function digestFileOrMissing(path: string): Promise<string> {
+  try {
+    return createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
+  }
+}
+
+async function treeSnapshot(
+  root: string,
+  relativeTo: string,
+  excludedTopLevel: Set<string> = new Set(),
+): Promise<string[]> {
+  const result: string[] = [];
+  async function visit(path: string): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await readdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    entries.sort();
+    for (const name of entries) {
+      if (path === root && excludedTopLevel.has(name)) continue;
+      const child = join(path, name);
+      const metadata = await lstat(child);
+      const item = relative(relativeTo, child);
+      if (metadata.isDirectory()) {
+        result.push(`d ${metadata.mode & 0o777} ${item}`);
+        await visit(child);
+      } else if (metadata.isSymbolicLink()) {
+        result.push(
+          `l ${metadata.mode & 0o777} ${item} ${await readlink(child)}`,
+        );
+      } else {
+        result.push(
+          `f ${metadata.mode & 0o777} ${item} ${await digestFileOrMissing(child)}`,
+        );
+      }
+    }
+  }
+  await visit(root);
+  return result;
+}
+
+async function output(argv: string[]): Promise<string> {
+  const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
+  const [stdout, error, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (code !== 0) throw new Error(`${argv.join(" ")} failed: ${error}`);
+  return stdout.trim();
+}
+
 async function command(argv: string[]): Promise<void> {
   const child = Bun.spawn(argv, { stdout: "ignore", stderr: "pipe" });
   const error = await new Response(child.stderr).text();
