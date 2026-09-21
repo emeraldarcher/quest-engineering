@@ -565,6 +565,9 @@ export class SbxExecutionEnvironmentBackend
         validateCommand(command);
         const current = await this.requireUsableLease(record, "launcher");
         const requested = withDefaultCwd(command);
+        const launcherSha256 = createHash("sha256")
+          .update(await readFile(this.launcherPath))
+          .digest("hex");
         return {
           executable: process.execPath,
           args: [
@@ -589,6 +592,12 @@ export class SbxExecutionEnvironmentBackend
             profile: {
               id: current.profileId,
               digest: current.profileDigest,
+            },
+            launcher: {
+              contractVersion: 1,
+              runtimeExecutable: process.execPath,
+              entrypoint: this.launcherPath,
+              entrypointSha256: launcherSha256,
             },
           },
         } satisfies HostLaunchDescriptor;

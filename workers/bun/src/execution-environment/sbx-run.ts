@@ -1,12 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  chmod,
-  copyFile,
-  mkdir,
-  readFile,
-  rename,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import type { WorkerConfig, WorkspaceBindingConfig } from "../config.ts";
 import type { DispatchRecord, HarnessLineage } from "../dispatch/registry.ts";
@@ -46,7 +39,11 @@ import {
   SBX_PI_RUNTIME_NETWORK_TARGETS,
 } from "./sbx-profile.ts";
 import { SbxRunExecutionStore } from "./sbx-run-store.ts";
-import type { EnvironmentLease, EnvironmentSpec } from "./types.ts";
+import type {
+  EnvironmentLease,
+  EnvironmentSpec,
+  HostLaunchDescriptor,
+} from "./types.ts";
 
 const MAX_MAILBOX_REQUEST_BYTES = 1024 * 1024;
 const PI_EXTENSION_ENTRIES = [
@@ -119,10 +116,13 @@ export interface PreparedSbxPiExecution {
   guestEnvironment: Record<string, string>;
   extensionPaths: string[];
   materializedArtifacts: Record<string, MaterializedArtifact>;
+  /** Bind exact Pi argv to the environment-owned host launcher. */
+  launchDescriptor(args: readonly string[]): Promise<HostLaunchDescriptor>;
   syncControl(): Promise<void>;
   activityCursor(): Promise<number>;
   observedActivityAfter(cursor: number): string | null;
   startRelay(host: TerminalSessionBackend, paneId: string): void;
+  awaitAttestation(timeoutMs?: number): Promise<void>;
   stopRelay(): Promise<void>;
 }
 
@@ -155,11 +155,6 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     digest: string;
     bundles: ExtensionBundle[];
   }> | null = null;
-  private readonly launcherSource = resolve(
-    import.meta.dir,
-    "../harnesses/pi/pi-environment-launcher.ts",
-  );
-
   constructor(
     private readonly config: WorkerConfig,
     private readonly worktrees: RunWorktreeRegistry,
@@ -364,6 +359,52 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       hostArtifacts,
     );
     const guestPaths = guestControlPaths(controlRoot);
+    const attestation = {
+      schemaVersion: 1,
+      workerId: lease.ref.workerId,
+      runId: lease.ref.runId,
+      environmentId: lease.ref.environmentId,
+      incarnation: lease.ref.incarnation,
+      profileId: lease.ref.profile.id,
+      profileDigest: lease.ref.profile.digest,
+      physicalLineageId: lineage.lineageId,
+      workspacePath: workspace.paths.workspace,
+      homePath: lease.paths.home,
+    } as const;
+    const ownershipMarkerPath = posix.join(
+      lease.paths.state,
+      "environment-ownership.json",
+    );
+    const launchBindingPath = posix.join(controlRoot, "launch-binding.json");
+    const launchBindingReceipt = await lease.writeFile({
+      path: launchBindingPath,
+      data: new TextEncoder().encode(`${JSON.stringify(attestation)}\n`),
+      mode: 0o400,
+    });
+    if (
+      launchBindingReceipt.sha256 !== digest(`${JSON.stringify(attestation)}\n`)
+    )
+      throw environmentLaunchFailure(
+        "environment_launch_mismatch",
+        "SBX launch-binding marker changed while crossing the environment boundary.",
+      );
+    const requiredGuestPaths = [
+      ownershipMarkerPath,
+      launchBindingPath,
+      SBX_PI_EXECUTABLE,
+      workspace.paths.workspace,
+      controlRoot,
+      guestPaths.mailbox,
+      ...extensionPaths,
+    ];
+    await this.validateGuestLaunchPaths(
+      lease,
+      attestation,
+      ownershipMarkerPath,
+      launchBindingPath,
+      requiredGuestPaths,
+      workspace.paths.workspace,
+    );
     const guestEnvironment: Record<string, string> = {
       QE_HARNESS_CONTROL_PATH: guestPaths.descriptor,
       [SBX_CONTROL_MAILBOX_ENV]: guestPaths.mailbox,
@@ -375,20 +416,12 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       QE_WORKSPACE_ROOT: workspace.paths.workspace,
       QE_ALLOWED_PI_TOOLS: mappedPiTools(dispatch).join(","),
       QE_ARTIFACT_ROOT: posix.join(lease.paths.state, "execution-artifacts"),
+      QE_SBX_ATTESTATION_JSON: JSON.stringify(attestation),
+      QE_SBX_OWNERSHIP_MARKER_PATH: ownershipMarkerPath,
+      QE_SBX_LAUNCH_BINDING_PATH: launchBindingPath,
+      QE_SBX_REQUIRED_GUEST_PATHS_JSON: JSON.stringify(requiredGuestPaths),
     };
-    const launch = await lease.launcher({
-      executable: SBX_PI_EXECUTABLE,
-      args: [],
-      cwd: workspace.paths.workspace,
-      environment: guestEnvironment,
-    });
-    const launcher = await this.installHostLauncher(lineage.lineageId);
-    const paneEnvironment = {
-      PATH: `${launcher.directory}:${process.env.PATH ?? ""}`,
-      QE_PI_ENVIRONMENT_LAUNCH: Buffer.from(JSON.stringify(launch)).toString(
-        "base64",
-      ),
-    };
+    const paneEnvironment: Record<string, string> = {};
     const context: RuntimeContext = {
       dispatch,
       lineage,
@@ -417,14 +450,77 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         ? { replacementOf: existingExecution.environmentRef }
         : {}),
     });
+    let launchPromise: Promise<HostLaunchDescriptor> | null = null;
+    let launchArgvDigest: string | null = null;
     const prepared: PreparedSbxPiExecution = {
       lease,
       workspace,
-      hostCwd: launcher.directory,
+      hostCwd: worktree.canonicalRoot,
       paneEnvironment,
       guestEnvironment,
       extensionPaths,
       materializedArtifacts,
+      launchDescriptor: async (args) => {
+        const guestArgvSha256 = digest(JSON.stringify([...args]));
+        if (launchArgvDigest && launchArgvDigest !== guestArgvSha256)
+          throw environmentLaunchFailure(
+            "environment_launch_mismatch",
+            "The physical lineage requested conflicting Pi launch argv.",
+          );
+        launchArgvDigest = guestArgvSha256;
+        launchPromise ??= lease
+          .launcher({
+            executable: SBX_PI_EXECUTABLE,
+            args: [...args],
+            cwd: workspace.paths.workspace,
+            environment: guestEnvironment,
+          })
+          .then((descriptor) => {
+            const launcherProvenance = descriptor.provenance.launcher;
+            if (!launcherProvenance)
+              throw environmentLaunchFailure(
+                "environment_launch_mismatch",
+                "The SBX backend omitted exact launcher provenance.",
+              );
+            const launch: HostLaunchDescriptor = {
+              ...descriptor,
+              provenance: {
+                ...descriptor.provenance,
+                binding: {
+                  physicalLineageId: lineage.lineageId,
+                  workspacePath: workspace.paths.workspace,
+                  guestExecutable: SBX_PI_EXECUTABLE,
+                  guestCwd: workspace.paths.workspace,
+                  guestArgvSha256,
+                },
+              },
+            };
+            this.store.bindLaunch(
+              lineage.lineageId,
+              dispatch.action.action_id,
+              {
+                schemaVersion: 1,
+                executable: launch.executable,
+                cwd: launch.cwd,
+                argvSha256: digest(JSON.stringify([...launch.args])),
+                environmentKeys: Object.keys(launch.environment).sort(),
+                launcherContractVersion: launcherProvenance.contractVersion,
+                launcherEntrypoint: launcherProvenance.entrypoint,
+                launcherEntrypointSha256: launcherProvenance.entrypointSha256,
+                guestExecutable: SBX_PI_EXECUTABLE,
+                guestCwd: workspace.paths.workspace,
+                guestArgvSha256,
+                physicalLineageId: lineage.lineageId,
+                environmentId: lease.ref.environmentId,
+                incarnation: lease.ref.incarnation,
+                profileId: lease.ref.profile.id,
+                profileDigest: lease.ref.profile.digest,
+              },
+            );
+            return launch;
+          });
+        return launchPromise;
+      },
       syncControl: () => this.syncControl(context),
       activityCursor: async () => {
         await context.relay?.refresh();
@@ -440,6 +536,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           lineage,
           host,
           paneId,
+          attestation,
           () =>
             this.store.attention(
               lineage.lineageId,
@@ -452,6 +549,14 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
             ),
         );
         context.relay.start();
+      },
+      awaitAttestation: (timeoutMs = 30_000) => {
+        if (!context.relay)
+          throw environmentLaunchFailure(
+            "environment_attestation_failed",
+            "The guest attestation relay was not started.",
+          );
+        return context.relay.awaitAttestation(timeoutMs);
       },
       stopRelay: async () => {
         await context.relay?.stop();
@@ -632,20 +737,35 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     return this.extensionBundles;
   }
 
-  private async installHostLauncher(lineageId: string): Promise<{
-    directory: string;
-    executable: string;
-  }> {
-    const directory = join(
-      resolve(this.config.dataRoot),
-      "environment-launchers",
-      digest(lineageId).slice(0, 32),
-    );
-    const executable = join(directory, "pi");
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    await copyFile(this.launcherSource, executable);
-    await chmod(executable, 0o700);
-    return { directory, executable };
+  private async validateGuestLaunchPaths(
+    lease: EnvironmentLease,
+    attestation: Record<string, string | number>,
+    ownershipMarkerPath: string,
+    launchBindingPath: string,
+    requiredPaths: readonly string[],
+    workspacePath: string,
+  ): Promise<void> {
+    const result = await lease.exec({
+      executable: "/usr/bin/python3",
+      args: [
+        "-c",
+        "import json,os,pathlib,sys; expected=json.loads(os.environ['QE_EXPECTED']); marker=json.loads(pathlib.Path(os.environ['QE_MARKER']).read_text()); binding=json.loads(pathlib.Path(os.environ['QE_BINDING']).read_text()); keys=('workerId','runId','environmentId','incarnation','profileId','profileDigest'); bad=[k for k in keys if marker.get(k)!=expected.get(k)]; binding_bad=[k for k,v in expected.items() if binding.get(k)!=v]; paths=json.loads(os.environ['QE_PATHS']); missing=[p for p in paths if not pathlib.Path(p).exists()]; exe=os.environ['QE_EXECUTABLE']; ok=os.path.isfile(exe) and os.access(exe,os.X_OK) and pathlib.Path(os.environ['QE_WORKSPACE']).is_dir(); print(json.dumps({'bad':bad,'binding_bad':binding_bad,'missing':missing,'executable':ok},separators=(',',':'))); sys.exit(0 if not bad and not binding_bad and not missing and ok else 41)",
+      ],
+      environment: {
+        QE_EXPECTED: JSON.stringify(attestation),
+        QE_MARKER: ownershipMarkerPath,
+        QE_BINDING: launchBindingPath,
+        QE_PATHS: JSON.stringify(requiredPaths),
+        QE_EXECUTABLE: SBX_PI_EXECUTABLE,
+        QE_WORKSPACE: workspacePath,
+      },
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0)
+      throw environmentLaunchFailure(
+        "environment_launch_mismatch",
+        `SBX guest launch-path validation failed: ${result.stdout.trim() || result.stderr.trim() || `exit ${result.exitCode}`}`,
+      );
   }
 
   private async importVerifiedExport(
@@ -820,6 +940,8 @@ class SbxControlMailboxRelay {
   private readonly processedRequests = new Map<string, string>();
   private consecutiveFailures = 0;
   private failureReported = false;
+  private attestationState: "pending" | "passed" | "failed" = "pending";
+  private attestationFailure: string | null = null;
 
   constructor(
     private readonly lease: EnvironmentLease,
@@ -827,6 +949,7 @@ class SbxControlMailboxRelay {
     private readonly lineage: HarnessLineage,
     private readonly host: TerminalSessionBackend,
     private readonly paneId: string,
+    private readonly expectedAttestation: Record<string, string | number>,
     private readonly onFailure: () => void,
     private readonly onRecovery: () => void,
   ) {}
@@ -856,6 +979,20 @@ class SbxControlMailboxRelay {
 
   observedActivityAfter(cursor: number): string | null {
     return this.lastWorkingSequence > cursor ? this.lastWorkingAt : null;
+  }
+
+  async awaitAttestation(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.attestationState === "pending" && Date.now() < deadline) {
+      await this.refresh().catch(() => undefined);
+      if (this.attestationState === "pending") await Bun.sleep(50);
+    }
+    if (this.attestationState !== "passed")
+      throw environmentLaunchFailure(
+        "environment_attestation_failed",
+        this.attestationFailure ??
+          "The exact SBX Run/environment/lineage attestation did not arrive before the launch deadline.",
+      );
   }
 
   private async loop(): Promise<void> {
@@ -931,6 +1068,28 @@ class SbxControlMailboxRelay {
 
   private async reportRuntime(value: unknown): Promise<void> {
     if (!record(value) || value.schemaVersion !== 1) return;
+    const reportedFailure =
+      typeof value.attestationFailure === "string"
+        ? value.attestationFailure
+        : null;
+    const observedAttestation = record(value.attestation)
+      ? value.attestation
+      : null;
+    if (
+      reportedFailure ||
+      !observedAttestation ||
+      !sameAttestation(this.expectedAttestation, observedAttestation)
+    ) {
+      this.attestationState = "failed";
+      this.attestationFailure = reportedFailure
+        ? `Guest environment attestation failed: ${reportedFailure}`
+        : "Guest environment attestation did not match the exact Run, environment incarnation, profile, lineage, and workspace binding.";
+      throw environmentLaunchFailure(
+        "environment_attestation_failed",
+        this.attestationFailure,
+      );
+    }
+    this.attestationState = "passed";
     const sequence = Number(value.sequence);
     const workingSequence = Number(value.lastWorkingSequence);
     const state = value.state;
@@ -1169,6 +1328,19 @@ async function writeAtomic(path: string, value: string): Promise<void> {
 
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function sameAttestation(
+  expected: Record<string, string | number>,
+  observed: Record<string, unknown>,
+): boolean {
+  return Object.entries(expected).every(
+    ([key, value]) => observed[key] === value,
+  );
+}
+
+function environmentLaunchFailure(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
 }
 
 function digest(value: string): string {

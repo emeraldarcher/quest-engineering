@@ -43,6 +43,25 @@ test("SBX Run execution store preserves host tree continuity while rotating Acti
     workspace,
     extensionSetDigest: "extensions-1",
   });
+  const launchProvenance = {
+    schemaVersion: 1 as const,
+    executable: "/opt/qe/bin/bun",
+    cwd: root,
+    argvSha256: "host-argv",
+    environmentKeys: [],
+    launcherContractVersion: 1 as const,
+    launcherEntrypoint: "/qe/sbx-launcher.ts",
+    launcherEntrypointSha256: "launcher-digest",
+    guestExecutable: "/opt/qe/pi/bin/pi",
+    guestCwd: "/qe/workspace",
+    guestArgvSha256: "guest-argv",
+    physicalLineageId: "lineage-1",
+    environmentId: "environment-1",
+    incarnation: "incarnation-1",
+    profileId: "qe-pi-execution-v1",
+    profileDigest: "profile",
+  };
+  store.bindLaunch("lineage-1", "action-1", launchProvenance);
   const changeExport = {
     exportId: "export-1",
     checkpointId: "checkpoint-1",
@@ -54,6 +73,12 @@ test("SBX Run execution store preserves host tree continuity while rotating Acti
     actionId: "action-1",
     changeExport: { exportId: "export-1" },
     hostResultTree: "tree-1",
+    launchProvenance: {
+      executable: "/opt/qe/bin/bun",
+      guestExecutable: "/opt/qe/pi/bin/pi",
+      launcherEntrypointSha256: "launcher-digest",
+      physicalLineageId: "lineage-1",
+    },
   });
 
   expect(() =>
@@ -79,6 +104,7 @@ test("SBX Run execution store preserves host tree continuity while rotating Acti
     changeExport: null,
     recoveryExport: { exportId: "export-1" },
     hostResultTree: "tree-1",
+    launchProvenance: null,
   });
   store.ready({
     lineageId: "lineage-2",

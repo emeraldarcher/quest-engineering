@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { workerCapabilities } from "../src/capabilities.ts";
@@ -46,6 +47,23 @@ const discovered: DiscoveredPiModelCatalog = {
     },
   ],
 };
+
+test("production config requires one exact absolute Herdr executable", async () => {
+  const configured = await environment();
+  expect(loadConfig(configured).herdrBin).toBe(realpathSync(process.execPath));
+  const missing = { ...configured };
+  delete missing.QE_HERDR_BIN;
+  expect(() => loadConfig(missing)).toThrow("QE_HERDR_BIN is required");
+  expect(() => loadConfig({ ...configured, QE_HERDR_BIN: "herdr" })).toThrow(
+    "must be an absolute path",
+  );
+  expect(() =>
+    loadConfig({
+      ...configured,
+      QE_HERDR_BIN: configured.QE_WORKER_DATA_ROOT,
+    }),
+  ).toThrow("must identify an existing executable file");
+});
 
 test("omitted model configuration remains absent while an authored empty value remains deny-all", async () => {
   const omitted = loadConfig(await environment());
@@ -218,6 +236,7 @@ async function environment(
     QE_WORKER_TOKEN: "unused",
     QE_WORKER_PROVIDER: "pi",
     QE_WORKER_HARNESSES: "pi",
+    QE_HERDR_BIN: process.execPath,
     QE_WORKER_DATA_ROOT: root,
     QE_WORKTREE_ROOT: join(root, "worktrees"),
     QE_ALLOWED_ROOTS_JSON: "[]",

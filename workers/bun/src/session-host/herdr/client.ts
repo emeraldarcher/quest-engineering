@@ -1,4 +1,6 @@
 import { createConnection, type Socket } from "node:net";
+import { isAbsolute } from "node:path";
+import type { HostLaunchDescriptor } from "../../execution-environment/types.ts";
 import type {
   HostedAgent,
   HostedAgentStatus,
@@ -22,6 +24,7 @@ export interface HerdrPing {
   version: string;
   protocol: number;
   endpointGeneration: number;
+  agentExplicitLaunch?: boolean;
 }
 
 export interface AgentLaunchInput {
@@ -29,6 +32,8 @@ export interface AgentLaunchInput {
   name: string;
   integrationKind: string;
   args: string[];
+  /** Exact host process transport. Herdr must not resolve this through PATH. */
+  command?: HostLaunchDescriptor;
   /** Stable QE ownership fields expected on the materialized native agent. */
   expectedTokens: Record<string, string>;
   timeoutMs?: number;
@@ -131,6 +136,7 @@ export class HerdrSocketClient implements HerdrControlClient {
         "ping.capabilities.endpoint_protocol_generation",
         "backend.endpoint_generation_1",
       ),
+      agentExplicitLaunch: capabilities.agent_explicit_launch === true,
     };
   }
 
@@ -326,6 +332,7 @@ export class HerdrSocketClient implements HerdrControlClient {
 
   async startAgent(input: AgentLaunchInput): Promise<HostedAgent> {
     assertLaunchOwnership(input);
+    if (input.command) assertExplicitCommand(input.command);
     const deadline = Date.now() + (input.timeoutMs ?? 90_000);
 
     // A prior caller may have lost the launch response after Herdr accepted the
@@ -356,7 +363,17 @@ export class HerdrSocketClient implements HerdrControlClient {
             pane_id: input.paneId,
             name: input.name,
             kind: input.integrationKind,
-            args: input.args,
+            args: input.command ? [] : input.args,
+            ...(input.command
+              ? {
+                  command: {
+                    executable: input.command.executable,
+                    args: [...input.command.args],
+                    cwd: input.command.cwd,
+                    env: { ...input.command.environment },
+                  },
+                }
+              : {}),
             timeout_ms: remainingMs,
           },
           remainingMs + 5_000,
@@ -785,6 +802,33 @@ const LAUNCH_OWNERSHIP_TOKEN_KEYS = [
   "qe_harness_kind",
   "qe_provider",
 ] as const;
+
+function assertExplicitCommand(command: HostLaunchDescriptor): void {
+  if (
+    !isAbsolute(command.executable) ||
+    !isAbsolute(command.cwd) ||
+    command.io !== "pty"
+  )
+    throw new HerdrApiError(
+      "environment_launch_mismatch",
+      "Explicit managed launch requires an absolute executable, absolute cwd, and PTY transport.",
+      "agent.explicit_launch",
+    );
+  if (
+    [command.executable, command.cwd, ...command.args].some((value) =>
+      value.includes("\0"),
+    ) ||
+    Object.entries(command.environment).some(
+      ([key, value]) =>
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || value.includes("\0"),
+    )
+  )
+    throw new HerdrApiError(
+      "environment_launch_mismatch",
+      "Explicit managed launch contains an invalid argv or environment value.",
+      "agent.explicit_launch",
+    );
+}
 
 function assertLaunchOwnership(input: AgentLaunchInput): void {
   const missing = REQUIRED_LAUNCH_OWNERSHIP_TOKEN_KEYS.filter(

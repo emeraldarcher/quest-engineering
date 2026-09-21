@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   assertHerdrDefaultSocketPathSafe,
@@ -11,11 +12,14 @@ import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connecti
 
 const enabled = process.env.QE_RUN_HERDR_STARTUP_LIVE === "1";
 const iterations = Number(process.env.QE_HERDR_STARTUP_ITERATIONS ?? "20");
+const herdrExecutable = process.env.QE_HERDR_BIN ?? "";
+const namingHome = process.env.QE_HERDR_TEST_NAMING_HOME ?? homedir();
 
 test.skipIf(!enabled)(
   "fresh default Worker-owned Herdr sessions start and support restart adoption without execution activity",
   async () => {
     expect(process.env.QE_HERDR_SESSION).toBeUndefined();
+    expect(herdrExecutable.startsWith("/")).toBe(true);
     expect(Number.isSafeInteger(iterations)).toBe(true);
     expect(iterations).toBeGreaterThanOrEqual(20);
     expect(iterations).toBeLessThanOrEqual(50);
@@ -41,13 +45,14 @@ test.skipIf(!enabled)(
         const workerId = `phase4-stress-${iteration}-${randomUUID()}-${"x".repeat(40)}`;
         expect(Buffer.byteLength(workerId)).toBeGreaterThan(80);
         expect(Buffer.byteLength(workerId)).toBeLessThanOrEqual(128);
-        const sessionName = defaultHerdrSessionName(workerId);
+        const sessionName = defaultHerdrSessionName(workerId, namingHome);
         activeSession = sessionName;
-        assertHerdrDefaultSocketPathSafe(sessionName);
-        const socketPaths = herdrDefaultSocketPaths(sessionName);
+        assertHerdrDefaultSocketPathSafe(sessionName, namingHome);
+        const socketPaths = herdrDefaultSocketPaths(sessionName, namingHome);
         const provider = new LocalHerdrConnectionProvider(sessionName, {
           workerId,
           dataRoot,
+          herdrExecutable,
         });
         const identity = await provider.ensureInfrastructure();
         generations.add(identity.serverGeneration);
@@ -65,13 +70,14 @@ test.skipIf(!enabled)(
         const restarted = new LocalHerdrConnectionProvider(sessionName, {
           workerId,
           dataRoot,
+          herdrExecutable,
         });
         const adopted = await restarted.ensureInfrastructure();
         expect(adopted.sessionIncarnation).toBe(identity.sessionIncarnation);
         expect(adopted.serverGeneration).toBe(identity.serverGeneration);
         expect((await restarted.readiness("pi")).ready).toBe(true);
 
-        await stopSession(sessionName);
+        await stopSession(herdrExecutable, sessionName);
         activeSession = null;
         records.push({
           workerId,
@@ -96,18 +102,26 @@ test.skipIf(!enabled)(
       );
     } finally {
       if (activeSession)
-        await stopSession(activeSession).catch(() => undefined);
+        await stopSession(herdrExecutable, activeSession).catch(
+          () => undefined,
+        );
     }
   },
   5 * 60_000,
 );
 
-async function stopSession(sessionName: string): Promise<void> {
-  const child = Bun.spawn(["herdr", "session", "stop", "--json", sessionName], {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+async function stopSession(
+  executable: string,
+  sessionName: string,
+): Promise<void> {
+  const child = Bun.spawn(
+    [executable, "session", "stop", "--json", sessionName],
+    {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),

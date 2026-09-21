@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
@@ -36,6 +44,8 @@ export interface WorkerConfig {
   maxConcurrency: number;
   tags: string[];
   herdrSession: string;
+  /** Exact host executable used for every Herdr CLI/server launch. */
+  herdrBin?: string;
   allowedRoots: AuthorizedRoot[];
   workspaceBindings: WorkspaceBindingConfig[];
   retiredWorkspaceBindings?: WorkspaceBindingConfig[];
@@ -126,6 +136,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     "QE_PROMPT_ACTIVITY_STALL_MS",
   );
   const provider = env.QE_WORKER_PROVIDER === "fake" ? "fake" : "pi";
+  const herdrBin = env.QE_HERDR_BIN?.trim()
+    ? exactExecutable(env.QE_HERDR_BIN, "QE_HERDR_BIN")
+    : undefined;
+  if (provider !== "fake" && !herdrBin)
+    throw new Error(
+      "QE_HERDR_BIN is required and must name the exact absolute Herdr executable.",
+    );
   const enabledHarnesses =
     provider === "fake"
       ? (["fake"] as const)
@@ -165,6 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     maxConcurrency,
     tags: csv(env.QE_WORKER_TAGS),
     herdrSession,
+    ...(herdrBin ? { herdrBin } : {}),
     allowedRoots,
     workspaceBindings,
     retiredWorkspaceBindings,
@@ -480,5 +498,18 @@ function absolute(value: string, key: string): string {
   const path = resolve(value);
   if (!isAbsolute(path))
     throw new Error(`${key} must resolve to an absolute path.`);
+  return path;
+}
+
+function exactExecutable(value: string, key: string): string {
+  if (!isAbsolute(value)) throw new Error(`${key} must be an absolute path.`);
+  let path: string;
+  try {
+    path = realpathSync(value);
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    accessSync(path, constants.X_OK);
+  } catch {
+    throw new Error(`${key} must identify an existing executable file.`);
+  }
   return path;
 }

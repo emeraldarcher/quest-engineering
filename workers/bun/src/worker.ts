@@ -118,6 +118,7 @@ export class QuestEngineeringWorker {
           new LocalHerdrConnectionProvider(config.herdrSession, {
             workerId: config.workerId,
             dataRoot: config.dataRoot,
+            ...(config.herdrBin ? { herdrExecutable: config.herdrBin } : {}),
           }));
     this.herdr = provider;
     this.sbxExecutionManager =

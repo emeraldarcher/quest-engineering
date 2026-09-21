@@ -139,6 +139,7 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
     name: string;
     integrationKind: string;
     args: string[];
+    command?: import("../../execution-environment/types.ts").HostLaunchDescriptor;
     expectedTokens: Record<string, string>;
   }): Promise<HostedAgent> {
     const client = await this.client();

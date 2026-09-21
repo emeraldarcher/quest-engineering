@@ -196,11 +196,18 @@ export function executionEnvironmentConformance(
       fixture.assertLauncher(descriptor, lease, requested);
     else expect(descriptor.cwd).toBe(requested.cwd ?? lease.paths.workspace);
     expect(descriptor.io).toBe("pty");
-    expect(descriptor.provenance).toEqual({
+    expect(descriptor.provenance).toMatchObject({
       kind: "execution_environment",
       ref: lease.ref,
       profile: primarySpec.profile,
     });
+    if (descriptor.provenance.launcher)
+      expect(descriptor.provenance.launcher).toMatchObject({
+        contractVersion: 1,
+        runtimeExecutable: descriptor.executable,
+        entrypoint: expect.stringContaining("sbx-launcher.ts"),
+        entrypointSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
   });
 
   test(`${name} environment conformance: noninteractive exec`, async () => {

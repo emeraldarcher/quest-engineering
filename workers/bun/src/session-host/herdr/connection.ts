@@ -87,6 +87,8 @@ type ServerStarter = (sessionName: string) => StartedServer;
 interface ProviderDependencies {
   workerId: string;
   dataRoot: string;
+  /** Absolute Herdr executable. Required when real host processes are used. */
+  herdrExecutable?: string;
   runCommand?: CommandRunner;
   createClient?: ClientFactory;
   startServer?: ServerStarter;
@@ -143,7 +145,16 @@ export class LocalHerdrConnectionProvider {
       dependencies.dataRoot,
       "herdr-session-ownership.json",
     );
-    this.runCommand = dependencies.runCommand ?? runHerdrCommand;
+    const executable = dependencies.herdrExecutable;
+    if (executable && !executable.startsWith("/"))
+      throw new HerdrApiError(
+        "backend_incompatible",
+        "The configured Herdr executable must be absolute.",
+        "backend.explicit_executable",
+      );
+    this.runCommand =
+      dependencies.runCommand ??
+      ((args) => runHerdrCommand(requiredExecutable(executable), args));
     this.createClient =
       dependencies.createClient ??
       ((socketPath, onUnavailable) =>
@@ -152,6 +163,7 @@ export class LocalHerdrConnectionProvider {
       dependencies.startServer ??
       ((name) =>
         startHerdrServer(
+          requiredExecutable(executable),
           name,
           join(dependencies.dataRoot, "herdr-server-startup.log"),
         ));
@@ -1113,10 +1125,23 @@ function visit(
   }
 }
 
-async function runHerdrCommand(args: string[]): Promise<CommandResult> {
+function requiredExecutable(value: string | undefined): string {
+  if (!value)
+    throw new HerdrApiError(
+      "backend_incompatible",
+      "An exact Herdr executable was not configured.",
+      "backend.explicit_executable",
+    );
+  return value;
+}
+
+async function runHerdrCommand(
+  executable: string,
+  args: string[],
+): Promise<CommandResult> {
   let child: ReturnType<typeof Bun.spawn>;
   try {
-    child = Bun.spawn(["herdr", ...args], {
+    child = Bun.spawn([executable, ...args], {
       env: explicitEnvironment(),
       stdout: "pipe",
       stderr: "pipe",
@@ -1136,6 +1161,7 @@ async function runHerdrCommand(args: string[]): Promise<CommandResult> {
 }
 
 function startHerdrServer(
+  executable: string,
   sessionName: string,
   diagnosticsPath: string,
 ): StartedServer {
@@ -1147,7 +1173,7 @@ function startHerdrServer(
   }
   const diagnostics = openSync(diagnosticsPath, "a", 0o600);
   try {
-    const child = Bun.spawn(["herdr", "--session", sessionName, "server"], {
+    const child = Bun.spawn([executable, "--session", sessionName, "server"], {
       env: explicitEnvironment(),
       stdin: "ignore",
       stdout: diagnostics,

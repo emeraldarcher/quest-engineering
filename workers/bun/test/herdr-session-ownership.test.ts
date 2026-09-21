@@ -660,7 +660,10 @@ class FakeHerdrRuntime {
         protocol: 22,
         compatible: true,
         endpoint_compatible: true,
-        capabilities: { endpoint_protocol_generation: 1 },
+        capabilities: {
+          endpoint_protocol_generation: 1,
+          agent_explicit_launch: true,
+        },
       }),
       stderr: "",
     };
@@ -692,7 +695,12 @@ class FakeHerdrClient extends HerdrSocketClient {
         "backend.connection",
       );
     }
-    return { version: "0.9.0", protocol: 22, endpointGeneration: 1 };
+    return {
+      version: "0.9.0",
+      protocol: 22,
+      endpointGeneration: 1,
+      agentExplicitLaunch: true,
+    };
   }
   override async snapshot() {
     return this.runtime.snapshot();
@@ -732,7 +740,7 @@ const OPERATIONS: Record<string, string[]> = {
     "tokens",
   ],
   "pane.process_info": ["pane_id"],
-  "agent.start": ["pane_id", "name", "kind", "args", "timeout_ms"],
+  "agent.start": ["pane_id", "name", "kind", "args", "command", "timeout_ms"],
   "agent.prompt": ["target", "text", "wait"],
   "agent.get": ["target"],
   "agent.send_keys": ["target", "keys"],

@@ -1,3 +1,5 @@
+import type { HostLaunchDescriptor } from "../execution-environment/types.ts";
+
 export type HostedAgentStatus =
   | "idle"
   | "working"
@@ -146,6 +148,8 @@ export interface TerminalSessionBackend {
     name: string;
     integrationKind: string;
     args: string[];
+    /** Exact host process transport; bypasses canonical executable lookup. */
+    command?: HostLaunchDescriptor;
     expectedTokens: Record<string, string>;
   }): Promise<HostedAgent>;
   prompt(

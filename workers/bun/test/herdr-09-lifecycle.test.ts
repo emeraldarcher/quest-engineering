@@ -145,6 +145,95 @@ for (const integrationKind of ["pi", "agy"]) {
   });
 }
 
+test("explicit managed launch sends literal argv, cwd, and env without legacy args", async () => {
+  const client = new LifecycleClient("pi", "inline-ready");
+  const literalArgs = [
+    "space value",
+    "quote'\"value",
+    "$(never-run)",
+    "*.not-expanded",
+    "日本語",
+    "",
+  ];
+  await client.startAgent({
+    paneId: "pane-1",
+    name: "qe-pi",
+    integrationKind: "pi",
+    args: ["legacy-must-not-be-sent"],
+    command: {
+      executable: "/opt/qe/launchers/sbx",
+      args: literalArgs,
+      cwd: "/worker/run cwd",
+      environment: { QE_TEST: "literal $VALUE; no shell" },
+      io: "pty",
+      provenance: {
+        kind: "execution_environment",
+        ref: {
+          backendKind: "sbx",
+          environmentId: "environment-1",
+          incarnation: "incarnation-1",
+          workerId: "worker-1",
+          runId: "run-1",
+          profile: { id: "profile-1", digest: "sha256:test" },
+        },
+        profile: { id: "profile-1", digest: "sha256:test" },
+      },
+    },
+    expectedTokens: ownershipTokens,
+    timeoutMs: 5_000,
+  });
+
+  expect(client.lastStartParams).toMatchObject({
+    pane_id: "pane-1",
+    name: "qe-pi",
+    kind: "pi",
+    args: [],
+    command: {
+      executable: "/opt/qe/launchers/sbx",
+      args: literalArgs,
+      cwd: "/worker/run cwd",
+      env: { QE_TEST: "literal $VALUE; no shell" },
+    },
+  });
+});
+
+test("explicit managed launch rejects relative executable before any Herdr side effect", async () => {
+  const client = new LifecycleClient("pi", "inline-ready");
+  await expect(
+    client.startAgent({
+      paneId: "pane-1",
+      name: "qe-pi",
+      integrationKind: "pi",
+      args: [],
+      command: {
+        executable: "pi",
+        args: [],
+        cwd: "/worker/run",
+        environment: {},
+        io: "pty",
+        provenance: {
+          kind: "execution_environment",
+          ref: {
+            backendKind: "sbx",
+            environmentId: "environment-1",
+            incarnation: "incarnation-1",
+            workerId: "worker-1",
+            runId: "run-1",
+            profile: { id: "profile-1", digest: "sha256:test" },
+          },
+          profile: { id: "profile-1", digest: "sha256:test" },
+        },
+      },
+      expectedTokens: ownershipTokens,
+      timeoutMs: 5_000,
+    }),
+  ).rejects.toMatchObject({
+    code: "environment_launch_mismatch",
+    capability: "agent.explicit_launch",
+  });
+  expect(client.startCalls).toBe(0);
+});
+
 test("full inline agent.start projection completes without inventory polling", async () => {
   const client = new LifecycleClient("pi", "inline-ready");
   const agent = await client.startAgent({
@@ -293,6 +382,7 @@ class LifecycleClient extends HerdrSocketClient {
   startCalls = 0;
   getCalls = 0;
   promptCalls = 0;
+  lastStartParams: Record<string, unknown> | null = null;
 
   constructor(
     private readonly integrationKind: string,
@@ -303,7 +393,7 @@ class LifecycleClient extends HerdrSocketClient {
 
   override async request(
     method: string,
-    _params: Record<string, unknown> = {},
+    params: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>> {
     if (method === "agent.prompt") {
       this.promptCalls += 1;
@@ -318,7 +408,10 @@ class LifecycleClient extends HerdrSocketClient {
         },
       };
     if (method === "agent.get") return this.getAgentResponse();
-    if (method === "agent.start") return this.startAgentResponse();
+    if (method === "agent.start") {
+      this.lastStartParams = structuredClone(params);
+      return this.startAgentResponse();
+    }
     throw new Error(`Unexpected method: ${method}`);
   }
 

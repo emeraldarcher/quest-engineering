@@ -153,6 +153,20 @@ export interface HostLaunchDescriptor {
     kind: "execution_environment";
     ref: EnvironmentRef;
     profile: EnvironmentProfileIdentity;
+    launcher?: {
+      contractVersion: 1;
+      runtimeExecutable: string;
+      entrypoint: string;
+      entrypointSha256: string;
+    };
+    /** Optional execution binding added by the Run-level environment owner. */
+    binding?: {
+      physicalLineageId: string;
+      workspacePath: string;
+      guestExecutable: string;
+      guestCwd: string;
+      guestArgvSha256: string;
+    };
   };
 }
 

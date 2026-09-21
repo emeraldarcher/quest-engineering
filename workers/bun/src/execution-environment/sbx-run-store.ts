@@ -7,6 +7,25 @@ import type {
 } from "../workspace/private-git.ts";
 import type { EnvironmentRef } from "./types.ts";
 
+export interface SbxLaunchProvenance {
+  schemaVersion: 1;
+  executable: string;
+  cwd: string;
+  argvSha256: string;
+  environmentKeys: string[];
+  launcherContractVersion: 1;
+  launcherEntrypoint: string;
+  launcherEntrypointSha256: string;
+  guestExecutable: string;
+  guestCwd: string;
+  guestArgvSha256: string;
+  physicalLineageId: string;
+  environmentId: string;
+  incarnation: string;
+  profileId: string;
+  profileDigest: string;
+}
+
 export interface SbxRunExecutionRecord {
   lineageId: string;
   actionId: string;
@@ -19,6 +38,7 @@ export interface SbxRunExecutionRecord {
   changeExport: PrivateGitChangeExport | null;
   recoveryExport: PrivateGitChangeExport | null;
   hostResultTree: string | null;
+  launchProvenance: SbxLaunchProvenance | null;
   updatedAt: string;
 }
 
@@ -34,6 +54,7 @@ interface Row {
   change_export_json: string | null;
   recovery_export_json: string | null;
   host_result_tree: string | null;
+  launch_provenance_json: string | null;
   updated_at: string;
 }
 
@@ -60,6 +81,7 @@ export class SbxRunExecutionStore {
       change_export_json TEXT,
       recovery_export_json TEXT,
       host_result_tree TEXT,
+      launch_provenance_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -86,6 +108,10 @@ export class SbxRunExecutionStore {
         "UPDATE sbx_run_executions SET recovery_export_json=change_export_json WHERE change_export_json IS NOT NULL",
       );
     }
+    if (!columns.has("launch_provenance_json"))
+      this.db.exec(
+        "ALTER TABLE sbx_run_executions ADD COLUMN launch_provenance_json TEXT",
+      );
   }
 
   close(): void {
@@ -168,6 +194,12 @@ export class SbxRunExecutionStore {
             THEN sbx_run_executions.change_export_json
             ELSE NULL
           END,
+          launch_provenance_json=CASE
+            WHEN sbx_run_executions.action_id=excluded.action_id
+              AND sbx_run_executions.environment_ref_json=excluded.environment_ref_json
+            THEN sbx_run_executions.launch_provenance_json
+            ELSE NULL
+          END,
           state='ready',failure_code=NULL,updated_at=excluded.updated_at`)
       .run(
         input.lineageId,
@@ -189,6 +221,34 @@ export class SbxRunExecutionStore {
         now,
       );
     return this.get(input.lineageId) as SbxRunExecutionRecord;
+  }
+
+  bindLaunch(
+    lineageId: string,
+    actionId: string,
+    provenance: SbxLaunchProvenance,
+  ): SbxRunExecutionRecord {
+    const current = this.get(lineageId);
+    if (!current || current.actionId !== actionId)
+      throw new Error("SBX launch provenance belongs to a stale Action.");
+    if (
+      current.launchProvenance &&
+      JSON.stringify(current.launchProvenance) !== JSON.stringify(provenance)
+    )
+      throw new Error(
+        "Conflicting host launch provenance is already bound to this physical lineage.",
+      );
+    this.db
+      .query(
+        "UPDATE sbx_run_executions SET launch_provenance_json=?,updated_at=? WHERE lineage_id=? AND action_id=?",
+      )
+      .run(
+        JSON.stringify(provenance),
+        new Date().toISOString(),
+        lineageId,
+        actionId,
+      );
+    return this.get(lineageId) as SbxRunExecutionRecord;
   }
 
   bindExport(
@@ -267,6 +327,9 @@ function mapRow(row: Row): SbxRunExecutionRecord {
       ? (JSON.parse(row.recovery_export_json) as PrivateGitChangeExport)
       : null,
     hostResultTree: row.host_result_tree,
+    launchProvenance: row.launch_provenance_json
+      ? (JSON.parse(row.launch_provenance_json) as SbxLaunchProvenance)
+      : null,
     updatedAt: row.updated_at,
   };
 }

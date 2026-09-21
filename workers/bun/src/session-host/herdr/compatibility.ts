@@ -115,6 +115,7 @@ export interface HerdrCompatibilityEvidence {
     version: string;
     protocol: number;
     endpointGeneration: number;
+    agentExplicitLaunch?: boolean;
   };
   snapshot: HostedSnapshot;
   integrations: HerdrIntegrationEvidence[];
@@ -222,6 +223,23 @@ export function evaluateHerdrCompatibility(
         code: "missing_capability",
         capability,
         message: `Herdr cannot prove QE capability '${capability}'; API metadata omits ${[...absent, ...malformed].join(", ")}.`,
+      });
+    }
+  }
+
+  if (harnessKind === "pi") {
+    const explicitLaunchSchema =
+      schemaOperations.get("agent.start")?.has("command") === true;
+    const explicitLaunchAdvertised = evidence.ping.agentExplicitLaunch === true;
+    if (explicitLaunchSchema && explicitLaunchAdvertised)
+      capabilities.add("agent.explicit_launch");
+    else {
+      missing.add("agent.explicit_launch");
+      diagnostics.push({
+        code: "missing_capability",
+        capability: "agent.explicit_launch",
+        message:
+          "Herdr cannot prove generic exact managed launch support in both live capabilities and agent.start schema metadata.",
       });
     }
   }

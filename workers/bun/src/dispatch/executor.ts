@@ -1027,6 +1027,9 @@ function operationalFailureClassification(error: unknown) {
     [
       "provenance_mismatch",
       "ownership_mismatch",
+      "environment_launch_mismatch",
+      "environment_attestation_failed",
+      "agent_explicit_launch_failed",
       "incompatible_continuation_configuration",
       "harness_contract_violation",
     ].includes(code ?? "")

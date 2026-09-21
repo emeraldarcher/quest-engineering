@@ -46,7 +46,7 @@ const PARAMETERS: Record<string, string[]> = {
     "tokens",
   ],
   "pane.process_info": ["pane_id"],
-  "agent.start": ["pane_id", "name", "kind", "args", "timeout_ms"],
+  "agent.start": ["pane_id", "name", "kind", "args", "command", "timeout_ms"],
   "agent.prompt": ["target", "text", "wait"],
   "agent.get": ["target"],
   "agent.send_keys": ["target", "keys"],
@@ -218,7 +218,10 @@ test("readiness fences a stale observation failure after newer success and reval
     protocol: 999,
     compatible: true,
     endpoint_compatible: true,
-    capabilities: { endpoint_protocol_generation: 1 },
+    capabilities: {
+      endpoint_protocol_generation: 1,
+      agent_explicit_launch: true,
+    },
   };
   const directory = await canonicalSessionDirectory(root);
   const timestamp = new Date().toISOString();
@@ -338,6 +341,7 @@ function evidence(
       endpoint_compatible: true,
       capabilities: {
         endpoint_protocol_generation: endpointGeneration,
+        agent_explicit_launch: true,
       },
     },
     schema: schema(
@@ -349,6 +353,7 @@ function evidence(
       version: "test-herdr",
       protocol,
       endpointGeneration,
+      agentExplicitLaunch: true,
     },
     snapshot: { workspaces: [], panes: [], agents: [] },
     integrations: overrides.integrations ?? [
@@ -373,6 +378,7 @@ class ReadinessProbeClient extends HerdrSocketClient {
       version: "test-herdr",
       protocol: 999,
       endpointGeneration: 1,
+      agentExplicitLaunch: true,
     };
   }
   override async snapshot() {

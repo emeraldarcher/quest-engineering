@@ -313,14 +313,25 @@ export class PiHarness implements AgentHarness {
       title: displayLabel(dispatch),
       tokens: launchTokens,
     });
-    const agent = await this.host.startAgent({
-      paneId: pane.paneId,
-      name: agentName,
-      integrationKind: "pi",
-      args: this.piArgs(dispatch, agentName, sbx),
-      expectedTokens: launchTokens,
-    });
-    sbx?.startRelay(this.host, agent.paneId);
+    const piArgs = this.piArgs(dispatch, agentName, sbx);
+    const command = sbx ? await sbx.launchDescriptor(piArgs) : undefined;
+    sbx?.startRelay(this.host, pane.paneId);
+    let agent: HostedAgent;
+    try {
+      agent = await this.host.startAgent({
+        paneId: pane.paneId,
+        name: agentName,
+        integrationKind: "pi",
+        args: piArgs,
+        ...(command ? { command } : {}),
+        expectedTokens: launchTokens,
+      });
+      await sbx?.awaitAttestation();
+    } catch (error) {
+      await sbx?.stopRelay().catch(() => undefined);
+      if (sbx) await this.host.closePane(pane.paneId).catch(() => undefined);
+      throw error;
+    }
     if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     return {
@@ -366,6 +377,7 @@ export class PiHarness implements AgentHarness {
     const agent = await this.findExactLiveAgent(lineage);
     if (agent) {
       sbx?.startRelay(this.host, agent.paneId);
+      await sbx?.awaitAttestation();
       if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
     }
     assertCurrentSessionIncarnation(this.host, lineage.herdrSessionIncarnation);
@@ -481,6 +493,7 @@ export class PiHarness implements AgentHarness {
     const agent = await this.findExactLiveAgent(lineage);
     if (agent) {
       sbx?.startRelay(this.host, agent.paneId);
+      await sbx?.awaitAttestation();
       if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
     }
     if (!agent)
