@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
   JsonValue,
@@ -102,9 +103,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     env.QE_MAX_CONCURRENCY ?? "1",
     "QE_MAX_CONCURRENCY",
   );
+  const herdrHome = env.HOME?.trim() || homedir();
   const herdrSession = validateHerdrSessionName(
-    env.QE_HERDR_SESSION?.trim() || defaultHerdrSessionName(workerId),
+    env.QE_HERDR_SESSION?.trim() ||
+      defaultHerdrSessionName(workerId, herdrHome),
   );
+  assertHerdrDefaultSocketPathSafe(herdrSession, herdrHome);
   const heartbeatMs = positiveInteger(
     env.QE_HEARTBEAT_MS ?? "10000",
     "QE_HEARTBEAT_MS",
@@ -189,15 +193,87 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   };
 }
 
-export function defaultHerdrSessionName(workerId: string): string {
+export const HERDR_UNIX_SOCKET_SAFE_PATH_BYTES = 103;
+const HERDR_SESSION_PREFIX = "qe-worker-";
+const HERDR_SESSION_HASH_HEX_LENGTH = 10;
+const HERDR_DEFAULT_SESSION_ROOT = [".config", "herdr", "sessions"] as const;
+const HERDR_API_SOCKET = "herdr.sock";
+const HERDR_CLIENT_SOCKET = "herdr-client.sock";
+
+export interface HerdrDefaultSocketPaths {
+  sessionDirectory: string;
+  apiSocket: string;
+  clientSocket: string;
+}
+
+export function herdrDefaultSocketPaths(
+  sessionName: string,
+  homeDirectory: string = homedir(),
+): HerdrDefaultSocketPaths {
+  const sessionDirectory = join(
+    homeDirectory,
+    ...HERDR_DEFAULT_SESSION_ROOT,
+    sessionName,
+  );
+  return {
+    sessionDirectory,
+    apiSocket: join(sessionDirectory, HERDR_API_SOCKET),
+    clientSocket: join(sessionDirectory, HERDR_CLIENT_SOCKET),
+  };
+}
+
+export function assertHerdrDefaultSocketPathSafe(
+  sessionName: string,
+  homeDirectory: string = homedir(),
+): void {
+  const paths = herdrDefaultSocketPaths(sessionName, homeDirectory);
+  for (const [kind, path] of [
+    ["API", paths.apiSocket],
+    ["client", paths.clientSocket],
+  ] as const) {
+    const bytes = Buffer.byteLength(path, "utf8");
+    if (bytes > HERDR_UNIX_SOCKET_SAFE_PATH_BYTES)
+      throw new Error(
+        `Herdr ${kind} socket path is ${bytes} bytes; the safe Unix-domain socket limit is ${HERDR_UNIX_SOCKET_SAFE_PATH_BYTES} bytes. Shorten the host HOME path or configured Herdr session name.`,
+      );
+  }
+}
+
+export function defaultHerdrSessionName(
+  workerId: string,
+  homeDirectory: string = homedir(),
+): string {
+  const hash = createHash("sha256")
+    .update(workerId)
+    .digest("hex")
+    .slice(0, HERDR_SESSION_HASH_HEX_LENGTH);
+  const fixedBytes = Buffer.byteLength(
+    `${HERDR_SESSION_PREFIX}-${hash}`,
+    "utf8",
+  );
+  const root = join(homeDirectory, ...HERDR_DEFAULT_SESSION_ROOT);
+  const socketWithoutSession = join(root, HERDR_CLIENT_SOCKET);
+  const sessionBudget =
+    HERDR_UNIX_SOCKET_SAFE_PATH_BYTES -
+    Buffer.byteLength(socketWithoutSession, "utf8") -
+    1;
+  const readableBudget = Math.min(32, sessionBudget - fixedBytes);
+  if (readableBudget < 1)
+    throw new Error(
+      "The host HOME path is too long for a collision-resistant default Herdr session socket.",
+    );
   const readable =
     workerId
       .toLowerCase()
       .replace(/[^a-z0-9._-]+/g, "-")
       .replace(/^[._-]+|[._-]+$/g, "")
-      .slice(0, 32) || "worker";
-  const hash = createHash("sha256").update(workerId).digest("hex").slice(0, 10);
-  return validateHerdrSessionName(`qe-worker-${readable}-${hash}`);
+      .slice(0, readableBudget)
+      .replace(/[._-]+$/g, "") || "worker".slice(0, readableBudget);
+  const sessionName = validateHerdrSessionName(
+    `${HERDR_SESSION_PREFIX}${readable}-${hash}`,
+  );
+  assertHerdrDefaultSocketPathSafe(sessionName, homeDirectory);
+  return sessionName;
 }
 
 function parseAllowedRoots(encoded: string | undefined): AuthorizedRoot[] {

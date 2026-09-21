@@ -1,4 +1,6 @@
-import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, openSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { SessionBackendReadiness } from "../types.ts";
 import {
@@ -28,12 +30,17 @@ import {
 } from "./ownership.ts";
 
 const SESSION_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+const HERDR_METADATA_TOKEN_VALUE_BYTES = 80;
 const SERVER_START_RECONCILIATION_MS = [
   10, 20, 40, 80, 160, 320, 640, 1_280, 2_560, 5_000, 5_000,
+] as const;
+const SERVER_READINESS_RECONCILIATION_MS = [
+  10, 20, 40, 80, 160, 320, 640,
 ] as const;
 
 interface StartedServer {
   exited: Promise<number>;
+  diagnostics?: () => Promise<string>;
 }
 const startedServers = new Map<string, StartedServer>();
 const infrastructureEnsures = new Map<
@@ -120,6 +127,7 @@ export class LocalHerdrConnectionProvider {
   private compatibilityProbeGeneration = 0;
   private currentOwnership: HerdrSessionOwnershipRecord | undefined;
   private ensureOperation: Promise<HerdrInfrastructureIdentity> | undefined;
+  private startupServer: StartedServer | undefined;
   private readonly workerId: string;
   private readonly ownershipPath: string;
   private readonly runCommand: CommandRunner;
@@ -140,7 +148,13 @@ export class LocalHerdrConnectionProvider {
       dependencies.createClient ??
       ((socketPath, onUnavailable) =>
         new HerdrSocketClient(socketPath, 30_000, onUnavailable));
-    this.startNamedServer = dependencies.startServer ?? startHerdrServer;
+    this.startNamedServer =
+      dependencies.startServer ??
+      ((name) =>
+        startHerdrServer(
+          name,
+          join(dependencies.dataRoot, "herdr-server-startup.log"),
+        ));
     this.now = dependencies.now ?? (() => new Date().toISOString());
     this.randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID());
   }
@@ -305,6 +319,7 @@ export class LocalHerdrConnectionProvider {
   }
 
   private async ensureInfrastructureOnce(): Promise<HerdrInfrastructureIdentity> {
+    this.startupServer = undefined;
     const schema = await this.schema();
     assertSessionLifecycleContract(schema);
     const sessions = await this.listSessions();
@@ -381,12 +396,7 @@ export class LocalHerdrConnectionProvider {
         `Herdr session directory identity changed while ensuring '${this.sessionName}'.`,
       );
 
-    const status = await this.status();
-    const sharedReadiness = await this.readinessFromStatus(
-      "worker-infrastructure",
-      status,
-      primary,
-    );
+    const sharedReadiness = await this.reconcileStartupReadiness(primary);
     if (!sharedReadiness.ready) throwForReadiness(sharedReadiness);
 
     this.currentOwnership = primary;
@@ -656,6 +666,49 @@ export class LocalHerdrConnectionProvider {
     }
   }
 
+  private async reconcileStartupReadiness(
+    ownership: HerdrSessionOwnershipRecord,
+  ): Promise<SessionBackendReadiness> {
+    let readiness = await this.observeStartupReadiness(ownership);
+    const server = this.startupServer;
+    if (!server || readiness.ready || !retryableStartupReadiness(readiness))
+      return readiness;
+
+    for (const delay of SERVER_READINESS_RECONCILIATION_MS) {
+      const outcome = await Promise.race([
+        server.exited.then((exitCode) => ({ exitCode })),
+        Bun.sleep(delay).then(() => null),
+      ]);
+      if (outcome)
+        throw await nativeServerExitError(
+          this.sessionName,
+          server,
+          outcome.exitCode,
+        );
+
+      const exact = this.onlyNamedSession(await this.listSessions());
+      if (!exact?.running) continue;
+      readiness = await this.observeStartupReadiness(ownership);
+      if (readiness.ready || !retryableStartupReadiness(readiness))
+        return readiness;
+    }
+    return readiness;
+  }
+
+  private async observeStartupReadiness(
+    ownership: HerdrSessionOwnershipRecord,
+  ): Promise<SessionBackendReadiness> {
+    try {
+      return await this.readinessFromStatus(
+        "worker-infrastructure",
+        await this.status(),
+        ownership,
+      );
+    } catch (error) {
+      return readinessForError("worker-infrastructure", error);
+    }
+  }
+
   private async startAndReconcile(): Promise<ListedSession> {
     const server = this.startServer();
     for (const delay of SERVER_START_RECONCILIATION_MS) {
@@ -671,12 +724,10 @@ export class LocalHerdrConnectionProvider {
       if (outcome) {
         const afterExit = this.onlyNamedSession(await this.listSessions());
         if (afterExit?.running) return afterExit;
-        throw new HerdrApiError(
-          outcome.exitCode === 2
-            ? "backend_incompatible"
-            : "backend_unavailable",
-          `Herdr session '${this.sessionName}' server exited with status ${outcome.exitCode} before becoming ready.`,
-          "backend.session_lifecycle",
+        throw await nativeServerExitError(
+          this.sessionName,
+          server,
+          outcome.exitCode,
         );
       }
     }
@@ -690,7 +741,10 @@ export class LocalHerdrConnectionProvider {
   private startServer(): StartedServer {
     const key = `${this.ownershipPath}:${this.sessionName}`;
     const existing = startedServers.get(key);
-    if (existing) return existing;
+    if (existing) {
+      this.startupServer = existing;
+      return existing;
+    }
     let server: StartedServer;
     try {
       server = this.startNamedServer(this.sessionName);
@@ -702,6 +756,7 @@ export class LocalHerdrConnectionProvider {
         "backend.session_lifecycle",
       );
     }
+    this.startupServer = server;
     startedServers.set(key, server);
     void server.exited.finally(() => {
       if (startedServers.get(key) === server) startedServers.delete(key);
@@ -846,9 +901,15 @@ function workspaceOwnershipTokens(
 ): Record<string, string> {
   return {
     qe_infrastructure_owner: HERDR_OWNERSHIP_TOKEN,
-    qe_worker_id: ownership.workerId,
+    qe_worker_id: boundedOwnershipWorkerId(ownership.workerId),
     qe_session_incarnation: ownership.sessionIncarnation,
   };
+}
+
+function boundedOwnershipWorkerId(workerId: string): string {
+  if (Buffer.byteLength(workerId, "utf8") <= HERDR_METADATA_TOKEN_VALUE_BYTES)
+    return workerId;
+  return `sha256:${createHash("sha256").update(workerId).digest("hex")}`;
 }
 
 function readinessForError(
@@ -876,6 +937,29 @@ function readinessForError(
   return unavailableHerdrReadiness(
     harnessKind,
     error instanceof Error ? error.message : String(error),
+  );
+}
+
+function retryableStartupReadiness(
+  readiness: SessionBackendReadiness,
+): boolean {
+  return (
+    readiness.status === "unavailable" &&
+    readiness.missingCapabilities.includes("backend.connection")
+  );
+}
+
+async function nativeServerExitError(
+  sessionName: string,
+  server: StartedServer,
+  exitCode: number,
+): Promise<HerdrApiError> {
+  const raw = await server.diagnostics?.().catch(() => "");
+  const detail = raw?.trim().replaceAll(/\s+/g, " ").slice(-1_500);
+  return new HerdrApiError(
+    exitCode === 2 ? "backend_incompatible" : "backend_unavailable",
+    `Herdr session '${sessionName}' native server exited with status ${exitCode} before protocol readiness${detail ? `: ${detail}` : "."}`,
+    "backend.session_lifecycle",
   );
 }
 
@@ -1051,16 +1135,34 @@ async function runHerdrCommand(args: string[]): Promise<CommandResult> {
   return { stdout, stderr, exitCode };
 }
 
-function startHerdrServer(sessionName: string): StartedServer {
-  const child = Bun.spawn(["herdr", "--session", sessionName, "server"], {
-    env: explicitEnvironment(),
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-    detached: true,
-  });
-  child.unref();
-  return child;
+function startHerdrServer(
+  sessionName: string,
+  diagnosticsPath: string,
+): StartedServer {
+  let offset = 0;
+  try {
+    offset = statSync(diagnosticsPath).size;
+  } catch {
+    offset = 0;
+  }
+  const diagnostics = openSync(diagnosticsPath, "a", 0o600);
+  try {
+    const child = Bun.spawn(["herdr", "--session", sessionName, "server"], {
+      env: explicitEnvironment(),
+      stdin: "ignore",
+      stdout: diagnostics,
+      stderr: diagnostics,
+      detached: true,
+    });
+    child.unref();
+    return {
+      exited: child.exited,
+      diagnostics: async () =>
+        (await readFile(diagnosticsPath)).subarray(offset).toString("utf8"),
+    };
+  } finally {
+    closeSync(diagnostics);
+  }
 }
 
 function explicitEnvironment(): Record<string, string | undefined> {

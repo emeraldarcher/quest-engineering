@@ -1,9 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  assertHerdrDefaultSocketPathSafe,
   defaultHerdrSessionName,
+  HERDR_UNIX_SOCKET_SAFE_PATH_BYTES,
+  herdrDefaultSocketPaths,
   loadConfig,
   type WorkerConfig,
 } from "../src/config.ts";
@@ -87,6 +91,54 @@ test("readiness is side-effect free, then zero-session ensure creates infrastruc
     qe_worker_id: "worker-a",
     qe_session_incarnation: first.sessionIncarnation,
   });
+});
+
+test("long valid Worker IDs use collision-resistant bounded live ownership metadata", async () => {
+  const workerId = `worker-${"x".repeat(121)}`;
+  expect(Buffer.byteLength(workerId)).toBe(128);
+  const fixture = await setup(workerId);
+
+  const identity = await fixture.provider.ensureInfrastructure();
+  expect(fixture.runtime.workspaceTokens.qe_worker_id).toBe(
+    `sha256:${createHash("sha256").update(workerId).digest("hex")}`,
+  );
+  expect(
+    Buffer.byteLength(fixture.runtime.workspaceTokens.qe_worker_id ?? ""),
+  ).toBeLessThanOrEqual(80);
+  expect(
+    (
+      await readOwnershipRecord(
+        join(fixture.root, "herdr-session-ownership.json"),
+        "long Worker ownership",
+      )
+    )?.workerId,
+  ).toBe(workerId);
+  expect(identity.sessionIncarnation).toBe("incarnation-1");
+});
+
+test("a transient first protocol close reconciles the exact started server without duplication", async () => {
+  const fixture = await setup("worker-startup-reconcile");
+  fixture.runtime.readinessConnectionFailures = 1;
+
+  const identity = await fixture.provider.ensureInfrastructure();
+  expect(identity.sessionIncarnation).toBe("incarnation-1");
+  expect(fixture.runtime.starts).toBe(1);
+  expect(fixture.runtime.pings).toBeGreaterThanOrEqual(2);
+});
+
+test("native startup exit diagnostics distinguish process failure from a generic socket close", async () => {
+  const fixture = await setup("worker-native-exit");
+  fixture.runtime.nativeExitOnReadiness = true;
+
+  await expect(fixture.provider.ensureInfrastructure()).rejects.toMatchObject({
+    code: "backend_unavailable",
+    capability: "backend.session_lifecycle",
+    message: expect.stringContaining("native server exited with status 1"),
+  });
+  await expect(fixture.provider.ensureInfrastructure()).rejects.toThrow(
+    "native socket path failure",
+  );
+  expect(fixture.runtime.starts).toBe(2);
 });
 
 test("concurrent ensures for the same Worker converge on one physical claim", async () => {
@@ -342,15 +394,81 @@ test("configuration derives the default session and retains explicit overrides",
   ).toBe("explicit-session");
 });
 
-test("different Worker IDs derive collision-resistant session names", () => {
-  const first = defaultHerdrSessionName("foo/bar");
-  const second = defaultHerdrSessionName("foo-bar");
-  expect(first).not.toBe(second);
-  expect(first).toMatch(/^qe-worker-foo-bar-[a-f0-9]{10}$/);
-  expect(second).toMatch(/^qe-worker-foo-bar-[a-f0-9]{10}$/);
-  expect(defaultHerdrSessionName("worker-a")).not.toBe(
-    defaultHerdrSessionName("worker-b"),
+test("default session names are deterministic, bounded, normalized, and collision-resistant", () => {
+  const home = "/Users/kylec";
+  const ids = [
+    "worker-a",
+    "phase4-paid-9311592d-24f4-4626-8817-78dbbef44779",
+    `worker-${"x".repeat(121)}`,
+    "Worker.Name:region_1",
+  ];
+  for (const id of ids) {
+    const first = defaultHerdrSessionName(id, home);
+    expect(defaultHerdrSessionName(id, home)).toBe(first);
+    expect(first).toMatch(/^qe-worker-[a-z0-9._-]+-[a-f0-9]{10}$/);
+    expect(Buffer.byteLength(first)).toBeLessThanOrEqual(64);
+    assertHerdrDefaultSocketPathSafe(first, home);
+  }
+
+  const normalizedFirst = defaultHerdrSessionName("foo/bar", home);
+  const normalizedSecond = defaultHerdrSessionName("foo-bar", home);
+  expect(normalizedFirst).not.toBe(normalizedSecond);
+  expect(normalizedFirst).toMatch(/^qe-worker-foo-bar-[a-f0-9]{10}$/);
+  expect(normalizedSecond).toMatch(/^qe-worker-foo-bar-[a-f0-9]{10}$/);
+
+  const sharedPrefix = "worker-with-one-very-long-shared-prefix-";
+  expect(defaultHerdrSessionName(`${sharedPrefix}a`, home)).not.toBe(
+    defaultHerdrSessionName(`${sharedPrefix}b`, home),
   );
+});
+
+test("derived names keep both native Herdr sockets below the Unix path contract", async () => {
+  const home = "/Users/kylec";
+  const failedWorkerId = "phase4-paid-9311592d-24f4-4626-8817-78dbbef44779";
+  const derived = defaultHerdrSessionName(failedWorkerId, home);
+  const paths = herdrDefaultSocketPaths(derived, home);
+  expect(Buffer.byteLength(paths.apiSocket)).toBeLessThanOrEqual(
+    HERDR_UNIX_SOCKET_SAFE_PATH_BYTES,
+  );
+  expect(Buffer.byteLength(paths.clientSocket)).toBeLessThanOrEqual(
+    HERDR_UNIX_SOCKET_SAFE_PATH_BYTES,
+  );
+
+  const failedName = "qe-worker-phase4-paid-9311592d-24f4-4626-8-88bd5a28f4";
+  const failedPaths = herdrDefaultSocketPaths(failedName, home);
+  expect(Buffer.byteLength(failedPaths.apiSocket)).toBe(100);
+  expect(Buffer.byteLength(failedPaths.clientSocket)).toBe(107);
+  expect(() => assertHerdrDefaultSocketPathSafe(failedName, home)).toThrow(
+    "107 bytes",
+  );
+
+  const root = await fixtureRoot();
+  const baseEnvironment: NodeJS.ProcessEnv = {
+    HOME: home,
+    QE_CONTROL_PLANE_URL: "ws://127.0.0.1/worker/websocket",
+    QE_WORKER_ID: failedWorkerId,
+    QE_WORKER_TOKEN: "unused",
+    QE_ALLOWED_ROOTS_JSON: "[]",
+    QE_WORKER_PROVIDER: "fake",
+    QE_ENABLE_TEST_PROVIDER: "1",
+  };
+  expect(() =>
+    loadConfig({
+      ...baseEnvironment,
+      QE_WORKER_DATA_ROOT: root,
+      QE_WORKTREE_ROOT: join(root, "worktrees"),
+      QE_HERDR_SESSION: failedName,
+    }),
+  ).toThrow("Herdr client socket path is 107 bytes");
+
+  const longDataRoot = join(root, ...Array.from({ length: 12 }, () => "long"));
+  const configuration = loadConfig({
+    ...baseEnvironment,
+    QE_WORKER_DATA_ROOT: longDataRoot,
+    QE_WORKTREE_ROOT: join(longDataRoot, "worktrees"),
+  });
+  expect(configuration.herdrSession).toBe(derived);
+  assertHerdrDefaultSocketPathSafe(configuration.herdrSession, home);
 });
 
 async function fixtureRoot(): Promise<string> {
@@ -404,6 +522,8 @@ class SnapshotClient extends HerdrSocketClient {
 class FakeHerdrRuntime {
   starts = 0;
   pings = 0;
+  readinessConnectionFailures = 0;
+  nativeExitOnReadiness = false;
   workspaceMetadataReports = 0;
   infrastructureBootstraps = 0;
   executionMutations = 0;
@@ -436,12 +556,15 @@ class FakeHerdrRuntime {
       exit = resolve;
     });
     this.exits.push(exit);
-    return { exited };
+    return {
+      exited,
+      diagnostics: async () => "native socket path failure",
+    };
   }
 
-  stop() {
+  stop(exitCode = 0) {
     this.running = false;
-    for (const resolve of this.exits.splice(0)) resolve(0);
+    for (const resolve of this.exits.splice(0)) resolve(exitCode);
   }
 
   shutdown() {
@@ -553,6 +676,22 @@ class FakeHerdrClient extends HerdrSocketClient {
   }
   override async ping() {
     this.runtime.pings += 1;
+    if (this.runtime.nativeExitOnReadiness) {
+      this.runtime.stop(1);
+      throw new HerdrApiError(
+        "backend_unavailable",
+        "Herdr socket closed before responding.",
+        "backend.connection",
+      );
+    }
+    if (this.runtime.readinessConnectionFailures > 0) {
+      this.runtime.readinessConnectionFailures -= 1;
+      throw new HerdrApiError(
+        "backend_unavailable",
+        "Herdr socket closed before responding.",
+        "backend.connection",
+      );
+    }
     return { version: "0.9.0", protocol: 22, endpointGeneration: 1 };
   }
   override async snapshot() {
