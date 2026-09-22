@@ -52,9 +52,15 @@ Antigravity readiness combines exact static MCP registration, MCP child startup/
 
 Physical continuation is adapter-specific and is valid only within the same harness kind and immutable physical configuration. Artifact handoff remains valid across harnesses because artifact identity and hash provenance are independent of native conversation identity. Recovery first adopts a surviving exact TUI, then may resume a verified native conversation in a new interactive process; inability to verify identity fails closed.
 
+## Model and account eligibility
+
+A harness registry and a provider account catalog are separate authorities. Pi's generated `openai-codex` data proves only that the pinned harness can represent a model. The authenticated ChatGPT models resource, queried with Pi's native account headers and `originator: pi`, proves current account-scoped API, visibility, rollout, and reasoning eligibility. QE advertises only `harness-supported ∩ provider-eligible ∩ optional configured scope`; reasoning, tool policy, and profile matching then remain normal scheduler filters. A valid authenticated response may contain zero eligible models. Unknown or contradictory eligibility is unschedulable, never a reason to use a static allow/deny list, another provider, or a replacement model.
+
+The account snapshot is keyed by a one-way account scope and reused only briefly inside the already-verified Run environment. An explicit provider `unsupported/no access` result fails the frozen Attempt without another turn, invalidates the snapshot, and triggers metadata-only capability refresh. If refresh still calls the rejected model eligible for the same account, QE reports `provider_catalog_runtime_inconsistency` and publishes nothing rather than hardcoding an exception.
+
 ## Reasoning and effort capabilities
 
-Each discovered model reports a capability rather than an assumed global enum:
+Each eligible model reports a capability rather than an assumed global enum:
 
 - `enumerated` carries the model's exact native values. A Loadout freezes one advertised value and the adapter passes the corresponding native launch option.
 - `unsupported` means the model has no configurable reasoning/effort dimension. The authored value is explicitly `null`, the resolved execution also freezes the matching `unsupported` capability evidence, and the adapter omits the native option.
