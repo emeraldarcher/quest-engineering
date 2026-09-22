@@ -187,6 +187,8 @@ export class QuestEngineeringWorker {
       (dispatch, type) => this.report(dispatch, type),
       (dispatch, lineage) => this.reportHarnessSession(dispatch, lineage),
       this.harnessControl,
+      1_000,
+      (dispatch) => this.handleTerminalFailure(dispatch),
     );
   }
 
@@ -221,7 +223,9 @@ export class QuestEngineeringWorker {
     }
   }
 
-  private async refreshHarnessCapabilities(): Promise<void> {
+  private async refreshHarnessCapabilities(
+    requireExecutor = true,
+  ): Promise<void> {
     const discoveries = await this.harnesses.discover();
     for (const discovery of discoveries) {
       if (discovery.integration.status !== "ready")
@@ -235,13 +239,35 @@ export class QuestEngineeringWorker {
       arch(),
       discoveries,
     );
-    if (discovered.executors.length === 0)
+    if (
+      requireExecutor &&
+      discovered.executors.length === 0 &&
+      discoveries.every((item) => item.integration.status !== "ready")
+    )
       throw new Error(
         `No enabled harness is ready: ${discoveries
           .map((item) => `${item.displayName}: ${item.integration.detail}`)
           .join(" ")}`,
       );
     Object.assign(this.capabilities, discovered);
+  }
+
+  private async handleTerminalFailure(dispatch: DispatchRecord): Promise<void> {
+    if (dispatch.failure?.code !== "provider_model_ineligible") return;
+    try {
+      // The failed Attempt remains frozen and terminal. Refresh only
+      // metadata, then reconnect so subsequent scheduling sees the new
+      // account-scoped catalog rather than the rejected capability set.
+      await this.refreshHarnessCapabilities(false);
+    } catch (error) {
+      this.capabilities.executors = [];
+      console.error(
+        "Provider eligibility refresh failed closed",
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      this.channel.close();
+    }
   }
 
   attachment(actionId: string) {

@@ -7,6 +7,7 @@ import { loadConfig } from "../src/config.ts";
 import {
   applyConfiguredPiModelScope,
   type DiscoveredPiModelCatalog,
+  reconcileProviderEligibilityInvalidations,
 } from "../src/execution-environment/sbx-run.ts";
 import type { HarnessDiscovery } from "../src/harnesses/types.ts";
 
@@ -102,7 +103,7 @@ test("omitted scope retains the complete dynamic catalog and reasoning metadata"
 test("explicit empty scope denies every dynamically discovered model", () => {
   const result = applyConfiguredPiModelScope(discovered, []);
   expect(result.models).toEqual([]);
-  expect(result.authenticated).toBe(false);
+  expect(result.authenticated).toBe(true);
   expect(result.diagnostics.at(-1)).toBe(
     "QE model scope is explicitly empty; policy retained 0 of 3 dynamically discovered model(s).",
   );
@@ -128,14 +129,34 @@ test("nonempty scope retains an exact subset in native catalog order", () => {
 
 test("zero-model discovery is distinguished from QE policy exclusion", () => {
   const result = applyConfiguredPiModelScope(
-    { authenticated: false, diagnostics: [], models: [] },
+    { authenticated: true, diagnostics: [], models: [] },
     undefined,
   );
   expect(result.models).toEqual([]);
-  expect(result.authenticated).toBe(false);
+  expect(result.authenticated).toBe(true);
   expect(result.diagnostics).toEqual([
     "Dynamic Pi discovery returned zero compatible models; QE model scope is omitted.",
   ]);
+});
+
+test("authenticated zero-model account catalog publishes no executor", async () => {
+  const config = loadConfig(await environment());
+  const scoped = applyConfiguredPiModelScope(
+    {
+      authenticated: true,
+      accountScope: "a".repeat(64),
+      providerEligibleModels: [],
+      diagnostics: ["Authenticated account returned zero eligible models."],
+      models: [],
+    },
+    config.executorModels,
+  );
+  const capabilities = workerCapabilities(config, "darwin", "arm64", [
+    discoveryFor(scoped),
+  ]);
+  expect(scoped.authenticated).toBe(true);
+  expect(scoped.models).toEqual([]);
+  expect(capabilities.executors).toEqual([]);
 });
 
 test("unknown nonempty scope advertises no fallback and explains policy exclusion", () => {
@@ -143,7 +164,7 @@ test("unknown nonempty scope advertises no fallback and explains policy exclusio
     { provider: "openai-codex", model: "missing-model" },
   ]);
   expect(result.models).toEqual([]);
-  expect(result.authenticated).toBe(false);
+  expect(result.authenticated).toBe(true);
   expect(result.diagnostics.at(-1)).toContain(
     "policy excluded the entire discovered catalog",
   );
@@ -165,6 +186,43 @@ test("scope matching is exact across duplicates, case, and provider", () => {
     { provider: "openai-codex", model: "model-a" },
   ]);
   expect(result.models).toEqual([modelA]);
+});
+
+test("account-scoped provider rejection invalidation requires a consistent live refresh", () => {
+  const accountScope = "a".repeat(64);
+  const invalidation = {
+    code: "provider_model_ineligible" as const,
+    provider: "openai-codex",
+    model: "model-a",
+    accountScope,
+    observedAt: "2026-09-22T00:00:00.000Z",
+    invalidatedAt: "2026-09-22T00:00:01.000Z",
+  };
+  const refreshed = {
+    ...discovered,
+    accountScope,
+    providerEligibleModels: [{ provider: "openai-codex", model: "model-c" }],
+  };
+  expect(
+    reconcileProviderEligibilityInvalidations(refreshed, [invalidation]),
+  ).toEqual([]);
+  expect(() =>
+    reconcileProviderEligibilityInvalidations(
+      {
+        ...refreshed,
+        providerEligibleModels: [
+          { provider: "openai-codex", model: "model-a" },
+        ],
+      },
+      [invalidation],
+    ),
+  ).toThrow("still marks a model eligible");
+  expect(
+    reconcileProviderEligibilityInvalidations(
+      { ...refreshed, accountScope: "b".repeat(64) },
+      [invalidation],
+    ),
+  ).toEqual([invalidation]);
 });
 
 test("resolved omitted-scope catalog reaches Worker capability publication", async () => {
@@ -200,7 +258,7 @@ test("resolved explicit-empty scope remains truthfully unschedulable", async () 
     discoveryFor(scoped),
   ]);
   expect(scoped.models).toEqual([]);
-  expect(scoped.authenticated).toBe(false);
+  expect(scoped.authenticated).toBe(true);
   expect(capabilities.executors).toEqual([]);
 });
 

@@ -60,6 +60,7 @@ import type {
   HumanInterventionLifecycle,
   PromptEvidenceCursor,
 } from "../types.ts";
+import { OperationalExecutionError } from "../types.ts";
 import { discoverPiModels } from "./discovery.ts";
 import { mappedPiTools } from "./tools.ts";
 
@@ -922,6 +923,21 @@ export class PiHarness implements AgentHarness {
           ["idle", "done"].includes(current.status) &&
           !interventionIsPending(inspection.intervention)
         ) {
+          const providerFailure = await this.sbxExecutions
+            .get(lineage.lineageId)
+            ?.providerEligibilityFailure();
+          if (providerFailure)
+            throw new OperationalExecutionError(
+              "The frozen ChatGPT account model was explicitly rejected by the provider. The Attempt is failed without model substitution or another provider turn; account-scoped eligibility was invalidated for metadata refresh.",
+              "operator_recovery_required",
+              providerFailure.code,
+              {
+                provider: providerFailure.provider,
+                model: providerFailure.model,
+                account_scope: providerFailure.accountScope,
+                observed_at: providerFailure.observedAt,
+              },
+            );
           const outputs = (await collectStepResult(dispatch)).envelope.outputs;
           onEvent({
             type: "settled",

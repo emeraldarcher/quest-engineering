@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -15,6 +16,13 @@ const OWNERSHIP_MARKER_ENV = "QE_SBX_OWNERSHIP_MARKER_PATH";
 const LAUNCH_BINDING_ENV = "QE_SBX_LAUNCH_BINDING_PATH";
 const REQUIRED_PATHS_ENV = "QE_SBX_REQUIRED_GUEST_PATHS_JSON";
 type RuntimeState = "idle" | "working" | "blocked";
+interface ProviderEligibilityFailure {
+  code: "provider_model_ineligible";
+  provider: string;
+  model: string;
+  accountScope: string;
+  observedAt: string;
+}
 
 /**
  * Guest half of the SBX/Herdr state relay. It writes only lifecycle identity
@@ -32,6 +40,8 @@ export default function sbxHerdrStateExtension(pi: ExtensionAPI) {
   let sessionPath: string | undefined;
   let attestation: Record<string, string | number> | undefined;
   let attestationFailure: string | undefined;
+  let providerFailure: ProviderEligibilityFailure | undefined;
+  let publishTail: Promise<void> = Promise.resolve();
 
   const updateSession = (ctx: {
     sessionManager?: {
@@ -53,33 +63,38 @@ export default function sbxHerdrStateExtension(pi: ExtensionAPI) {
       sessionPath = undefined;
     }
   };
-  const publish = async () => {
-    const state: RuntimeState =
-      blocked > 0 ? "blocked" : active ? "working" : "idle";
-    sequence += 1;
-    if (state === "working") lastWorkingSequence = sequence;
-    const value = {
-      schemaVersion: 1,
-      sequence,
-      lastWorkingSequence,
-      state,
-      observedAt: new Date().toISOString(),
-      ...(attestation ? { attestation } : {}),
-      ...(attestationFailure ? { attestationFailure } : {}),
-      ...(sessionPath
-        ? { nativeSession: { kind: "path", value: sessionPath } }
-        : sessionId
-          ? { nativeSession: { kind: "id", value: sessionId } }
-          : {}),
-    };
-    await mkdir(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(value)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
+  const publish = () => {
+    const operation = publishTail.then(async () => {
+      const state: RuntimeState =
+        blocked > 0 ? "blocked" : active ? "working" : "idle";
+      sequence += 1;
+      if (state === "working") lastWorkingSequence = sequence;
+      const value = {
+        schemaVersion: 1,
+        sequence,
+        lastWorkingSequence,
+        state,
+        observedAt: new Date().toISOString(),
+        ...(attestation ? { attestation } : {}),
+        ...(attestationFailure ? { attestationFailure } : {}),
+        ...(providerFailure ? { providerFailure } : {}),
+        ...(sessionPath
+          ? { nativeSession: { kind: "path", value: sessionPath } }
+          : sessionId
+            ? { nativeSession: { kind: "id", value: sessionId } }
+            : {}),
+      };
+      await mkdir(dirname(path), { recursive: true });
+      const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(value)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      await rename(temporary, path);
     });
-    await rename(temporary, path);
+    publishTail = operation.catch(() => undefined);
+    return operation;
   };
 
   pi.events.on("herdr:blocked", (value) => {
@@ -108,12 +123,70 @@ export default function sbxHerdrStateExtension(pi: ExtensionAPI) {
     active = true;
     await publish();
   });
+  pi.on("message_end", async (event, ctx) => {
+    const message = event.message as unknown as Record<string, unknown>;
+    const provider = ctx.model?.provider;
+    const model = ctx.model?.id;
+    if (
+      typeof provider !== "string" ||
+      typeof model !== "string" ||
+      message.stopReason !== "error" ||
+      typeof message.errorMessage !== "string" ||
+      !classifyProviderEligibilityFailure(provider, message.errorMessage)
+    )
+      return;
+    const accountScope = await readEligibilityAccountScope();
+    if (!accountScope) return;
+    providerFailure = {
+      code: "provider_model_ineligible",
+      provider,
+      model,
+      accountScope,
+      observedAt: new Date().toISOString(),
+    };
+    await publish();
+  });
   pi.on("agent_settled", async (_event, ctx) => {
     updateSession(ctx);
     if (ctx?.isIdle?.() !== true) return;
     active = false;
     await publish();
   });
+}
+
+export function classifyProviderEligibilityFailure(
+  provider: string,
+  message: string,
+): boolean {
+  if (provider !== "openai-codex") return false;
+  return [
+    /model is not supported when using codex with a chatgpt account/i,
+    /model .* is not supported when using codex with a chatgpt account/i,
+    /(?:do not|don't|does not|doesn't) have access to (?:the )?model/i,
+    /model .* (?:is not available|is unavailable) (?:for|to) (?:this|your) account/i,
+  ].some((pattern) => pattern.test(message));
+}
+
+async function readEligibilityAccountScope(): Promise<string | null> {
+  try {
+    const auth = JSON.parse(
+      await readFile("/home/agent/.pi/agent/auth.json", "utf8"),
+    )["openai-codex"] as Record<string, unknown>;
+    const access = typeof auth.access === "string" ? auth.access : "";
+    const payloadPart = access.split(".")[1];
+    const payload = JSON.parse(
+      Buffer.from(payloadPart ?? "", "base64url").toString("utf8"),
+    ) as Record<string, unknown>;
+    const claim = payload["https://api.openai.com/auth"] as
+      | Record<string, unknown>
+      | undefined;
+    const accountId = claim?.chatgpt_account_id;
+    return typeof accountId === "string" && accountId === auth.accountId
+      ? createHash("sha256").update(accountId).digest("hex")
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function verifyEnvironmentAttestation(

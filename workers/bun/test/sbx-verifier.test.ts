@@ -333,7 +333,13 @@ class PiProbeClient extends ProbeClient {
       command.args[0]?.includes("probe-resource")
     )
       return ok(
-        `${JSON.stringify({ authenticated: true, status: 200, hasModels: true })}\n`,
+        `${JSON.stringify({
+          schemaVersion: 2,
+          authenticated: true,
+          eligibilityKnown: true,
+          status: 200,
+          eligibleModelCount: 0,
+        })}\n`,
       );
     if (command.executable === "/usr/bin/node")
       return ok(

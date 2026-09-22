@@ -438,9 +438,12 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       "Pi subscription resource probe",
     );
     if (
+      proof.schemaVersion !== 2 ||
       proof.authenticated !== true ||
+      proof.eligibilityKnown !== true ||
       proof.status !== 200 ||
-      proof.hasModels !== true
+      !Number.isSafeInteger(proof.eligibleModelCount) ||
+      Number(proof.eligibleModelCount) < 0
     )
       throw unhealthy("The sandbox-scoped subscription resource proof failed.");
   }

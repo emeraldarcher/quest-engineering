@@ -158,6 +158,24 @@ describe("durable dispatch registry", () => {
       promptHash: "hash",
     });
     expect(completed.settledAt).not.toBeNull();
+
+    const failedDispatch = registry.accept(
+      action({ action_id: "action-failed", attempt_id: "attempt-failed" }),
+    ).dispatch;
+    registry.occupy(
+      failedDispatch.lineageId as string,
+      failedDispatch.action.action_id,
+    );
+    registry.markPromptIntent(failedDispatch.action.action_id);
+    registry.markPromptAccepted(failedDispatch.action.action_id);
+    registry.markNativeActivity(failedDispatch.action.action_id);
+    const failed = registry.fail(failedDispatch.action.action_id, {
+      code: "provider_model_ineligible",
+    });
+    expect(turnLifecycle(failed).phase).toBe("settled");
+    expect(registry.getLineage(failed.lineageId as string).sessionState).toBe(
+      "retained",
+    );
     registry.close();
   });
 

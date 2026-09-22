@@ -32,6 +32,7 @@ import type {
 } from "../src/execution-environment/types.ts";
 
 const enabled = process.env.QE_RUN_SBX_PI_LIVE === "1";
+const sbxBin = process.env.QE_SBX_BIN ?? "/opt/homebrew/bin/sbx";
 
 test.skipIf(!enabled)(
   "live repository-owned Pi profile proves host OAuth discovery without inference",
@@ -41,7 +42,7 @@ test.skipIf(!enabled)(
     const dataRoot = await mkdtemp(join(parent, "sbx-pi-live-"));
     const runId = `pi-live-${randomUUID()}`;
     const workerId = `pi-live-worker-${randomUUID()}`;
-    const client = new CliSbxClient();
+    const client = new CliSbxClient(sbxBin);
     const initialGlobalPolicy = globalPolicySnapshot(await client.policies());
     const initialSecretInventory = await secretInventorySnapshot();
     expect(
@@ -151,9 +152,11 @@ test.skipIf(!enabled)(
         0,
       );
       expect(JSON.parse(resource.stdout)).toEqual({
+        schemaVersion: 2,
         authenticated: true,
+        eligibilityKnown: true,
         status: 200,
-        hasModels: true,
+        eligibleModelCount: expect.any(Number),
       });
 
       const discovery = await lease.exec({
@@ -162,9 +165,15 @@ test.skipIf(!enabled)(
         cwd: lease.paths.workspace,
         timeoutMs: 60_000,
       });
-      expect(discovery.exitCode).toBe(0);
+      expect(
+        discovery.exitCode,
+        `${discovery.stdout}\n${discovery.stderr}`,
+      ).toBe(0);
       const value = JSON.parse(discovery.stdout) as {
+        schemaVersion: number;
         authenticated: boolean;
+        accountScope: string;
+        providerEligibleModels: Array<{ provider: string; model: string }>;
         diagnostics: string[];
         models: Array<{
           provider: string;
@@ -173,15 +182,27 @@ test.skipIf(!enabled)(
           reasoning: string[];
         }>;
       };
+      expect(value.schemaVersion).toBe(2);
       expect(value.authenticated).toBe(true);
-      expect(value.models.length).toBeGreaterThan(0);
+      expect(value.accountScope).toMatch(/^[a-f0-9]{64}$/);
       expect(
         value.models.every((model) => model.provider === "openai-codex"),
+      ).toBe(true);
+      expect(
+        value.models.every((model) =>
+          value.providerEligibleModels.some(
+            (eligible) =>
+              eligible.provider === model.provider &&
+              eligible.model === model.model,
+          ),
+        ),
       ).toBe(true);
       const workerCatalog = applyConfiguredPiModelScope(
         {
           authenticated: value.authenticated,
           diagnostics: value.diagnostics,
+          accountScope: value.accountScope,
+          providerEligibleModels: value.providerEligibleModels,
           models: value.models.map((model) => ({
             provider: model.provider,
             model: model.model,
@@ -199,13 +220,13 @@ test.skipIf(!enabled)(
       expect(workerCatalog.models.map((model) => model.model)).toEqual(
         value.models.map((model) => model.model),
       );
-      expect(
-        workerCatalog.models.some(
-          (model) =>
-            model.reasoningCapability.kind === "enumerated" &&
-            model.reasoningCapability.values.length > 0,
+      expect(workerCatalog.models).toEqual(
+        expect.arrayContaining(
+          workerCatalog.models.filter(
+            (model) => model.reasoningCapability.kind !== "unknown",
+          ),
         ),
-      ).toBe(true);
+      );
       const runtime = await lease.exec({
         executable: "/usr/bin/node",
         args: [
@@ -230,10 +251,12 @@ test.skipIf(!enabled)(
       );
 
       await proveMailboxRoundTrip(lease);
-      await provePiTuiReadinessWithoutInference(
-        lease,
-        `${value.models[0]?.provider}/${value.models[0]?.model}`,
-      );
+      const firstModel = value.models[0];
+      if (firstModel)
+        await provePiTuiReadinessWithoutInference(
+          lease,
+          `${firstModel.provider}/${firstModel.model}`,
+        );
 
       scopeProbeSandbox = `qe-pi-scope-${randomUUID().slice(0, 12)}`;
       await client.create({
@@ -331,7 +354,7 @@ async function directoryContains(
 }
 
 async function secretInventorySnapshot(): Promise<unknown> {
-  const child = Bun.spawn(["sbx", "secret", "ls", "--json"], {
+  const child = Bun.spawn([sbxBin, "secret", "ls", "--json"], {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

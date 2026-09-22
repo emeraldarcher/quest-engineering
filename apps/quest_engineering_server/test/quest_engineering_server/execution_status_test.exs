@@ -23,13 +23,20 @@ defmodule QuestEngineering.Server.ExecutionStatusTest do
              "stalled"
   end
 
-  test "durable dispatch uncertainty outranks lifecycle observations" do
+  test "terminal dispatch truth outranks stale lifecycle observations" do
     assert ExecutionStatus.step_state(
              :dispatched,
              %{},
              %{state: "uncertain"},
              session("working")
            ) == "uncertain"
+
+    assert ExecutionStatus.step_state(
+             :dispatched,
+             %{},
+             %{state: "failed"},
+             session("working")
+           ) == "failed"
   end
 
   test "Run status uses one deterministic precedence across projected steps" do

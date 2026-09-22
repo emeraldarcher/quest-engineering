@@ -31,6 +31,9 @@ export type SessionReporter = (
   dispatch: DispatchRecord,
   lineage: HarnessLineage,
 ) => Promise<boolean>;
+export type TerminalFailureObserver = (
+  dispatch: DispatchRecord,
+) => Promise<void>;
 
 export class DispatchExecutor {
   private readonly active = new Map<string, Promise<void>>();
@@ -47,6 +50,8 @@ export class DispatchExecutor {
     private readonly reportSession: SessionReporter = async () => false,
     private readonly control: HarnessControlAuthority | null = null,
     private readonly backendRetryDelayMs = 1_000,
+    private readonly onTerminalFailure: TerminalFailureObserver = async () =>
+      undefined,
   ) {
     this.harnesses =
       harnesses instanceof HarnessRegistry
@@ -626,7 +631,9 @@ export class DispatchExecutor {
         lineage.intervention,
       );
     }
-    await this.reportFailure(this.registry.get(actionId));
+    const terminal = this.registry.get(actionId);
+    await this.reportFailure(terminal);
+    if (terminal.state === "failed") await this.onTerminalFailure(terminal);
   }
 
   private preparedProcessAdoptionSource(

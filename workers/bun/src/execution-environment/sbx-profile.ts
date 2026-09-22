@@ -68,6 +68,8 @@ export const SBX_PI_DISCOVERY_SCRIPT =
 export const SBX_PI_RUNTIME_PROBE = "/home/agent/.qe-profile/probe-runtime.mjs";
 export const SBX_PI_RESOURCE_PROBE =
   "/home/agent/.qe-profile/probe-resource.mjs";
+export const SBX_PI_ELIGIBILITY_SNAPSHOT =
+  "/qe/state/openai-codex-model-eligibility.json";
 
 const SBX_PI_PROFILE_ASSETS = Object.freeze({
   "spec.yaml":
@@ -76,12 +78,14 @@ const SBX_PI_PROFILE_ASSETS = Object.freeze({
     "e00290736ad2d76027395f4d19b0f3a78a0bf333fa7cf99fb370ab3025f00782",
   "files/home/.qe-profile/package-lock.json":
     "e5d368409a3750b22ef795ef37acce7d12fed7750ec3e82f2222672341e15ce7",
+  "files/home/.qe-profile/codex-model-eligibility.mjs":
+    "a2f4254156f44668b660f3cd4b65b6d21869b5d56e83b16e7412f8f3f8498e87",
   "files/home/.qe-profile/discover-models.mjs":
-    "7ea06091e7377d63192595305daf142f6d4495a138e9c4612daf88f3c7e9e15d",
+    "7de8cc6abe276493838e0328fb245abbd960c4d49a670fbdfd8a9de8057b375a",
   "files/home/.qe-profile/probe-runtime.mjs":
     "26d4fa144c80060d0b9f5ca16ec633ec7ced71c89ada1657d4c091f782921856",
   "files/home/.qe-profile/probe-resource.mjs":
-    "8e09fb53966502011ea184571c09aa49ed6d07c6369a5f7e7c7a50a5e1b8caf0",
+    "e08f0cfba88b8fd5e92bedf3eb396f03be35b65dd409a976144b3c70dc00b5e6",
 });
 
 export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({

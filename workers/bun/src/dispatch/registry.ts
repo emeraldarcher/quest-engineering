@@ -1454,7 +1454,9 @@ export function turnLifecycle(
   settledAt: string | null;
 } {
   const phase: TurnLifecyclePhase =
-    dispatch.state === "completed" || dispatch.settledAt
+    dispatch.state === "completed" ||
+    dispatch.state === "failed" ||
+    dispatch.settledAt
       ? "settled"
       : dispatch.state === "uncertain"
         ? "uncertain"

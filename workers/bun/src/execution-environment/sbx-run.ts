@@ -33,6 +33,7 @@ import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_PI_DISCOVERY_SCRIPT,
+  SBX_PI_ELIGIBILITY_SNAPSHOT,
   SBX_PI_EXECUTABLE,
   SBX_PI_EXECUTION_PROFILE_V1,
   SBX_PI_PROFILE,
@@ -53,10 +54,46 @@ const PI_EXTENSION_ENTRIES = [
   "sbx-herdr-state-extension.ts",
 ] as const;
 
+export interface ProviderModelEligibilityRef {
+  provider: string;
+  model: string;
+}
+
 export interface DiscoveredPiModelCatalog {
   models: HarnessModelCapability[];
   diagnostics: string[];
+  /** OAuth/account resource authentication, independent of model count. */
   authenticated: boolean;
+  accountScope?: string;
+  providerEligibleModels?: ProviderModelEligibilityRef[];
+}
+
+export function reconcileProviderEligibilityInvalidations(
+  discovered: DiscoveredPiModelCatalog,
+  current: readonly ProviderEligibilityInvalidation[],
+): ProviderEligibilityInvalidation[] {
+  const accountScope = discovered.accountScope;
+  const providerEligibleModels = discovered.providerEligibleModels;
+  if (!accountScope || !providerEligibleModels)
+    throw new Error(
+      "Pi discovery omitted account-scoped provider eligibility.",
+    );
+  const eligible = new Set(
+    providerEligibleModels.map((item) => `${item.provider}/${item.model}`),
+  );
+  const contradictions = current.filter(
+    (item) =>
+      item.accountScope === accountScope &&
+      eligible.has(`${item.provider}/${item.model}`),
+  );
+  if (contradictions.length > 0)
+    throw Object.assign(
+      new Error(
+        "The authenticated provider catalog still marks a model eligible after the same account rejected it as unsupported; refusing to hardcode an exclusion or publish the inconsistent catalog.",
+      ),
+      { code: "provider_catalog_runtime_inconsistency" },
+    );
+  return current.filter((item) => item.accountScope !== accountScope);
 }
 
 export function applyConfiguredPiModelScope(
@@ -66,8 +103,9 @@ export function applyConfiguredPiModelScope(
   const total = discovered.models.length;
   if (configured === undefined)
     return {
+      ...discovered,
       models: [...discovered.models],
-      authenticated: discovered.authenticated && total > 0,
+      authenticated: discovered.authenticated,
       diagnostics: [
         ...discovered.diagnostics,
         total > 0
@@ -78,8 +116,9 @@ export function applyConfiguredPiModelScope(
 
   if (configured.length === 0)
     return {
+      ...discovered,
       models: [],
-      authenticated: false,
+      authenticated: discovered.authenticated,
       diagnostics: [
         ...discovered.diagnostics,
         ...(total === 0
@@ -102,10 +141,19 @@ export function applyConfiguredPiModelScope(
         ? `Configured QE model scope retained 0 of ${total} dynamically discovered model(s); policy excluded the entire discovered catalog.`
         : `Configured QE model scope retained ${models.length} of ${total} dynamically discovered model(s).`;
   return {
+    ...discovered,
     models,
-    authenticated: discovered.authenticated && models.length > 0,
+    authenticated: discovered.authenticated,
     diagnostics: [...discovered.diagnostics, diagnostic],
   };
+}
+
+export interface ProviderEligibilityFailure {
+  code: "provider_model_ineligible";
+  provider: string;
+  model: string;
+  accountScope: string;
+  observedAt: string;
 }
 
 export interface PreparedSbxPiExecution {
@@ -121,6 +169,7 @@ export interface PreparedSbxPiExecution {
   syncControl(): Promise<void>;
   activityCursor(): Promise<number>;
   observedActivityAfter(cursor: number): string | null;
+  providerEligibilityFailure(): Promise<ProviderEligibilityFailure | null>;
   startRelay(host: TerminalSessionBackend, paneId: string): void;
   awaitAttestation(timeoutMs?: number): Promise<void>;
   stopRelay(): Promise<void>;
@@ -141,6 +190,16 @@ interface RuntimeContext {
   relay: SbxControlMailboxRelay | null;
 }
 
+export interface ProviderEligibilityInvalidation
+  extends ProviderEligibilityFailure {
+  invalidatedAt: string;
+}
+
+interface ProviderEligibilityInvalidationFile {
+  schemaVersion: 1;
+  invalidations: ProviderEligibilityInvalidation[];
+}
+
 /**
  * Production Pi execution boundary. There is intentionally no HostNative
  * branch: every prepared execution has an exact SBX lease and private Git
@@ -155,6 +214,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     digest: string;
     bundles: ExtensionBundle[];
   }> | null = null;
+  private providerEligibilityTail: Promise<void> = Promise.resolve();
   constructor(
     private readonly config: WorkerConfig,
     private readonly worktrees: RunWorktreeRegistry,
@@ -177,11 +237,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     this.store = options.store ?? new SbxRunExecutionStore(config.dataRoot);
   }
 
-  async discover(): Promise<{
-    models: HarnessModelCapability[];
-    diagnostics: string[];
-    authenticated: boolean;
-  }> {
+  async discover(): Promise<DiscoveredPiModelCatalog> {
     const runId = `discovery-${randomUUID()}`;
     const spec = this.spec({
       runId,
@@ -205,6 +261,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           result.stderr.trim() || "In-sandbox Pi model discovery failed.",
         );
       const discovered = decodeDiscovery(result.stdout);
+      await this.reconcileProviderEligibility(discovered);
       const configured =
         this.config.executorModels ??
         (this.config.piModel
@@ -214,6 +271,82 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     } finally {
       if (lease) await this.backend.remove(lease.ref).catch(() => undefined);
     }
+  }
+
+  private invalidateProviderEligibility(
+    failure: ProviderEligibilityFailure,
+  ): Promise<void> {
+    return this.withProviderEligibilityAuthority(async () => {
+      const current = await this.readProviderEligibilityInvalidations();
+      const retained = current.filter(
+        (item) =>
+          item.accountScope !== failure.accountScope ||
+          item.provider !== failure.provider ||
+          item.model !== failure.model,
+      );
+      retained.push({ ...failure, invalidatedAt: new Date().toISOString() });
+      await this.writeProviderEligibilityInvalidations(retained.slice(-64));
+    });
+  }
+
+  private reconcileProviderEligibility(
+    discovered: DiscoveredPiModelCatalog,
+  ): Promise<void> {
+    return this.withProviderEligibilityAuthority(async () => {
+      const current = await this.readProviderEligibilityInvalidations();
+      const retained = reconcileProviderEligibilityInvalidations(
+        discovered,
+        current,
+      );
+      if (retained.length !== current.length)
+        await this.writeProviderEligibilityInvalidations(retained);
+    });
+  }
+
+  private withProviderEligibilityAuthority<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const result = this.providerEligibilityTail.then(operation);
+    this.providerEligibilityTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async readProviderEligibilityInvalidations(): Promise<
+    ProviderEligibilityInvalidation[]
+  > {
+    try {
+      const parsed = JSON.parse(
+        await readFile(this.providerEligibilityInvalidationPath(), "utf8"),
+      ) as Partial<ProviderEligibilityInvalidationFile>;
+      if (
+        parsed.schemaVersion !== 1 ||
+        !Array.isArray(parsed.invalidations) ||
+        !parsed.invalidations.every(validProviderEligibilityInvalidation)
+      )
+        throw new Error(
+          "Provider eligibility invalidation state is malformed.",
+        );
+      return parsed.invalidations;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  private writeProviderEligibilityInvalidations(
+    invalidations: ProviderEligibilityInvalidation[],
+  ): Promise<void> {
+    return writeAtomic(
+      this.providerEligibilityInvalidationPath(),
+      `${JSON.stringify({ schemaVersion: 1, invalidations })}\n`,
+    );
+  }
+
+  private providerEligibilityInvalidationPath(): string {
+    return join(this.config.dataRoot, "provider-model-eligibility.json");
   }
 
   async reconcileDurableOwnership(): Promise<string[]> {
@@ -528,6 +661,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       },
       observedActivityAfter: (cursor) =>
         context.relay?.observedActivityAfter(cursor) ?? null,
+      providerEligibilityFailure: () =>
+        context.relay?.awaitProviderEligibilityFailureOrIdle() ??
+        Promise.resolve(null),
       startRelay: (host, paneId) => {
         if (context.relay) return;
         context.relay = new SbxControlMailboxRelay(
@@ -547,6 +683,23 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
               lineage.lineageId,
               "control_mailbox_relay_failed",
             ),
+          async (failure) => {
+            const invalidated = await lease.exec({
+              executable: "/usr/bin/python3",
+              args: [
+                "-c",
+                "import os,pathlib; pathlib.Path(os.environ['QE_ELIGIBILITY_SNAPSHOT']).unlink(missing_ok=True)",
+              ],
+              environment: {
+                QE_ELIGIBILITY_SNAPSHOT: SBX_PI_ELIGIBILITY_SNAPSHOT,
+              },
+            });
+            if (invalidated.exitCode !== 0)
+              throw new Error(
+                `Could not invalidate ${SBX_PI_ELIGIBILITY_SNAPSHOT}.`,
+              );
+            await this.invalidateProviderEligibility(failure);
+          },
         );
         context.relay.start();
       },
@@ -928,13 +1081,15 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   }
 }
 
-class SbxControlMailboxRelay {
+export class SbxControlMailboxRelay {
   private stopped = false;
   private operation: Promise<void> | null = null;
   private pollTail: Promise<void> = Promise.resolve();
   private lastRuntimeSequence = 0;
+  private lastRuntimeState: "idle" | "working" | "blocked" | null = null;
   private lastWorkingSequence = 0;
   private lastWorkingAt: string | null = null;
+  private providerFailure: ProviderEligibilityFailure | null = null;
   private lastAttention = "";
   private lastRecovery = "";
   private readonly processedRequests = new Map<string, string>();
@@ -952,6 +1107,9 @@ class SbxControlMailboxRelay {
     private readonly expectedAttestation: Record<string, string | number>,
     private readonly onFailure: () => void,
     private readonly onRecovery: () => void,
+    private readonly onProviderEligibilityFailure: (
+      failure: ProviderEligibilityFailure,
+    ) => Promise<void> = async () => undefined,
   ) {}
 
   start(): void {
@@ -965,6 +1123,21 @@ class SbxControlMailboxRelay {
   async stop(): Promise<void> {
     this.stopped = true;
     await this.operation;
+    // Pi may publish agent_settled just after Herdr's terminal integration has
+    // already observed idle. Drain that final guest-authoritative state before
+    // releasing the relay so a retained pane cannot remain falsely working.
+    const deadline = Date.now() + 2_000;
+    do {
+      try {
+        await this.refresh();
+        this.consecutiveFailures = 0;
+      } catch {
+        this.onFailure();
+        return;
+      }
+      if (this.lastRuntimeState !== "working") return;
+      if (Date.now() < deadline) await Bun.sleep(50);
+    } while (Date.now() < deadline);
   }
 
   async refresh(): Promise<void> {
@@ -979,6 +1152,24 @@ class SbxControlMailboxRelay {
 
   observedActivityAfter(cursor: number): string | null {
     return this.lastWorkingSequence > cursor ? this.lastWorkingAt : null;
+  }
+
+  providerEligibilityFailure(): ProviderEligibilityFailure | null {
+    return this.providerFailure ? { ...this.providerFailure } : null;
+  }
+
+  async awaitProviderEligibilityFailureOrIdle(
+    timeoutMs = 2_000,
+  ): Promise<ProviderEligibilityFailure | null> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      await this.refresh();
+      if (this.providerFailure) return { ...this.providerFailure };
+      if (this.lastRuntimeState && this.lastRuntimeState !== "working")
+        return null;
+      if (Date.now() < deadline) await Bun.sleep(50);
+    } while (Date.now() < deadline);
+    return null;
   }
 
   async awaitAttestation(timeoutMs: number): Promise<void> {
@@ -1100,6 +1291,17 @@ class SbxControlMailboxRelay {
     )
       return;
     this.lastRuntimeSequence = sequence;
+    this.lastRuntimeState = state as "idle" | "working" | "blocked";
+    const providerFailure = decodeProviderEligibilityFailure(
+      value.providerFailure,
+    );
+    if (
+      providerFailure &&
+      JSON.stringify(providerFailure) !== JSON.stringify(this.providerFailure)
+    ) {
+      await this.onProviderEligibilityFailure(providerFailure);
+      this.providerFailure = providerFailure;
+    }
     if (
       Number.isSafeInteger(workingSequence) &&
       workingSequence > this.lastWorkingSequence
@@ -1187,15 +1389,16 @@ function splitConfiguredModel(value: string): {
     : { provider: "openai-codex", model: value };
 }
 
-function decodeDiscovery(value: string): {
-  models: HarnessModelCapability[];
-  diagnostics: string[];
-  authenticated: boolean;
-} {
+function decodeDiscovery(value: string): DiscoveredPiModelCatalog {
   const parsed = JSON.parse(value) as {
     schemaVersion?: number;
     authenticated?: boolean;
+    accountScope?: unknown;
     diagnostics?: unknown[];
+    providerEligibleModels?: Array<{
+      provider?: unknown;
+      model?: unknown;
+    }>;
     models?: Array<{
       provider?: unknown;
       model?: unknown;
@@ -1203,10 +1406,24 @@ function decodeDiscovery(value: string): {
       reasoning?: unknown;
     }>;
   };
-  if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.models))
+  if (
+    parsed.schemaVersion !== 2 ||
+    parsed.authenticated !== true ||
+    typeof parsed.accountScope !== "string" ||
+    !/^[a-f0-9]{64}$/.test(parsed.accountScope) ||
+    !Array.isArray(parsed.providerEligibleModels) ||
+    !Array.isArray(parsed.models)
+  )
     throw new Error(
-      "In-sandbox Pi discovery returned an incompatible contract.",
+      "In-sandbox Pi discovery returned an incompatible account-eligibility contract.",
     );
+  const providerEligibleModels = parsed.providerEligibleModels.map((model) => {
+    if (typeof model.provider !== "string" || typeof model.model !== "string")
+      throw new Error(
+        "In-sandbox Pi discovery returned malformed provider eligibility.",
+      );
+    return { provider: model.provider, model: model.model };
+  });
   const models = parsed.models.map((model) => {
     if (
       typeof model.provider !== "string" ||
@@ -1231,7 +1448,9 @@ function decodeDiscovery(value: string): {
     diagnostics: (parsed.diagnostics ?? []).filter(
       (item): item is string => typeof item === "string",
     ),
-    authenticated: parsed.authenticated === true && models.length > 0,
+    authenticated: true,
+    accountScope: parsed.accountScope,
+    providerEligibleModels,
   };
 }
 
@@ -1328,6 +1547,38 @@ async function writeAtomic(path: string, value: string): Promise<void> {
 
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function decodeProviderEligibilityFailure(
+  value: unknown,
+): ProviderEligibilityFailure | null {
+  if (!record(value)) return null;
+  if (
+    value.code !== "provider_model_ineligible" ||
+    typeof value.provider !== "string" ||
+    typeof value.model !== "string" ||
+    typeof value.accountScope !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.accountScope) ||
+    typeof value.observedAt !== "string"
+  )
+    return null;
+  return {
+    code: value.code,
+    provider: value.provider,
+    model: value.model,
+    accountScope: value.accountScope,
+    observedAt: value.observedAt,
+  };
+}
+
+function validProviderEligibilityInvalidation(
+  value: unknown,
+): value is ProviderEligibilityInvalidation {
+  return Boolean(
+    decodeProviderEligibilityFailure(value) &&
+      record(value) &&
+      typeof value.invalidatedAt === "string",
+  );
 }
 
 function sameAttestation(

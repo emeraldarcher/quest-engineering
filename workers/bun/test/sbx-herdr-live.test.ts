@@ -35,7 +35,7 @@ const sbxBin = process.env.QE_SBX_BIN ?? "/opt/homebrew/bin/sbx";
  * and therefore cannot authorize a provider/model cycle.
  */
 test.skipIf(!enabled)(
-  "live exact Herdr launch attests Run-owned SBX Pi without inference",
+  "live account eligibility gates exact Herdr/SBX launch without inference",
   async () => {
     expect(herdrBin.startsWith("/")).toBe(true);
     expect(sbxBin.startsWith("/")).toBe(true);
@@ -153,8 +153,19 @@ test.skipIf(!enabled)(
       const catalog = await manager.discover();
       expect(catalog.authenticated).toBe(true);
       const model = catalog.models[0];
-      expect(model?.provider).toBe("openai-codex");
-      if (!model) throw new Error("Dynamic Pi discovery returned no model.");
+      if (!model) {
+        expect(catalog.providerEligibleModels).toEqual([]);
+        console.log(
+          JSON.stringify({
+            event: "sbx_herdr_launch_gated_by_account_eligibility",
+            authenticated: catalog.authenticated,
+            publishedModels: 0,
+            providerCycles: 0,
+          }),
+        );
+        return;
+      }
+      expect(model.provider).toBe("openai-codex");
       if (model.reasoningCapability.kind === "unknown")
         throw new Error(
           "Dynamic Pi discovery returned unknown reasoning metadata.",
