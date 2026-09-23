@@ -13,6 +13,7 @@ import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import {
   controlDescriptorPath,
   HarnessControlAuthority,
+  type StructuredCompletionBoundary,
 } from "../src/harnesses/control/authority.ts";
 import {
   forwardHarnessControlPayload,
@@ -27,7 +28,10 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
-async function createFixture(maxStopEnforcements = 2) {
+async function createFixture(
+  maxStopEnforcements = 2,
+  completionBoundary?: StructuredCompletionBoundary,
+) {
   const parent = join(process.cwd(), ".pi", "tmp");
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, "harness-control-"));
@@ -36,7 +40,11 @@ async function createFixture(maxStopEnforcements = 2) {
     root,
     "fake",
   );
-  const authority = new HarnessControlAuthority(registry, maxStopEnforcements);
+  const authority = new HarnessControlAuthority(
+    registry,
+    maxStopEnforcements,
+    completionBoundary,
+  );
   const server = new HarnessControlServer(authority);
   await server.start();
   cleanups.push(async () => {
@@ -279,6 +287,110 @@ test("reported completion infrastructure failure preserves work without consumin
     cause: "completion_infrastructure",
   });
   expect(stop && "enforcementAttempt" in stop).toBe(false);
+});
+
+test("response loss after durable acceptance reconciles the accepted result", async () => {
+  const value = await createFixture();
+  const bound = await bind(value);
+  const descriptor = JSON.parse(
+    await Bun.file(controlDescriptorPath(bound.lineage)).text(),
+  );
+  let requests = 0;
+  const responseLossServer = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      input += chunk;
+      const newline = input.indexOf("\n");
+      if (newline < 0) return;
+      void (async () => {
+        requests += 1;
+        const request = JSON.parse(input.slice(0, newline));
+        const result = await value.authority.handle(request);
+        if (requests === 1) {
+          socket.end();
+          return;
+        }
+        socket.end(
+          `${JSON.stringify({ protocolVersion: 1, ok: true, result })}\n`,
+        );
+      })();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    responseLossServer.once("error", reject);
+    responseLossServer.listen(0, "127.0.0.1", resolve);
+  });
+  cleanups.push(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        responseLossServer.close((error) =>
+          error ? reject(error) : resolve(),
+        ),
+      ),
+  );
+  const address = responseLossServer.address();
+  if (!address || typeof address === "string")
+    throw new Error("response-loss server has no port");
+  await writeFile(
+    controlDescriptorPath(bound.lineage),
+    JSON.stringify({
+      ...descriptor,
+      endpoint: { ...descriptor.endpoint, port: address.port },
+    }),
+  );
+
+  expect(
+    await new HarnessControlClient(
+      controlDescriptorPath(bound.lineage),
+    ).completeStep({ change_set: { accepted: true } }, "lost-ack"),
+  ).toMatchObject({ accepted: true, completed: true, duplicate: true });
+  expect(requests).toBe(2);
+  expect((await collectStepResult(bound.dispatch)).envelope.outputs).toEqual({
+    change_set: { accepted: true },
+  });
+});
+
+test("physical export failure leaves completion pending and a corrected retry succeeds once", async () => {
+  let failExport = true;
+  let exports = 0;
+  const value = await createFixture(2, {
+    async verifyAndBind({ outputs }) {
+      exports += 1;
+      if (failExport) throw new Error("synthetic private-Git export failure");
+      return {
+        ...outputs,
+        change_set: {
+          ...(outputs.change_set as Record<string, unknown>),
+          physical: { export_id: "export-1", checkpoint_id: "checkpoint-1" },
+        },
+      } as never;
+    },
+  });
+  const bound = await bind(value);
+
+  await expect(
+    bound.client.completeStep({ change_set: { files: ["src/greeting.js"] } }),
+  ).rejects.toMatchObject({
+    kind: "infrastructure",
+    code: "invalid_bridge_response",
+  });
+  expect((await bound.client.completionStatus()).completed).toBe(false);
+  await expect(collectStepResult(bound.dispatch)).rejects.toThrow(
+    "without a structured",
+  );
+
+  failExport = false;
+  await expect(
+    bound.client.completeStep({ change_set: { files: ["src/greeting.js"] } }),
+  ).resolves.toMatchObject({ completed: true });
+  expect(exports).toBe(2);
+  expect((await collectStepResult(bound.dispatch)).envelope.outputs).toEqual({
+    change_set: {
+      files: ["src/greeting.js"],
+      physical: { export_id: "export-1", checkpoint_id: "checkpoint-1" },
+    },
+  });
 });
 
 test("ambiguous response loss reconciles status without replaying completion", async () => {

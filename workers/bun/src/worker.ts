@@ -1484,8 +1484,18 @@ function harnessSessionPayload(
       prompt_intent_at: turn.promptIntentAt,
       prompt_accepted_at: turn.promptAcceptedAt,
       native_activity_at: turn.nativeActivityAt,
+      provider_turn_settled_at: turn.providerTurnSettledAt,
+      native_idle_at: turn.nativeIdleAt,
+      structured_result_received_at: turn.structuredResultReceivedAt,
       stalled_at: turn.stalledAt,
       settled_at: turn.settledAt,
+      completion: {
+        structured_result_required:
+          dispatch.completionRequirement.structuredResultRequired,
+        outputs: dispatch.completionRequirement.outputs,
+        physical_export_required:
+          dispatch.completionRequirement.physicalExportRequired,
+      },
       ...(physicalProcess
         ? {
             physical_process: {

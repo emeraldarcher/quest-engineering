@@ -5,7 +5,7 @@ import {
 } from "../src/protocol/codec.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v7 ResolvedExecution codec", () => {
+describe("Worker Protocol v8 ResolvedExecution codec", () => {
   test("requires and preserves separated semantic instructions", () => {
     const input = action({
       instruction: "Inspect inputs.\nProduce the result.",

@@ -188,9 +188,36 @@ export class DispatchExecutor {
       new Date().toISOString(),
       lineage.intervention,
     );
-    this.control?.invalidate(lineage.lineageId);
     await this.reportSession(failed, unavailable);
     await this.reportFailure(failed);
+  }
+
+  async cancel(actionId: string): Promise<void> {
+    const current = this.registry.get(actionId);
+    if (["completed", "failed"].includes(current.state)) return;
+    if (!current.lineageId)
+      throw new Error(
+        `Dispatch ${actionId} has no cancellable harness lineage.`,
+      );
+    const lineage = this.registry.getLineage(current.lineageId);
+    const harness = this.harnessForLineage(lineage);
+    await harness.interrupt?.(lineage);
+    const failed = this.registry.fail(
+      actionId,
+      {
+        reason: "execution_cancelled",
+        code: "execution_cancelled",
+        classification: "terminal_not_recoverable",
+        message: "The QE Attempt was explicitly cancelled.",
+      },
+      false,
+    );
+    await harness.clearActiveMetadata(
+      failed,
+      this.registry.getLineage(lineage.lineageId),
+    );
+    await this.reportFailure(failed);
+    await this.onTerminalFailure(failed);
   }
 
   physicalProcessTransition(actionId: string) {
@@ -368,7 +395,6 @@ export class DispatchExecutor {
         dispatch,
         this.registry.getLineage(lineage.lineageId),
       );
-      this.control?.invalidate(lineage.lineageId);
       await this.reportCompletion(dispatch);
     } catch (error) {
       if (backendUnavailable(error)) throw error;
@@ -485,7 +511,6 @@ export class DispatchExecutor {
           completed,
           this.registry.getLineage(lineage.lineageId),
         );
-        this.control?.invalidate(lineage.lineageId);
         await this.reportCompletion(completed);
         return;
       }
@@ -683,7 +708,7 @@ export class DispatchExecutor {
         attentionId: `qe-prompt-authorization-${dispatch.action.attempt_id}`,
         category: "needs_confirmation",
         message:
-          "Recovery ready. Existing implementation retained. Native worker prepared. Authorization is required to begin Builder inference.",
+          "Execution environment ready. Native worker prepared. Explicit authorization is required to begin Builder inference.",
         requestedAt:
           lineage.attention?.attentionId ===
           `qe-prompt-authorization-${dispatch.action.attempt_id}`
@@ -864,6 +889,12 @@ export class DispatchExecutor {
       this.registry.markPromptAccepted(actionId, event.acceptedAt);
     else if (event.type === "native_activity")
       this.registry.markNativeActivity(actionId, event.observedAt);
+    else if (event.type === "provider_turn_settled")
+      this.registry.markProviderTurnSettled(actionId, event.observedAt);
+    else if (event.type === "native_idle")
+      this.registry.markNativeIdle(actionId, event.observedAt);
+    else if (event.type === "structured_result_received")
+      this.registry.markStructuredResultReceived(actionId, event.observedAt);
     else if (event.type === "stalled")
       this.registry.markStalled(actionId, event.observedAt);
     else if (event.type === "running") {
@@ -903,7 +934,14 @@ export class DispatchExecutor {
       inspection.intervention,
     );
     if (
-      ["prompt_accepted", "native_activity", "running"].includes(event.type)
+      [
+        "prompt_accepted",
+        "native_activity",
+        "provider_turn_settled",
+        "native_idle",
+        "structured_result_received",
+        "running",
+      ].includes(event.type)
     ) {
       void this.report(
         payload(this.registry.get(actionId), "running"),
@@ -914,37 +952,38 @@ export class DispatchExecutor {
   }
 
   private async reportCompletion(dispatch: DispatchRecord): Promise<void> {
-    if (dispatch.lineageId) {
+    if (dispatch.lineageId)
       await this.reportSession(
         dispatch,
         this.registry.getLineage(dispatch.lineageId),
       );
-      this.control?.invalidate(dispatch.lineageId);
-    }
     const acknowledged = await this.report(
       payload(dispatch, "completed"),
       "step_completed",
     );
     if (acknowledged)
       this.registry.acknowledgeServerCompletion(dispatch.action.action_id);
+    if (dispatch.lineageId) this.control?.invalidate(dispatch.lineageId);
   }
   private async reportFailure(dispatch: DispatchRecord): Promise<void> {
-    if (dispatch.lineageId) {
+    if (dispatch.lineageId)
       await this.reportSession(
         dispatch,
         this.registry.getLineage(dispatch.lineageId),
       );
-      if (dispatch.state === "failed")
-        this.control?.invalidate(dispatch.lineageId);
-    }
     if (dispatch.state === "uncertain")
       await this.report(payload(dispatch, "uncertain"), "dispatch_state");
     else await this.report(payload(dispatch, "failed"), "step_failed");
+    if (dispatch.lineageId && dispatch.state === "failed")
+      this.control?.invalidate(dispatch.lineageId);
   }
 }
 
 function requiresPromptAuthorization(action: ExecuteAction): boolean {
-  return action.operational_recovery?.authorization_kind === "human";
+  if (action.execution.configuration.harness_kind === "fake") return false;
+  return ["initial", "human"].includes(
+    action.operational_recovery?.authorization_kind ?? "",
+  );
 }
 
 function prePromptControlFailure(

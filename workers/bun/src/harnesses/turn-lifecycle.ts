@@ -47,6 +47,11 @@ export function persistedPromptEvidence(
   return {
     kind,
     cursor: value.cursor,
+    ...(typeof value.providerTurnCursor === "number" &&
+    Number.isSafeInteger(value.providerTurnCursor) &&
+    value.providerTurnCursor >= 0
+      ? { providerTurnCursor: value.providerTurnCursor }
+      : {}),
     promptHash: value.promptHash,
   };
 }

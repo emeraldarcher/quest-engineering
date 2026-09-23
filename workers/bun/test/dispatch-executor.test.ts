@@ -115,6 +115,40 @@ test("independent dispatches enter provider execution concurrently", async () =>
   registry.close();
 });
 
+test("explicit cancellation terminalizes while a pending structured result remains absent", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new BlockingProvider(registry);
+  const reports: ReconcileDispatch[] = [];
+  const executor = new DispatchExecutor(registry, harness, async (dispatch) => {
+    reports.push(dispatch);
+    return true;
+  });
+  const dispatch = executor.accept(action()).dispatch;
+  const operation = executor.start(dispatch.action.action_id);
+  for (let attempt = 0; attempt < 100 && harness.running === 0; attempt += 1)
+    await Bun.sleep(1);
+
+  await executor.cancel(dispatch.action.action_id);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    failure: {
+      code: "execution_cancelled",
+      classification: "terminal_not_recoverable",
+    },
+    structuredResultReceivedAt: null,
+  });
+  expect(harness.interrupts).toBe(1);
+  expect(reports.at(-1)).toMatchObject({
+    state: "failed",
+    failure: { code: "execution_cancelled" },
+  });
+  harness.releaseAll();
+  await operation;
+  expect(registry.get(dispatch.action.action_id).state).toBe("failed");
+  registry.close();
+});
+
 test("Pi and Antigravity selections execute concurrently without Worker-global serialization", async () => {
   const { root, database } = await fixture();
   let harnesses: HarnessRegistry;
@@ -165,6 +199,56 @@ test("Pi and Antigravity selections execute concurrently without Worker-global s
   await Promise.all(operations);
   expect(registry.get(first.action.action_id).state).toBe("completed");
   expect(registry.get(second.action.action_id).state).toBe("completed");
+  registry.close();
+});
+
+test("fresh initial execution reaches a durable zero-inference gate before one authorized prompt", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "pi");
+  const harness = new StagedRecoveryHarness(registry, "pi");
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+  );
+  const initial = action({
+    action_id: "initial-action",
+    attempt_id: "initial-attempt-1",
+    operational_recovery: {
+      epoch_number: 0,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "initial",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: null,
+      request_id: null,
+    },
+  });
+  initial.execution.configuration.harness_kind = "pi";
+  const dispatch = executor.accept(initial).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  expect(harness.promptSubmissions).toBe(0);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "accepted",
+    promptAuthorizedAt: null,
+    promptIntentAt: null,
+    promptAcceptedAt: null,
+  });
+  expect(registry.getLineage(dispatch.lineageId as string)).toMatchObject({
+    sessionState: "waiting_for_human",
+    attention: { category: "needs_confirmation" },
+  });
+
+  await executor.authorizePrompt(dispatch.action.action_id);
+  expect(harness.promptSubmissions).toBe(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    promptAuthorizedAt: expect.any(String),
+    promptIntentAt: expect.any(String),
+  });
   registry.close();
 });
 

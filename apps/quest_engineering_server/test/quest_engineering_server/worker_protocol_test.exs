@@ -266,8 +266,16 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
           "prompt_intent_at" => "2026-09-06T00:00:00Z",
           "prompt_accepted_at" => "2026-09-06T00:00:00.100Z",
           "native_activity_at" => "2026-09-06T00:00:00.500Z",
+          "provider_turn_settled_at" => "2026-09-06T00:00:00.750Z",
+          "native_idle_at" => nil,
+          "structured_result_received_at" => nil,
           "stalled_at" => nil,
-          "settled_at" => nil
+          "settled_at" => nil,
+          "completion" => %{
+            "structured_result_required" => true,
+            "outputs" => [%{"name" => "change_set", "kind" => "change_set"}],
+            "physical_export_required" => true
+          }
         }
       }
     }
@@ -290,6 +298,8 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert capabilities["conversational_takeover"]
     assert turn["phase"] == "blocked"
     assert turn["prompt_accepted_at"] == "2026-09-06T00:00:00.100Z"
+    assert turn["provider_turn_settled_at"] == "2026-09-06T00:00:00.750Z"
+    assert turn["completion"]["physical_export_required"]
 
     for {state, expected} <- [
           {"waiting_for_activity", :waiting_for_activity},

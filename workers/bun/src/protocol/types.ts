@@ -146,6 +146,7 @@ export type ExecutionTurnPhase =
   | "prompt_intent"
   | "waiting_for_activity"
   | "working"
+  | "awaiting_result"
   | "blocked"
   | "stalled"
   | "settled"
@@ -221,8 +222,16 @@ export interface ReconcileSession {
     prompt_intent_at: string | null;
     prompt_accepted_at: string | null;
     native_activity_at: string | null;
+    provider_turn_settled_at: string | null;
+    native_idle_at: string | null;
+    structured_result_received_at: string | null;
     stalled_at: string | null;
     settled_at: string | null;
+    completion: {
+      structured_result_required: true;
+      outputs: Array<{ name: string; kind: string }>;
+      physical_export_required: boolean;
+    };
     physical_process?: {
       mode: "prepared_process_adopted" | "fresh_process_fallback";
       source_action_id: string;

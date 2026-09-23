@@ -34,7 +34,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     "closed" => :closed,
     "unavailable" => :unavailable
   }
-  @turn_phases ~w(preparing prompt_intent waiting_for_activity working blocked stalled settled uncertain)
+  @turn_phases ~w(preparing prompt_intent waiting_for_activity working awaiting_result blocked stalled settled uncertain)
   @attention_categories ~w(needs_input needs_permission needs_authentication needs_confirmation blocked_external interactive_prompt unknown_interactive_block)
   @interaction_kinds ~w(confirmation text choice multiline_response conversational_intervention)
   @human_control_states ~w(intervention_pending human_control resuming_automation)
@@ -560,13 +560,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        "prompt_intent_at" => nil,
        "prompt_accepted_at" => nil,
        "native_activity_at" => nil,
+       "provider_turn_settled_at" => nil,
+       "native_idle_at" => nil,
+       "structured_result_received_at" => nil,
        "stalled_at" => nil,
-       "settled_at" => nil
+       "settled_at" => nil,
+       "completion" => nil
      }}
   end
 
   defp decode_turn(%{"phase" => phase} = value, _state) when phase in @turn_phases do
-    fields = ~w(prompt_intent_at prompt_accepted_at native_activity_at stalled_at settled_at)
+    fields =
+      ~w(prompt_intent_at prompt_accepted_at native_activity_at provider_turn_settled_at native_idle_at structured_result_received_at stalled_at settled_at)
 
     Enum.reduce_while(fields, {:ok, %{"phase" => phase}}, fn field, {:ok, decoded} ->
       case optional_timestamp(value[field], "session.turn.#{field}") do
@@ -581,12 +586,51 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       end
     end)
     |> case do
+      {:ok, decoded} -> decode_completion(value["completion"], decoded)
+      error -> error
+    end
+    |> case do
       {:ok, decoded} -> decode_physical_process(value["physical_process"], decoded)
       error -> error
     end
   end
 
   defp decode_turn(_, _state), do: error(:invalid_field, "session.turn")
+
+  defp decode_completion(nil, turn), do: {:ok, Map.put(turn, "completion", nil)}
+
+  defp decode_completion(
+         %{
+           "structured_result_required" => true,
+           "outputs" => outputs,
+           "physical_export_required" => physical_export_required
+         } = completion,
+         turn
+       )
+       when is_list(outputs) and is_boolean(physical_export_required) do
+    valid_outputs =
+      Enum.all?(outputs, fn
+        %{"name" => name, "kind" => kind}
+        when is_binary(name) and name != "" and is_binary(kind) and kind != "" ->
+          true
+
+        _ ->
+          false
+      end)
+
+    if valid_outputs do
+      {:ok,
+       Map.put(turn, "completion", %{
+         "structured_result_required" => true,
+         "outputs" => completion["outputs"],
+         "physical_export_required" => physical_export_required
+       })}
+    else
+      error(:invalid_field, "session.turn.completion.outputs")
+    end
+  end
+
+  defp decode_completion(_, _turn), do: error(:invalid_field, "session.turn.completion")
 
   defp decode_physical_process(nil, turn), do: {:ok, turn}
 

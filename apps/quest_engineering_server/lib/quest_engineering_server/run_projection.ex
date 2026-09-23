@@ -295,7 +295,7 @@ defmodule QuestEngineering.Server.RunProjection do
          _state,
          %WorkerDispatch{prompt_authorized_at: nil},
          %{
-           operational: %{recovery_kind: "human"},
+           operational: %{recovery_kind: recovery_kind},
            session: %{
              state: "waiting_for_human",
              native_identity: %{conversation_id: nil},
@@ -303,7 +303,8 @@ defmodule QuestEngineering.Server.RunProjection do
              turn: %{"prompt_intent_at" => nil}
            }
          }
-       ) do
+       )
+       when recovery_kind in ["initial", "human"] do
     %{
       can_retry: false,
       can_mark_failed: false,
@@ -312,7 +313,7 @@ defmodule QuestEngineering.Server.RunProjection do
       can_authorize_prompt: true,
       can_recover_pre_prompt: false,
       message:
-        "Recovery ready. Existing implementation retained. Native worker prepared. Authorization is required to begin Builder inference."
+        "Execution environment ready. Native worker prepared. Explicit authorization is required to begin Builder inference."
     }
   end
 

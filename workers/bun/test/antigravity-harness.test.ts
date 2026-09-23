@@ -638,7 +638,9 @@ test("semantic MCP completion is authoritative even while Herdr still projects w
     expect(outputs).toEqual({ change_set: { status: "ok" } });
     expect(value.host.agent.status).toBe("working");
     expect(events.some((event) => event.type === "prompt_accepted")).toBe(true);
-    expect(events.some((event) => event.type === "settled")).toBe(true);
+    expect(
+      events.some((event) => event.type === "structured_result_received"),
+    ).toBe(true);
     expect(value.host.promptOptions).toBeUndefined();
     expect(
       (
@@ -692,7 +694,7 @@ test("accepted prompt can become stalled and later work without uncertainty or r
         "prompt_accepted",
         "stalled",
         "native_activity",
-        "settled",
+        "structured_result_received",
       ]),
     );
     expect(value.host.promptCalls).toBe(1);

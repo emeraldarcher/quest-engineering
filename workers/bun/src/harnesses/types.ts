@@ -167,6 +167,8 @@ export interface PreAuthorizationActivity {
 export interface PromptEvidenceCursor {
   kind: "pi_transcript" | "pi_runtime_state" | "antigravity_log";
   cursor: number;
+  /** Guest-native provider completion baseline; present only for Pi/SBX. */
+  providerTurnCursor?: number;
   promptHash: string;
 }
 
@@ -186,8 +188,22 @@ export type HarnessEvent =
       observedAt: string;
       inspection: HarnessInspection;
     }
+  | {
+      type: "provider_turn_settled";
+      observedAt: string;
+      inspection: HarnessInspection;
+    }
+  | {
+      type: "native_idle";
+      observedAt: string;
+      inspection: HarnessInspection;
+    }
   | { type: "stalled"; observedAt: string; inspection: HarnessInspection }
-  | { type: "settled"; observedAt: string; inspection: HarnessInspection }
+  | {
+      type: "structured_result_received";
+      observedAt: string;
+      inspection: HarnessInspection;
+    }
   | { type: "inspection"; inspection: HarnessInspection }
   /** Backward-compatible synthetic-harness event: native work is active. */
   | { type: "running"; inspection: HarnessInspection }

@@ -9,6 +9,7 @@ import {
 } from "../../dispatch/registry.ts";
 import type {
   PreparedSbxPiExecution,
+  ProviderEligibilityFailure,
   SbxRunExecutionManager,
 } from "../../execution-environment/sbx-run.ts";
 import type { JsonValue } from "../../protocol/types.ts";
@@ -201,8 +202,8 @@ export class PiHarness implements AgentHarness {
             backendReadinessDetail(backend),
             discovered.diagnostics.join(" ") ||
               (discovered.authenticated
-                ? "Pi native extension integration and configured model scope are ready."
-                : "Pi has no authenticated models in its configured scope."),
+                ? "Pi native extension integration, runtime catalog, and optional QE model scope are ready."
+                : "Pi has no authenticated models in its runtime catalog or optional QE model scope."),
           ]
             .filter(Boolean)
             .join(" "),
@@ -438,6 +439,7 @@ export class PiHarness implements AgentHarness {
       ? {
           kind: "pi_runtime_state" as const,
           cursor: await sbx.activityCursor(),
+          providerTurnCursor: await sbx.providerTurnCursor(),
           promptHash: createHash("sha256").update(prompt).digest("hex"),
         }
       : await promptEvidenceCursor(
@@ -528,6 +530,7 @@ export class PiHarness implements AgentHarness {
       ? (persistedPromptEvidence(dispatch, "pi_runtime_state", prompt) ?? {
           kind: "pi_runtime_state" as const,
           cursor: await sbx.activityCursor(),
+          providerTurnCursor: await sbx.providerTurnCursor(),
           promptHash: createHash("sha256").update(prompt).digest("hex"),
         })
       : (persistedPromptEvidence(dispatch, "pi_transcript", prompt) ??
@@ -669,7 +672,9 @@ export class PiHarness implements AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<void> {
-    await this.sbxExecutions.get(lineage.lineageId)?.stopRelay();
+    // A durable semantic result may precede Pi's final agent_settled event.
+    // Keep mailbox and lifecycle relaying alive through that bounded unwind.
+    await this.sbxExecutions.get(lineage.lineageId)?.stopRelay(30_000);
     this.sbxExecutions.delete(lineage.lineageId);
     if (lineage.paneId) this.sbxExecutionsByPane.delete(lineage.paneId);
     if (!lineage.paneId) return;
@@ -795,7 +800,7 @@ export class PiHarness implements AgentHarness {
             ),
           });
           onEvent({
-            type: "settled",
+            type: "structured_result_received",
             observedAt: new Date().toISOString(),
             inspection: this.inspectionFor(lineage, current),
           });
@@ -835,10 +840,34 @@ export class PiHarness implements AgentHarness {
     onEvent: (event: HarnessEvent) => void,
     acceptedAt = dispatch.promptAcceptedAt,
   ): Promise<Record<string, JsonValue>> {
+    if (!dispatch.completionRequirement.structuredResultRequired)
+      throw new Error("Pi execution has no frozen structured-result contract.");
     let current = initial;
     let nativeActivity = Boolean(dispatch.nativeActivityAt);
+    let nativeIdle = Boolean(dispatch.nativeIdleAt);
+    let providerTurnSettled = Boolean(dispatch.providerTurnSettledAt);
     let stalled = Boolean(dispatch.stalledAt && !nativeActivity);
     let previousInspection = "";
+    const collectResult = async () => {
+      if (!(await structuredResultExists(dispatch.resultDirectory)))
+        return null;
+      const outputs = (await collectStepResult(dispatch)).envelope.outputs;
+      onEvent({
+        type: "structured_result_received",
+        observedAt: new Date().toISOString(),
+        inspection: this.inspectionFor(lineage, current),
+      });
+      return outputs;
+    };
+    const drainResult = async (durationMs: number) => {
+      const deadline = Date.now() + durationMs;
+      do {
+        const outputs = await collectResult();
+        if (outputs) return outputs;
+        if (Date.now() < deadline) await Bun.sleep(25);
+      } while (Date.now() < deadline);
+      return collectResult();
+    };
     if (!acceptedAt) {
       const resolution = await reconcileAmbiguousPrompt({
         observe: () =>
@@ -849,20 +878,20 @@ export class PiHarness implements AgentHarness {
         timeoutMs: promptActivityStallMs(this.config),
       });
       if (resolution === "settled") {
-        const outputs = (await collectStepResult(dispatch)).envelope.outputs;
-        const inspection = this.inspectionFor(lineage, current);
         acceptedAt = new Date().toISOString();
         onEvent({
           type: "prompt_accepted",
           acceptedAt,
-          inspection: waitingInspection(inspection, "waiting_for_activity"),
+          inspection: waitingInspection(
+            this.inspectionFor(lineage, current),
+            "waiting_for_activity",
+          ),
         });
-        onEvent({
-          type: "settled",
-          observedAt: new Date().toISOString(),
-          inspection,
-        });
-        return outputs;
+        const outputs = await collectResult();
+        if (outputs) return outputs;
+        throw new Error(
+          "Structured result disappeared during prompt reconciliation.",
+        );
       }
       if (!resolution)
         throw uncertainPrompt(
@@ -878,22 +907,18 @@ export class PiHarness implements AgentHarness {
         ),
       });
     }
+    const acceptedTimestamp = Date.parse(acceptedAt);
+    const resultDeadline =
+      (Number.isFinite(acceptedTimestamp) ? acceptedTimestamp : Date.now()) +
+      this.config.resultTimeoutMs;
     while (true) {
       if (this.stopped)
         throw new HerdrApiError(
           "controller_disconnected",
           "Worker detached while Herdr retained the Pi execution.",
         );
-      if (await structuredResultExists(dispatch.resultDirectory)) {
-        const outputs = (await collectStepResult(dispatch)).envelope.outputs;
-        const inspection = this.inspectionFor(lineage, current);
-        onEvent({
-          type: "settled",
-          observedAt: new Date().toISOString(),
-          inspection,
-        });
-        return outputs;
-      }
+      const completed = await collectResult();
+      if (completed) return completed;
       const observation = await this.nativeActivity(
         target,
         current,
@@ -902,6 +927,18 @@ export class PiHarness implements AgentHarness {
       );
       current = observation.agent;
       let inspection = this.inspectionFor(lineage, current);
+      const sbx = this.sbxExecutions.get(lineage.lineageId);
+      const providerSettledAt = sbx?.observedProviderTurnAfter(
+        evidence.providerTurnCursor ?? 0,
+      );
+      if (!providerTurnSettled && providerSettledAt) {
+        providerTurnSettled = true;
+        onEvent({
+          type: "provider_turn_settled",
+          observedAt: providerSettledAt,
+          inspection,
+        });
+      }
       const structuredActivity =
         readAttentionControl(lineage).structured.state === "requested";
       if (
@@ -909,6 +946,7 @@ export class PiHarness implements AgentHarness {
         (observation.activity.working || structuredActivity)
       ) {
         nativeActivity = true;
+        nativeIdle = false;
         const running = waitingInspection(inspection, "running");
         onEvent({
           type: "native_activity",
@@ -917,34 +955,42 @@ export class PiHarness implements AgentHarness {
           inspection: running,
         });
         previousInspection = inspectionFingerprint(running);
+      } else if (nativeIdle && current.status === "working") {
+        nativeIdle = false;
+        onEvent({
+          type: "native_activity",
+          observedAt: new Date().toISOString(),
+          inspection,
+        });
       }
       if (nativeActivity) {
         if (
-          ["idle", "done"].includes(current.status) &&
+          current.status === "idle" &&
           !interventionIsPending(inspection.intervention)
         ) {
-          const providerFailure = await this.sbxExecutions
-            .get(lineage.lineageId)
-            ?.providerEligibilityFailure();
-          if (providerFailure)
-            throw new OperationalExecutionError(
-              "The frozen ChatGPT account model was explicitly rejected by the provider. The Attempt is failed without model substitution or another provider turn; account-scoped eligibility was invalidated for metadata refresh.",
-              "operator_recovery_required",
-              providerFailure.code,
-              {
-                provider: providerFailure.provider,
-                model: providerFailure.model,
-                account_scope: providerFailure.accountScope,
-                observed_at: providerFailure.observedAt,
-              },
-            );
-          const outputs = (await collectStepResult(dispatch)).envelope.outputs;
-          onEvent({
-            type: "settled",
-            observedAt: new Date().toISOString(),
-            inspection,
-          });
-          return outputs;
+          if (!nativeIdle) {
+            const providerFailure = await sbx?.providerEligibilityFailure();
+            if (providerFailure) throw providerIneligible(providerFailure);
+            nativeIdle = true;
+            onEvent({
+              type: "native_idle",
+              observedAt: new Date().toISOString(),
+              inspection,
+            });
+          }
+        } else if (
+          current.status === "done" &&
+          !interventionIsPending(inspection.intervention)
+        ) {
+          const providerFailure = await sbx?.providerEligibilityFailure();
+          if (providerFailure) throw providerIneligible(providerFailure);
+          const racingResult = await drainResult(250);
+          if (racingResult) return racingResult;
+          throw new OperationalExecutionError(
+            "The native Pi session terminated before its required structured Step result was accepted.",
+            "operator_recovery_required",
+            "native_session_terminated_before_result",
+          );
         }
         const fingerprint = inspectionFingerprint(inspection);
         if (fingerprint !== previousInspection) {
@@ -972,6 +1018,15 @@ export class PiHarness implements AgentHarness {
             previousInspection = fingerprint;
           }
         }
+      }
+      if (Date.now() >= resultDeadline) {
+        const racingResult = await drainResult(250);
+        if (racingResult) return racingResult;
+        throw new OperationalExecutionError(
+          "The bounded QE structured-result recovery deadline expired before a valid result arrived.",
+          "operator_recovery_required",
+          "structured_result_timeout",
+        );
       }
       await Bun.sleep(100);
     }
@@ -1437,4 +1492,20 @@ function interventionIsPending(
   intervention: HumanInterventionLifecycle | null,
 ): boolean {
   return Boolean(intervention && intervention.state !== "resumed");
+}
+
+function providerIneligible(
+  failure: ProviderEligibilityFailure,
+): OperationalExecutionError {
+  return new OperationalExecutionError(
+    "The frozen ChatGPT account model was explicitly rejected by the provider. The Attempt is failed without model substitution or another provider turn; exact account/auth/profile/model availability is now verified unavailable until direct recheck, expiry, or generation change.",
+    "operator_recovery_required",
+    failure.code,
+    {
+      provider: failure.provider,
+      model: failure.model,
+      account_scope: failure.accountScope,
+      observed_at: failure.observedAt,
+    },
+  );
 }

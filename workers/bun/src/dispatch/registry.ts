@@ -42,17 +42,29 @@ export interface HarnessLineage {
   nativeSession: NativeSessionRef | null;
 }
 
+export interface StructuredCompletionRequirement {
+  /** Every QE Action requires one nonce-bound semantic result, including `{}`. */
+  structuredResultRequired: true;
+  outputs: Array<{ name: string; kind: string }>;
+  physicalExportRequired: boolean;
+}
+
 export interface DispatchRecord {
   action: ExecuteAction;
   state: LocalDispatchState;
   lineageId: string | null;
   resultNonce: string;
   resultDirectory: string;
+  /** Frozen from the typed Step output contract when the Action is accepted. */
+  completionRequirement: StructuredCompletionRequirement;
   outputs: Record<string, JsonValue> | null;
   failure: Record<string, JsonValue> | null;
   promptIntentAt: string | null;
   promptAcceptedAt: string | null;
   nativeActivityAt: string | null;
+  providerTurnSettledAt: string | null;
+  nativeIdleAt: string | null;
+  structuredResultReceivedAt: string | null;
   stalledAt: string | null;
   settledAt: string | null;
   promptEvidence: Record<string, JsonValue> | null;
@@ -111,11 +123,15 @@ interface DispatchRow {
   lineage_id: string | null;
   result_nonce: string;
   result_directory: string;
+  completion_requirement_json: string | null;
   outputs_json: string | null;
   failure_json: string | null;
   prompt_intent_at: string | null;
   prompt_accepted_at: string | null;
   native_activity_at: string | null;
+  provider_turn_settled_at: string | null;
+  native_idle_at: string | null;
+  structured_result_received_at: string | null;
   stalled_at: string | null;
   settled_at: string | null;
   prompt_evidence_json: string | null;
@@ -269,8 +285,8 @@ export class DispatchRegistry {
         );
         this.db
           .query(`INSERT INTO dispatches
-        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,completion_requirement_json,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(
             action.action_id,
             action.run_id,
@@ -283,6 +299,7 @@ export class DispatchRegistry {
             lineageId,
             resultNonce,
             resultDirectory,
+            JSON.stringify(structuredCompletionRequirement(action)),
             now(),
             now(),
           );
@@ -408,8 +425,8 @@ export class DispatchRegistry {
         const actionJson = canonicalJson(input.action);
         this.db
           .query(`INSERT INTO dispatches
-        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,prompt_intent_at,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,completion_requirement_json,prompt_intent_at,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(
             input.action.action_id,
             input.action.run_id,
@@ -422,6 +439,7 @@ export class DispatchRegistry {
             lineage.lineageId,
             input.resultNonce,
             input.resultDirectory,
+            JSON.stringify(structuredCompletionRequirement(input.action)),
             now(),
             now(),
             now(),
@@ -885,7 +903,31 @@ export class DispatchRegistry {
   markNativeActivity(actionId: string, observedAt = now()): void {
     this.db
       .query(
-        "UPDATE dispatches SET native_activity_at=COALESCE(native_activity_at,?),state=CASE WHEN state='accepted' THEN 'running' ELSE state END,updated_at=? WHERE action_id=?",
+        "UPDATE dispatches SET native_activity_at=COALESCE(native_activity_at,?),native_idle_at=NULL,state=CASE WHEN state='accepted' THEN 'running' ELSE state END,updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(observedAt, now(), actionId);
+  }
+
+  markProviderTurnSettled(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET provider_turn_settled_at=COALESCE(provider_turn_settled_at,?),updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(observedAt, now(), actionId);
+  }
+
+  markNativeIdle(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET native_idle_at=?,updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(observedAt, now(), actionId);
+  }
+
+  markStructuredResultReceived(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET structured_result_received_at=COALESCE(structured_result_received_at,?),updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
       )
       .run(observedAt, now(), actionId);
   }
@@ -1121,11 +1163,15 @@ export class DispatchRegistry {
         lineage_id TEXT REFERENCES provider_lineages(lineage_id),
         result_nonce TEXT NOT NULL,
         result_directory TEXT NOT NULL,
+        completion_requirement_json TEXT,
         outputs_json TEXT,
         failure_json TEXT,
         prompt_intent_at TEXT,
         prompt_accepted_at TEXT,
         native_activity_at TEXT,
+        provider_turn_settled_at TEXT,
+        native_idle_at TEXT,
+        structured_result_received_at TEXT,
         stalled_at TEXT,
         settled_at TEXT,
         prompt_evidence_json TEXT,
@@ -1177,8 +1223,12 @@ export class DispatchRegistry {
     this.ensureColumn("provider_lineages", "attention_json", "TEXT");
     this.ensureColumn("provider_lineages", "intervention_json", "TEXT");
     this.ensureColumn("provider_lineages", "herdr_session_incarnation", "TEXT");
+    this.ensureColumn("dispatches", "completion_requirement_json", "TEXT");
     this.ensureColumn("dispatches", "prompt_accepted_at", "TEXT");
     this.ensureColumn("dispatches", "native_activity_at", "TEXT");
+    this.ensureColumn("dispatches", "provider_turn_settled_at", "TEXT");
+    this.ensureColumn("dispatches", "native_idle_at", "TEXT");
+    this.ensureColumn("dispatches", "structured_result_received_at", "TEXT");
     this.ensureColumn("dispatches", "stalled_at", "TEXT");
     this.ensureColumn("dispatches", "settled_at", "TEXT");
     this.ensureColumn("dispatches", "prompt_evidence_json", "TEXT");
@@ -1207,6 +1257,24 @@ export class DispatchRegistry {
         timestamp,
         timestamp,
       );
+    const completionRows = this.db
+      .query(
+        "SELECT action_id,action_json FROM dispatches WHERE completion_requirement_json IS NULL",
+      )
+      .all() as Array<{ action_id: string; action_json: string }>;
+    for (const row of completionRows)
+      this.db
+        .query(
+          "UPDATE dispatches SET completion_requirement_json=? WHERE action_id=? AND completion_requirement_json IS NULL",
+        )
+        .run(
+          JSON.stringify(
+            structuredCompletionRequirement(
+              JSON.parse(row.action_json) as ExecuteAction,
+            ),
+          ),
+          row.action_id,
+        );
     const capabilityRows = this.db
       .query(
         "SELECT lineage_id,harness_kind,capabilities_json FROM provider_lineages",
@@ -1303,11 +1371,15 @@ export class DispatchRegistry {
         lineage_id TEXT REFERENCES provider_lineages(lineage_id),
         result_nonce TEXT NOT NULL,
         result_directory TEXT NOT NULL,
+        completion_requirement_json TEXT,
         outputs_json TEXT,
         failure_json TEXT,
         prompt_intent_at TEXT,
         prompt_accepted_at TEXT,
         native_activity_at TEXT,
+        provider_turn_settled_at TEXT,
+        native_idle_at TEXT,
+        structured_result_received_at TEXT,
         stalled_at TEXT,
         settled_at TEXT,
         prompt_evidence_json TEXT,
@@ -1346,6 +1418,13 @@ function mapDispatch(row: DispatchRow): DispatchRecord {
     lineageId: row.lineage_id,
     resultNonce: row.result_nonce,
     resultDirectory: row.result_directory,
+    completionRequirement: row.completion_requirement_json
+      ? (JSON.parse(
+          row.completion_requirement_json,
+        ) as StructuredCompletionRequirement)
+      : structuredCompletionRequirement(
+          JSON.parse(row.action_json) as ExecuteAction,
+        ),
     outputs: row.outputs_json
       ? (JSON.parse(row.outputs_json) as Record<string, JsonValue>)
       : null,
@@ -1355,6 +1434,9 @@ function mapDispatch(row: DispatchRow): DispatchRecord {
     promptIntentAt: row.prompt_intent_at,
     promptAcceptedAt: row.prompt_accepted_at,
     nativeActivityAt: row.native_activity_at,
+    providerTurnSettledAt: row.provider_turn_settled_at,
+    nativeIdleAt: row.native_idle_at,
+    structuredResultReceivedAt: row.structured_result_received_at,
     stalledAt: row.stalled_at,
     settledAt: row.settled_at,
     promptEvidence: row.prompt_evidence_json
@@ -1424,6 +1506,7 @@ export type TurnLifecyclePhase =
   | "prompt_intent"
   | "waiting_for_activity"
   | "working"
+  | "awaiting_result"
   | "blocked"
   | "stalled"
   | "settled"
@@ -1450,6 +1533,9 @@ export function turnLifecycle(
   promptIntentAt: string | null;
   promptAcceptedAt: string | null;
   nativeActivityAt: string | null;
+  providerTurnSettledAt: string | null;
+  nativeIdleAt: string | null;
+  structuredResultReceivedAt: string | null;
   stalledAt: string | null;
   settledAt: string | null;
 } {
@@ -1462,22 +1548,50 @@ export function turnLifecycle(
         ? "uncertain"
         : attention || sessionState === "waiting_for_human"
           ? "blocked"
-          : dispatch.nativeActivityAt
-            ? "working"
-            : sessionState === "stalled" || dispatch.stalledAt
-              ? "stalled"
-              : dispatch.promptAcceptedAt
-                ? "waiting_for_activity"
-                : dispatch.promptIntentAt
-                  ? "prompt_intent"
-                  : "preparing";
+          : dispatch.nativeIdleAt
+            ? "awaiting_result"
+            : dispatch.nativeActivityAt
+              ? "working"
+              : sessionState === "stalled" || dispatch.stalledAt
+                ? "stalled"
+                : dispatch.promptAcceptedAt
+                  ? "waiting_for_activity"
+                  : dispatch.promptIntentAt
+                    ? "prompt_intent"
+                    : "preparing";
   return {
     phase,
     promptIntentAt: dispatch.promptIntentAt,
     promptAcceptedAt: dispatch.promptAcceptedAt,
     nativeActivityAt: dispatch.nativeActivityAt,
+    providerTurnSettledAt: dispatch.providerTurnSettledAt,
+    nativeIdleAt: dispatch.nativeIdleAt,
+    structuredResultReceivedAt: dispatch.structuredResultReceivedAt,
     stalledAt: dispatch.stalledAt,
     settledAt: dispatch.settledAt,
+  };
+}
+
+export function structuredCompletionRequirement(
+  action: ExecuteAction,
+): StructuredCompletionRequirement {
+  const outputs = action.execution.work.declared_outputs.map((output) => ({
+    name: output.name,
+    kind: output.kind,
+  }));
+  if (
+    JSON.stringify(outputs.map((output) => output.name)) !==
+    JSON.stringify(action.declared_outputs)
+  )
+    throw new Error(
+      `Action ${action.action_id} has inconsistent typed output declarations.`,
+    );
+  return {
+    structuredResultRequired: true,
+    outputs,
+    physicalExportRequired: outputs.some(
+      (output) => output.kind === "change_set",
+    ),
   };
 }
 

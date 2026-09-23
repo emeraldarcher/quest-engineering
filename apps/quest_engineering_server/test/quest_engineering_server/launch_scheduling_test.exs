@@ -924,6 +924,93 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert Enum.map(replay_projection.operational_recovery, & &1.epoch_number) == [0, 1]
   end
 
+  test "initial execution requires explicit authorization after native preparation", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-staged-initial", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "staged-initial-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+    assert dispatch.operational_recovery.authorization_kind == "initial"
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: Ecto.UUID.generate(),
+               action_id: dispatch.action_id,
+               run_id: launched.run_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id,
+               member_key: dispatch.execution.performer.member_key,
+               harness_kind: "pi",
+               harness_display_name: "Pi",
+               state: :waiting_for_human,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: %{"supports_observation" => true, "supports_takeover" => true},
+               native_session_id: nil,
+               attention: %{
+                 "attention_id" =>
+                   "qe-prompt-authorization-#{dispatch.execution.identity.attempt_id}",
+                 "category" => "needs_confirmation",
+                 "message" => "Initial execution environment ready."
+               },
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    assert {:ok, staged_projection} = RunProjection.get(launched.run_id)
+    [staged_step] = staged_projection.steps
+    assert staged_step.attempt.operational.recovery_kind == "initial"
+    assert staged_step.recovery.can_authorize_prompt
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, authorization} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id
+             )
+
+    refute authorization.idempotent_replay?
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "authorize_dispatch_prompt",
+                      "action_id" => action_id
+                    }}
+
+    assert action_id == dispatch.action_id
+    persisted = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert persisted.prompt_authorization_request_id == request_id
+    assert persisted.prompt_authorized_at
+  end
+
   test "blocked fresh recovery retires immutably, appends one epoch, and stages paid inference",
        context do
     fixture = product_fixture()

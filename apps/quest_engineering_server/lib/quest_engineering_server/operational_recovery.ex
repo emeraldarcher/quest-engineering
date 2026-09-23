@@ -536,7 +536,7 @@ defmodule QuestEngineering.Server.OperationalRecovery do
     end
   end
 
-  @doc "Opens the paid-inference gate for one fully prepared human fresh recovery Attempt."
+  @doc "Opens the paid-inference gate for one fully prepared initial or human recovery Attempt."
   def authorize_prompt(run_id, occurrence_id, attempt_id, request_id) do
     Repo.transaction(fn ->
       persist_prompt_authorization(run_id, occurrence_id, attempt_id, request_id)
@@ -603,12 +603,12 @@ defmodule QuestEngineering.Server.OperationalRecovery do
   end
 
   defp prompt_authorization_ready?(epoch, dispatch, session) do
-    human_recovery_epoch?(epoch) and promptable_dispatch?(dispatch) and
+    prompt_authorization_epoch?(epoch) and promptable_dispatch?(dispatch) and
       promptable_session?(session)
   end
 
-  defp human_recovery_epoch?(epoch) do
-    epoch && epoch.authorization_kind == "human" &&
+  defp prompt_authorization_epoch?(epoch) do
+    epoch && epoch.authorization_kind in ["initial", "human"] &&
       epoch.continuation_mode in ["fresh", "retained"]
   end
 
@@ -1022,7 +1022,7 @@ defmodule QuestEngineering.Server.OperationalRecovery do
 
   defp pre_prompt_turn?(turn) when is_map(turn) do
     Enum.all?(
-      ~w(prompt_intent_at prompt_accepted_at native_activity_at stalled_at settled_at),
+      ~w(prompt_intent_at prompt_accepted_at native_activity_at provider_turn_settled_at native_idle_at structured_result_received_at stalled_at settled_at),
       &is_nil(turn[&1])
     )
   end

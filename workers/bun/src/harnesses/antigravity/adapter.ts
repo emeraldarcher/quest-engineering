@@ -1014,7 +1014,7 @@ export class AntigravityHarness implements AgentHarness {
             ),
           });
           onEvent({
-            type: "settled",
+            type: "structured_result_received",
             observedAt: this.now(),
             inspection: this.inspectionFor(lineage, current),
           });
@@ -1075,7 +1075,7 @@ export class AntigravityHarness implements AgentHarness {
           inspection: withState(inspection, "waiting_for_activity"),
         });
         onEvent({
-          type: "settled",
+          type: "structured_result_received",
           observedAt: this.now(),
           inspection,
         });
@@ -1110,7 +1110,7 @@ export class AntigravityHarness implements AgentHarness {
       if (await structuredResultExists(dispatch.resultDirectory)) {
         const outputs = (await collectStepResult(dispatch)).envelope.outputs;
         onEvent({
-          type: "settled",
+          type: "structured_result_received",
           observedAt: this.now(),
           inspection: this.inspectionFor(lineage, current),
         });

@@ -31,6 +31,7 @@ defmodule QuestEngineering.Server.ExecutionStatus do
   defp active_step_state(_dispatch, _scheduled, "blocked"), do: "blocked"
   defp active_step_state(_dispatch, _scheduled, "stalled"), do: "stalled"
   defp active_step_state(_dispatch, _scheduled, "working"), do: "running"
+  defp active_step_state(_dispatch, _scheduled, "awaiting_result"), do: "running"
 
   defp active_step_state(_dispatch, _scheduled, phase)
        when phase in ["prompt_intent", "waiting_for_activity"],

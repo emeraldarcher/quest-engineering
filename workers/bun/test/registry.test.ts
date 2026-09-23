@@ -104,6 +104,11 @@ describe("durable dispatch registry", () => {
     const { root, database } = await fixture();
     const registry = new DispatchRegistry(database, root);
     const dispatch = registry.accept(action()).dispatch;
+    expect(dispatch.completionRequirement).toEqual({
+      structuredResultRequired: true,
+      outputs: [{ name: "change_set", kind: "change_set" }],
+      physicalExportRequired: true,
+    });
 
     registry.markPromptIntent(dispatch.action.action_id);
     registry.recordPromptEvidence(dispatch.action.action_id, {
@@ -135,6 +140,17 @@ describe("durable dispatch registry", () => {
     expect(turnLifecycle(registry.get(dispatch.action.action_id)).phase).toBe(
       "working",
     );
+    registry.markProviderTurnSettled(
+      dispatch.action.action_id,
+      "2026-09-16T00:00:32.000Z",
+    );
+    registry.markNativeIdle(
+      dispatch.action.action_id,
+      "2026-09-16T00:00:33.000Z",
+    );
+    expect(turnLifecycle(registry.get(dispatch.action.action_id)).phase).toBe(
+      "awaiting_result",
+    );
     expect(
       turnLifecycle(registry.get(dispatch.action.action_id), "unavailable", {
         attentionId: "native-step-18",
@@ -148,6 +164,10 @@ describe("durable dispatch registry", () => {
       }).phase,
     ).toBe("blocked");
 
+    registry.markStructuredResultReceived(
+      dispatch.action.action_id,
+      "2026-09-16T00:00:34.000Z",
+    );
     const completed = registry.complete(dispatch.action.action_id, {
       change_set: {},
     });
@@ -157,7 +177,12 @@ describe("durable dispatch registry", () => {
       cursor: 42,
       promptHash: "hash",
     });
-    expect(completed.settledAt).not.toBeNull();
+    expect(completed).toMatchObject({
+      providerTurnSettledAt: "2026-09-16T00:00:32.000Z",
+      nativeIdleAt: "2026-09-16T00:00:33.000Z",
+      structuredResultReceivedAt: "2026-09-16T00:00:34.000Z",
+      settledAt: expect.any(String),
+    });
 
     const failedDispatch = registry.accept(
       action({ action_id: "action-failed", attempt_id: "attempt-failed" }),

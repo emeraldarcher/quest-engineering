@@ -16,6 +16,9 @@ defmodule QuestEngineering.Server.ExecutionStatusTest do
     assert ExecutionStatus.step_state(:dispatched, %{}, dispatch, session("working")) ==
              "running"
 
+    assert ExecutionStatus.step_state(:dispatched, %{}, dispatch, session("awaiting_result")) ==
+             "running"
+
     assert ExecutionStatus.step_state(:dispatched, %{}, dispatch, session("blocked")) ==
              "blocked"
 

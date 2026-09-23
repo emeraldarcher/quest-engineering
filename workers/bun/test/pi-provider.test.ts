@@ -743,6 +743,140 @@ test("agent settlement while intervention is pending does not collect or release
   registry.close();
 });
 
+test("native Pi idle remains awaiting-result until a delayed structured result arrives", async () => {
+  const { registry, host, provider } = await fixture();
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("idle");
+  const dispatch = registry.get(accepted.action.action_id);
+  const events: HarnessEvent[] = [];
+  let resolved = false;
+  const operation = provider
+    .sendInputAndCollect(
+      dispatch,
+      { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+      (event) => events.push(event),
+    )
+    .then((outputs) => {
+      resolved = true;
+      return outputs;
+    });
+
+  await waitFor(() => events.some((event) => event.type === "native_idle"));
+  await Bun.sleep(150);
+  expect(resolved).toBe(false);
+  expect(
+    events.some((event) => event.type === "structured_result_received"),
+  ).toBe(false);
+
+  await writeResult(dispatch, "delayed-idle-result");
+  expect(await operation).toEqual({ change_set: { version: 1 } });
+  expect(
+    events.find((event) => event.type === "native_idle")?.inspection.state,
+  ).toBe("retained");
+  expect(events.at(-1)?.type).toBe("structured_result_received");
+  registry.close();
+});
+
+test("native Pi process death before a structured result is an explicit terminal cause", async () => {
+  const { registry, host, provider } = await fixture();
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("done");
+  const dispatch = registry.get(accepted.action.action_id);
+
+  await expect(
+    provider.sendInputAndCollect(
+      dispatch,
+      { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+      () => undefined,
+    ),
+  ).rejects.toMatchObject({
+    code: "native_session_terminated_before_result",
+    classification: "operator_recovery_required",
+  });
+  registry.close();
+});
+
+test("bounded structured-result timeout performs a final drain and accepts a racing result", async () => {
+  const { root, registry, host } = await fixture();
+  const extension = join(
+    import.meta.dir,
+    "..",
+    "src",
+    "harnesses",
+    "pi",
+    "step-result-extension.ts",
+  );
+  const provider = new PiHarness(
+    host,
+    { ...config(root), resultTimeoutMs: 200 },
+    { integrationPath: extension, resultExtensionPath: extension },
+  );
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("idle");
+  const dispatch = registry.get(accepted.action.action_id);
+  const operation = provider.sendInputAndCollect(
+    dispatch,
+    { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+    () => undefined,
+  );
+
+  await Bun.sleep(275);
+  await writeResult(dispatch, "final-drain-result");
+  expect(await operation).toEqual({ change_set: { version: 1 } });
+  registry.close();
+});
+
+test("bounded structured-result timeout fails only after the final drain", async () => {
+  const { root, registry, host } = await fixture();
+  const extension = join(
+    import.meta.dir,
+    "..",
+    "src",
+    "harnesses",
+    "pi",
+    "step-result-extension.ts",
+  );
+  const provider = new PiHarness(
+    host,
+    { ...config(root), resultTimeoutMs: 100 },
+    { integrationPath: extension, resultExtensionPath: extension },
+  );
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("idle");
+
+  await expect(
+    provider.sendInputAndCollect(
+      registry.get(accepted.action.action_id),
+      { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+      () => undefined,
+    ),
+  ).rejects.toMatchObject({
+    code: "structured_result_timeout",
+    classification: "operator_recovery_required",
+  });
+  registry.close();
+});
+
 test("Worker restart restores Herdr-only blocked attention from recovered state", async () => {
   const { root, registry, host } = await fixture();
   const dispatch = registry.accept(action()).dispatch;
@@ -1217,6 +1351,30 @@ class FakeHost implements TerminalSessionBackend {
       cwd: this.cwd,
     };
   }
+}
+
+async function writeResult(
+  dispatch: ReturnType<DispatchRegistry["get"]>,
+  callId: string,
+): Promise<void> {
+  await writeStepResultAtomic(dispatch.resultDirectory, callId, {
+    protocolVersion: 1,
+    kind: "quest_engineering_step_result",
+    workerId: dispatch.action.worker_id,
+    actionId: dispatch.action.action_id,
+    runId: dispatch.action.run_id,
+    occurrenceId: dispatch.action.occurrence_id,
+    attemptId: dispatch.action.attempt_id,
+    nonce: dispatch.resultNonce,
+    createdAt: new Date().toISOString(),
+    outputs: { change_set: { version: 1 } },
+  });
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate() && Date.now() < deadline) await Bun.sleep(10);
+  if (!predicate()) throw new Error("condition was not observed");
 }
 
 function readyBackend(harnessKind: string): SessionBackendReadiness {
