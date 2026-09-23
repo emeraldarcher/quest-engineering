@@ -399,6 +399,7 @@ export interface RunAttempt {
   outputs: ArtifactRef[];
   output_produced: boolean;
   resolution: "retried" | "marked_failed" | "cancelled" | null;
+  can_cancel?: boolean;
   cancellation?: {
     state: "requested" | "cancelled";
     request_id: string;
@@ -463,6 +464,7 @@ export interface RunStep {
     can_mark_failed: boolean;
     can_human_retry?: boolean;
     can_retry_fresh?: boolean;
+    can_authorize_prompt?: boolean;
     retained_session_available?: boolean;
     classification?: string;
     epoch_exhausted?: boolean;

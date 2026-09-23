@@ -42,6 +42,20 @@ export type BuildingId =
   | "quest-board"
   | "war-room"
   | "work-area";
+export interface ExecutionAttemptIdentity {
+  runId: string;
+  occurrenceId: string;
+  attemptId: string;
+}
+
+export interface ExecutionCommandState {
+  operation: "authorize" | "cancel";
+  identity: ExecutionAttemptIdentity;
+  requestId: string;
+  status: "pending" | "error";
+  error: ApiError | null;
+}
+
 export interface ProductState {
   classes: ClassDefinition[];
   classCatalog: ClassDefinition[];
@@ -83,6 +97,7 @@ export function createAppStore(
   );
   const loading = writable(true);
   const error = writable<ApiError | null>(null);
+  const executionCommands = writable<ExecutionCommandState[]>([]);
   const realtimeStatus = writable<RealtimeStatus>(
     fixture?.realtimeStatus ?? "disconnected",
   );
@@ -486,6 +501,222 @@ export function createAppStore(
     );
   }
 
+  function executionStep(identity: ExecutionAttemptIdentity) {
+    const projection = get(selectedRun);
+    if (!projection || projection.id !== identity.runId) return null;
+    const step = projection.steps.find(
+      (item) => item.occurrence_id === identity.occurrenceId,
+    );
+    return step?.attempt?.id === identity.attemptId ? step : null;
+  }
+
+  function executionActionAvailable(
+    operation: ExecutionCommandState["operation"],
+    identity: ExecutionAttemptIdentity,
+  ): boolean {
+    const step = executionStep(identity);
+    if (!step) return false;
+    return operation === "authorize"
+      ? step.recovery?.can_authorize_prompt === true
+      : step.attempt?.can_cancel === true;
+  }
+
+  function sameExecutionCommand(
+    value: ExecutionCommandState,
+    operation: ExecutionCommandState["operation"],
+    identity: ExecutionAttemptIdentity,
+    requestId?: string,
+  ): boolean {
+    return Boolean(
+      value.operation === operation &&
+        value.identity.runId === identity.runId &&
+        value.identity.occurrenceId === identity.occurrenceId &&
+        value.identity.attemptId === identity.attemptId &&
+        (requestId === undefined || value.requestId === requestId),
+    );
+  }
+
+  function hasExecutionCommand(
+    operation: ExecutionCommandState["operation"],
+    identity: ExecutionAttemptIdentity,
+    requestId: string,
+  ): boolean {
+    return get(executionCommands).some((value) =>
+      sameExecutionCommand(value, operation, identity, requestId),
+    );
+  }
+
+  function beginExecutionCommand(
+    operation: ExecutionCommandState["operation"],
+    identity: ExecutionAttemptIdentity,
+  ): { requestId: string; projection: RunProjection } | null {
+    const active = get(executionCommands).find(
+      (value) =>
+        value.identity.runId === identity.runId &&
+        value.identity.occurrenceId === identity.occurrenceId &&
+        value.identity.attemptId === identity.attemptId,
+    );
+    if (active?.status === "pending") return null;
+    const projection = get(selectedRun);
+    const requestId = crypto.randomUUID();
+    if (!projection || !executionActionAvailable(operation, identity)) {
+      putExecutionCommand({
+        operation,
+        identity,
+        requestId,
+        status: "error",
+        error: new ApiError(
+          "stale_execution_attempt",
+          "The current Attempt changed. Review its latest state before acting.",
+        ),
+      });
+      return null;
+    }
+    error.set(null);
+    putExecutionCommand({
+      operation,
+      identity,
+      requestId,
+      status: "pending",
+      error: null,
+    });
+    return { requestId, projection };
+  }
+
+  function putExecutionCommand(command: ExecutionCommandState) {
+    executionCommands.update((values) => [
+      ...values.filter(
+        (value) =>
+          value.identity.runId !== command.identity.runId ||
+          value.identity.occurrenceId !== command.identity.occurrenceId ||
+          value.identity.attemptId !== command.identity.attemptId,
+      ),
+      command,
+    ]);
+  }
+
+  function removeExecutionCommand(
+    operation: ExecutionCommandState["operation"],
+    identity: ExecutionAttemptIdentity,
+    requestId: string,
+  ) {
+    executionCommands.update((values) =>
+      values.filter(
+        (value) => !sameExecutionCommand(value, operation, identity, requestId),
+      ),
+    );
+  }
+
+  function acceptExecutionProjection(
+    projection: RunProjection,
+    startedWith: RunProjection,
+  ): boolean {
+    const current = get(selectedRun);
+    if (!current || current.id !== projection.id || current !== startedWith)
+      return false;
+    selectedRun.set(projection);
+    activeRunTracker?.seed(projection);
+    observeAttention(projection);
+    return true;
+  }
+
+  async function reconcileExecutionProjection(runId: string) {
+    try {
+      const projection = await api.getRun(runId);
+      if (get(selectedRun)?.id === runId) {
+        selectedRun.set(projection);
+        activeRunTracker?.seed(projection);
+        observeAttention(projection);
+      }
+      return projection;
+    } catch {
+      // Mutation errors remain operation-scoped; realtime may still reconcile.
+      return null;
+    }
+  }
+
+  async function failExecutionCommand(
+    operation: ExecutionCommandState["operation"],
+    identity: ExecutionAttemptIdentity,
+    requestId: string,
+    cause: unknown,
+  ) {
+    await reconcileExecutionProjection(identity.runId);
+    if (!hasExecutionCommand(operation, identity, requestId)) return;
+    if (!executionActionAvailable(operation, identity)) {
+      removeExecutionCommand(operation, identity, requestId);
+      return;
+    }
+    putExecutionCommand({
+      operation,
+      identity,
+      requestId,
+      status: "error",
+      error: toApiError(cause),
+    });
+  }
+
+  async function authorizePrompt(identity: ExecutionAttemptIdentity) {
+    const started = beginExecutionCommand("authorize", identity);
+    if (!started) return false;
+    try {
+      const projection = await api.authorizeExecutionPrompt(
+        identity.runId,
+        identity.occurrenceId,
+        identity.attemptId,
+        started.requestId,
+      );
+      if (!acceptExecutionProjection(projection, started.projection))
+        await reconcileExecutionProjection(identity.runId);
+      if (hasExecutionCommand("authorize", identity, started.requestId))
+        removeExecutionCommand("authorize", identity, started.requestId);
+      error.set(null);
+      return true;
+    } catch (cause) {
+      await failExecutionCommand(
+        "authorize",
+        identity,
+        started.requestId,
+        cause,
+      );
+      return false;
+    }
+  }
+
+  async function cancelExecution(identity: ExecutionAttemptIdentity) {
+    const started = beginExecutionCommand("cancel", identity);
+    if (!started) return null;
+    try {
+      const result = await api.cancelExecutionAttempt(
+        identity.runId,
+        identity.occurrenceId,
+        identity.attemptId,
+        started.requestId,
+      );
+      if (!acceptExecutionProjection(result.run, started.projection))
+        await reconcileExecutionProjection(identity.runId);
+      if (hasExecutionCommand("cancel", identity, started.requestId))
+        removeExecutionCommand("cancel", identity, started.requestId);
+      error.set(null);
+      return result.cancellation;
+    } catch (cause) {
+      await failExecutionCommand("cancel", identity, started.requestId, cause);
+      return null;
+    }
+  }
+
+  function clearExecutionCommand(identity: ExecutionAttemptIdentity) {
+    executionCommands.update((values) =>
+      values.filter(
+        (value) =>
+          value.status !== "error" ||
+          value.identity.runId !== identity.runId ||
+          value.identity.occurrenceId !== identity.occurrenceId ||
+          value.identity.attemptId !== identity.attemptId,
+      ),
+    );
+  }
+
   async function retryExecution(runId: string, occurrenceId: string) {
     const result = await command(() => api.retryExecution(runId, occurrenceId));
     if (result) await invalidateRun(runId);
@@ -548,6 +779,7 @@ export function createAppStore(
     sessionFocus,
     loading,
     error,
+    executionCommands,
     realtimeStatus,
     serverReachable,
     bootstrapRunning,
@@ -564,6 +796,9 @@ export function createAppStore(
     openLiveSession,
     focusAttention,
     dismissAttention,
+    authorizePrompt,
+    cancelExecution,
+    clearExecutionCommand,
     retryExecution,
     recoverExecutionFresh,
     markExecutionFailed,

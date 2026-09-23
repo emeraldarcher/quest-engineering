@@ -5,6 +5,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
   alias QuestEngineering.Server.DeliveryEligibility
   alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.ExecutionStatus
   alias QuestEngineering.Server.OperationalRecovery
@@ -469,6 +470,9 @@ defmodule QuestEngineering.Server.RunProjection do
       outputs: outputs,
       output_produced: outputs != [],
       resolution: attempt_resolution(facts.dispatch),
+      can_cancel:
+        attempt.id == occurrence.current_attempt_id and
+          ExecutionCancellation.cancellable?(facts.dispatch),
       cancellation: cancellation(facts.dispatch),
       retry_of_attempt_id: previous_attempt_id(occurrence.attempts, attempt.number),
       operational: operational_attempt(facts.attribution, facts.epoch),

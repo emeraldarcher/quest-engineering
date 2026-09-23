@@ -159,6 +159,42 @@ test("War Room sends anonymous and persisted-candidate draft previews without pe
   ]);
 });
 
+test("prompt authorization targets one exact Attempt and preserves its request identity", async () => {
+  const fixture = createFixture("work-yard-running");
+  if (!fixture?.selectedRunId) throw new Error("Expected running fixture");
+  const run = fixture.runs[fixture.selectedRunId];
+  const step = run?.steps.at(-1);
+  if (!run || !step?.attempt) throw new Error("Expected current Attempt");
+  step.recovery = null;
+
+  let requestPath = "";
+  let request: RequestInit | undefined;
+  globalThis.fetch = mock(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestPath = String(input);
+      request = init;
+      return new Response(JSON.stringify({ run }));
+    },
+  ) as unknown as typeof fetch;
+  const api = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+
+  const result = await api.authorizeExecutionPrompt(
+    run.id,
+    step.occurrence_id,
+    step.attempt.id,
+    "authorize-request-1",
+  );
+
+  expect(result.id).toBe(run.id);
+  expect(requestPath).toEndWith(`/runs/${run.id}/execution/authorize-prompt`);
+  expect(request?.method).toBe("POST");
+  expect(JSON.parse(String(request?.body))).toEqual({
+    occurrence_id: step.occurrence_id,
+    attempt_id: step.attempt.id,
+    request_id: "authorize-request-1",
+  });
+});
+
 test("Product cancellation is local-only and preserves its exact request identity", async () => {
   const web = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
   await expect(

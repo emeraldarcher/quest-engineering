@@ -27,6 +27,16 @@ defmodule QuestEngineering.Server.ExecutionCancellation do
 
   @cancellable_states ~w(acknowledged running)
 
+  @doc "Whether Product may offer a new cancellation command for this dispatch."
+  def cancellable?(%WorkerDispatch{
+        state: state,
+        cancellation_requested_at: nil
+      })
+      when state in @cancellable_states,
+      do: true
+
+  def cancellable?(_dispatch), do: false
+
   def request(run_id, occurrence_id, attempt_id, request_id, reason \\ nil) do
     with :ok <- validate_request(run_id, occurrence_id, attempt_id, request_id, reason),
          {:ok, result} <- transact_request(run_id, occurrence_id, attempt_id, request_id, reason) do

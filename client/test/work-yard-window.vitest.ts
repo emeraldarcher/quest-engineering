@@ -9,7 +9,11 @@ import {
 import { get } from "svelte/store";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ApiClient } from "../src/api/client";
-import type { HumanAttention, RunProjection } from "../src/api/contracts";
+import {
+  ApiError,
+  type HumanAttention,
+  type RunProjection,
+} from "../src/api/contracts";
 import WorkYardWindow from "../src/components/work-yard/WorkYardWindow.svelte";
 import { type ClientFixture, createFixture } from "../src/fixtures/fixtures";
 import * as liveSessionPlatform from "../src/platform/live-session";
@@ -181,6 +185,213 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
     first.attempt.id,
     first.session,
     "observe",
+  );
+});
+
+test("pre-prompt execution exposes distinct confirmed authorization and cancellation commands", async () => {
+  const { value, run, step, store, identity } = operatorSetup();
+  const authorize = vi.spyOn(store, "authorizePrompt").mockResolvedValue(true);
+  const cancelExecution = vi
+    .spyOn(store, "cancelExecution")
+    .mockResolvedValue(null);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(screen.getByRole("button", { name: "Open Session" })).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Authorize inference" }),
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Cancel execution" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Take Control" })).toBeNull();
+
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Authorize inference" }),
+  );
+  let dialog = screen.getByRole("dialog", { name: "Authorize inference?" });
+  expect(dialog.textContent).toContain(
+    "allows the current Attempt to submit its configured Pi model prompt",
+  );
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Not yet" }),
+  );
+  expect(authorize).not.toHaveBeenCalled();
+
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Authorize inference" }),
+  );
+  dialog = screen.getByRole("dialog", { name: "Authorize inference?" });
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Authorize inference" }),
+  );
+  expect(authorize).toHaveBeenCalledWith(identity);
+
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Cancel execution" }),
+  );
+  dialog = screen.getByRole("dialog", { name: "Cancel this execution?" });
+  expect(dialog.textContent).toContain("Existing history will be preserved");
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Keep execution" }),
+  );
+  expect(cancelExecution).not.toHaveBeenCalled();
+
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Cancel execution" }),
+  );
+  dialog = screen.getByRole("dialog", { name: "Cancel this execution?" });
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Cancel execution" }),
+  );
+  expect(cancelExecution).toHaveBeenCalledWith(identity);
+  expect(step.attempt?.id).toBe(identity.attemptId);
+  expect(run.id).toBe(identity.runId);
+});
+
+test("operator command pending state does not block inputless Open Session", async () => {
+  const { value, step, store, identity } = operatorSetup();
+  store.executionCommands.set([
+    {
+      operation: "cancel",
+      identity,
+      requestId: "pending-cancel",
+      status: "pending",
+      error: null,
+    },
+  ]);
+  const open = vi.spyOn(store, "openLiveSession").mockResolvedValue(true);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  const openButton = screen.getByRole("button", { name: "Open Session" });
+  const authorizeButton = screen.getByRole("button", {
+    name: "Authorize inference",
+  }) as HTMLButtonElement;
+  const cancelButton = screen.getByRole("button", {
+    name: "Requesting cancellation…",
+  }) as HTMLButtonElement;
+  expect(authorizeButton.disabled).toBe(true);
+  expect(cancelButton.disabled).toBe(true);
+  expect((openButton as HTMLButtonElement).disabled).toBe(false);
+  await fireEvent.click(openButton);
+  expect(open).toHaveBeenCalledWith(
+    identity.runId,
+    identity.attemptId,
+    step.session,
+    "observe",
+  );
+});
+
+test("cancellation remains available before a live session is projected", () => {
+  const { value, step, store } = operatorSetup();
+  step.session = null;
+  step.recovery = null;
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(
+    screen.getByRole("heading", { name: "Execution control" }),
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Cancel execution" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Open Session" })).toBeNull();
+});
+
+test("realtime Attempt replacement closes stale confirmation and clears old affordances", async () => {
+  const { value, run, store } = operatorSetup();
+  const cancelExecution = vi
+    .spyOn(store, "cancelExecution")
+    .mockResolvedValue(null);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Cancel execution" }),
+  );
+  expect(
+    screen.getByRole("dialog", { name: "Cancel this execution?" }),
+  ).toBeTruthy();
+
+  const replacement = structuredClone(run);
+  const replacementStep = replacement.steps.at(-1);
+  if (!replacementStep?.attempt)
+    throw new Error("Expected replacement Attempt");
+  replacementStep.attempt.id = "replacement-attempt";
+  replacementStep.attempt.can_cancel = false;
+  replacementStep.recovery = null;
+  store.selectedRun.set(replacement);
+
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Cancel this execution?" }),
+    ).toBeNull(),
+  );
+  expect(cancelExecution).not.toHaveBeenCalled();
+  expect(
+    screen.queryByRole("button", { name: "Authorize inference" }),
+  ).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cancel execution" })).toBeNull();
+});
+
+test("terminal cancellation removes commands while retained observation remains", async () => {
+  const { value, run, step, store } = operatorSetup();
+  if (!step.attempt || !step.session)
+    throw new Error("Expected execution state");
+  step.state = "cancelled";
+  step.recovery = null;
+  step.attempt.state = "cancelled";
+  step.attempt.can_cancel = false;
+  step.attempt.cancellation = {
+    state: "cancelled",
+    request_id: "cancel-request",
+    origin: "product_operator",
+    reason: null,
+    requested_generation: 3,
+    requested_at: "2026-09-23T00:00:00Z",
+    cancelled_at: "2026-09-23T00:00:01Z",
+  };
+  step.session.state = "retained";
+  step.session.attachment.can_takeover = false;
+  run.status = "cancelled";
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(screen.getByRole("button", { name: "Inspect Session" })).toBeTruthy();
+  expect(document.body.textContent).toContain(
+    "Execution cancelled · session history retained.",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Authorize inference" }),
+  ).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cancel execution" })).toBeNull();
+});
+
+test("operator command failures are scoped and dismissible", async () => {
+  const { value, store, identity } = operatorSetup();
+  store.executionCommands.set([
+    {
+      operation: "authorize",
+      identity,
+      requestId: "authorize-request",
+      status: "error",
+      error: new ApiError(
+        "prompt_authorization_not_ready",
+        "The current Attempt is no longer ready for authorization.",
+      ),
+    },
+  ]);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  const alert = screen.getByRole("alert");
+  expect(alert.textContent).toContain("Authorization not completed");
+  await fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+  await waitFor(() =>
+    expect(screen.queryByText("Authorization not completed")).toBeNull(),
   );
 });
 
@@ -643,6 +854,47 @@ test("artifact selection returns to list state when the artifact disappears", as
     await screen.findByRole("heading", { name: "Select an artifact" }),
   ).toBeTruthy();
 });
+
+function operatorSetup() {
+  vi.spyOn(liveSessionPlatform, "canOpenLocalLiveSession").mockReturnValue(
+    true,
+  );
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps.at(-1);
+  if (!step?.attempt) throw new Error("Expected current Attempt");
+  step.attempt.can_cancel = true;
+  step.recovery = {
+    can_retry: false,
+    can_mark_failed: false,
+    can_authorize_prompt: true,
+    message: "Explicit authorization is required.",
+  };
+  step.session = harnessSession("session-pre-prompt", "waiting_for_human", {
+    attention_id: `qe-prompt-authorization-${step.attempt.id}`,
+    category: "needs_confirmation",
+    message: "Explicit authorization is required.",
+    requested_at: "2026-09-06T00:00:00Z",
+  });
+  step.session.native_identity.conversation_id = null;
+  step.session.attachment.can_takeover = false;
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  return {
+    value,
+    run,
+    step,
+    store,
+    identity: {
+      runId: run.id,
+      occurrenceId: step.occurrence_id,
+      attemptId: step.attempt.id,
+    },
+  };
+}
 
 function harnessSession(
   id: string,

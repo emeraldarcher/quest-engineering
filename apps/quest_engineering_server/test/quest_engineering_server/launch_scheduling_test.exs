@@ -988,6 +988,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     [staged_step] = staged_projection.steps
     assert staged_step.attempt.operational.recovery_kind == "initial"
     assert staged_step.recovery.can_authorize_prompt
+    assert staged_step.attempt.can_cancel
 
     request_id = Ecto.UUID.generate()
 
@@ -1110,6 +1111,10 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert replay.delivery == :not_repeated
     refute_receive {:worker_protocol, %{"type" => "cancel_dispatch"}}, 20
 
+    assert {:ok, pending_projection} = RunProjection.get(launched.run_id)
+    [pending_step] = pending_projection.steps
+    refute pending_step.attempt.can_cancel
+
     assert {:error, %{code: :execution_cancellation_pending}} =
              OperationalRecovery.authorize_prompt(
                launched.run_id,
@@ -1209,6 +1214,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert step.issue.code == "execution_cancelled"
     assert is_nil(step.recovery)
     assert step.attempt.resolution == "cancelled"
+    refute step.attempt.can_cancel
     assert step.attempt.cancellation.state == "cancelled"
     assert step.attempt.cancellation.request_id == request_id
     assert step.attempt.outputs == []
@@ -1297,6 +1303,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     assert {:ok, before_cancellation} = RunProjection.get(launched.run_id)
     [before_step] = before_cancellation.steps
+    assert before_step.attempt.can_cancel
     assert before_step.attempt.session.attachment.can_takeover
 
     cancellation_request_id = Ecto.UUID.generate()
@@ -1318,6 +1325,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     assert {:ok, after_cancellation} = RunProjection.get(launched.run_id)
     [after_step] = after_cancellation.steps
+    refute after_step.attempt.can_cancel
     refute after_step.attempt.session.attachment.can_takeover
     refute after_step.attempt.session.attachment.can_recover
 
@@ -1600,6 +1608,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
            ]
 
     assert staged_step.attempt.id == third.execution.identity.attempt_id
+    assert Enum.map(staged_step.attempts, & &1.can_cancel) == [false, false, true]
     assert staged_step.recovery.can_authorize_prompt
     assert staged_step.attempt.session.state == "waiting_for_human"
     refute staged_step.attempt.session.attachment.can_takeover

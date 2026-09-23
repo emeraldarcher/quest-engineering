@@ -165,6 +165,21 @@ export class ApiClient {
       { occurrence_id: occurrenceId },
       (value) => decodeRun(asRecord(value, "run").run),
     );
+  authorizeExecutionPrompt = (
+    runId: string,
+    occurrenceId: string,
+    attemptId: string,
+    requestId: string,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/execution/authorize-prompt`,
+      {
+        occurrence_id: occurrenceId,
+        attempt_id: attemptId,
+        request_id: requestId,
+      },
+      (value) => decodeRun(asRecord(value, "run").run),
+    );
   recoverExecutionFresh = (
     runId: string,
     occurrenceId: string,
@@ -1165,6 +1180,14 @@ function decodeRunStep(value: unknown) {
               ),
               can_human_retry: recovery.can_human_retry === true,
               can_retry_fresh: recovery.can_retry_fresh === true,
+              ...(recovery.can_authorize_prompt === undefined
+                ? {}
+                : {
+                    can_authorize_prompt: asBoolean(
+                      recovery.can_authorize_prompt,
+                      "execution prompt authorization",
+                    ),
+                  }),
               retained_session_available:
                 recovery.retained_session_available === true,
               ...(typeof recovery.classification === "string"
@@ -1245,6 +1268,14 @@ function decodeRunAttempt(value: unknown) {
     ),
     output_produced: asBoolean(attempt.output_produced, "step attempt"),
     resolution,
+    ...(attempt.can_cancel === undefined
+      ? {}
+      : {
+          can_cancel: asBoolean(
+            attempt.can_cancel,
+            "step attempt cancellation eligibility",
+          ),
+        }),
     cancellation:
       attempt.cancellation == null
         ? null
