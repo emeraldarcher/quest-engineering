@@ -13,6 +13,11 @@ defmodule QuestEngineering.Server.CapabilityMatcher do
 
   def executor_compatible?(capabilities, requested), do: compatible?(capabilities, requested)
 
+  # Missing availability is treated as active for protocol-v8 compatibility.
+  # A maintenance Worker remains registered and observable but is structurally
+  # ineligible for workspace assignment or Action scheduling.
+  def resolve_executor(%{"dispatch_availability" => "maintenance"}, _requested), do: :error
+
   def resolve_executor(%{"executors" => executors}, requested)
       when is_list(executors) and is_map(requested) do
     Enum.find_value(executors, :error, &resolve_profile(&1, requested))

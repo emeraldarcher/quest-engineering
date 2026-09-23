@@ -88,6 +88,7 @@ export function workerCapabilities(
     os,
     arch,
     max_concurrency: config.maxConcurrency,
+    dispatch_availability: config.dispatchAvailability ?? "active",
     tags: config.tags,
     executors: discoveries
       ? discoveredExecutorCapabilities(discoveries)

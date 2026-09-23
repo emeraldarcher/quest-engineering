@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 7 as const;
+export const WORKER_PROTOCOL_VERSION = 8 as const;
 
 export type JsonValue =
   | string
@@ -268,6 +268,7 @@ export interface WorkerCapabilities {
   os: string;
   arch: string;
   max_concurrency: number;
+  dispatch_availability?: "active" | "maintenance";
   tags: string[];
   executors: ExecutorCapability[];
   features?: Array<

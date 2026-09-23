@@ -66,6 +66,27 @@ test("production config requires one exact absolute Herdr executable", async () 
   ).toThrow("must identify an existing executable file");
 });
 
+test("dispatch availability defaults active and supports generic maintenance registration", async () => {
+  const active = loadConfig(await environment());
+  expect(active.dispatchAvailability).toBe("active");
+  expect(
+    workerCapabilities(active, "darwin", "arm64").dispatch_availability,
+  ).toBe("active");
+
+  const maintenance = loadConfig(
+    await environment({ QE_WORKER_DISPATCH_AVAILABILITY: "maintenance" }),
+  );
+  expect(maintenance.dispatchAvailability).toBe("maintenance");
+  expect(
+    workerCapabilities(maintenance, "darwin", "arm64").dispatch_availability,
+  ).toBe("maintenance");
+
+  const invalid = await environment({
+    QE_WORKER_DISPATCH_AVAILABILITY: "draining-ish",
+  });
+  expect(() => loadConfig(invalid)).toThrow("must be active or maintenance");
+});
+
 test("omitted model configuration remains absent while an authored empty value remains deny-all", async () => {
   const omitted = loadConfig(await environment());
   expect(Object.hasOwn(omitted, "executorModels")).toBe(false);

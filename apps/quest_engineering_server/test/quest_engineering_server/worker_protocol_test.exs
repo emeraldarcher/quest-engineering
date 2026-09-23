@@ -22,10 +22,11 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v7 logical Workspace bindings" do
+  test "accepts explicit protocol v8 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
+    assert hello.capabilities["dispatch_availability"] == "active"
     assert hello.capabilities["tags"] == ["fake"]
     assert hello.capabilities["features"] == ["run_delivery_v1"]
     assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
@@ -39,6 +40,17 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert {:error, %WorkerProtocol.Error{code: :invalid_capabilities}} =
              WorkerProtocol.decode_hello(malformed)
+  end
+
+  test "accepts maintenance availability and rejects unknown dispatch availability" do
+    maintenance = put_in(hello(), ["capabilities", "dispatch_availability"], "maintenance")
+    assert {:ok, decoded} = WorkerProtocol.decode_hello(maintenance)
+    assert decoded.capabilities["dispatch_availability"] == "maintenance"
+
+    invalid = put_in(hello(), ["capabilities", "dispatch_availability"], "draining-ish")
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             WorkerProtocol.decode_hello(invalid)
   end
 
   test "reasoning capability distinguishes unsupported from unknown" do
@@ -93,7 +105,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes authoritative Delivery evidence messages" do
     payload = %{
       "type" => "run_delivery_inspected",
-      "protocol_version" => 7,
+      "protocol_version" => 8,
       "worker_id" => @worker_id,
       "delivery" => %{
         "delivery_id" => Ecto.UUID.generate(),
@@ -120,7 +132,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "accepts uncertain reconciliation only with structured failure" do
     payload = %{
       "type" => "dispatch_state",
-      "protocol_version" => 7,
+      "protocol_version" => 8,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -135,7 +147,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "normalizes classified failures and validates retained recovery requests" do
     failed = %{
       "type" => "step_failed",
-      "protocol_version" => 7,
+      "protocol_version" => 8,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -153,7 +165,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     recovery = %{
       "type" => "human_recovery_requested",
-      "protocol_version" => 7,
+      "protocol_version" => 8,
       "worker_id" => @worker_id,
       "recovery" => %{
         "request_id" => "request",
@@ -175,7 +187,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes Product-safe harness session and structured attention state" do
     payload = %{
       "type" => "session_state",
-      "protocol_version" => 7,
+      "protocol_version" => 8,
       "worker_id" => @worker_id,
       "session" => %{
         "session_id" => "session-1",
@@ -284,7 +296,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     encoded = WorkerProtocol.execute_action(@worker_id, execution())
     wire = encoded["execution"]
 
-    assert encoded["protocol_version"] == 7
+    assert encoded["protocol_version"] == 8
     assert wire["configuration"]["harness_kind"] == "fake"
     assert wire["configuration"]["model"] == %{"provider" => "fake", "model" => "test"}
 
@@ -392,7 +404,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   defp hello do
     %{
       "type" => "worker_hello",
-      "protocol_version" => 7,
+      "protocol_version" => 8,
       "worker_id" => @worker_id,
       "capabilities" => %{
         "os" => "test",

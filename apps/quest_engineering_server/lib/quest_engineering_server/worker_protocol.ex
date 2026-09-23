@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 7
+  @version 8
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -1131,6 +1131,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
               is_integer(max_concurrency) and max_concurrency > 0 and max_concurrency <= 1024 and
               is_list(executors) and executors != [] do
     with :ok <- string_list(tags, "capabilities.tags"),
+         {:ok, dispatch_availability} <-
+           validate_dispatch_availability(
+             Map.get(capabilities, "dispatch_availability", "active")
+           ),
          {:ok, executors} <- validate_executors(executors),
          :ok <- validate_workspace_bindings(workspace_bindings),
          features = Map.get(capabilities, "features", []),
@@ -1140,6 +1144,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "os" => os,
          "arch" => arch,
          "max_concurrency" => max_concurrency,
+         "dispatch_availability" => dispatch_availability,
          "tags" => Enum.uniq(tags),
          "executors" => executors,
          "workspace_bindings" => Enum.uniq(workspace_bindings),
@@ -1150,6 +1155,12 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp validate_capabilities(_capabilities),
     do: error(:invalid_capabilities, "capabilities")
+
+  defp validate_dispatch_availability(value) when value in ["active", "maintenance"],
+    do: {:ok, value}
+
+  defp validate_dispatch_availability(_value),
+    do: error(:invalid_field, "capabilities.dispatch_availability")
 
   defp validate_executors(executors) do
     Enum.reduce_while(executors, {:ok, []}, fn executor, {:ok, validated} ->

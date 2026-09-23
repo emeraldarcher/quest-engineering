@@ -28,7 +28,11 @@ defmodule QuestEngineering.Server.ExecutionOptions do
        when is_list(executors) do
     bindings = safe_bindings(worker)
 
-    Enum.flat_map(executors, fn executor -> profile(executor, bindings, status == "connected") end)
+    dispatch_active = Map.get(worker.capabilities, "dispatch_availability", "active") == "active"
+
+    Enum.flat_map(executors, fn executor ->
+      profile(executor, bindings, status == "connected" and dispatch_active)
+    end)
   end
 
   defp profiles(_worker), do: []

@@ -43,6 +43,8 @@ export interface WorkerConfig {
   workerToken: string;
   maxConcurrency: number;
   tags: string[];
+  /** Generic scheduler admission state; maintenance Workers stay connected but cannot claim work. */
+  dispatchAvailability?: "active" | "maintenance";
   herdrSession: string;
   /** Exact host executable used for every Herdr CLI/server launch. */
   herdrBin?: string;
@@ -113,6 +115,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     env.QE_MAX_CONCURRENCY ?? "1",
     "QE_MAX_CONCURRENCY",
   );
+  const dispatchAvailability = dispatchAvailabilityValue(
+    env.QE_WORKER_DISPATCH_AVAILABILITY ?? "active",
+  );
   const herdrHome = env.HOME?.trim() || homedir();
   const herdrSession = validateHerdrSessionName(
     env.QE_HERDR_SESSION?.trim() ||
@@ -181,6 +186,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     workerToken,
     maxConcurrency,
     tags: csv(env.QE_WORKER_TAGS),
+    dispatchAvailability,
     herdrSession,
     ...(herdrBin ? { herdrBin } : {}),
     allowedRoots,
@@ -415,6 +421,14 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
   const value = env[key]?.trim();
   if (!value) throw new Error(`${key} is required.`);
   return value;
+}
+function dispatchAvailabilityValue(value: string): "active" | "maintenance" {
+  const normalized = value.trim();
+  if (normalized === "active" || normalized === "maintenance")
+    return normalized;
+  throw new Error(
+    "QE_WORKER_DISPATCH_AVAILABILITY must be active or maintenance.",
+  );
 }
 function positiveInteger(value: string, key: string): number {
   const parsed = Number(value);

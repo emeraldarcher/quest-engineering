@@ -79,6 +79,9 @@ export class QuestEngineeringWorker {
   private readonly herdr: WorkerInfrastructure | null;
   private readonly sbxExecutionManager: SbxRunExecutionManager | null;
   private stopping = false;
+  private initialization: Promise<void> | null = null;
+  private shutdown: Promise<void> | null = null;
+  private readonly protocolOperations = new Set<Promise<unknown>>();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private recoveryScanActive = false;
   private readyGeneration: number | null = null;
@@ -169,9 +172,9 @@ export class QuestEngineeringWorker {
       capabilities,
       {
         onProtocol: (message, generation) =>
-          this.handleProtocol(message, generation),
+          this.trackProtocolOperation(this.handleProtocol(message, generation)),
         onRegistered: (response, generation) =>
-          this.onRegistered(response, generation),
+          this.trackProtocolOperation(this.onRegistered(response, generation)),
         onDisconnected: (generation) => this.onDisconnected(generation),
         onSuperseded: () => {
           console.warn(
@@ -204,9 +207,14 @@ export class QuestEngineeringWorker {
   }
 
   async run(): Promise<void> {
-    await this.prepareForStartup();
-    await this.harnessControlServer.start();
-    await this.executor.recoverAll();
+    if (this.stopping) return;
+    const initialization = this.initialize();
+    this.initialization = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.initialization === initialization) this.initialization = null;
+    }
     while (!this.stopping) {
       try {
         await this.channel.connect();
@@ -221,6 +229,14 @@ export class QuestEngineeringWorker {
       }
       if (!this.stopping) await Bun.sleep(this.config.reconnectMs);
     }
+  }
+
+  private async initialize(): Promise<void> {
+    await this.prepareForStartup();
+    if (this.stopping) return;
+    await this.harnessControlServer.start();
+    if (this.stopping) return;
+    await this.executor.recoverAll();
   }
 
   private async refreshHarnessCapabilities(
@@ -274,17 +290,51 @@ export class QuestEngineeringWorker {
     return this.executor.attachment(actionId);
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (!this.shutdown) this.shutdown = this.stopOnce();
+    return this.shutdown;
+  }
+
+  private async stopOnce(): Promise<void> {
     this.stopping = true;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
+    await this.initialization?.catch(() => undefined);
+    // Fence new server work first, then make in-flight harness loops observe
+    // controller disconnection before closing their durable registries.
     this.channel.close();
     this.executor.disconnect();
+    const drained = await this.waitForProtocolOperations(10_000);
+    if (!drained) {
+      console.error(
+        "Worker shutdown timed out while protocol work was still active; durable stores remain open for supervisor termination.",
+      );
+      return;
+    }
     await this.harnessControlServer.stop();
     await this.sbxExecutionManager?.close();
     this.registry.close();
     this.deliveries.close();
     this.worktrees.close();
+  }
+
+  private trackProtocolOperation<T>(operation: Promise<T>): Promise<T> {
+    const tracked = operation.finally(() => {
+      this.protocolOperations.delete(tracked);
+    });
+    this.protocolOperations.add(tracked);
+    return tracked;
+  }
+
+  private async waitForProtocolOperations(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.protocolOperations.size > 0 && Date.now() <= deadline) {
+      await Promise.race([
+        Promise.allSettled([...this.protocolOperations]),
+        Bun.sleep(25),
+      ]);
+    }
+    return this.protocolOperations.size === 0;
   }
 
   private async handleProtocol(
@@ -508,7 +558,14 @@ export class QuestEngineeringWorker {
         // Durable acceptance is sufficient to begin; a lost ACK reply must not
         // strand accepted work in this still-running Worker process.
         if (acceptance.dispatch.state === "accepted")
-          void this.executor.start(action.action_id);
+          void this.trackProtocolOperation(
+            this.executor.start(action.action_id),
+          ).catch((error) =>
+            console.error(
+              "Accepted dispatch execution failed",
+              error instanceof Error ? error.message : String(error),
+            ),
+          );
       }
       return;
     }
@@ -547,11 +604,12 @@ export class QuestEngineeringWorker {
       await this.reconcileControlPlane(generation);
     // Reconstruct discovery/readiness from source authority; it is not a raw
     // outbound replay and does not gate already-durable dispatch recovery.
-    void this.reportWorkspaceSources().catch((error) =>
-      console.warn(
-        "Workspace source discovery failed",
-        error instanceof Error ? error.message : String(error),
-      ),
+    void this.trackProtocolOperation(this.reportWorkspaceSources()).catch(
+      (error) =>
+        console.warn(
+          "Workspace source discovery failed",
+          error instanceof Error ? error.message : String(error),
+        ),
     );
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = setInterval(() => {
@@ -562,10 +620,16 @@ export class QuestEngineeringWorker {
           worker_id: this.config.workerId,
         })
         .catch(() => undefined);
-      void this.scanRecoveryRequests();
+      if (!this.stopping)
+        void this.trackProtocolOperation(this.scanRecoveryRequests()).catch(
+          () => undefined,
+        );
     }, this.config.heartbeatMs);
     this.heartbeat.unref?.();
-    void this.scanRecoveryRequests();
+    if (!this.stopping)
+      void this.trackProtocolOperation(this.scanRecoveryRequests()).catch(
+        () => undefined,
+      );
   }
 
   private onDisconnected(generation: number): void {
