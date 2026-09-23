@@ -4,7 +4,7 @@ This fixture intentionally invokes a real provider and is never part of automate
 
 ## Prerequisites
 
-- Herdr 0.8.2 and Pi 0.84.x are installed and authenticated by the human.
+- The repository-pinned Pi profile and the exact patched Herdr 0.9.0 managed-launch binary are available and authenticated by the human.
 - `herdr integration install pi` installed the official Pi state integration.
 - Phoenix migrations are current.
 - Tauri, Phoenix and the Worker run on the same macOS host.
@@ -94,7 +94,7 @@ Do **not** place forced-yield wording in the Quest objective. Quest intent is sh
 
 ## Multi-turn flow
 
-1. Launch the Quest and wait for the Pi session to yield.
+1. Launch the Quest. Verify the initial Pi process reaches the durable pre-prompt `needs_confirmation` gate with no prompt intent, then use the separate operator **Authorize Builder inference** action exactly once. Wait for the authorized Pi session to yield.
 2. Verify all attention surfaces identify the same Member and Step:
    - HUD Needs Attention count;
    - in-app attention toast;

@@ -52,11 +52,13 @@ Antigravity readiness combines exact static MCP registration, MCP child startup/
 
 Physical continuation is adapter-specific and is valid only within the same harness kind and immutable physical configuration. Artifact handoff remains valid across harnesses because artifact identity and hash provenance are independent of native conversation identity. Recovery first adopts a surviving exact TUI, then may resume a verified native conversation in a new interactive process; inability to verify identity fails closed.
 
-## Model and account eligibility
+## Model support and account availability
 
-A harness registry and a provider account catalog are separate authorities. Pi's generated `openai-codex` data proves only that the pinned harness can represent a model. The authenticated ChatGPT models resource, queried with Pi's native account headers and `originator: pi`, proves current account-scoped API, visibility, rollout, and reasoning eligibility. QE advertises only `harness-supported ∩ provider-eligible ∩ optional configured scope`; reasoning, tool policy, and profile matching then remain normal scheduler filters. A valid authenticated response may contain zero eligible models. Unknown or contradictory eligibility is unschedulable, never a reason to use a static allow/deny list, another provider, or a replacement model.
+Pi's immutable execution runtime is the model-support authority. QE publishes every runtime-supported `openai-codex` model and then applies the optional exact QE scope. Host `enabledModels`, `defaultModel`, and `defaultThinkingLevel` remain UX preferences, not scheduler policy. The authenticated ChatGPT models resource is advisory diagnostics only: empty, nonempty, malformed, or unavailable metadata cannot establish model entitlement and never narrows the runtime catalog.
 
-The account snapshot is keyed by a one-way account scope and reused only briefly inside the already-verified Run environment. An explicit provider `unsupported/no access` result fails the frozen Attempt without another turn, invalidates the snapshot, and triggers metadata-only capability refresh. If refresh still calls the rejected model eligible for the same account, QE reports `provider_catalog_runtime_inconsistency` and publishes nothing rather than hardcoding an exception.
+Account availability is a separate three-state fact on each exact model: `verified_available`, `verified_unavailable`, or `unknown`. Unknown remains schedulable. Only direct successful execution marks the exact account/auth-generation/profile/provider/model tuple available; only an exact provider `unsupported/no access` result marks it unavailable. Evidence is durable, expires after a bounded interval, and becomes inapplicable after account, OAuth generation, or immutable execution-profile changes. Explicit recheck clears the exact tuple. Provider metadata cannot overwrite direct evidence.
+
+A verified-unavailable model remains visible for diagnostics but is rejected by capability matching. The already-frozen Attempt fails without another turn, model substitution, provider fallback, or automatic retry. Direct success records availability for future discovery. Optional QE scope still distinguishes omitted (all runtime-supported models), explicit empty (deny all), and a nonempty exact allowlist.
 
 ## Reasoning and effort capabilities
 

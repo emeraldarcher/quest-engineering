@@ -20,7 +20,7 @@ import {
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_PI_DISCOVERY_SCRIPT,
   SBX_PI_EXECUTABLE,
-  SBX_PI_EXECUTION_PROFILE_V1,
+  SBX_PI_EXECUTION_PROFILE_V2,
   SBX_PI_PROFILE,
   SBX_PI_RESOURCE_PROBE,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
@@ -30,6 +30,7 @@ import type {
   EnvironmentLease,
   EnvironmentSpec,
 } from "../src/execution-environment/types.ts";
+import { AccountAvailabilityEvidenceStore } from "../src/harnesses/account-availability.ts";
 
 const enabled = process.env.QE_RUN_SBX_PI_LIVE === "1";
 const sbxBin = process.env.QE_SBX_BIN ?? "/opt/homebrew/bin/sbx";
@@ -72,7 +73,7 @@ test.skipIf(!enabled)(
           frozenBase: { kind: "fixture", value: "none" },
         },
       },
-      profile: SBX_PI_EXECUTION_PROFILE_V1,
+      profile: SBX_PI_EXECUTION_PROFILE_V2,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
       networkRequirements: [
         {
@@ -126,6 +127,16 @@ test.skipIf(!enabled)(
       );
       expect(guestAuth).not.toContain(refreshedHostCredential.accessToken);
       expect(guestAuth).toContain(placeholder);
+      expect(
+        new TextDecoder()
+          .decode(
+            await lease.readFile({
+              path: "/home/agent/.pi/agent/qe-auth-generation",
+              maxBytes: 128,
+            }),
+          )
+          .trim(),
+      ).toBe(refreshedHostCredential.authGeneration);
       expect(globalPolicySnapshot(await client.policies())).toEqual(
         initialGlobalPolicy,
       );
@@ -152,11 +163,12 @@ test.skipIf(!enabled)(
         0,
       );
       expect(JSON.parse(resource.stdout)).toEqual({
-        schemaVersion: 2,
+        schemaVersion: 3,
         authenticated: true,
-        eligibilityKnown: true,
         status: 200,
-        eligibleModelCount: expect.any(Number),
+        metadataAuthority: "advisory",
+        metadataConclusive: false,
+        modelCount: expect.any(Number),
       });
 
       const discovery = await lease.exec({
@@ -173,45 +185,76 @@ test.skipIf(!enabled)(
         schemaVersion: number;
         authenticated: boolean;
         accountScope: string;
-        providerEligibleModels: Array<{ provider: string; model: string }>;
+        authGeneration: string;
+        metadata: {
+          authority: "advisory";
+          conclusive: false;
+          status: number | null;
+          observedAt: string;
+          modelCount: number | null;
+        };
         diagnostics: string[];
         models: Array<{
           provider: string;
           model: string;
           displayName: string;
           reasoning: string[];
+          accountAvailability: "unknown";
         }>;
       };
-      expect(value.schemaVersion).toBe(2);
-      expect(value.authenticated).toBe(true);
+      expect(value.schemaVersion).toBe(3);
+      expect(value.authenticated, JSON.stringify(value)).toBe(true);
       expect(value.accountScope).toMatch(/^[a-f0-9]{64}$/);
+      expect(value.authGeneration).toMatch(/^[a-f0-9]{64}$/);
+      expect(value.metadata).toMatchObject({
+        authority: "advisory",
+        conclusive: false,
+      });
+      expect(value.models).toHaveLength(8);
+      expect(value.models.some((model) => model.model === "gpt-6-astra")).toBe(
+        true,
+      );
       expect(
-        value.models.every((model) => model.provider === "openai-codex"),
-      ).toBe(true);
-      expect(
-        value.models.every((model) =>
-          value.providerEligibleModels.some(
-            (eligible) =>
-              eligible.provider === model.provider &&
-              eligible.model === model.model,
-          ),
+        value.models.every(
+          (model) =>
+            model.provider === "openai-codex" &&
+            model.accountAvailability === "unknown",
         ),
       ).toBe(true);
+      const availability = new AccountAvailabilityEvidenceStore(
+        join(dataRoot, "pi-account-availability.json"),
+      );
+      const seedPaths = (process.env.QE_PI_ACCOUNT_EVIDENCE_SEEDS ?? "")
+        .split(",")
+        .map((path) => path.trim())
+        .filter(Boolean);
+      for (const path of seedPaths) await availability.importFile(path);
+      const annotatedModels = await availability.annotate(
+        value.models.map((model) => ({
+          provider: model.provider,
+          model: model.model,
+          displayName: model.displayName,
+          accountAvailability: "unknown" as const,
+          reasoningCapability:
+            model.reasoning.length > 0
+              ? { kind: "enumerated" as const, values: model.reasoning }
+              : { kind: "unsupported" as const },
+        })),
+        {
+          accountScope: value.accountScope,
+          authGeneration: value.authGeneration,
+          profileId: SBX_PI_EXECUTION_PROFILE_V2.id,
+          profileDigest: SBX_PI_EXECUTION_PROFILE_V2.digest,
+        },
+      );
       const workerCatalog = applyConfiguredPiModelScope(
         {
           authenticated: value.authenticated,
           diagnostics: value.diagnostics,
           accountScope: value.accountScope,
-          providerEligibleModels: value.providerEligibleModels,
-          models: value.models.map((model) => ({
-            provider: model.provider,
-            model: model.model,
-            displayName: model.displayName,
-            reasoningCapability:
-              model.reasoning.length > 0
-                ? { kind: "enumerated" as const, values: model.reasoning }
-                : { kind: "unsupported" as const },
-          })),
+          authGeneration: value.authGeneration,
+          metadata: value.metadata,
+          models: annotatedModels,
         },
         undefined,
       );
@@ -220,6 +263,26 @@ test.skipIf(!enabled)(
       expect(workerCatalog.models.map((model) => model.model)).toEqual(
         value.models.map((model) => model.model),
       );
+      if (seedPaths.length > 0) {
+        expect(
+          workerCatalog.models.find(
+            (model) => model.model === "gpt-5.3-codex-spark",
+          )?.accountAvailability,
+        ).toBe("verified_unavailable");
+        expect(
+          workerCatalog.models.find((model) => model.model === "gpt-5.6-sol")
+            ?.accountAvailability,
+        ).toBe("verified_available");
+        expect(
+          workerCatalog.models
+            .filter(
+              (model) =>
+                model.model !== "gpt-5.3-codex-spark" &&
+                model.model !== "gpt-5.6-sol",
+            )
+            .every((model) => model.accountAvailability === "unknown"),
+        ).toBe(true);
+      }
       expect(workerCatalog.models).toEqual(
         expect.arrayContaining(
           workerCatalog.models.filter(
@@ -241,17 +304,21 @@ test.skipIf(!enabled)(
           models: workerCatalog.models.map((model) => ({
             provider: model.provider,
             model: model.model,
+            accountAvailability: model.accountAvailability,
             reasoningCapability: model.reasoningCapability,
           })),
           piVersion: runtime.stdout.trim(),
-          profile: SBX_PI_EXECUTION_PROFILE_V1,
+          profile: SBX_PI_EXECUTION_PROFILE_V2,
           configuredModelScope: "omitted",
+          prompts: 0,
           providerCycles: 0,
         }),
       );
 
       await proveMailboxRoundTrip(lease);
-      const firstModel = value.models[0];
+      const firstModel = workerCatalog.models.find(
+        (model) => model.accountAvailability !== "verified_unavailable",
+      );
       if (firstModel)
         await provePiTuiReadinessWithoutInference(
           lease,
@@ -303,7 +370,13 @@ test.skipIf(!enabled)(
         args: [SBX_PI_RESOURCE_PROBE],
         timeoutMs: 60_000,
       });
-      expect(afterRevocation.exitCode).not.toBe(0);
+      expect(afterRevocation.exitCode).toBe(0);
+      expect(JSON.parse(afterRevocation.stdout)).toMatchObject({
+        schemaVersion: 3,
+        metadataAuthority: "advisory",
+        metadataConclusive: false,
+        status: 401,
+      });
     } finally {
       if (scopeProbeSandbox)
         await client.remove(scopeProbeSandbox).catch(() => undefined);

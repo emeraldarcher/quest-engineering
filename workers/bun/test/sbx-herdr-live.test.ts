@@ -42,14 +42,24 @@ test.skipIf(!enabled)(
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
     const root = await mkdtemp(join(parent, "sbx-herdr-live-"));
-    const source = join(root, "source");
+    const externalSource = process.env.QE_SBX_HERDR_LIVE_SOURCE;
+    const source = externalSource ?? join(root, "source");
+    const authorizedRoot = externalSource ?? root;
     const dataRoot = join(root, "data");
     const worktreeRoot = join(root, "worktrees");
     const trapRoot = join(root, "path-trap");
     const trapMarker = join(root, "host-pi-trap-ran");
-    const workerId = `sbx-herdr-live-${randomUUID().slice(0, 12)}`;
-    const runId = `run-${randomUUID()}`;
-    const actionId = `action-${randomUUID()}`;
+    const workerId =
+      process.env.QE_SBX_HERDR_LIVE_WORKER_ID ??
+      `sbx-herdr-live-${randomUUID().slice(0, 12)}`;
+    const runId = process.env.QE_SBX_HERDR_LIVE_RUN_ID ?? `run-${randomUUID()}`;
+    const actionId =
+      process.env.QE_SBX_HERDR_LIVE_ACTION_ID ?? `action-${randomUUID()}`;
+    const attemptId =
+      process.env.QE_SBX_HERDR_LIVE_ATTEMPT_ID ?? `attempt-${randomUUID()}`;
+    const occurrenceId =
+      process.env.QE_SBX_HERDR_LIVE_OCCURRENCE_ID ??
+      `occurrence-${randomUUID()}`;
     const sessionName = `qe-sbx-live-${randomUUID().slice(0, 12)}`;
     const workspaceId = randomUUID();
     const bindingId = randomUUID();
@@ -64,24 +74,26 @@ test.skipIf(!enabled)(
       | null = null;
     let sourceBefore = "";
     try {
-      await mkdir(source, { recursive: true });
       await mkdir(worktreeRoot, { recursive: true });
       await mkdir(trapRoot, { recursive: true });
-      await git(["init", "-q", source]);
-      await writeFile(join(source, "README.md"), "# launch-only fixture\n");
-      await git(["-C", source, "add", "README.md"]);
-      await git([
-        "-C",
-        source,
-        "-c",
-        "user.name=QE",
-        "-c",
-        "user.email=qe@example.invalid",
-        "commit",
-        "-q",
-        "-m",
-        "fixture",
-      ]);
+      if (!externalSource) {
+        await mkdir(source, { recursive: true });
+        await git(["init", "-q", source]);
+        await writeFile(join(source, "README.md"), "# launch-only fixture\n");
+        await git(["-C", source, "add", "README.md"]);
+        await git([
+          "-C",
+          source,
+          "-c",
+          "user.name=QE",
+          "-c",
+          "user.email=qe@example.invalid",
+          "commit",
+          "-q",
+          "-m",
+          "fixture",
+        ]);
+      }
       sourceBefore = await repositorySnapshot(source);
       const trap = join(trapRoot, "pi");
       await writeFile(
@@ -102,9 +114,9 @@ test.skipIf(!enabled)(
         allowedRoots: [
           {
             key: "fixture",
-            path: root,
+            path: authorizedRoot,
             max_access: "read_write",
-            discover_depth: 2,
+            discover_depth: externalSource ? 0 : 2,
             allow_unconfined_shell: true,
           },
         ],
@@ -153,19 +165,9 @@ test.skipIf(!enabled)(
       const catalog = await manager.discover();
       expect(catalog.authenticated).toBe(true);
       const model = catalog.models[0];
-      if (!model) {
-        expect(catalog.providerEligibleModels).toEqual([]);
-        console.log(
-          JSON.stringify({
-            event: "sbx_herdr_launch_gated_by_account_eligibility",
-            authenticated: catalog.authenticated,
-            publishedModels: 0,
-            providerCycles: 0,
-          }),
-        );
-        return;
-      }
+      if (!model) throw new Error("Pi runtime catalog returned no models");
       expect(model.provider).toBe("openai-codex");
+      expect(model.accountAvailability).not.toBe("verified_unavailable");
       if (model.reasoningCapability.kind === "unknown")
         throw new Error(
           "Dynamic Pi discovery returned unknown reasoning metadata.",
@@ -175,6 +177,8 @@ test.skipIf(!enabled)(
         workerId,
         runId,
         actionId,
+        attemptId,
+        occurrenceId,
         workspaceId,
         bindingId,
         worktreeId,
@@ -263,6 +267,72 @@ test.skipIf(!enabled)(
         workspacePath: execution.workspace.paths.workspace,
         homePath: "/home/agent",
       });
+
+      const holdPath = process.env.QE_SBX_HERDR_LIVE_HOLD_PATH;
+      if (holdPath) {
+        const releasePath = process.env.QE_SBX_HERDR_LIVE_RELEASE_PATH;
+        if (!releasePath)
+          throw new Error(
+            "QE_SBX_HERDR_LIVE_RELEASE_PATH is required with the live hold path.",
+          );
+        await Bun.write(
+          holdPath,
+          `${JSON.stringify(
+            {
+              workerId,
+              runId,
+              actionId,
+              attemptId: accepted.action.attempt_id,
+              occurrenceId: accepted.action.occurrence_id,
+              lineageId: lineage.lineageId,
+              sessionName: prepared.ref.sessionName,
+              paneId: prepared.ref.paneId,
+              terminalId: prepared.ref.terminalId,
+              environmentId: execution.environmentRef.environmentId,
+              environmentIncarnation: execution.environmentRef.incarnation,
+              profileId: execution.environmentRef.profile.id,
+              profileDigest: execution.environmentRef.profile.digest,
+              providerCycles: 0,
+              prompts: 0,
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        while (!(await Bun.file(releasePath).exists())) await Bun.sleep(100);
+      }
+
+      // No-inference lifecycle probe: exercise Herdr's actual managed state API
+      // while the exact guest Pi process and pane remain alive. These terminal
+      // state reports do not send TUI input or contact a model provider.
+      const probeSequence = Number.MAX_SAFE_INTEGER - 1;
+      await host.reportAgentState({
+        paneId: prepared.ref.paneId,
+        state: "working",
+        sequence: probeSequence,
+      });
+      expect(await host.inspectAgentState(prepared.ref.paneId)).toMatchObject({
+        status: "working",
+        paneId: prepared.ref.paneId,
+      });
+      await host.reportAgentState({
+        paneId: prepared.ref.paneId,
+        state: "idle",
+        sequence: probeSequence + 1,
+      });
+      // Herdr normalizes an explicit native-idle report for this retained Pi
+      // process to its terminal non-working `done` status.
+      expect(await host.inspectAgentState(prepared.ref.paneId)).toMatchObject({
+        status: "done",
+        paneId: prepared.ref.paneId,
+      });
+      expect(
+        (await host.snapshot()).agents.some(
+          (agent) =>
+            agent.paneId === prepared.ref.paneId && agent.status === "done",
+        ),
+      ).toBe(true);
+
       const docker = await sbxClient.exec(sbxEnvironmentName(workerId, runId), {
         executable: "/usr/bin/docker",
         args: ["info", "--format", "{{json .DockerRootDir}}"],
@@ -289,7 +359,7 @@ test.skipIf(!enabled)(
       expect(surviving).toMatchObject({
         agent: "pi",
         paneId: prepared.ref.paneId,
-        status: "idle",
+        status: "done",
       });
       expect(restartedHost.attachment(prepared.ref).supportsTakeover).toBe(
         true,
@@ -321,6 +391,9 @@ test.skipIf(!enabled)(
           guestExecutable: execution.launchProvenance?.guestExecutable,
           attested: true,
           processSurvivedControllerRestart: true,
+          nativeLifecycleReports: ["idle", "working", "idle"],
+          herdrObservedLifecycle: ["idle", "working", "done"],
+          retainedRestartState: "done",
           openSession: true,
           takeControl: true,
           shellRestored: true,
@@ -353,6 +426,8 @@ function launchAction(input: {
   workerId: string;
   runId: string;
   actionId: string;
+  attemptId: string;
+  occurrenceId: string;
   workspaceId: string;
   bindingId: string;
   worktreeId: string;
@@ -364,8 +439,8 @@ function launchAction(input: {
   const value = action({
     action_id: input.actionId,
     run_id: input.runId,
-    occurrence_id: `occurrence-${randomUUID()}`,
-    attempt_id: `attempt-${randomUUID()}`,
+    occurrence_id: input.occurrenceId,
+    attempt_id: input.attemptId,
   });
   value.worker_id = input.workerId;
   value.execution = {

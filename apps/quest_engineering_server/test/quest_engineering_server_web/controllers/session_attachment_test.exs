@@ -23,6 +23,12 @@ defmodule QuestEngineering.ServerWeb.SessionAttachmentTest do
     assert json_response(conn, 409)["error"]["code"] == "local_session_attachment_disabled"
 
     Application.put_env(:quest_engineering_server, :local_session_attach_enabled, true)
+
+    assert %{
+             "status" => "ok",
+             "capabilities" => %{"local_session_attachment" => true}
+           } = json_response(get(build_conn(), "/api/v1/health"), 200)
+
     conn = %{build_conn() | host: "127.0.0.1"} |> post(path, %{})
     assert json_response(conn, 409)["error"]["code"] == "local_session_attachment_disabled"
 
