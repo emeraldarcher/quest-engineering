@@ -499,7 +499,7 @@ export class QuestEngineeringWorker {
       const cancellation = decodeCancelDispatch(
         message,
         this.config.workerId,
-        generation,
+        cancellationServerGeneration(this.channel, generation),
       );
       await this.executor.cancel(cancellation);
       return;
@@ -742,7 +742,7 @@ export class QuestEngineeringWorker {
           const cancellation = decodeCancelDispatch(
             command,
             this.config.workerId,
-            generation,
+            cancellationServerGeneration(this.channel, generation),
           );
           await this.executor.cancel(cancellation);
         }
@@ -1742,6 +1742,25 @@ function identityMessage(
   };
 }
 type DispatchReportType = "step_completed" | "step_failed" | "dispatch_state";
+
+export function cancellationServerGeneration(
+  channel: Pick<
+    PhoenixWorkerChannel,
+    "isCurrentGeneration" | "currentServerGeneration"
+  >,
+  localGeneration: number,
+): number {
+  if (!channel.isCurrentGeneration(localGeneration))
+    throw new Error(
+      "Cancellation command arrived on a stale Worker connection.",
+    );
+  const serverGeneration = channel.currentServerGeneration();
+  if (serverGeneration === null)
+    throw new Error(
+      "Cancellation command lacks a server registration generation.",
+    );
+  return serverGeneration;
+}
 
 export function dispatchReportMessage(
   workerId: string,

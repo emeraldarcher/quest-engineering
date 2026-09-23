@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReconcileDispatch } from "../src/protocol/types.ts";
 import {
+  cancellationServerGeneration,
   dispatchReportMessage,
   retainedDiffFingerprint,
 } from "../src/worker.ts";
@@ -20,6 +21,22 @@ const dispatch: ReconcileDispatch = {
   attempt_id: "attempt-1",
   state: "running",
 };
+
+test("cancellation fencing uses the durable server generation after a process restart", () => {
+  const channel = {
+    isCurrentGeneration: (generation: number) => generation === 1,
+    currentServerGeneration: () => 4,
+  };
+
+  expect(cancellationServerGeneration(channel, 1)).toBe(4);
+  expect(() => cancellationServerGeneration(channel, 2)).toThrow("stale");
+  expect(() =>
+    cancellationServerGeneration(
+      { ...channel, currentServerGeneration: () => null },
+      1,
+    ),
+  ).toThrow("server registration generation");
+});
 
 test("running dispatch state omits terminal fields", () => {
   expect(dispatchReportMessage("worker-1", dispatch, "dispatch_state")).toEqual(
