@@ -728,39 +728,37 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
   end
 
   defp stop_worker_process(port, worker_id, captured_pid \\ nil) do
-    pid =
-      case Port.info(port, :os_pid) do
-        {:os_pid, current_pid} -> current_pid
-        nil -> captured_pid
-      end
-
-    if is_integer(pid) do
-      members = process_group_members(pid)
-
-      if members != [] do
-        expected_identity = "--qe-test-worker=#{worker_id}"
-        assert Enum.any?(members, &String.contains?(&1.command, expected_identity))
-        {_, status} = System.cmd("kill", ["-TERM", "-#{pid}"], stderr_to_stdout: true)
-        assert status in [0, 1]
-
-        receive do
-          {^port, {:exit_status, _status}} -> :ok
-        after
-          2_000 -> :ok
-        end
-
-        unless process_group_members(pid) == [] do
-          {_, kill_status} =
-            System.cmd("kill", ["-KILL", "-#{pid}"], stderr_to_stdout: true)
-
-          assert kill_status in [0, 1]
-        end
-
-        assert_eventually(fn -> process_group_members(pid) == [] end)
-      end
-
-      assert Port.info(port) == nil
+    case Port.info(port, :os_pid) do
+      {:os_pid, pid} -> stop_owned_process(port, worker_id, pid)
+      nil when is_integer(captured_pid) -> stop_owned_process(port, worker_id, captured_pid)
+      nil -> :ok
     end
+  end
+
+  defp stop_owned_process(port, worker_id, pid) do
+    members = process_group_members(pid)
+    if members != [], do: terminate_owned_process_group(port, worker_id, pid, members)
+    assert Port.info(port) == nil
+  end
+
+  defp terminate_owned_process_group(port, worker_id, pid, members) do
+    expected_identity = "--qe-test-worker=#{worker_id}"
+    assert Enum.any?(members, &String.contains?(&1.command, expected_identity))
+    {_, status} = System.cmd("kill", ["-TERM", "-#{pid}"], stderr_to_stdout: true)
+    assert status in [0, 1]
+
+    receive do
+      {^port, {:exit_status, _status}} -> :ok
+    after
+      2_000 -> :ok
+    end
+
+    unless process_group_members(pid) == [] do
+      {_, kill_status} = System.cmd("kill", ["-KILL", "-#{pid}"], stderr_to_stdout: true)
+      assert kill_status in [0, 1]
+    end
+
+    assert_eventually(fn -> process_group_members(pid) == [] end)
   end
 
   defp process_group_members(pgid) do
