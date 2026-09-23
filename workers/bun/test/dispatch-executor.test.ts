@@ -83,6 +83,32 @@ function reviewAction(id = "review-action") {
   });
 }
 
+test("disconnect drains started dispatch work before durable stores close", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new FakeHarness({ change_set: { complete: true } });
+  const executor = new DispatchExecutor(registry, harness, async () => false);
+  let release: (() => void) | undefined;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const internal = executor as unknown as {
+    active: Map<string, Promise<void>>;
+  };
+  internal.active.set("active-action", pending);
+
+  let drained = false;
+  const disconnect = executor.disconnect().then(() => {
+    drained = true;
+  });
+  await Bun.sleep(1);
+  expect(drained).toBe(false);
+  release?.();
+  await disconnect;
+  expect(drained).toBe(true);
+  registry.close();
+});
+
 test("independent dispatches enter provider execution concurrently", async () => {
   const { root, database } = await fixture();
   const registry = new DispatchRegistry(database, root);

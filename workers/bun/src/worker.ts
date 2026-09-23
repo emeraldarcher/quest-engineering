@@ -317,7 +317,7 @@ export class QuestEngineeringWorker {
     // Fence new server work first, then make in-flight harness loops observe
     // controller disconnection before closing their durable registries.
     this.channel.close();
-    this.executor.disconnect();
+    void this.trackProtocolOperation(this.executor.disconnect());
     const drained = await this.waitForProtocolOperations(10_000);
     if (!drained) {
       console.error(

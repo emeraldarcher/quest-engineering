@@ -333,11 +333,20 @@ export class DispatchExecutor {
     return harness.attachment(lineage);
   }
 
-  disconnect(): void {
+  async disconnect(): Promise<void> {
+    const operations = new Set<Promise<void>>([
+      ...this.active.values(),
+      ...[...this.promptGateMonitors.values()].map(
+        (monitor) => monitor.operation,
+      ),
+      ...[...this.cancellationOperations.values()].map(
+        (cancellation) => cancellation.operation,
+      ),
+    ]);
     for (const monitor of this.promptGateMonitors.values())
       monitor.cancelled = true;
-    this.promptGateMonitors.clear();
     this.harnesses.disconnect();
+    await Promise.allSettled(operations);
   }
 
   private async execute(actionId: string): Promise<void> {
