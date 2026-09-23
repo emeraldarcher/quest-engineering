@@ -34,10 +34,25 @@ const executionStates: Record<string, StatusPresentation> = {
     description: "Work has been assigned and is waiting to begin.",
     tone: "active",
   },
+  waiting_for_activity: {
+    label: "Waiting for activity",
+    description: "Execution is waiting for the assigned work to begin.",
+    tone: "warning",
+  },
   running: {
     label: "Running",
     description: "Members are working on this Run.",
     tone: "active",
+  },
+  blocked: {
+    label: "Blocked",
+    description: "Execution is waiting for an operator decision or dependency.",
+    tone: "warning",
+  },
+  stalled: {
+    label: "Stalled",
+    description: "Execution stopped making progress and requires attention.",
+    tone: "warning",
   },
   completed: {
     label: "Completed",

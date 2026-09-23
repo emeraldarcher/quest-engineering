@@ -166,6 +166,31 @@ test("decodes projected occurrence and nested attempt history", async () => {
   });
 });
 
+test("decodes runtime waiting, blocked, and stalled execution states", async () => {
+  const value = createFixture("work-yard-running");
+  const source = value?.selectedRunId
+    ? value.runs[value.selectedRunId]
+    : undefined;
+  if (!source) throw new Error("Expected running fixture");
+
+  for (const state of ["waiting_for_activity", "blocked", "stalled"] as const) {
+    const projected = structuredClone(source);
+    projected.status = state;
+    const step = projected.steps.at(-1);
+    if (!step) throw new Error("Expected running Step");
+    step.state = state;
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify({ run: projected })),
+    ) as unknown as typeof fetch;
+
+    const decoded = await new ApiClient({
+      httpBaseUrl: "http://example.test/api/v1",
+    }).getRun(projected.id);
+    expect(decoded.status).toBe(state);
+    expect(decoded.steps.at(-1)?.state).toBe(state);
+  }
+});
+
 test("strictly preserves false prompt authorization eligibility", async () => {
   const run = await decodeFixtureRecovery(false);
   expect(run.steps.at(-1)?.recovery?.can_authorize_prompt).toBe(false);

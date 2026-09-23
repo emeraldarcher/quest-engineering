@@ -974,7 +974,15 @@ function decodeRun(value: unknown): RunProjection {
       pending: asNumber(counts.pending, "count"),
       waiting: asNumber(counts.waiting, "count"),
       scheduled: asNumber(counts.scheduled, "count"),
+      waiting_for_activity:
+        counts.waiting_for_activity === undefined
+          ? 0
+          : asNumber(counts.waiting_for_activity, "count"),
       running: asNumber(counts.running, "count"),
+      blocked:
+        counts.blocked === undefined ? 0 : asNumber(counts.blocked, "count"),
+      stalled:
+        counts.stalled === undefined ? 0 : asNumber(counts.stalled, "count"),
       completed: asNumber(counts.completed, "count"),
       failed: asNumber(counts.failed, "count"),
       cancelled:
@@ -1588,7 +1596,10 @@ function stepState(value: unknown): StepState {
       "pending",
       "waiting",
       "scheduled",
+      "waiting_for_activity",
       "running",
+      "blocked",
+      "stalled",
       "completed",
       "failed",
       "cancelled",
