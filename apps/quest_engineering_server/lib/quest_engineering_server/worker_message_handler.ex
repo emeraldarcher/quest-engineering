@@ -3,11 +3,13 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
   require Logger
 
+  alias QuestEngineering.Server.CancellationAdapter
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DeliveryCoordinator
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.Dispatcher
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.OperationalFailure
   alias QuestEngineering.Server.OperationalRecovery
@@ -203,6 +205,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          {:ok, reconciliation} <- Reconciler.reconcile(worker_id, generation, dispatches) do
       _ = Dispatcher.redeliver(worker_id, generation)
       prompt_authorizations = DispatchStore.prompt_authorizations_for_worker(worker_id)
+      cancellation_commands = ExecutionCancellation.pending_for_worker(worker_id, generation)
       Scheduler.wake_all()
       Enum.each(Reconciler.run_ids_for_worker(worker_id), &RunChangeNotifier.notify/1)
       ProductChangeNotifier.notify(["quests", "runs"])
@@ -220,9 +223,16 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
              %{reconciled_completion_action_id: action_id} -> [action_id]
              _other -> []
            end),
+         "terminal_action_ids" =>
+           reconciliation.observed
+           |> Enum.flat_map(fn
+             %{reconciled_terminal_action_id: action_id} -> [action_id]
+             _other -> []
+           end),
          "dispatch_resolutions" =>
            Enum.filter(reconciliation.observed, &Map.has_key?(&1, :resolution)),
-         "prompt_authorizations" => prompt_authorizations
+         "prompt_authorizations" => prompt_authorizations,
+         "cancellation_commands" => cancellation_commands
        }}
     end
   end
@@ -247,6 +257,25 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
       {:error, error} ->
         {:error, error}
+    end
+  end
+
+  defp failure(worker_id, generation, %{failure: %{"code" => "execution_cancelled"}} = message) do
+    with :ok <- validate_identity(worker_id, message),
+         {:ok, result} <- CancellationAdapter.cancel(worker_id, generation, message) do
+      Scheduler.wake_all()
+      ProductChangeNotifier.notify(["quests", "runs"])
+      notify_action(message.action_id)
+
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "execution_cancelled",
+         "action_id" => message.action_id,
+         "run_revision" => result.transition.revision,
+         "idempotent_replay" => result.transition.idempotent_replay?
+       }}
     end
   end
 

@@ -11,6 +11,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.LaunchQuest
@@ -25,6 +26,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.Persistence.RunDelivery
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Persistence.RuntimeTransition
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.WorkerDispatch
@@ -1009,6 +1011,453 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     persisted = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
     assert persisted.prompt_authorization_request_id == request_id
     assert persisted.prompt_authorized_at
+  end
+
+  test "Product cancellation is exact, idempotent, terminal, and excludes prompt authorization",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-product-cancellation", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "cancellation-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    unauthorized_failure = %{
+      "code" => "execution_cancelled",
+      "reason" => "execution_cancelled",
+      "classification" => "terminal_not_recoverable",
+      "cancellation_request_id" => Ecto.UUID.generate(),
+      "cancellation_origin" => "product_operator",
+      "cancellation_worker_generation" => worker.connection_generation,
+      "cancelled_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    assert {:error, %{type: :execution_cancellation_unauthorized}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: dispatch.action_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id,
+               failure: unauthorized_failure
+             })
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, cancellation} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id,
+               "Disposable no-inference preflight complete."
+             )
+
+    refute cancellation.idempotent_replay
+    assert cancellation.state == :cancellation_requested
+    assert cancellation.delivery == :sent
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "cancel_dispatch",
+                      "protocol_version" => 9,
+                      "worker_id" => worker_id,
+                      "connection_generation" => generation,
+                      "action_id" => action_id,
+                      "run_id" => run_id,
+                      "occurrence_id" => occurrence_id,
+                      "attempt_id" => attempt_id,
+                      "cancellation" => %{
+                        "request_id" => ^request_id,
+                        "origin" => "product_operator",
+                        "requested_at" => requested_at
+                      }
+                    }}
+
+    assert worker_id == worker.id
+    assert generation == worker.connection_generation
+    assert action_id == dispatch.action_id
+    assert run_id == launched.run_id
+    assert occurrence_id == dispatch.execution.identity.occurrence_id
+    assert attempt_id == dispatch.execution.identity.attempt_id
+    assert is_binary(requested_at)
+
+    assert {:ok, replay} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               occurrence_id,
+               attempt_id,
+               Ecto.UUID.generate(),
+               "A replay must not replace provenance."
+             )
+
+    assert replay.idempotent_replay
+    assert replay.request_id == request_id
+    assert replay.delivery == :not_repeated
+    refute_receive {:worker_protocol, %{"type" => "cancel_dispatch"}}, 20
+
+    assert {:error, %{code: :execution_cancellation_pending}} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               occurrence_id,
+               attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert {:error, %{type: :execution_cancellation_pending}} =
+             CompletionAdapter.complete(worker.id, worker.connection_generation, %{
+               action_id: action_id,
+               occurrence_id: occurrence_id,
+               attempt_id: attempt_id,
+               outputs: %{}
+             })
+
+    assert {:ok, _} =
+             WorkerStore.disconnect(
+               worker.id,
+               worker.connection_id,
+               worker.connection_generation
+             )
+
+    assert {:ok, reconnected} =
+             WorkerStore.register(
+               worker.id,
+               worker.capabilities,
+               "cancellation-reconnected"
+             )
+
+    assert reconnected.connection_generation == worker.connection_generation + 1
+
+    failure = %{
+      "code" => "execution_cancelled",
+      "reason" => "execution_cancelled",
+      "classification" => "terminal_not_recoverable",
+      "message" => "The QE Attempt was explicitly cancelled by the Product operator.",
+      "cancellation_request_id" => request_id,
+      "cancellation_origin" => "product_operator",
+      "cancellation_reason" => "Disposable no-inference preflight complete.",
+      "cancellation_requested_at" => requested_at,
+      "cancellation_worker_generation" => generation,
+      "cancelled_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    cancellation_message = %{
+      type: :step_failed,
+      action_id: action_id,
+      occurrence_id: occurrence_id,
+      attempt_id: attempt_id,
+      failure: failure
+    }
+
+    assert {:ok,
+            %{
+              "result" => "execution_cancelled",
+              "idempotent_replay" => false
+            }} =
+             WorkerMessageHandler.handle(
+               reconnected.id,
+               reconnected.connection_generation,
+               cancellation_message
+             )
+
+    assert {:ok, %{"result" => "execution_cancelled", "idempotent_replay" => true}} =
+             WorkerMessageHandler.handle(
+               reconnected.id,
+               reconnected.connection_generation,
+               cancellation_message
+             )
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: action_id)
+    assert persisted.state == "failed"
+    assert persisted.failure == failure
+    assert persisted.cancellation_request_id == request_id
+    assert is_nil(persisted.prompt_authorization_request_id)
+    assert is_nil(persisted.prompt_authorized_at)
+
+    assert Repo.get!(RunWorkspaceAssignment, launched.run_id).state == "retained"
+    assert Repo.reload!(worker).active_dispatches == 0
+    assert Repo.get_by!(ScheduledActionExecution, action_id: action_id).state == "failed"
+
+    cancellation_transition_count =
+      Repo.aggregate(
+        from(transition in RuntimeTransition,
+          where: like(transition.transition_id, "worker-cancellation/v1/%")
+        ),
+        :count
+      )
+
+    assert cancellation_transition_count == 1
+
+    assert {:ok, projection} = RunProjection.get(launched.run_id)
+    assert projection.status == "cancelled"
+    [step] = projection.steps
+    assert step.state == "cancelled"
+    assert step.issue.code == "execution_cancelled"
+    assert is_nil(step.recovery)
+    assert step.attempt.resolution == "cancelled"
+    assert step.attempt.cancellation.state == "cancelled"
+    assert step.attempt.cancellation.request_id == request_id
+    assert step.attempt.outputs == []
+    assert projection.step_counts["cancelled"] == 1
+  end
+
+  test "authorization that commits before cancellation remains historical while cancellation wins terminal authority",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-authorization-before-cancel", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "authorization-before-cancel",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: Ecto.UUID.generate(),
+               action_id: dispatch.action_id,
+               run_id: launched.run_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id,
+               member_key: dispatch.execution.performer.member_key,
+               harness_kind: "pi",
+               harness_display_name: "Pi",
+               state: :waiting_for_human,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: %{"supports_observation" => true, "supports_takeover" => true},
+               native_session_id: nil,
+               attention: %{
+                 "attention_id" =>
+                   "qe-prompt-authorization-#{dispatch.execution.identity.attempt_id}",
+                 "category" => "needs_confirmation",
+                 "message" => "Initial execution environment ready."
+               },
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    authorization_request_id = Ecto.UUID.generate()
+
+    assert {:ok, _} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               authorization_request_id
+             )
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "authorize_dispatch_prompt",
+                      "action_id" => action_id
+                    }}
+
+    assert action_id == dispatch.action_id
+
+    Repo.get_by!(ExecutionSession, current_action_id: action_id)
+    |> Ecto.Changeset.change(state: "running", attention: nil)
+    |> Repo.update!()
+
+    assert {:ok, before_cancellation} = RunProjection.get(launched.run_id)
+    [before_step] = before_cancellation.steps
+    assert before_step.attempt.session.attachment.can_takeover
+
+    cancellation_request_id = Ecto.UUID.generate()
+
+    assert {:ok, %{state: :cancellation_requested, delivery: :sent}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               cancellation_request_id
+             )
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "cancel_dispatch",
+                      "action_id" => ^action_id,
+                      "cancellation" => %{"request_id" => ^cancellation_request_id}
+                    }}
+
+    assert {:ok, after_cancellation} = RunProjection.get(launched.run_id)
+    [after_step] = after_cancellation.steps
+    refute after_step.attempt.session.attachment.can_takeover
+    refute after_step.attempt.session.attachment.can_recover
+
+    assert {:ok, descriptor} =
+             ExecutionSessionStore.attachment_descriptor(
+               launched.run_id,
+               dispatch.execution.identity.attempt_id,
+               after_step.attempt.session.id
+             )
+
+    refute descriptor.takeover_allowed
+    refute descriptor.recovery_allowed
+    assert {:ok, _} = ExecutionSessionStore.record_opened(descriptor.descriptor_token, "observe")
+
+    assert {:error, :attachment_unavailable} =
+             ExecutionSessionStore.record_opened(descriptor.descriptor_token, "takeover")
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: action_id)
+    assert persisted.prompt_authorization_request_id == authorization_request_id
+    assert persisted.prompt_authorized_at
+    assert persisted.cancellation_request_id == cancellation_request_id
+    assert persisted.cancellation_requested_at
+  end
+
+  test "disconnected cancellation stays pending and is redelivered with the reconnect generation",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-cancellation-reconnect", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    assert {:ok, _} =
+             WorkerStore.disconnect(
+               worker.id,
+               worker.connection_id,
+               worker.connection_generation
+             )
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, %{delivery: :pending, state: :cancellation_requested}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id
+             )
+
+    [command] =
+      ExecutionCancellation.pending_for_worker(worker.id, worker.connection_generation + 1)
+
+    assert command["type"] == "cancel_dispatch"
+    assert command["connection_generation"] == worker.connection_generation + 1
+    assert command["action_id"] == dispatch.action_id
+    assert command["cancellation"]["request_id"] == request_id
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert persisted.state == "acknowledged"
+    assert is_nil(persisted.terminal_at)
+    assert persisted.cancellation_request_id == request_id
+  end
+
+  test "already completed Attempt returns a non-mutating cancellation result", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-cancellation-terminal", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    complete(worker, dispatch)
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok,
+            %{
+              state: :already_terminal,
+              delivery: :not_repeated,
+              request_id: nil,
+              idempotent_replay: true
+            }} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id
+             )
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert persisted.state == "completed"
+    assert is_nil(persisted.cancellation_request_id)
+  end
+
+  test "Product cancellation rejects stale Attempt identity and uncertain dispatches", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-cancellation-rejections", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    assert {:error, %{code: :execution_cancellation_identity_mismatch}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               Ecto.UUID.generate(),
+               Ecto.UUID.generate()
+             )
+
+    assert {:ok, _} =
+             DispatchStore.mark_uncertain(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id,
+               %{"reason" => "transport_lost"}
+             )
+
+    assert {:error, %{code: :execution_cancellation_requires_recovery}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
   end
 
   test "blocked fresh recovery retires immutably, appends one epoch, and stages paid inference",

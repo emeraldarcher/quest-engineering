@@ -14,6 +14,11 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
     field :operational_recovery_requested_at, :utc_datetime_usec
     field :prompt_authorization_request_id, :string
     field :prompt_authorized_at, :utc_datetime_usec
+    field :cancellation_request_id, :string
+    field :cancellation_origin, :string
+    field :cancellation_reason, :string
+    field :cancellation_requested_generation, :integer
+    field :cancellation_requested_at, :utc_datetime_usec
     field :state, :string
     field :payload_hash, :string
     field :claim_owner, :string
@@ -40,6 +45,11 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
       :operational_recovery_requested_at,
       :prompt_authorization_request_id,
       :prompt_authorized_at,
+      :cancellation_request_id,
+      :cancellation_origin,
+      :cancellation_reason,
+      :cancellation_requested_generation,
+      :cancellation_requested_at,
       :state,
       :payload_hash,
       :claim_owner,
@@ -80,9 +90,15 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
     |> unique_constraint(:prompt_authorization_request_id,
       name: :worker_dispatches_prompt_authorization_request_index
     )
+    |> unique_constraint(:cancellation_request_id,
+      name: :worker_dispatches_cancellation_request_index
+    )
     |> unique_constraint([:worker_id, :worker_slot], name: :worker_dispatches_active_slot_index)
     |> check_constraint(:state, name: :worker_dispatches_state_valid)
     |> check_constraint(:worker_slot, name: :worker_dispatches_slot_valid)
     |> check_constraint(:worker_slot, name: :worker_dispatches_nonterminal_slot_required)
+    |> check_constraint(:cancellation_request_id,
+      name: :worker_dispatches_cancellation_provenance_valid
+    )
   end
 end

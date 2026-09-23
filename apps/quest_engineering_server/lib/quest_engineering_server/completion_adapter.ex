@@ -8,6 +8,7 @@ defmodule QuestEngineering.Server.CompletionAdapter do
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
+  alias QuestEngineering.Server.Persistence.RuntimeRun
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerDispatch
@@ -17,12 +18,21 @@ defmodule QuestEngineering.Server.CompletionAdapter do
 
   def complete(worker_id, generation, message) do
     transact(fn ->
+      outbox = Repo.get_by!(RuntimeOutbox, action_id: message.action_id)
+      {:ok, action} = decode_or_rollback(outbox)
+      lock_runtime!(action.run_id)
       lock_generation!(worker_id, generation)
       dispatch = lock_dispatch!(message.action_id)
       validate_worker!(dispatch, worker_id)
-      outbox = Repo.get_by!(RuntimeOutbox, action_id: message.action_id)
-      {:ok, action} = decode_or_rollback(outbox)
       validate_identity!(action, message, worker_id)
+
+      if dispatch.cancellation_requested_at do
+        Repo.rollback(
+          error(:execution_cancellation_pending, worker_id, action.id, %{
+            cancellation_request_id: dispatch.cancellation_request_id
+          })
+        )
+      end
 
       event = Runtime.completed(action, message.outputs)
       transition_id = transition_id(worker_id, action.id)
@@ -70,6 +80,13 @@ defmodule QuestEngineering.Server.CompletionAdapter do
     "worker-completion/v1/" <>
       Base.url_encode64(worker_id, padding: false) <>
       "/" <> Base.url_encode64(action_id, padding: false)
+  end
+
+  defp lock_runtime!(run_id) do
+    case Repo.one(from run in RuntimeRun, where: run.id == ^run_id, lock: "FOR UPDATE") do
+      nil -> Repo.rollback(error(:run_not_found, nil))
+      run -> run
+    end
   end
 
   defp lock_generation!(worker_id, generation) do

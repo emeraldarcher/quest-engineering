@@ -1037,12 +1037,55 @@ export class DispatchRegistry {
       .immediate();
   }
 
-  acknowledgeServerCompletion(actionId: string): void {
+  cancel(
+    actionId: string,
+    failure: Record<string, JsonValue>,
+  ): { dispatch: DispatchRecord; changed: boolean } {
+    return this.db
+      .transaction(() => {
+        const dispatch = this.get(actionId);
+        if (
+          ["completed", "failed"].includes(dispatch.state) &&
+          dispatch.serverAcknowledgedAt
+        )
+          throw new Error(
+            `Cannot cancel server-acknowledged terminal dispatch ${actionId}.`,
+          );
+        if (
+          dispatch.state === "failed" &&
+          dispatch.failure?.code === "execution_cancelled" &&
+          dispatch.failure.cancellation_request_id ===
+            failure.cancellation_request_id
+        )
+          return { dispatch, changed: false };
+
+        this.db
+          .query(
+            "UPDATE dispatches SET state='failed',outputs_json=NULL,failure_json=?,server_acknowledged_at=NULL,updated_at=? WHERE action_id=?",
+          )
+          .run(JSON.stringify(failure), now(), actionId);
+        if (dispatch.lineageId) {
+          this.db
+            .query(
+              "UPDATE provider_lineages SET active_action_id=NULL,session_state='retained',attention_json=NULL,last_activity_at=?,updated_at=? WHERE lineage_id=? AND active_action_id=?",
+            )
+            .run(now(), now(), dispatch.lineageId, actionId);
+        }
+        return { dispatch: this.get(actionId), changed: true };
+      })
+      .immediate();
+  }
+
+  acknowledgeServerTerminal(actionId: string): void {
     this.db
       .query(
-        "UPDATE dispatches SET server_acknowledged_at=COALESCE(server_acknowledged_at,?),updated_at=? WHERE action_id=? AND state='completed'",
+        "UPDATE dispatches SET server_acknowledged_at=COALESCE(server_acknowledged_at,?),updated_at=? WHERE action_id=? AND state IN ('completed','failed')",
       )
       .run(now(), now(), actionId);
+  }
+
+  acknowledgeServerCompletion(actionId: string): void {
+    this.acknowledgeServerTerminal(actionId);
   }
 
   reconcilePayloads(): ReconcileDispatch[] {

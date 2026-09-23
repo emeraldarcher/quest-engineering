@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 8
+  @version 9
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -239,6 +239,25 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "worker_id" => worker_id,
       "action_id" => action_id,
       "failure" => failure
+    }
+  end
+
+  def cancel_dispatch(dispatch, action, generation) do
+    %{
+      "type" => "cancel_dispatch",
+      "protocol_version" => @version,
+      "worker_id" => dispatch.worker_id,
+      "connection_generation" => generation,
+      "action_id" => action.id,
+      "run_id" => action.run_id,
+      "occurrence_id" => action.occurrence_id,
+      "attempt_id" => action.attempt_id,
+      "cancellation" => %{
+        "request_id" => dispatch.cancellation_request_id,
+        "origin" => dispatch.cancellation_origin,
+        "reason" => dispatch.cancellation_reason,
+        "requested_at" => DateTime.to_iso8601(dispatch.cancellation_requested_at)
+      }
     }
   end
 

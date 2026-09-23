@@ -140,7 +140,7 @@ const instruction =
   'Use bash to run "sleep 20" first. After it finishes, create restart-proof.txt containing exactly "same Pi survived Worker restart" followed by a newline. Produce change_set describing the file.';
 const action: ExecuteAction = {
   type: "execute_action",
-  protocol_version: 8,
+  protocol_version: 9,
   worker_id: config.workerId,
   execution: {
     identity: {

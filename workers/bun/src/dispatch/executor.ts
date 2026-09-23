@@ -8,6 +8,7 @@ import type {
 } from "../harnesses/types.ts";
 import { OperationalExecutionError } from "../harnesses/types.ts";
 import type {
+  CancelDispatch,
   ExecuteAction,
   JsonValue,
   ReconcileDispatch,
@@ -40,6 +41,10 @@ export class DispatchExecutor {
   private readonly promptGateMonitors = new Map<
     string,
     { cancelled: boolean; operation: Promise<void> }
+  >();
+  private readonly cancellationOperations = new Map<
+    string,
+    { requestId: string; operation: Promise<void> }
   >();
   private readonly harnesses: HarnessRegistry;
 
@@ -101,6 +106,11 @@ export class DispatchExecutor {
         (dispatch.state === "uncertain" &&
           !isRecoverableObservationUncertainty(dispatch))
       ) {
+        if (
+          dispatch.failure?.code === "execution_cancelled" &&
+          !dispatch.serverAcknowledgedAt
+        )
+          continue;
         const lineage = dispatch.lineageId
           ? this.registry.getLineage(dispatch.lineageId)
           : null;
@@ -192,32 +202,118 @@ export class DispatchExecutor {
     await this.reportFailure(failed);
   }
 
-  async cancel(actionId: string): Promise<void> {
-    const current = this.registry.get(actionId);
-    if (["completed", "failed"].includes(current.state)) return;
+  cancel(command: CancelDispatch): Promise<void> {
+    const existing = this.cancellationOperations.get(command.action_id);
+    if (existing) {
+      if (existing.requestId !== command.cancellation.request_id)
+        throw new Error(
+          `Dispatch ${command.action_id} already has a different cancellation operation.`,
+        );
+      return existing.operation;
+    }
+
+    const operation = this.cancelOnce(command).finally(() => {
+      if (
+        this.cancellationOperations.get(command.action_id)?.operation ===
+        operation
+      )
+        this.cancellationOperations.delete(command.action_id);
+    });
+    this.cancellationOperations.set(command.action_id, {
+      requestId: command.cancellation.request_id,
+      operation,
+    });
+    return operation;
+  }
+
+  private async cancelOnce(command: CancelDispatch): Promise<void> {
+    let current = this.registry.get(command.action_id);
+    assertCancellationIdentity(current, command);
+    await this.stopPromptGateMonitor(command.action_id);
+    current = this.registry.get(command.action_id);
+    assertCancellationIdentity(current, command);
+
+    if (
+      ["completed", "failed"].includes(current.state) &&
+      current.serverAcknowledgedAt
+    )
+      return;
     if (!current.lineageId)
       throw new Error(
-        `Dispatch ${actionId} has no cancellable harness lineage.`,
+        `Dispatch ${command.action_id} has no cancellable harness lineage.`,
       );
+
     const lineage = this.registry.getLineage(current.lineageId);
     const harness = this.harnessForLineage(lineage);
-    await harness.interrupt?.(lineage);
-    const failed = this.registry.fail(
-      actionId,
-      {
-        reason: "execution_cancelled",
-        code: "execution_cancelled",
-        classification: "terminal_not_recoverable",
-        message: "The QE Attempt was explicitly cancelled.",
-      },
-      false,
-    );
-    await harness.clearActiveMetadata(
-      failed,
-      this.registry.getLineage(lineage.lineageId),
-    );
-    await this.reportFailure(failed);
-    await this.onTerminalFailure(failed);
+    const alreadyCancelled =
+      current.state === "failed" &&
+      current.failure?.code === "execution_cancelled" &&
+      current.failure.cancellation_request_id ===
+        command.cancellation.request_id;
+
+    if (!alreadyCancelled && !["completed", "failed"].includes(current.state))
+      await harness.interrupt?.(lineage);
+
+    const cancelledAt = new Date().toISOString();
+    const cancellation = this.registry.cancel(command.action_id, {
+      reason: "execution_cancelled",
+      code: "execution_cancelled",
+      classification: "terminal_not_recoverable",
+      message:
+        "The QE Attempt was explicitly cancelled by the Product operator.",
+      cancellation_request_id: command.cancellation.request_id,
+      cancellation_origin: command.cancellation.origin,
+      cancellation_reason: command.cancellation.reason,
+      cancellation_requested_at: command.cancellation.requested_at,
+      cancellation_worker_generation: command.connection_generation,
+      cancelled_at: cancelledAt,
+    });
+
+    await this.reportFailure(cancellation.dispatch);
+  }
+
+  async acknowledgeTerminal(actionId: string): Promise<void> {
+    const current = this.registry.get(actionId);
+    if (!["completed", "failed"].includes(current.state)) return;
+    const monitor = this.promptGateMonitors.get(actionId);
+    if (monitor) monitor.cancelled = true;
+    const newlyAcknowledged = current.serverAcknowledgedAt === null;
+    this.registry.acknowledgeServerTerminal(actionId);
+
+    try {
+      if (
+        newlyAcknowledged &&
+        current.failure?.code === "execution_cancelled" &&
+        current.lineageId
+      ) {
+        const lineage = this.registry.getLineage(current.lineageId);
+        const harness = this.harnessForLineage(lineage);
+        await harness.clearActiveMetadata(current, lineage);
+        let sessionState: "retained" | "unavailable" = "retained";
+        let lastActivityAt = new Date().toISOString();
+        try {
+          const inspection = await harness.inspect(
+            this.registry.getLineage(lineage.lineageId),
+          );
+          sessionState =
+            inspection.state === "unavailable" ? "unavailable" : "retained";
+          lastActivityAt = inspection.lastActivityAt;
+        } catch {
+          // The terminal cancellation is durable; reconciliation can refresh observation later.
+        }
+        const updated = this.registry.updateSession(
+          lineage.lineageId,
+          sessionState,
+          null,
+          lastActivityAt,
+          lineage.intervention,
+        );
+        await this.reportSession(current, updated);
+        await this.onTerminalFailure(current);
+      }
+    } finally {
+      if (current.lineageId) this.control?.invalidate(current.lineageId);
+    }
   }
 
   physicalProcessTransition(actionId: string) {
@@ -961,9 +1057,7 @@ export class DispatchExecutor {
       payload(dispatch, "completed"),
       "step_completed",
     );
-    if (acknowledged)
-      this.registry.acknowledgeServerCompletion(dispatch.action.action_id);
-    if (dispatch.lineageId) this.control?.invalidate(dispatch.lineageId);
+    if (acknowledged) await this.acknowledgeTerminal(dispatch.action.action_id);
   }
   private async reportFailure(dispatch: DispatchRecord): Promise<void> {
     if (dispatch.lineageId)
@@ -973,10 +1067,30 @@ export class DispatchExecutor {
       );
     if (dispatch.state === "uncertain")
       await this.report(payload(dispatch, "uncertain"), "dispatch_state");
-    else await this.report(payload(dispatch, "failed"), "step_failed");
-    if (dispatch.lineageId && dispatch.state === "failed")
-      this.control?.invalidate(dispatch.lineageId);
+    else {
+      const acknowledged = await this.report(
+        payload(dispatch, "failed"),
+        "step_failed",
+      );
+      if (acknowledged)
+        await this.acknowledgeTerminal(dispatch.action.action_id);
+    }
   }
+}
+
+function assertCancellationIdentity(
+  dispatch: DispatchRecord,
+  command: CancelDispatch,
+): void {
+  if (
+    dispatch.action.action_id !== command.action_id ||
+    dispatch.action.run_id !== command.run_id ||
+    dispatch.action.occurrence_id !== command.occurrence_id ||
+    dispatch.action.attempt_id !== command.attempt_id
+  )
+    throw new Error(
+      `Cancellation identity does not match dispatch ${command.action_id}.`,
+    );
 }
 
 function requiresPromptAuthorization(action: ExecuteAction): boolean {

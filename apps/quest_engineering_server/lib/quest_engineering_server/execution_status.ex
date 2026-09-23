@@ -18,13 +18,16 @@ defmodule QuestEngineering.Server.ExecutionStatus do
 
   def step_state(:pending, _scheduled, _dispatch, _session), do: "pending"
   def step_state(:completed, _scheduled, _dispatch, _session), do: "completed"
-  def step_state(:failed, _scheduled, _dispatch, _session), do: "failed"
+
+  def step_state(:failed, _scheduled, dispatch, _session),
+    do: if(cancelled?(dispatch), do: "cancelled", else: "failed")
 
   def step_state(:dispatched, scheduled, dispatch, session) do
     active_step_state(record_state(dispatch), record_state(scheduled), turn_phase(session))
   end
 
   defp active_step_state("uncertain", _scheduled, _phase), do: "uncertain"
+  defp active_step_state("cancelled", _scheduled, _phase), do: "cancelled"
   defp active_step_state(_dispatch, "failed", _phase), do: "failed"
   defp active_step_state("failed", _scheduled, _phase), do: "failed"
   defp active_step_state(_dispatch, _scheduled, "uncertain"), do: "uncertain"
@@ -48,7 +51,9 @@ defmodule QuestEngineering.Server.ExecutionStatus do
 
   defp active_step_state(_dispatch, _scheduled, _phase), do: "waiting"
 
-  def run_state(:failed, _states), do: "failed"
+  def run_state(:failed, states),
+    do: if("cancelled" in states and "failed" not in states, do: "cancelled", else: "failed")
+
   def run_state(:completed, _states), do: "completed"
 
   def run_state(:running, states) do
@@ -96,7 +101,12 @@ defmodule QuestEngineering.Server.ExecutionStatus do
   end
 
   defp record_state(nil), do: nil
-  defp record_state(record), do: Map.get(record, :state)
+
+  defp record_state(record),
+    do: if(cancelled?(record), do: "cancelled", else: Map.get(record, :state))
+
+  defp cancelled?(%{state: "failed", failure: %{"code" => "execution_cancelled"}}), do: true
+  defp cancelled?(_record), do: false
 
   defp turn_phase(nil), do: nil
   defp turn_phase(%{turn: %{"phase" => phase}}), do: phase

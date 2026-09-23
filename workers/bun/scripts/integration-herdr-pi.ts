@@ -252,7 +252,7 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
       : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 8,
+    protocol_version: 9,
     worker_id: config.workerId,
     execution: {
       identity: {

@@ -41,6 +41,7 @@ test("decodes projected occurrence and nested attempt history", async () => {
                 control_path: [],
                 attempt: {
                   id: "attempt-2",
+                  action_id: "action-2",
                   number: 2,
                   state: "running",
                   started_at: "2026-09-01T12:01:00Z",
@@ -48,6 +49,15 @@ test("decodes projected occurrence and nested attempt history", async () => {
                   outputs: [],
                   output_produced: false,
                   resolution: null,
+                  cancellation: {
+                    state: "requested",
+                    request_id: "cancel-request-2",
+                    origin: "product_operator",
+                    reason: "preflight complete",
+                    requested_generation: 4,
+                    requested_at: "2026-09-01T12:01:30Z",
+                    cancelled_at: null,
+                  },
                   retry_of_attempt_id: "attempt-1",
                 },
                 attempts: [
@@ -64,6 +74,7 @@ test("decodes projected occurrence and nested attempt history", async () => {
                   },
                   {
                     id: "attempt-2",
+                    action_id: "action-2",
                     number: 2,
                     state: "running",
                     started_at: "2026-09-01T12:01:00Z",
@@ -71,6 +82,15 @@ test("decodes projected occurrence and nested attempt history", async () => {
                     outputs: [],
                     output_produced: false,
                     resolution: null,
+                    cancellation: {
+                      state: "requested",
+                      request_id: "cancel-request-2",
+                      origin: "product_operator",
+                      reason: "preflight complete",
+                      requested_generation: 4,
+                      requested_at: "2026-09-01T12:01:30Z",
+                      cancelled_at: null,
+                    },
                     retry_of_attempt_id: "attempt-1",
                   },
                 ],
@@ -120,6 +140,11 @@ test("decodes projected occurrence and nested attempt history", async () => {
   expect(run.launch.id).toBe("launch-1");
   expect(run.steps[0]?.attempt?.id).toBe("attempt-2");
   expect(run.steps[0]?.attempts).toHaveLength(2);
+  expect(run.steps[0]?.attempt?.cancellation).toMatchObject({
+    state: "requested",
+    request_id: "cancel-request-2",
+    requested_generation: 4,
+  });
   expect(run.steps[0]?.attempts[0]).toMatchObject({
     number: 1,
     state: "uncertain",

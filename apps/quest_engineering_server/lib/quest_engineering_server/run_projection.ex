@@ -293,7 +293,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
   defp recovery(
          _state,
-         %WorkerDispatch{prompt_authorized_at: nil},
+         %WorkerDispatch{prompt_authorized_at: nil, cancellation_requested_at: nil},
          %{
            operational: %{recovery_kind: recovery_kind},
            session: %{
@@ -461,6 +461,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
     %{
       id: attempt.id,
+      action_id: facts.action && facts.action.id,
       number: attempt.number,
       state: attempt_state(attempt, facts.scheduled, facts.dispatch, facts.session),
       started_at: started_at(facts),
@@ -468,10 +469,11 @@ defmodule QuestEngineering.Server.RunProjection do
       outputs: outputs,
       output_produced: outputs != [],
       resolution: attempt_resolution(facts.dispatch),
+      cancellation: cancellation(facts.dispatch),
       retry_of_attempt_id: previous_attempt_id(occurrence.attempts, attempt.number),
       operational: operational_attempt(facts.attribution, facts.epoch),
       execution: attempt_execution_configuration(facts.scheduled),
-      session: attempt_session(facts.action, execution)
+      session: attempt_session(facts.action, execution, facts.dispatch)
     }
   end
 
@@ -553,12 +555,12 @@ defmodule QuestEngineering.Server.RunProjection do
     end
   end
 
-  defp attempt_session(nil, _execution), do: nil
+  defp attempt_session(nil, _execution, _dispatch), do: nil
 
-  defp attempt_session(action, execution) do
+  defp attempt_session(action, execution, dispatch) do
     case Map.get(execution.session_by_action, action.id) do
       {persisted, worker} ->
-        session_projection(persisted, worker, execution.session_events, action.id)
+        session_projection(persisted, worker, execution.session_events, action.id, dispatch)
 
       nil ->
         nil
@@ -580,7 +582,7 @@ defmodule QuestEngineering.Server.RunProjection do
   defp tool_policy(%QuestEngineering.Core.Product.ToolPolicy.NativePermissions{}),
     do: %{kind: "native_permissions"}
 
-  defp session_projection(session, worker, events, action_id) do
+  defp session_projection(session, worker, events, action_id, dispatch) do
     current_usage = session.current_action_id == action_id
     available = session_available?(session, worker)
 
@@ -598,7 +600,7 @@ defmodule QuestEngineering.Server.RunProjection do
         terminal_id: get_in(session.terminal || %{}, ["terminal_id"])
       },
       capabilities: capability_projection(session.capabilities),
-      attachment: attachment_projection(session, worker, current_usage, available),
+      attachment: attachment_projection(session, worker, current_usage, available, dispatch),
       attention: if(current_usage, do: session.attention, else: nil),
       turn: session.turn,
       started_at: iso(session.started_at),
@@ -651,21 +653,31 @@ defmodule QuestEngineering.Server.RunProjection do
   defp session_state(session, _worker, true), do: session.state
   defp session_state(_session, _worker, false), do: "retained"
 
-  defp attachment_projection(session, worker, current_usage, available) do
+  defp attachment_projection(session, worker, current_usage, available, dispatch) do
     %{
       mode: "local_native_terminal",
       available: available,
       reason: attachment_unavailable_reason(session, worker, available),
       can_observe: available and get_in(session.terminal, ["supports_observation"]) == true,
-      can_takeover:
-        available and current_usage and
-          get_in(session.terminal, ["supports_takeover"]) == true and
-          not pre_prompt_authorization_pending?(session),
-      can_recover:
-        available and current_usage and session.state == "retained" and
-          get_in(session.terminal, ["supports_takeover"]) == true
+      can_takeover: takeover_available?(session, current_usage, available, dispatch),
+      can_recover: recovery_available?(session, current_usage, available, dispatch)
     }
   end
+
+  defp takeover_available?(session, current_usage, available, dispatch) do
+    available and current_usage and not cancellation_fenced?(dispatch) and
+      get_in(session.terminal, ["supports_takeover"]) == true and
+      not pre_prompt_authorization_pending?(session)
+  end
+
+  defp recovery_available?(session, current_usage, available, dispatch) do
+    available and current_usage and not cancellation_fenced?(dispatch) and
+      session.state == "retained" and
+      get_in(session.terminal, ["supports_takeover"]) == true
+  end
+
+  defp cancellation_fenced?(nil), do: false
+  defp cancellation_fenced?(dispatch), do: not is_nil(dispatch.cancellation_requested_at)
 
   defp pre_prompt_authorization_pending?(session) do
     attention_id = get_in(session.attention || %{}, ["attention_id"])
@@ -717,7 +729,31 @@ defmodule QuestEngineering.Server.RunProjection do
 
   defp attempt_resolution(%{failure: %{"code" => "operator_retry_requested"}}), do: "retried"
   defp attempt_resolution(%{failure: %{"code" => "operator_marked_failed"}}), do: "marked_failed"
+  defp attempt_resolution(%{failure: %{"code" => "execution_cancelled"}}), do: "cancelled"
   defp attempt_resolution(_dispatch), do: nil
+
+  defp cancellation(%WorkerDispatch{cancellation_requested_at: nil}), do: nil
+  defp cancellation(nil), do: nil
+
+  defp cancellation(dispatch) do
+    %{
+      state:
+        if(get_in(dispatch.failure || %{}, ["code"]) == "execution_cancelled",
+          do: "cancelled",
+          else: "requested"
+        ),
+      request_id: dispatch.cancellation_request_id,
+      origin: dispatch.cancellation_origin,
+      reason: dispatch.cancellation_reason,
+      requested_generation: dispatch.cancellation_requested_generation,
+      requested_at: iso(dispatch.cancellation_requested_at),
+      cancelled_at:
+        if(get_in(dispatch.failure || %{}, ["code"]) == "execution_cancelled",
+          do: get_in(dispatch.failure, ["cancelled_at"]),
+          else: nil
+        )
+    }
+  end
 
   defp previous_attempt_id(attempts, number) when number > 1 do
     case Enum.find(attempts, &(&1.number == number - 1)) do
@@ -808,6 +844,14 @@ defmodule QuestEngineering.Server.RunProjection do
   defp artifact_preview(_type, value) when is_map(value),
     do: %{kind: "json_summary", summary: "object"}
 
+  defp issue("cancelled", dispatch),
+    do: %{
+      code: "execution_cancelled",
+      message:
+        get_in(dispatch && dispatch.failure, ["message"]) ||
+          "Execution was cancelled by the Product operator."
+    }
+
   defp issue("failed", _dispatch),
     do: %{code: "execution_failed", message: "Execution reported a terminal failure."}
 
@@ -833,6 +877,7 @@ defmodule QuestEngineering.Server.RunProjection do
         "stalled",
         "completed",
         "failed",
+        "cancelled",
         "uncertain"
       ],
       %{},

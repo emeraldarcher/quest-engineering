@@ -562,6 +562,14 @@ defmodule QuestEngineering.Server.OperationalRecovery do
     session = lock_execution_session(action.id)
     already_authorized? = not is_nil(dispatch.prompt_authorized_at)
 
+    if dispatch.cancellation_requested_at do
+      Repo.rollback(
+        error(:execution_cancellation_pending, action, %{
+          cancellation_request_id: dispatch.cancellation_request_id
+        })
+      )
+    end
+
     unless already_authorized? or prompt_authorization_ready?(epoch, dispatch, session) do
       Repo.rollback(
         error(:prompt_authorization_not_ready, action, %{

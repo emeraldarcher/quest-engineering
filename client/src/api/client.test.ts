@@ -1,4 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
+import { createFixture } from "../fixtures/fixtures";
 import { ApiClient } from "./client";
 import { ApiError } from "./contracts";
 
@@ -156,6 +157,78 @@ test("War Room sends anonymous and persisted-candidate draft previews without pe
       body: { body },
     },
   ]);
+});
+
+test("Product cancellation is local-only and preserves its exact request identity", async () => {
+  const web = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+  await expect(
+    web.cancelExecutionAttempt("run", "occurrence", "attempt", "request"),
+  ).rejects.toMatchObject({ code: "local_session_attachment_unavailable" });
+
+  const fixture = createFixture("work-yard-running");
+  if (!fixture || !fixture.selectedRunId)
+    throw new Error("Expected a running fixture.");
+  const run = fixture.runs[fixture.selectedRunId];
+  if (!run) throw new Error("Expected a selected fixture Run.");
+
+  let requestPath = "";
+  let request: RequestInit | undefined;
+  globalThis.fetch = mock(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestPath = String(input);
+      request = init;
+      return new Response(
+        JSON.stringify({
+          cancellation: {
+            action_id: "action-1",
+            worker_id: "worker-1",
+            occurrence_id: "occurrence-1",
+            attempt_id: "attempt-1",
+            request_id: "cancel-request-1",
+            origin: "product_operator",
+            reason: "preflight complete",
+            requested_generation: 3,
+            requested_at: "2026-09-17T12:00:00Z",
+            state: "cancellation_requested",
+            delivery: "sent",
+            idempotent_replay: false,
+          },
+          run,
+        }),
+      );
+    },
+  ) as unknown as typeof fetch;
+
+  const desktop = new ApiClient({
+    httpBaseUrl: "http://example.test/api/v1",
+    localTauriClient: true,
+  });
+  const result = await desktop.cancelExecutionAttempt(
+    "run-1",
+    "occurrence-1",
+    "attempt-1",
+    "cancel-request-1",
+    "preflight complete",
+  );
+
+  expect(result.cancellation).toMatchObject({
+    action_id: "action-1",
+    request_id: "cancel-request-1",
+    state: "cancellation_requested",
+    delivery: "sent",
+  });
+  expect(requestPath).toEndWith("/runs/run-1/attempts/attempt-1/cancel");
+  expect(request?.method).toBe("POST");
+  expect(
+    (request?.headers as Record<string, string>)[
+      "x-quest-engineering-local-client"
+    ],
+  ).toBe("tauri");
+  expect(JSON.parse(String(request?.body))).toEqual({
+    occurrence_id: "occurrence-1",
+    request_id: "cancel-request-1",
+    reason: "preflight complete",
+  });
 });
 
 test("local session descriptors are unavailable to web clients and marked for Tauri", async () => {

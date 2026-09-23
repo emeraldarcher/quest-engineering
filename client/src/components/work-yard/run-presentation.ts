@@ -50,6 +50,11 @@ const executionStates: Record<string, StatusPresentation> = {
     description: "Execution reached a terminal failure.",
     tone: "danger",
   },
+  cancelled: {
+    label: "Cancelled",
+    description: "Execution was cancelled by the Product operator.",
+    tone: "neutral",
+  },
   uncertain: {
     label: "Uncertain",
     description: "Execution state is being reconciled.",

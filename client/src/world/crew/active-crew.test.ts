@@ -78,6 +78,7 @@ function run(id: string, squadId: string, states: StepState[]): RunProjection {
       running: states.filter((state) => state === "running").length,
       completed: 0,
       failed: 0,
+      cancelled: 0,
       uncertain: 0,
     },
     issues: [],

@@ -3,6 +3,7 @@ defmodule QuestEngineering.Server.Reconciler do
 
   import Ecto.Query
 
+  alias QuestEngineering.Server.CancellationAdapter
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.OperationalFailure
@@ -132,20 +133,53 @@ defmodule QuestEngineering.Server.Reconciler do
   end
 
   defp apply_observed(worker_id, generation, %{state: :completed} = item) do
-    with {:ok, result} <- CompletionAdapter.complete(worker_id, generation, item) do
-      {:ok, Map.put(result, :reconciled_completion_action_id, item.action_id)}
+    case CompletionAdapter.complete(worker_id, generation, item) do
+      {:ok, result} ->
+        {:ok, Map.put(result, :reconciled_completion_action_id, item.action_id)}
+
+      {:error, %WorkerError{type: :execution_cancellation_pending}} ->
+        {:ok, %{action_id: item.action_id, cancellation_pending: true}}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp apply_observed(
+         worker_id,
+         generation,
+         %{state: :failed, failure: %{"code" => "execution_cancelled"}} = item
+       ) do
+    case CancellationAdapter.cancel(worker_id, generation, item) do
+      {:ok, result} ->
+        {:ok, Map.put(result.dispatch, :reconciled_terminal_action_id, item.action_id)}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
   defp apply_observed(worker_id, generation, %{state: :failed} = item) do
     case OperationalFailure.record(worker_id, generation, item) do
-      {:ok, result} -> {:ok, result.dispatch}
-      {:error, error} -> {:error, error}
+      {:ok, result} ->
+        {:ok, Map.put(result.dispatch, :reconciled_terminal_action_id, item.action_id)}
+
+      {:error, %WorkerError{type: :execution_cancellation_pending}} ->
+        {:ok, %{action_id: item.action_id, cancellation_pending: true}}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
   defp apply_observed(worker_id, generation, %{state: :uncertain} = item) do
-    DispatchStore.mark_uncertain(worker_id, generation, item.action_id, item.failure)
+    case DispatchStore.mark_uncertain(worker_id, generation, item.action_id, item.failure) do
+      {:error, %WorkerError{type: :execution_cancellation_pending}} ->
+        {:ok, %{action_id: item.action_id, cancellation_pending: true}}
+
+      result ->
+        result
+    end
   end
 
   defp record_missing(worker_id, observed) do

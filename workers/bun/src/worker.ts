@@ -31,7 +31,7 @@ import { PiHarness } from "./harnesses/pi/adapter.ts";
 import { HarnessRegistry } from "./harnesses/registry.ts";
 import { structuredResultExists } from "./harnesses/turn-lifecycle.ts";
 import type { AgentHarness } from "./harnesses/types.ts";
-import { decodeExecuteAction } from "./protocol/codec.ts";
+import { decodeCancelDispatch, decodeExecuteAction } from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
   JsonValue,
@@ -269,6 +269,13 @@ export class QuestEngineeringWorker {
   }
 
   private async handleTerminalFailure(dispatch: DispatchRecord): Promise<void> {
+    if (dispatch.failure?.code === "execution_cancelled") {
+      const worktree = await this.worktrees.retain(
+        dispatch.action.execution.execution_workspace.worktree_id,
+      );
+      await this.reportWorktreeState("run_worktree_retained", worktree);
+      return;
+    }
     if (dispatch.failure?.code !== "provider_model_ineligible") return;
     try {
       // The failed Attempt remains frozen and terminal. Direct evidence was
@@ -486,6 +493,15 @@ export class QuestEngineeringWorker {
         actionId,
         failure as Record<string, JsonValue>,
       );
+      return;
+    }
+    if (message.type === "cancel_dispatch") {
+      const cancellation = decodeCancelDispatch(
+        message,
+        this.config.workerId,
+        generation,
+      );
+      await this.executor.cancel(cancellation);
       return;
     }
     if (message.type === "authorize_dispatch_prompt") {
@@ -707,7 +723,29 @@ export class QuestEngineeringWorker {
         if (typeof actionId !== "string") continue;
         const dispatch = this.registry.get(actionId);
         if (dispatch.state === "completed")
-          this.registry.acknowledgeServerCompletion(actionId);
+          await this.executor.acknowledgeTerminal(actionId);
+      }
+
+      const terminalActionIds = Array.isArray(response.terminal_action_ids)
+        ? response.terminal_action_ids
+        : [];
+      for (const actionId of terminalActionIds) {
+        if (typeof actionId === "string")
+          await this.executor.acknowledgeTerminal(actionId);
+      }
+
+      const cancellationCommands = Array.isArray(response.cancellation_commands)
+        ? response.cancellation_commands
+        : [];
+      for (const command of cancellationCommands) {
+        if (command && typeof command === "object") {
+          const cancellation = decodeCancelDispatch(
+            command,
+            this.config.workerId,
+            generation,
+          );
+          await this.executor.cancel(cancellation);
+        }
       }
 
       const resolutions = Array.isArray(response.dispatch_resolutions)

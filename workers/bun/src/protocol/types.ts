@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 8 as const;
+export const WORKER_PROTOCOL_VERSION = 9 as const;
 
 export type JsonValue =
   | string
@@ -103,7 +103,7 @@ export interface ResolvedExecution {
   };
 }
 
-/** v6 wire message plus normalized identity aliases used by durable internals. */
+/** Wire message plus normalized identity aliases used by durable internals. */
 export interface OperationalRecoveryExecution {
   epoch_number: number;
   attempt_in_epoch: number;
@@ -131,6 +131,23 @@ export interface ExecuteAction {
   context_requirement: { selector: "fresh" | "continue_from"; value: null };
   context_lineage_occurrence_id: string | null;
   operational_recovery?: OperationalRecoveryExecution;
+}
+
+export interface CancelDispatch {
+  type: "cancel_dispatch";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  action_id: string;
+  run_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  cancellation: {
+    request_id: string;
+    origin: "product_operator";
+    reason: string | null;
+    requested_at: string;
+  };
 }
 
 export type DispatchState =

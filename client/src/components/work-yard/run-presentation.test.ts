@@ -9,6 +9,7 @@ import {
   diagnosticPresentation,
   documentContent,
   effortLabel,
+  executionPresentation,
   implementationPlanInput,
   latestReviewArtifact,
   questPresentation,
@@ -58,6 +59,7 @@ function run(): RunProjection {
       running: 0,
       completed: 0,
       failed: 0,
+      cancelled: 0,
       uncertain: 0,
     },
     issues: [],
@@ -87,6 +89,14 @@ function quest(
 }
 
 describe("Work Yard operational presentation", () => {
+  test("cancelled execution is terminal without being presented as failure", () => {
+    expect(executionPresentation("cancelled")).toEqual({
+      label: "Cancelled",
+      description: "Execution was cancelled by the Product operator.",
+      tone: "neutral",
+    });
+  });
+
   test("reports unsupported effort and native authorization without exact-subset claims", () => {
     const execution = {
       harness: "antigravity",

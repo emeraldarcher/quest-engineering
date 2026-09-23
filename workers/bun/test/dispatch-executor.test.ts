@@ -17,7 +17,11 @@ import type {
   HarnessPreparedExecution,
   HarnessRecoveredExecution,
 } from "../src/harnesses/types.ts";
-import type { JsonValue, ReconcileDispatch } from "../src/protocol/types.ts";
+import {
+  type JsonValue,
+  type ReconcileDispatch,
+  WORKER_PROTOCOL_VERSION,
+} from "../src/protocol/types.ts";
 import { HerdrApiError } from "../src/session-host/herdr/client.ts";
 import type { HostedAgent } from "../src/session-host/types.ts";
 import { action } from "./support.ts";
@@ -129,7 +133,26 @@ test("explicit cancellation terminalizes while a pending structured result remai
   for (let attempt = 0; attempt < 100 && harness.running === 0; attempt += 1)
     await Bun.sleep(1);
 
-  await executor.cancel(dispatch.action.action_id);
+  const cancellation = {
+    type: "cancel_dispatch" as const,
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 1,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-request-1",
+      origin: "product_operator" as const,
+      reason: "Operator requested cancellation.",
+      requested_at: new Date().toISOString(),
+    },
+  };
+  await Promise.all([
+    executor.cancel(cancellation),
+    executor.cancel(cancellation),
+  ]);
   expect(registry.get(dispatch.action.action_id)).toMatchObject({
     state: "failed",
     failure: {
@@ -141,11 +164,82 @@ test("explicit cancellation terminalizes while a pending structured result remai
   expect(harness.interrupts).toBe(1);
   expect(reports.at(-1)).toMatchObject({
     state: "failed",
-    failure: { code: "execution_cancelled" },
+    failure: {
+      code: "execution_cancelled",
+      cancellation_request_id: "cancel-request-1",
+      cancellation_worker_generation: 1,
+    },
   });
+  expect(
+    registry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).not.toBeNull();
+
+  const reportCount = reports.length;
+  await executor.cancel(cancellation);
+  expect(harness.interrupts).toBe(1);
+  expect(reports).toHaveLength(reportCount);
+
+  await expect(
+    executor.cancel({ ...cancellation, attempt_id: "stale-attempt" }),
+  ).rejects.toThrow("Cancellation identity does not match");
   harness.releaseAll();
   await operation;
   expect(registry.get(dispatch.action.action_id).state).toBe("failed");
+  registry.close();
+});
+
+test("authorized cancellation overrides a locally completed result that the server has not accepted", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new BlockingProvider(registry);
+  const reports: ReconcileDispatch[] = [];
+  const executor = new DispatchExecutor(registry, harness, async (dispatch) => {
+    reports.push(dispatch);
+    return true;
+  });
+  const dispatch = executor.accept(action()).dispatch;
+  const operation = executor.start(dispatch.action.action_id);
+  for (let attempt = 0; attempt < 100 && harness.running === 0; attempt += 1)
+    await Bun.sleep(1);
+
+  registry.complete(dispatch.action.action_id, { result: "late" });
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    serverAcknowledgedAt: null,
+  });
+
+  await executor.cancel({
+    type: "cancel_dispatch",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 4,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-wins-completion-race",
+      origin: "product_operator",
+      reason: null,
+      requested_at: new Date().toISOString(),
+    },
+  });
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    outputs: null,
+    failure: {
+      code: "execution_cancelled",
+      cancellation_request_id: "cancel-wins-completion-race",
+    },
+  });
+  expect(() =>
+    registry.complete(dispatch.action.action_id, { result: "stale" }),
+  ).toThrow("Cannot complete");
+  expect(harness.interrupts).toBe(0);
+  harness.releaseAll();
+  await operation;
+  expect(reports.at(-1)?.failure?.code).toBe("execution_cancelled");
   registry.close();
 });
 
@@ -250,6 +344,141 @@ test("fresh initial execution reaches a durable zero-inference gate before one a
     promptIntentAt: expect.any(String),
   });
   registry.close();
+});
+
+test("cancelling the prepared initial gate emits no prompt or provider activity", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "pi");
+  const harness = new StagedRecoveryHarness(registry, "pi");
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+  );
+  const initial = action({
+    action_id: "cancel-pre-prompt-action",
+    attempt_id: "cancel-pre-prompt-attempt",
+    operational_recovery: {
+      epoch_number: 0,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "initial",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: null,
+      request_id: null,
+    },
+  });
+  initial.execution.configuration.harness_kind = "pi";
+  const dispatch = executor.accept(initial).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  await executor.cancel({
+    type: "cancel_dispatch",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 2,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-pre-prompt-request",
+      origin: "product_operator",
+      reason: "No-inference probe complete.",
+      requested_at: new Date().toISOString(),
+    },
+  });
+
+  expect(harness.promptSubmissions).toBe(0);
+  expect(harness.interrupts).toBe(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    promptAuthorizedAt: null,
+    promptIntentAt: null,
+    promptAcceptedAt: null,
+    nativeActivityAt: null,
+    failure: {
+      code: "execution_cancelled",
+      cancellation_request_id: "cancel-pre-prompt-request",
+    },
+  });
+  registry.close();
+});
+
+test("cancellation response loss keeps terminal authority until reconciliation acknowledgement", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "pi");
+  const harness = new StagedRecoveryHarness(registry, "pi");
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async () => false,
+  );
+  const initial = action({
+    action_id: "cancel-response-loss-action",
+    attempt_id: "cancel-response-loss-attempt",
+    operational_recovery: {
+      epoch_number: 0,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "initial",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: null,
+      request_id: null,
+    },
+  });
+  initial.execution.configuration.harness_kind = "pi";
+  const dispatch = executor.accept(initial).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  await executor.cancel({
+    type: "cancel_dispatch",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 8,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-response-loss-request",
+      origin: "product_operator",
+      reason: null,
+      requested_at: new Date().toISOString(),
+    },
+  });
+
+  expect(
+    registry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).toBeNull();
+  expect(harness.metadataClears).toBe(0);
+  expect(harness.promptSubmissions).toBe(0);
+  registry.close();
+
+  const restartedRegistry = new DispatchRegistry(database, root, "pi");
+  const restartedHarness = new StagedRecoveryHarness(restartedRegistry, "pi");
+  const restartedExecutor = new DispatchExecutor(
+    restartedRegistry,
+    restartedHarness,
+    async () => false,
+    async () => false,
+  );
+  await restartedExecutor.recoverAll();
+  expect(restartedHarness.metadataClears).toBe(0);
+  expect(
+    restartedRegistry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).toBeNull();
+
+  await restartedExecutor.acknowledgeTerminal(dispatch.action.action_id);
+  expect(
+    restartedRegistry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).not.toBeNull();
+  expect(restartedHarness.metadataClears).toBe(1);
+  restartedRegistry.close();
 });
 
 test("fresh human recovery reaches a durable zero-inference gate before one authorized prompt", async () => {
@@ -1098,6 +1327,7 @@ class InspectingProvider implements AgentHarness {
   };
   starts = 0;
   interrupts = 0;
+  metadataClears = 0;
   sawDurableAcceptance = false;
   constructor(
     private readonly registry: DispatchRegistry,
@@ -1164,7 +1394,9 @@ class InspectingProvider implements AgentHarness {
     return inspection(lineage);
   }
   async close() {}
-  async clearActiveMetadata() {}
+  async clearActiveMetadata() {
+    this.metadataClears += 1;
+  }
   async discoverAdoptionCandidates() {
     return [];
   }

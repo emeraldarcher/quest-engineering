@@ -30,7 +30,7 @@ import {
 } from "../platform/live-session";
 import { RealtimeClient, type RealtimeStatus } from "../realtime/client";
 import { projectActiveCrewActivities } from "../world/crew/active-crew";
-import { ActiveRunTracker } from "./active-run-tracker";
+import { ActiveRunTracker, isTrackableRun } from "./active-run-tracker";
 import { recordAttentionOnce } from "./attention-dedupe";
 import { executeStarterCrewCommand } from "./starter-crew-command";
 
@@ -105,9 +105,7 @@ export function createAppStore(
   const activeCrew = writable(
     fixture
       ? projectActiveCrewActivities(
-          Object.values(fixture.runs).filter(
-            (run) => run.status !== "completed" && run.status !== "failed",
-          ),
+          Object.values(fixture.runs).filter(isTrackableRun),
         )
       : [],
   );

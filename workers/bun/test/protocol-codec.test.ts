@@ -1,11 +1,44 @@
 import { describe, expect, test } from "bun:test";
 import {
+  decodeCancelDispatch,
   decodeExecuteAction,
   ProtocolDecodeError,
 } from "../src/protocol/codec.ts";
+import type { CancelDispatch } from "../src/protocol/types.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v8 ResolvedExecution codec", () => {
+describe("Worker Protocol v9 ResolvedExecution codec", () => {
+  test("decodes only an exact Worker-generation cancellation command", () => {
+    const command = {
+      type: "cancel_dispatch",
+      protocol_version: 9,
+      worker_id: "worker-test",
+      connection_generation: 7,
+      action_id: "action-1",
+      run_id: "run-1",
+      occurrence_id: "occurrence-1",
+      attempt_id: "attempt-1",
+      cancellation: {
+        request_id: "cancel-1",
+        origin: "product_operator",
+        reason: null,
+        requested_at: "2026-09-17T12:00:00Z",
+      },
+    } satisfies CancelDispatch;
+
+    expect(decodeCancelDispatch(command, "worker-test", 7)).toEqual(command);
+    expect(() =>
+      decodeCancelDispatch(
+        { ...command, connection_generation: 6 },
+        "worker-test",
+        7,
+      ),
+    ).toThrow(ProtocolDecodeError);
+    expect(() =>
+      decodeCancelDispatch({ ...command, attempt_id: "" }, "worker-test", 7),
+    ).toThrow(ProtocolDecodeError);
+  });
+
   test("requires and preserves separated semantic instructions", () => {
     const input = action({
       instruction: "Inspect inputs.\nProduce the result.",

@@ -3,6 +3,7 @@ defmodule QuestEngineering.ServerWeb.RunController do
 
   alias QuestEngineering.Server.DeliveryCoordinator
   alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.OperationalRecovery
@@ -141,6 +142,38 @@ defmodule QuestEngineering.ServerWeb.RunController do
         code: :invalid_prompt_authorization,
         details: %{fields: ["occurrence_id", "attempt_id", "request_id"]}
       })
+
+  def cancel_execution_attempt(
+        conn,
+        %{
+          "id" => run_id,
+          "attempt_id" => attempt_id,
+          "occurrence_id" => occurrence_id,
+          "request_id" => request_id
+        } = params
+      ) do
+    with :ok <- require_local_tauri(conn),
+         {:ok, cancellation} <-
+           ExecutionCancellation.request(
+             run_id,
+             occurrence_id,
+             attempt_id,
+             request_id,
+             params["reason"]
+           ),
+         {:ok, run} <- RunProjection.get(run_id) do
+      json(conn, %{cancellation: cancellation, run: run})
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def cancel_execution_attempt(conn, _params) do
+    Api.render_error(conn, %ExecutionCancellation.Error{
+      code: :invalid_execution_cancellation,
+      details: %{fields: ["occurrence_id", "attempt_id", "request_id"]}
+    })
+  end
 
   def mark_execution_failed(conn, %{"id" => run_id, "occurrence_id" => occurrence_id})
       when is_binary(occurrence_id) do

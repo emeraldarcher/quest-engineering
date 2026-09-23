@@ -76,27 +76,38 @@ defmodule QuestEngineering.Server.DispatchStore do
 
   def mark_completed(worker_id, generation, action_id) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
-      if dispatch.state == "failed" do
-        Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
-      else
-        updated =
-          Repo.update!(
-            Changeset.change(dispatch,
-              state: "completed",
-              acknowledged_at: dispatch.acknowledged_at || now(),
-              terminal_at: dispatch.terminal_at || now(),
-              last_connection_generation: generation
-            )
+      cond do
+        dispatch.cancellation_requested_at ->
+          Repo.rollback(
+            error(:execution_cancellation_pending, worker_id, action_id, %{
+              cancellation_request_id: dispatch.cancellation_request_id
+            })
           )
 
-        mark_scheduled_terminal!(action_id, "completed", nil)
-        updated
+        dispatch.state == "failed" ->
+          Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
+
+        true ->
+          updated =
+            Repo.update!(
+              Changeset.change(dispatch,
+                state: "completed",
+                acknowledged_at: dispatch.acknowledged_at || now(),
+                terminal_at: dispatch.terminal_at || now(),
+                last_connection_generation: generation
+              )
+            )
+
+          mark_scheduled_terminal!(action_id, "completed", nil)
+          updated
       end
     end)
   end
 
   def mark_failed(worker_id, generation, action_id, failure) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
+      validate_failure_authority!(dispatch, failure, worker_id)
+
       cond do
         dispatch.state == "completed" ->
           Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
@@ -171,6 +182,13 @@ defmodule QuestEngineering.Server.DispatchStore do
       cond do
         dispatch.state in ["completed", "failed"] ->
           dispatch
+
+        dispatch.cancellation_requested_at ->
+          Repo.rollback(
+            error(:execution_cancellation_pending, worker_id, action_id, %{
+              cancellation_request_id: dispatch.cancellation_request_id
+            })
+          )
 
         dispatch.state == "uncertain" and dispatch.failure != failure ->
           Repo.rollback(
@@ -350,6 +368,34 @@ defmodule QuestEngineering.Server.DispatchStore do
          ) do
       nil -> Repo.rollback(error(:dispatch_not_found, nil, action_id))
       dispatch -> dispatch
+    end
+  end
+
+  defp validate_failure_authority!(dispatch, failure, worker_id) do
+    cancellation? = failure["code"] == "execution_cancelled"
+    request_id = failure["cancellation_request_id"]
+
+    cond do
+      cancellation? and is_nil(dispatch.cancellation_request_id) ->
+        Repo.rollback(error(:execution_cancellation_unauthorized, worker_id, dispatch.action_id))
+
+      cancellation? and request_id != dispatch.cancellation_request_id ->
+        Repo.rollback(
+          error(:execution_cancellation_identity_mismatch, worker_id, dispatch.action_id, %{
+            expected_request_id: dispatch.cancellation_request_id,
+            received_request_id: request_id
+          })
+        )
+
+      dispatch.cancellation_request_id && not cancellation? ->
+        Repo.rollback(
+          error(:execution_cancellation_pending, worker_id, dispatch.action_id, %{
+            cancellation_request_id: dispatch.cancellation_request_id
+          })
+        )
+
+      true ->
+        :ok
     end
   end
 
