@@ -271,14 +271,21 @@ export class QuestEngineeringWorker {
   private async handleTerminalFailure(dispatch: DispatchRecord): Promise<void> {
     if (dispatch.failure?.code !== "provider_model_ineligible") return;
     try {
-      // The failed Attempt remains frozen and terminal. Refresh only
-      // metadata, then reconnect so subsequent scheduling sees the new
-      // account-scoped catalog rather than the rejected capability set.
+      // The failed Attempt remains frozen and terminal. Direct evidence was
+      // persisted by the SBX lifecycle relay; rediscovery reapplies that exact
+      // account/auth/profile/model annotation without consulting metadata.
       await this.refreshHarnessCapabilities(false);
     } catch (error) {
-      this.capabilities.executors = [];
+      const rejected = dispatch.action.execution.configuration.model;
+      for (const executor of this.capabilities.executors)
+        for (const model of executor.models)
+          if (
+            model.provider === rejected.provider &&
+            model.model === rejected.model
+          )
+            model.account_availability = "verified_unavailable";
       console.error(
-        "Provider eligibility refresh failed closed",
+        "Account availability refresh failed; exact rejected model remains fenced",
         error instanceof Error ? error.message : String(error),
       );
     } finally {

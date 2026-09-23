@@ -7,7 +7,7 @@ import {
 } from "../src/execution-environment/sbx-backend.ts";
 import {
   SBX_EXECUTION_PROFILE_V1,
-  SBX_PI_EXECUTION_PROFILE_V1,
+  SBX_PI_EXECUTION_PROFILE_V2,
   SBX_PI_PROFILE,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
   SBX_TESTED_REVISION,
@@ -114,7 +114,7 @@ test("repository-owned Pi kit provisions one sandbox-scoped host resolver before
   });
   backends.push(value);
   const spec = sbxSpec("run-pi-profile");
-  spec.profile = { ...SBX_PI_EXECUTION_PROFILE_V1 };
+  spec.profile = { ...SBX_PI_EXECUTION_PROFILE_V2 };
   spec.networkRequirements = [
     {
       capability: "model_provider",

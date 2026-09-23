@@ -28,6 +28,7 @@ export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
     ).map((model) => ({
       ...model,
       display_name: `${model.provider}/${model.model}`,
+      account_availability: "verified_available" as const,
       reasoning_capability: { kind: "enumerated", values: reasoning },
     })),
     supported_tool_policies: ["exact"],
@@ -63,6 +64,7 @@ export function discoveredExecutorCapabilities(
           provider: model.provider,
           model: model.model,
           display_name: model.displayName,
+          account_availability: model.accountAvailability,
           reasoning_capability: model.reasoningCapability,
         })),
       supported_tool_policies:
@@ -130,6 +132,7 @@ export function assertExecutionSupported(
           (model) =>
             model.provider === requested.model.provider &&
             model.model === requested.model.model &&
+            model.account_availability !== "verified_unavailable" &&
             reasoningSupported(
               model.reasoning_capability,
               requested.reasoning,

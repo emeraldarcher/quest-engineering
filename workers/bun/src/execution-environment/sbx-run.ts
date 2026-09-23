@@ -4,6 +4,11 @@ import { basename, dirname, join, posix, resolve } from "node:path";
 import type { WorkerConfig, WorkspaceBindingConfig } from "../config.ts";
 import type { DispatchRecord, HarnessLineage } from "../dispatch/registry.ts";
 import {
+  type AccountAvailabilityContext,
+  AccountAvailabilityEvidenceStore,
+  newAccountAvailabilityEvidence,
+} from "../harnesses/account-availability.ts";
+import {
   controlDescriptorPath,
   type StructuredCompletionBoundary,
 } from "../harnesses/control/authority.ts";
@@ -33,9 +38,8 @@ import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_PI_DISCOVERY_SCRIPT,
-  SBX_PI_ELIGIBILITY_SNAPSHOT,
   SBX_PI_EXECUTABLE,
-  SBX_PI_EXECUTION_PROFILE_V1,
+  SBX_PI_EXECUTION_PROFILE_V2,
   SBX_PI_PROFILE,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
 } from "./sbx-profile.ts";
@@ -54,46 +58,20 @@ const PI_EXTENSION_ENTRIES = [
   "sbx-herdr-state-extension.ts",
 ] as const;
 
-export interface ProviderModelEligibilityRef {
-  provider: string;
-  model: string;
-}
-
 export interface DiscoveredPiModelCatalog {
   models: HarnessModelCapability[];
   diagnostics: string[];
   /** OAuth/account resource authentication, independent of model count. */
   authenticated: boolean;
-  accountScope?: string;
-  providerEligibleModels?: ProviderModelEligibilityRef[];
-}
-
-export function reconcileProviderEligibilityInvalidations(
-  discovered: DiscoveredPiModelCatalog,
-  current: readonly ProviderEligibilityInvalidation[],
-): ProviderEligibilityInvalidation[] {
-  const accountScope = discovered.accountScope;
-  const providerEligibleModels = discovered.providerEligibleModels;
-  if (!accountScope || !providerEligibleModels)
-    throw new Error(
-      "Pi discovery omitted account-scoped provider eligibility.",
-    );
-  const eligible = new Set(
-    providerEligibleModels.map((item) => `${item.provider}/${item.model}`),
-  );
-  const contradictions = current.filter(
-    (item) =>
-      item.accountScope === accountScope &&
-      eligible.has(`${item.provider}/${item.model}`),
-  );
-  if (contradictions.length > 0)
-    throw Object.assign(
-      new Error(
-        "The authenticated provider catalog still marks a model eligible after the same account rejected it as unsupported; refusing to hardcode an exclusion or publish the inconsistent catalog.",
-      ),
-      { code: "provider_catalog_runtime_inconsistency" },
-    );
-  return current.filter((item) => item.accountScope !== accountScope);
+  accountScope: string;
+  authGeneration: string;
+  metadata: {
+    authority: "advisory";
+    conclusive: false;
+    status: number | null;
+    observedAt: string;
+    modelCount: number | null;
+  };
 }
 
 export function applyConfiguredPiModelScope(
@@ -148,13 +126,30 @@ export function applyConfiguredPiModelScope(
   };
 }
 
-export interface ProviderEligibilityFailure {
-  code: "provider_model_ineligible";
+interface ProviderAvailabilityEvidenceBase {
   provider: string;
   model: string;
   accountScope: string;
+  authGeneration: string;
   observedAt: string;
 }
+
+export type ProviderAvailabilityEvidence = ProviderAvailabilityEvidenceBase &
+  (
+    | {
+        state: "verified_available";
+        code: "provider_model_succeeded";
+      }
+    | {
+        state: "verified_unavailable";
+        code: "provider_model_ineligible";
+      }
+  );
+
+export type ProviderEligibilityFailure = Extract<
+  ProviderAvailabilityEvidence,
+  { state: "verified_unavailable" }
+>;
 
 export interface PreparedSbxPiExecution {
   lease: EnvironmentLease;
@@ -169,10 +164,12 @@ export interface PreparedSbxPiExecution {
   syncControl(): Promise<void>;
   activityCursor(): Promise<number>;
   observedActivityAfter(cursor: number): string | null;
+  providerTurnCursor(): Promise<number>;
+  observedProviderTurnAfter(cursor: number): string | null;
   providerEligibilityFailure(): Promise<ProviderEligibilityFailure | null>;
   startRelay(host: TerminalSessionBackend, paneId: string): void;
   awaitAttestation(timeoutMs?: number): Promise<void>;
-  stopRelay(): Promise<void>;
+  stopRelay(awaitNativeIdleMs?: number): Promise<void>;
 }
 
 interface ExtensionBundle {
@@ -190,16 +187,6 @@ interface RuntimeContext {
   relay: SbxControlMailboxRelay | null;
 }
 
-export interface ProviderEligibilityInvalidation
-  extends ProviderEligibilityFailure {
-  invalidatedAt: string;
-}
-
-interface ProviderEligibilityInvalidationFile {
-  schemaVersion: 1;
-  invalidations: ProviderEligibilityInvalidation[];
-}
-
 /**
  * Production Pi execution boundary. There is intentionally no HostNative
  * branch: every prepared execution has an exact SBX lease and private Git
@@ -214,7 +201,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     digest: string;
     bundles: ExtensionBundle[];
   }> | null = null;
-  private providerEligibilityTail: Promise<void> = Promise.resolve();
+  private readonly accountAvailability: AccountAvailabilityEvidenceStore;
   constructor(
     private readonly config: WorkerConfig,
     private readonly worktrees: RunWorktreeRegistry,
@@ -235,6 +222,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       options.privateGit ??
       new PrivateGitWorkspaceManager({ dataRoot: config.dataRoot });
     this.store = options.store ?? new SbxRunExecutionStore(config.dataRoot);
+    this.accountAvailability = new AccountAvailabilityEvidenceStore(
+      join(config.dataRoot, "pi-account-availability.json"),
+    );
   }
 
   async discover(): Promise<DiscoveredPiModelCatalog> {
@@ -261,7 +251,18 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           result.stderr.trim() || "In-sandbox Pi model discovery failed.",
         );
       const discovered = decodeDiscovery(result.stdout);
-      await this.reconcileProviderEligibility(discovered);
+      for (const path of this.config.piAccountEvidenceSeedPaths ?? [])
+        await this.accountAvailability.importFile(path);
+      const context: AccountAvailabilityContext = {
+        accountScope: discovered.accountScope,
+        authGeneration: discovered.authGeneration,
+        profileId: SBX_PI_EXECUTION_PROFILE_V2.id,
+        profileDigest: SBX_PI_EXECUTION_PROFILE_V2.digest,
+      };
+      discovered.models = await this.accountAvailability.annotate(
+        discovered.models,
+        context,
+      );
       const configured =
         this.config.executorModels ??
         (this.config.piModel
@@ -273,80 +274,25 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     }
   }
 
-  private invalidateProviderEligibility(
-    failure: ProviderEligibilityFailure,
+  private recordProviderEvidence(
+    evidence: ProviderAvailabilityEvidence,
   ): Promise<void> {
-    return this.withProviderEligibilityAuthority(async () => {
-      const current = await this.readProviderEligibilityInvalidations();
-      const retained = current.filter(
-        (item) =>
-          item.accountScope !== failure.accountScope ||
-          item.provider !== failure.provider ||
-          item.model !== failure.model,
-      );
-      retained.push({ ...failure, invalidatedAt: new Date().toISOString() });
-      await this.writeProviderEligibilityInvalidations(retained.slice(-64));
-    });
-  }
-
-  private reconcileProviderEligibility(
-    discovered: DiscoveredPiModelCatalog,
-  ): Promise<void> {
-    return this.withProviderEligibilityAuthority(async () => {
-      const current = await this.readProviderEligibilityInvalidations();
-      const retained = reconcileProviderEligibilityInvalidations(
-        discovered,
-        current,
-      );
-      if (retained.length !== current.length)
-        await this.writeProviderEligibilityInvalidations(retained);
-    });
-  }
-
-  private withProviderEligibilityAuthority<T>(
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    const result = this.providerEligibilityTail.then(operation);
-    this.providerEligibilityTail = result.then(
-      () => undefined,
-      () => undefined,
+    return this.accountAvailability.record(
+      newAccountAvailabilityEvidence(
+        {
+          accountScope: evidence.accountScope,
+          authGeneration: evidence.authGeneration,
+          profileId: SBX_PI_EXECUTION_PROFILE_V2.id,
+          profileDigest: SBX_PI_EXECUTION_PROFILE_V2.digest,
+        },
+        { provider: evidence.provider, model: evidence.model },
+        evidence.state,
+        evidence.state === "verified_available"
+          ? "direct_execution_success"
+          : "direct_provider_rejection",
+        new Date(evidence.observedAt),
+      ),
     );
-    return result;
-  }
-
-  private async readProviderEligibilityInvalidations(): Promise<
-    ProviderEligibilityInvalidation[]
-  > {
-    try {
-      const parsed = JSON.parse(
-        await readFile(this.providerEligibilityInvalidationPath(), "utf8"),
-      ) as Partial<ProviderEligibilityInvalidationFile>;
-      if (
-        parsed.schemaVersion !== 1 ||
-        !Array.isArray(parsed.invalidations) ||
-        !parsed.invalidations.every(validProviderEligibilityInvalidation)
-      )
-        throw new Error(
-          "Provider eligibility invalidation state is malformed.",
-        );
-      return parsed.invalidations;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-  }
-
-  private writeProviderEligibilityInvalidations(
-    invalidations: ProviderEligibilityInvalidation[],
-  ): Promise<void> {
-    return writeAtomic(
-      this.providerEligibilityInvalidationPath(),
-      `${JSON.stringify({ schemaVersion: 1, invalidations })}\n`,
-    );
-  }
-
-  private providerEligibilityInvalidationPath(): string {
-    return join(this.config.dataRoot, "provider-model-eligibility.json");
   }
 
   async reconcileDurableOwnership(): Promise<string[]> {
@@ -661,6 +607,12 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       },
       observedActivityAfter: (cursor) =>
         context.relay?.observedActivityAfter(cursor) ?? null,
+      providerTurnCursor: async () => {
+        await context.relay?.refresh();
+        return context.relay?.providerTurnCursor() ?? 0;
+      },
+      observedProviderTurnAfter: (cursor) =>
+        context.relay?.observedProviderTurnAfter(cursor) ?? null,
       providerEligibilityFailure: () =>
         context.relay?.awaitProviderEligibilityFailureOrIdle() ??
         Promise.resolve(null),
@@ -683,22 +635,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
               lineage.lineageId,
               "control_mailbox_relay_failed",
             ),
-          async (failure) => {
-            const invalidated = await lease.exec({
-              executable: "/usr/bin/python3",
-              args: [
-                "-c",
-                "import os,pathlib; pathlib.Path(os.environ['QE_ELIGIBILITY_SNAPSHOT']).unlink(missing_ok=True)",
-              ],
-              environment: {
-                QE_ELIGIBILITY_SNAPSHOT: SBX_PI_ELIGIBILITY_SNAPSHOT,
-              },
-            });
-            if (invalidated.exitCode !== 0)
-              throw new Error(
-                `Could not invalidate ${SBX_PI_ELIGIBILITY_SNAPSHOT}.`,
-              );
-            await this.invalidateProviderEligibility(failure);
+          async (evidence) => {
+            await this.recordProviderEvidence(evidence);
           },
         );
         context.relay.start();
@@ -711,8 +649,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           );
         return context.relay.awaitAttestation(timeoutMs);
       },
-      stopRelay: async () => {
-        await context.relay?.stop();
+      stopRelay: async (awaitNativeIdleMs = 2_000) => {
+        await context.relay?.stop(awaitNativeIdleMs);
         context.relay = null;
       },
     };
@@ -734,6 +672,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       throw new Error(
         "No exact active SBX/private-Git completion context exists.",
       );
+    const outputs = structuredClone(input.outputs);
+    if (!input.dispatch.completionRequirement.physicalExportRequired)
+      return outputs;
     const durable = this.store.get(input.lineageId);
     const changeExport =
       durable?.changeExport ??
@@ -752,9 +693,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         input.dispatch.action.action_id,
         changeExport,
       );
-    const outputs = structuredClone(input.outputs);
-    for (const declaration of input.dispatch.action.execution.work
-      .declared_outputs) {
+    for (const declaration of input.dispatch.completionRequirement.outputs) {
       if (declaration.kind !== "change_set") continue;
       const current = outputs[declaration.name];
       if (!current || typeof current !== "object" || Array.isArray(current))
@@ -1050,7 +989,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           frozenBase: { kind: "git_commit", value: input.frozenBase },
         },
       },
-      profile: SBX_PI_EXECUTION_PROFILE_V1,
+      profile: SBX_PI_EXECUTION_PROFILE_V2,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
       networkRequirements: [
         {
@@ -1089,7 +1028,10 @@ export class SbxControlMailboxRelay {
   private lastRuntimeState: "idle" | "working" | "blocked" | null = null;
   private lastWorkingSequence = 0;
   private lastWorkingAt: string | null = null;
+  private lastProviderTurnSequence = 0;
+  private lastProviderTurnAt: string | null = null;
   private providerFailure: ProviderEligibilityFailure | null = null;
+  private lastProviderEvidence = "";
   private lastAttention = "";
   private lastRecovery = "";
   private readonly processedRequests = new Map<string, string>();
@@ -1107,8 +1049,8 @@ export class SbxControlMailboxRelay {
     private readonly expectedAttestation: Record<string, string | number>,
     private readonly onFailure: () => void,
     private readonly onRecovery: () => void,
-    private readonly onProviderEligibilityFailure: (
-      failure: ProviderEligibilityFailure,
+    private readonly onProviderEvidence: (
+      evidence: ProviderAvailabilityEvidence,
     ) => Promise<void> = async () => undefined,
   ) {}
 
@@ -1120,24 +1062,34 @@ export class SbxControlMailboxRelay {
     });
   }
 
-  async stop(): Promise<void> {
-    this.stopped = true;
-    await this.operation;
-    // Pi may publish agent_settled just after Herdr's terminal integration has
-    // already observed idle. Drain that final guest-authoritative state before
-    // releasing the relay so a retained pane cannot remain falsely working.
-    const deadline = Date.now() + 2_000;
-    do {
+  async stop(awaitNativeIdleMs = 2_000): Promise<void> {
+    // Keep mailbox servicing and guest-native lifecycle publication alive while
+    // a completion acknowledgement can still cause Pi's final agent_settled.
+    // This is deliberately separate from semantic Attempt settlement.
+    const deadline = Date.now() + Math.max(0, awaitNativeIdleMs);
+    while (
+      this.lastRuntimeState === "working" &&
+      Date.now() < deadline &&
+      !this.stopped
+    ) {
       try {
         await this.refresh();
         this.consecutiveFailures = 0;
       } catch {
         this.onFailure();
-        return;
+        break;
       }
-      if (this.lastRuntimeState !== "working") return;
-      if (Date.now() < deadline) await Bun.sleep(50);
-    } while (Date.now() < deadline);
+      if (this.lastRuntimeState === "working") await Bun.sleep(50);
+    }
+    this.stopped = true;
+    await this.operation;
+    // One serialized final poll drains a racing mailbox request or idle event.
+    try {
+      await this.refresh();
+      this.consecutiveFailures = 0;
+    } catch {
+      this.onFailure();
+    }
   }
 
   async refresh(): Promise<void> {
@@ -1152,6 +1104,16 @@ export class SbxControlMailboxRelay {
 
   observedActivityAfter(cursor: number): string | null {
     return this.lastWorkingSequence > cursor ? this.lastWorkingAt : null;
+  }
+
+  providerTurnCursor(): number {
+    return this.lastProviderTurnSequence;
+  }
+
+  observedProviderTurnAfter(cursor: number): string | null {
+    return this.lastProviderTurnSequence > cursor
+      ? this.lastProviderTurnAt
+      : null;
   }
 
   providerEligibilityFailure(): ProviderEligibilityFailure | null {
@@ -1283,6 +1245,7 @@ export class SbxControlMailboxRelay {
     this.attestationState = "passed";
     const sequence = Number(value.sequence);
     const workingSequence = Number(value.lastWorkingSequence);
+    const providerTurnSequence = Number(value.providerTurnSequence ?? 0);
     const state = value.state;
     if (
       !Number.isSafeInteger(sequence) ||
@@ -1292,15 +1255,20 @@ export class SbxControlMailboxRelay {
       return;
     this.lastRuntimeSequence = sequence;
     this.lastRuntimeState = state as "idle" | "working" | "blocked";
-    const providerFailure = decodeProviderEligibilityFailure(
-      value.providerFailure,
+    const providerEvidence = decodeProviderAvailabilityEvidence(
+      value.providerEvidence,
     );
+    const encodedProviderEvidence = providerEvidence
+      ? JSON.stringify(providerEvidence)
+      : "";
     if (
-      providerFailure &&
-      JSON.stringify(providerFailure) !== JSON.stringify(this.providerFailure)
+      providerEvidence &&
+      encodedProviderEvidence !== this.lastProviderEvidence
     ) {
-      await this.onProviderEligibilityFailure(providerFailure);
-      this.providerFailure = providerFailure;
+      await this.onProviderEvidence(providerEvidence);
+      this.lastProviderEvidence = encodedProviderEvidence;
+      if (providerEvidence.state === "verified_unavailable")
+        this.providerFailure = providerEvidence;
     }
     if (
       Number.isSafeInteger(workingSequence) &&
@@ -1311,6 +1279,18 @@ export class SbxControlMailboxRelay {
         typeof value.observedAt === "string"
           ? value.observedAt
           : new Date().toISOString();
+    }
+    if (
+      Number.isSafeInteger(providerTurnSequence) &&
+      providerTurnSequence > this.lastProviderTurnSequence
+    ) {
+      this.lastProviderTurnSequence = providerTurnSequence;
+      this.lastProviderTurnAt =
+        typeof value.providerTurnSettledAt === "string"
+          ? value.providerTurnSettledAt
+          : typeof value.observedAt === "string"
+            ? value.observedAt
+            : new Date().toISOString();
     }
     const native = record(value.nativeSession)
       ? value.nativeSession
@@ -1394,41 +1374,42 @@ function decodeDiscovery(value: string): DiscoveredPiModelCatalog {
     schemaVersion?: number;
     authenticated?: boolean;
     accountScope?: unknown;
+    authGeneration?: unknown;
     diagnostics?: unknown[];
-    providerEligibleModels?: Array<{
-      provider?: unknown;
-      model?: unknown;
-    }>;
+    metadata?: Record<string, unknown>;
     models?: Array<{
       provider?: unknown;
       model?: unknown;
       displayName?: unknown;
       reasoning?: unknown;
+      accountAvailability?: unknown;
     }>;
   };
+  const metadata = parsed.metadata;
   if (
-    parsed.schemaVersion !== 2 ||
+    parsed.schemaVersion !== 3 ||
     parsed.authenticated !== true ||
     typeof parsed.accountScope !== "string" ||
     !/^[a-f0-9]{64}$/.test(parsed.accountScope) ||
-    !Array.isArray(parsed.providerEligibleModels) ||
+    typeof parsed.authGeneration !== "string" ||
+    !/^[a-f0-9]{64}$/.test(parsed.authGeneration) ||
+    !metadata ||
+    metadata.authority !== "advisory" ||
+    metadata.conclusive !== false ||
+    (metadata.status !== null && typeof metadata.status !== "number") ||
+    typeof metadata.observedAt !== "string" ||
+    (metadata.modelCount !== null && typeof metadata.modelCount !== "number") ||
     !Array.isArray(parsed.models)
   )
     throw new Error(
-      "In-sandbox Pi discovery returned an incompatible account-eligibility contract.",
+      "In-sandbox Pi discovery returned an incompatible runtime-catalog contract.",
     );
-  const providerEligibleModels = parsed.providerEligibleModels.map((model) => {
-    if (typeof model.provider !== "string" || typeof model.model !== "string")
-      throw new Error(
-        "In-sandbox Pi discovery returned malformed provider eligibility.",
-      );
-    return { provider: model.provider, model: model.model };
-  });
   const models = parsed.models.map((model) => {
     if (
       typeof model.provider !== "string" ||
       typeof model.model !== "string" ||
       typeof model.displayName !== "string" ||
+      model.accountAvailability !== "unknown" ||
       !Array.isArray(model.reasoning) ||
       !model.reasoning.every((item) => typeof item === "string")
     )
@@ -1437,6 +1418,7 @@ function decodeDiscovery(value: string): DiscoveredPiModelCatalog {
       provider: model.provider,
       model: model.model,
       displayName: model.displayName,
+      accountAvailability: "unknown" as const,
       reasoningCapability:
         model.reasoning.length > 0
           ? ({ kind: "enumerated", values: model.reasoning } as const)
@@ -1450,7 +1432,14 @@ function decodeDiscovery(value: string): DiscoveredPiModelCatalog {
     ),
     authenticated: true,
     accountScope: parsed.accountScope,
-    providerEligibleModels,
+    authGeneration: parsed.authGeneration,
+    metadata: {
+      authority: "advisory",
+      conclusive: false,
+      status: metadata.status as number | null,
+      observedAt: metadata.observedAt as string,
+      modelCount: metadata.modelCount as number | null,
+    },
   };
 }
 
@@ -1549,36 +1538,47 @@ function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function decodeProviderEligibilityFailure(
+function decodeProviderAvailabilityEvidence(
   value: unknown,
-): ProviderEligibilityFailure | null {
+): ProviderAvailabilityEvidence | null {
   if (!record(value)) return null;
   if (
-    value.code !== "provider_model_ineligible" ||
+    (value.state !== "verified_available" &&
+      value.state !== "verified_unavailable") ||
+    (value.code !== "provider_model_succeeded" &&
+      value.code !== "provider_model_ineligible") ||
+    (value.state === "verified_available" &&
+      value.code !== "provider_model_succeeded") ||
+    (value.state === "verified_unavailable" &&
+      value.code !== "provider_model_ineligible") ||
     typeof value.provider !== "string" ||
     typeof value.model !== "string" ||
     typeof value.accountScope !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.accountScope) ||
-    typeof value.observedAt !== "string"
+    typeof value.authGeneration !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.authGeneration) ||
+    typeof value.observedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.observedAt))
   )
     return null;
-  return {
-    code: value.code,
+  const identity = {
     provider: value.provider,
     model: value.model,
     accountScope: value.accountScope,
+    authGeneration: value.authGeneration,
     observedAt: value.observedAt,
   };
-}
-
-function validProviderEligibilityInvalidation(
-  value: unknown,
-): value is ProviderEligibilityInvalidation {
-  return Boolean(
-    decodeProviderEligibilityFailure(value) &&
-      record(value) &&
-      typeof value.invalidatedAt === "string",
-  );
+  return value.state === "verified_available"
+    ? {
+        ...identity,
+        state: "verified_available",
+        code: "provider_model_succeeded",
+      }
+    : {
+        ...identity,
+        state: "verified_unavailable",
+        code: "provider_model_ineligible",
+      };
 }
 
 function sameAttestation(

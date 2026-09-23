@@ -68,35 +68,35 @@ export const SBX_PI_DISCOVERY_SCRIPT =
 export const SBX_PI_RUNTIME_PROBE = "/home/agent/.qe-profile/probe-runtime.mjs";
 export const SBX_PI_RESOURCE_PROBE =
   "/home/agent/.qe-profile/probe-resource.mjs";
-export const SBX_PI_ELIGIBILITY_SNAPSHOT =
-  "/qe/state/openai-codex-model-eligibility.json";
+export const SBX_PI_METADATA_SNAPSHOT =
+  "/qe/state/openai-codex-model-metadata.json";
 
 const SBX_PI_PROFILE_ASSETS = Object.freeze({
   "spec.yaml":
-    "73ca505281eb9db003de7ba6dcbb53e67f58cc84a47f5d6fe1ec20f6f1bb14cd",
+    "6b3d1bef0ba8584d9a1327d078487f0c1ec8235e16efdc9b9dfc46ea2df7f724",
   "files/home/.qe-profile/package.json":
-    "e00290736ad2d76027395f4d19b0f3a78a0bf333fa7cf99fb370ab3025f00782",
+    "212bd50e14991cd48cb6202e9708175458f17c3c4bf37cb6c81c3911c74611e3",
   "files/home/.qe-profile/package-lock.json":
-    "e5d368409a3750b22ef795ef37acce7d12fed7750ec3e82f2222672341e15ce7",
+    "e277d2df9fa8c58e2c9be763f9102e8204e7a8e92d50777d2b61091fc36ee032",
   "files/home/.qe-profile/codex-model-eligibility.mjs":
-    "a2f4254156f44668b660f3cd4b65b6d21869b5d56e83b16e7412f8f3f8498e87",
+    "e8fbc8b2ed437ebaec0214a5c7ab1b61a6562438b9cc863235b8a2a1a0016972",
   "files/home/.qe-profile/discover-models.mjs":
-    "7de8cc6abe276493838e0328fb245abbd960c4d49a670fbdfd8a9de8057b375a",
+    "bac7e4929fc881e76539c3220be632938ce418ff865297d656fe0164cc270e93",
   "files/home/.qe-profile/probe-runtime.mjs":
-    "26d4fa144c80060d0b9f5ca16ec633ec7ced71c89ada1657d4c091f782921856",
+    "3ffa1e4c1034f7ffd1a0a75aaa96d7cd917b958adb5824af361bad3f0c1e122b",
   "files/home/.qe-profile/probe-resource.mjs":
-    "e08f0cfba88b8fd5e92bedf3eb396f03be35b65dd409a976144b3c70dc00b5e6",
+    "514354d2aef1334886578e8e9733af7dbdfdd030495000977b88c9d049e1e41c",
 });
 
-export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
-  schemaVersion: 1,
-  id: "qe-pi-execution-v1",
+export const SBX_PI_EXECUTION_PROFILE_V2_DEFINITION = Object.freeze({
+  schemaVersion: 2,
+  id: "qe-pi-execution-v2",
   backend: "docker-sandboxes",
   kitSchemaVersion: "2",
-  kitName: "qe-pi-execution-v1",
+  kitName: "qe-pi-execution-v2",
   baseImage:
     "docker.io/docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919",
-  piPackage: "@earendil-works/pi-coding-agent@0.84.2",
+  piPackage: "@earendil-works/pi-coding-agent@0.85.1",
   assets: SBX_PI_PROFILE_ASSETS,
   mounts: Object.freeze([]),
   skills: "off",
@@ -116,10 +116,10 @@ export const SBX_PI_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
   }),
 });
 
-export const SBX_PI_EXECUTION_PROFILE_V1: EnvironmentProfileIdentity =
+export const SBX_PI_EXECUTION_PROFILE_V2: EnvironmentProfileIdentity =
   Object.freeze({
-    id: SBX_PI_EXECUTION_PROFILE_V1_DEFINITION.id,
-    digest: digest(SBX_PI_EXECUTION_PROFILE_V1_DEFINITION),
+    id: SBX_PI_EXECUTION_PROFILE_V2_DEFINITION.id,
+    digest: digest(SBX_PI_EXECUTION_PROFILE_V2_DEFINITION),
   });
 
 export interface SbxExecutionProfile {
@@ -142,13 +142,13 @@ export const SBX_SHELL_PROFILE: SbxExecutionProfile = Object.freeze({
 
 export const SBX_PI_PROFILE_ROOT = resolve(
   import.meta.dir,
-  "../../profiles/qe-pi-execution-v1",
+  "../../profiles/qe-pi-execution-v2",
 );
 
 export const SBX_PI_PROFILE: SbxExecutionProfile = Object.freeze({
-  identity: SBX_PI_EXECUTION_PROFILE_V1,
+  identity: SBX_PI_EXECUTION_PROFILE_V2,
   agentReference: SBX_PI_PROFILE_ROOT,
-  nativeAgent: "qe-pi-execution-v1",
+  nativeAgent: "qe-pi-execution-v2",
   networkMode: "openai_subscription",
   credentialMode: "host_pi_oauth_dynamic_proxy",
   postCreateNetworkDenies: Object.freeze([SBX_PI_INSTALL_NETWORK_TARGET]),
@@ -158,8 +158,8 @@ export async function verifySbxProfileAssets(
   profile: SbxExecutionProfile,
 ): Promise<void> {
   if (
-    profile.identity.id !== SBX_PI_EXECUTION_PROFILE_V1.id ||
-    profile.identity.digest !== SBX_PI_EXECUTION_PROFILE_V1.digest
+    profile.identity.id !== SBX_PI_EXECUTION_PROFILE_V2.id ||
+    profile.identity.digest !== SBX_PI_EXECUTION_PROFILE_V2.digest
   )
     return;
   if (resolve(profile.agentReference) !== SBX_PI_PROFILE_ROOT)

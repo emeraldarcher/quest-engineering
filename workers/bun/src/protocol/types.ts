@@ -251,12 +251,18 @@ export interface ReconcileDispatch {
   failure?: Record<string, JsonValue>;
 }
 
+export type AccountAvailability =
+  | "verified_available"
+  | "verified_unavailable"
+  | "unknown";
+
 export interface ExecutorCapability {
   harness_kind: string;
   models: Array<{
     provider: string;
     model: string;
     display_name: string;
+    account_availability: AccountAvailability;
     reasoning_capability: ReasoningCapability;
   }>;
   supported_tool_policies: Array<ToolPolicy["kind"]>;

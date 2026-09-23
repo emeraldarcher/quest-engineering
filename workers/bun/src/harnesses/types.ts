@@ -13,6 +13,10 @@ import type {
 } from "../session-host/types.ts";
 
 export type HarnessKind = "pi" | "antigravity" | "fake" | (string & {});
+export type AccountAvailability =
+  | "verified_available"
+  | "verified_unavailable"
+  | "unknown";
 export type HarnessIntegrationStrategy =
   | "native_extension"
   | "native_rpc"
@@ -32,6 +36,7 @@ export interface HarnessModelCapability {
   provider: string;
   model: string;
   displayName: string;
+  accountAvailability: AccountAvailability;
   reasoningCapability:
     | ReasoningCapability
     | { kind: "unknown"; detail: string };

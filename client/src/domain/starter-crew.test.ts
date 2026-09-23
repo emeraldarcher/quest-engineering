@@ -18,6 +18,7 @@ const option: ExecutionOption = {
     model: "starter",
     display_name: "Starter",
   },
+  account_availability: "verified_available",
   reasoning_capability: { kind: "enumerated", values: ["medium"] },
   tool_policy: { kind: "exact" },
   tool_enforcement: "exact",

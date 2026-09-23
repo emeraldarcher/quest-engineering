@@ -69,6 +69,8 @@ const { mkdirSync, writeFileSync, renameSync, chmodSync } = require("node:fs");
 const { dirname } = require("node:path");
 const path = "/home/agent/.pi/agent/auth.json";
 const temporary = path + ".qe-new";
+const generationPath = "/home/agent/.pi/agent/qe-auth-generation";
+const generationTemporary = generationPath + ".qe-new";
 const document = {
   "openai-codex": {
     type: "oauth",
@@ -82,6 +84,9 @@ mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 writeFileSync(temporary, JSON.stringify(document) + "\n", { mode: 0o600 });
 chmodSync(temporary, 0o600);
 renameSync(temporary, path);
+writeFileSync(generationTemporary, process.env.QE_PROXY_AUTH_GENERATION + "\n", { mode: 0o600 });
+chmodSync(generationTemporary, 0o600);
+renameSync(generationTemporary, generationPath);
 `;
 
 function accountIdFromPlaceholder(placeholder: string): string {
@@ -139,6 +144,7 @@ export class SbxPiCredentialProvisioner {
           environment: {
             QE_PROXY_ACCESS: placeholder,
             QE_PROXY_ACCOUNT: accountIdFromPlaceholder(placeholder),
+            QE_PROXY_AUTH_GENERATION: resolved.authGeneration,
           },
           timeoutMs: 30_000,
         },

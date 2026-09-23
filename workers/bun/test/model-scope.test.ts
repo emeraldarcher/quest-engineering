@@ -7,7 +7,6 @@ import { loadConfig } from "../src/config.ts";
 import {
   applyConfiguredPiModelScope,
   type DiscoveredPiModelCatalog,
-  reconcileProviderEligibilityInvalidations,
 } from "../src/execution-environment/sbx-run.ts";
 import type { HarnessDiscovery } from "../src/harnesses/types.ts";
 
@@ -21,11 +20,21 @@ afterEach(async () => {
 const discovered: DiscoveredPiModelCatalog = {
   authenticated: true,
   diagnostics: ["Pi dynamic discovery authenticated."],
+  accountScope: "a".repeat(64),
+  authGeneration: "b".repeat(64),
+  metadata: {
+    authority: "advisory",
+    conclusive: false,
+    status: 200,
+    observedAt: "2026-09-22T00:00:00.000Z",
+    modelCount: 0,
+  },
   models: [
     {
       provider: "openai-codex",
       model: "model-a",
       displayName: "Model A",
+      accountAvailability: "verified_available",
       reasoningCapability: {
         kind: "enumerated",
         values: ["low", "medium", "high"],
@@ -35,12 +44,14 @@ const discovered: DiscoveredPiModelCatalog = {
       provider: "openai-codex",
       model: "model-b",
       displayName: "Model B",
+      accountAvailability: "verified_unavailable",
       reasoningCapability: { kind: "unsupported" },
     },
     {
       provider: "openai-codex",
       model: "model-c",
       displayName: "Model C",
+      accountAvailability: "unknown",
       reasoningCapability: {
         kind: "enumerated",
         values: ["medium", "high"],
@@ -150,7 +161,7 @@ test("nonempty scope retains an exact subset in native catalog order", () => {
 
 test("zero-model discovery is distinguished from QE policy exclusion", () => {
   const result = applyConfiguredPiModelScope(
-    { authenticated: true, diagnostics: [], models: [] },
+    { ...discovered, diagnostics: [], models: [] },
     undefined,
   );
   expect(result.models).toEqual([]);
@@ -160,24 +171,15 @@ test("zero-model discovery is distinguished from QE policy exclusion", () => {
   ]);
 });
 
-test("authenticated zero-model account catalog publishes no executor", async () => {
+test("empty advisory metadata does not suppress the runtime catalog", async () => {
   const config = loadConfig(await environment());
-  const scoped = applyConfiguredPiModelScope(
-    {
-      authenticated: true,
-      accountScope: "a".repeat(64),
-      providerEligibleModels: [],
-      diagnostics: ["Authenticated account returned zero eligible models."],
-      models: [],
-    },
-    config.executorModels,
-  );
+  const scoped = applyConfiguredPiModelScope(discovered, config.executorModels);
   const capabilities = workerCapabilities(config, "darwin", "arm64", [
     discoveryFor(scoped),
   ]);
-  expect(scoped.authenticated).toBe(true);
-  expect(scoped.models).toEqual([]);
-  expect(capabilities.executors).toEqual([]);
+  expect(scoped.metadata.modelCount).toBe(0);
+  expect(scoped.models).toHaveLength(3);
+  expect(capabilities.executors[0]?.models).toHaveLength(3);
 });
 
 test("unknown nonempty scope advertises no fallback and explains policy exclusion", () => {
@@ -207,43 +209,6 @@ test("scope matching is exact across duplicates, case, and provider", () => {
     { provider: "openai-codex", model: "model-a" },
   ]);
   expect(result.models).toEqual([modelA]);
-});
-
-test("account-scoped provider rejection invalidation requires a consistent live refresh", () => {
-  const accountScope = "a".repeat(64);
-  const invalidation = {
-    code: "provider_model_ineligible" as const,
-    provider: "openai-codex",
-    model: "model-a",
-    accountScope,
-    observedAt: "2026-09-22T00:00:00.000Z",
-    invalidatedAt: "2026-09-22T00:00:01.000Z",
-  };
-  const refreshed = {
-    ...discovered,
-    accountScope,
-    providerEligibleModels: [{ provider: "openai-codex", model: "model-c" }],
-  };
-  expect(
-    reconcileProviderEligibilityInvalidations(refreshed, [invalidation]),
-  ).toEqual([]);
-  expect(() =>
-    reconcileProviderEligibilityInvalidations(
-      {
-        ...refreshed,
-        providerEligibleModels: [
-          { provider: "openai-codex", model: "model-a" },
-        ],
-      },
-      [invalidation],
-    ),
-  ).toThrow("still marks a model eligible");
-  expect(
-    reconcileProviderEligibilityInvalidations(
-      { ...refreshed, accountScope: "b".repeat(64) },
-      [invalidation],
-    ),
-  ).toEqual([invalidation]);
 });
 
 test("resolved omitted-scope catalog reaches Worker capability publication", async () => {

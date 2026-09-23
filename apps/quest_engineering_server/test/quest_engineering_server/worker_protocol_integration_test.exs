@@ -653,6 +653,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
               "provider" => "fake",
               "model" => "test",
               "display_name" => "Test model",
+              "account_availability" => "verified_available",
               "reasoning_capability" => %{
                 "kind" => "enumerated",
                 "values" => ["low", "medium", "high"]

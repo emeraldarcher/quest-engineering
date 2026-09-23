@@ -703,6 +703,16 @@ function decodeExecutionOption(value: unknown): ExecutionOption {
         "current tool profile tools",
       ),
     },
+    account_availability: (() => {
+      const state = asString(x.account_availability, "account availability");
+      if (
+        state !== "verified_available" &&
+        state !== "verified_unavailable" &&
+        state !== "unknown"
+      )
+        throw new Error("Invalid account availability.");
+      return state;
+    })(),
     workspaces: asArray(x.workspaces, "option workspaces").map((item) => {
       const w = asRecord(item, "option workspace");
       return {

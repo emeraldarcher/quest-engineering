@@ -17,7 +17,12 @@ defmodule QuestEngineering.Server.ExecutionOptions do
     |> Enum.group_by(&profile_key/1)
     |> Enum.map(fn {_key, profiles} ->
       profile = hd(profiles)
-      %{profile | available: Enum.any?(profiles, & &1.available)}
+
+      %{
+        profile
+        | available: Enum.any?(profiles, & &1.available),
+          account_availability: merged_account_availability(profiles)
+      }
     end)
     |> Enum.sort_by(
       &{&1.harness, &1.model.provider, &1.model.model, &1.tool_policy, &1.reasoning_capability}
@@ -93,7 +98,8 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       tool_enforcement: tool_enforcement,
       current_tool_profile: %{tools: Enum.sort(tools)},
       workspaces: workspaces,
-      available: available
+      account_availability: model.account_availability,
+      available: available and model.account_availability != "verified_unavailable"
     }
   end
 
@@ -149,9 +155,11 @@ defmodule QuestEngineering.Server.ExecutionOptions do
           "provider" => provider,
           "model" => model,
           "display_name" => display_name,
+          "account_availability" => account_availability,
           "reasoning_capability" => reasoning_capability
         }
-        when is_binary(provider) and is_binary(model) and is_binary(display_name) ->
+        when is_binary(provider) and is_binary(model) and is_binary(display_name) and
+               account_availability in ["verified_available", "verified_unavailable", "unknown"] ->
           case reasoning_capability do
             %{"kind" => "unsupported"} ->
               [
@@ -159,6 +167,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
                   provider: provider,
                   model: model,
                   display_name: display_name,
+                  account_availability: account_availability,
                   reasoning_capability: %{kind: "unsupported"}
                 }
               ]
@@ -170,6 +179,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
                   provider: provider,
                   model: model,
                   display_name: display_name,
+                  account_availability: account_availability,
                   reasoning_capability: %{kind: "enumerated", values: Enum.sort(values)}
                 }
               ]
@@ -185,6 +195,16 @@ defmodule QuestEngineering.Server.ExecutionOptions do
     if length(values) == length(models),
       do: {:ok, Enum.sort_by(values, &{&1.provider, &1.model})},
       else: :error
+  end
+
+  defp merged_account_availability(profiles) do
+    states = Enum.map(profiles, & &1.account_availability)
+
+    cond do
+      "verified_available" in states -> "verified_available"
+      "unknown" in states -> "unknown"
+      true -> "verified_unavailable"
+    end
   end
 
   defp access_levels(max_access) do

@@ -52,6 +52,7 @@ harnessConformance("Pi", () => {
           provider: "openai-codex",
           model: "scoped-test-model",
           displayName: "Scoped Test Model",
+          accountAvailability: "unknown",
           reasoningCapability: {
             kind: "enumerated",
             values: ["off", "high"],

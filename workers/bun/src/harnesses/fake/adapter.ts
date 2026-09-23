@@ -74,6 +74,7 @@ export class FakeHarness implements AgentHarness {
           provider: "fake",
           model: "test",
           displayName: "Deterministic Test Model",
+          accountAvailability: "verified_available",
           reasoningCapability: {
             kind: "enumerated",
             values: ["low", "medium", "high"],

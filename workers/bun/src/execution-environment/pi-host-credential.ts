@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -25,6 +25,8 @@ export interface HostPiCredentialResolution {
   accessToken: string;
   /** Nonsecret routing metadata required by the Codex subscription API. */
   accountId: string;
+  /** Nonsecret digest that invalidates account evidence when the OAuth generation changes. */
+  authGeneration: string;
   /** True only when Pi rotated and the resolver atomically committed auth.json. */
   persistedRotation: boolean;
 }
@@ -241,7 +243,13 @@ export async function resolveHostPiOpenAiCredential(
       shadowExists = false;
       await fsyncDirectory(directory);
     }
-    return { accessToken, accountId, persistedRotation };
+    const authGeneration = createHash("sha256")
+      .update("qe-pi-auth-generation-v1\u0000")
+      .update(accountId)
+      .update("\u0000")
+      .update(accessToken)
+      .digest("hex");
+    return { accessToken, accountId, authGeneration, persistedRotation };
   } finally {
     if (shadowExists) await unlink(shadowPath).catch(() => undefined);
     await release();

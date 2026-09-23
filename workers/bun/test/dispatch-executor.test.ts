@@ -1037,6 +1037,7 @@ class InspectingProvider implements AgentHarness {
           provider: "fake",
           model: "test",
           displayName: "Test",
+          accountAvailability: "verified_available",
           reasoningCapability: { kind: "enumerated", values: ["medium"] },
         },
       ],

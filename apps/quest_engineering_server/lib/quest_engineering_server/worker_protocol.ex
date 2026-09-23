@@ -1215,9 +1215,11 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "provider" => provider,
          "model" => model,
          "display_name" => display_name,
+         "account_availability" => account_availability,
          "reasoning_capability" => reasoning_capability
        }) do
     non_blank?(provider) and non_blank?(model) and non_blank?(display_name) and
+      account_availability in ["verified_available", "verified_unavailable", "unknown"] and
       valid_reasoning_capability?(reasoning_capability)
   end
 

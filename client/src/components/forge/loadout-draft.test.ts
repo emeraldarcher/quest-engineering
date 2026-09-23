@@ -30,6 +30,7 @@ const option: ExecutionOption = {
     model: "gpt-5.6-sol",
     display_name: "GPT 5.6 Sol",
   },
+  account_availability: "verified_available",
   reasoning_capability: {
     kind: "enumerated",
     values: ["low", "medium", "high"],

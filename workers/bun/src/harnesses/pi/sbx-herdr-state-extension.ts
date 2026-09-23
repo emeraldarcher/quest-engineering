@@ -16,11 +16,13 @@ const OWNERSHIP_MARKER_ENV = "QE_SBX_OWNERSHIP_MARKER_PATH";
 const LAUNCH_BINDING_ENV = "QE_SBX_LAUNCH_BINDING_PATH";
 const REQUIRED_PATHS_ENV = "QE_SBX_REQUIRED_GUEST_PATHS_JSON";
 type RuntimeState = "idle" | "working" | "blocked";
-interface ProviderEligibilityFailure {
-  code: "provider_model_ineligible";
+interface ProviderAvailabilityEvidence {
+  state: "verified_available" | "verified_unavailable";
+  code: "provider_model_succeeded" | "provider_model_ineligible";
   provider: string;
   model: string;
   accountScope: string;
+  authGeneration: string;
   observedAt: string;
 }
 
@@ -36,11 +38,13 @@ export default function sbxHerdrStateExtension(pi: ExtensionAPI) {
   let blocked = 0;
   let sequence = Date.now() * 1000;
   let lastWorkingSequence = 0;
+  let providerTurnSequence = 0;
+  let providerTurnSettledAt: string | undefined;
   let sessionId: string | undefined;
   let sessionPath: string | undefined;
   let attestation: Record<string, string | number> | undefined;
   let attestationFailure: string | undefined;
-  let providerFailure: ProviderEligibilityFailure | undefined;
+  let providerEvidence: ProviderAvailabilityEvidence | undefined;
   let publishTail: Promise<void> = Promise.resolve();
 
   const updateSession = (ctx: {
@@ -73,11 +77,16 @@ export default function sbxHerdrStateExtension(pi: ExtensionAPI) {
         schemaVersion: 1,
         sequence,
         lastWorkingSequence,
+        providerTurnSequence,
+        ...(providerTurnSettledAt ? { providerTurnSettledAt } : {}),
         state,
         observedAt: new Date().toISOString(),
         ...(attestation ? { attestation } : {}),
         ...(attestationFailure ? { attestationFailure } : {}),
-        ...(providerFailure ? { providerFailure } : {}),
+        ...(providerEvidence ? { providerEvidence } : {}),
+        ...(providerEvidence?.state === "verified_unavailable"
+          ? { providerFailure: providerEvidence }
+          : {}),
         ...(sessionPath
           ? { nativeSession: { kind: "path", value: sessionPath } }
           : sessionId
@@ -127,23 +136,37 @@ export default function sbxHerdrStateExtension(pi: ExtensionAPI) {
     const message = event.message as unknown as Record<string, unknown>;
     const provider = ctx.model?.provider;
     const model = ctx.model?.id;
-    if (
-      typeof provider !== "string" ||
-      typeof model !== "string" ||
-      message.stopReason !== "error" ||
-      typeof message.errorMessage !== "string" ||
-      !classifyProviderEligibilityFailure(provider, message.errorMessage)
-    )
-      return;
-    const accountScope = await readEligibilityAccountScope();
-    if (!accountScope) return;
-    providerFailure = {
-      code: "provider_model_ineligible",
-      provider,
-      model,
-      accountScope,
-      observedAt: new Date().toISOString(),
-    };
+    if (typeof provider !== "string" || typeof model !== "string") return;
+    providerTurnSequence += 1;
+    providerTurnSettledAt = new Date().toISOString();
+    const identity = await readAccountEvidenceIdentity();
+    if (identity) {
+      if (
+        message.stopReason === "error" &&
+        typeof message.errorMessage === "string" &&
+        classifyProviderEligibilityFailure(provider, message.errorMessage)
+      )
+        providerEvidence = {
+          state: "verified_unavailable",
+          code: "provider_model_ineligible",
+          provider,
+          model,
+          ...identity,
+          observedAt: providerTurnSettledAt,
+        };
+      else if (
+        message.stopReason === "stop" ||
+        message.stopReason === "toolUse"
+      )
+        providerEvidence = {
+          state: "verified_available",
+          code: "provider_model_succeeded",
+          provider,
+          model,
+          ...identity,
+          observedAt: providerTurnSettledAt,
+        };
+    }
     await publish();
   });
   pi.on("agent_settled", async (_event, ctx) => {
@@ -167,7 +190,10 @@ export function classifyProviderEligibilityFailure(
   ].some((pattern) => pattern.test(message));
 }
 
-async function readEligibilityAccountScope(): Promise<string | null> {
+async function readAccountEvidenceIdentity(): Promise<{
+  accountScope: string;
+  authGeneration: string;
+} | null> {
   try {
     const auth = JSON.parse(
       await readFile("/home/agent/.pi/agent/auth.json", "utf8"),
@@ -181,8 +207,17 @@ async function readEligibilityAccountScope(): Promise<string | null> {
       | Record<string, unknown>
       | undefined;
     const accountId = claim?.chatgpt_account_id;
-    return typeof accountId === "string" && accountId === auth.accountId
-      ? createHash("sha256").update(accountId).digest("hex")
+    const authGeneration = (
+      await readFile("/home/agent/.pi/agent/qe-auth-generation", "utf8")
+    ).trim();
+    return typeof accountId === "string" &&
+      accountId === auth.accountId &&
+      typeof authGeneration === "string" &&
+      /^[a-f0-9]{64}$/.test(authGeneration)
+      ? {
+          accountScope: createHash("sha256").update(accountId).digest("hex"),
+          authGeneration,
+        }
       : null;
   } catch {
     return null;

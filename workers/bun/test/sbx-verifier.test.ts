@@ -4,7 +4,10 @@ import {
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_PI_PROFILE,
 } from "../src/execution-environment/sbx-profile.ts";
-import { LiveSbxEnvironmentVerifier } from "../src/execution-environment/sbx-verifier.ts";
+import {
+  decodePiCapabilityContract,
+  LiveSbxEnvironmentVerifier,
+} from "../src/execution-environment/sbx-verifier.ts";
 import type { DurableEnvironmentRecord } from "../src/execution-environment/store.ts";
 import type {
   EnvironmentCommand,
@@ -18,6 +21,37 @@ const sandbox = {
   agent: "shell",
   status: "running",
 };
+
+test("PiCapabilityContract gates capabilities while retaining version only as provenance", () => {
+  const contract = {
+    schemaVersion: 2,
+    compatible: true,
+    capabilities: {
+      nodeRuntime: true,
+      git: true,
+      modelRuntime: true,
+      runtimeCatalog: true,
+      interactiveCli: true,
+      nativeExtensions: true,
+      structuredTools: true,
+      externallyManagedCredential: true,
+      jwtAccountClaim: true,
+      syntheticExpiry: true,
+      guestRefreshDisabled: true,
+      nodeProxyConfigured: true,
+    },
+    provenance: { piPackage: "999.0.0", node: "99.0.0", git: "git version 99" },
+  };
+  expect(decodePiCapabilityContract(contract).provenance.piPackage).toBe(
+    "999.0.0",
+  );
+  expect(() =>
+    decodePiCapabilityContract({
+      ...contract,
+      capabilities: { ...contract.capabilities, runtimeCatalog: false },
+    }),
+  ).toThrow("lacks required execution capabilities");
+});
 
 test("live verifier proves isolated paths, private HOME, deny-all, and private Docker", async () => {
   const client = new ProbeClient();
@@ -334,22 +368,24 @@ class PiProbeClient extends ProbeClient {
     )
       return ok(
         `${JSON.stringify({
-          schemaVersion: 2,
+          schemaVersion: 3,
           authenticated: true,
-          eligibilityKnown: true,
           status: 200,
-          eligibleModelCount: 0,
+          metadataAuthority: "advisory",
+          metadataConclusive: false,
+          modelCount: 0,
         })}\n`,
       );
     if (command.executable === "/usr/bin/node")
       return ok(
         `${JSON.stringify({
-          schemaVersion: 1,
+          schemaVersion: 2,
           compatible: true,
           capabilities: {
             nodeRuntime: true,
             git: true,
             modelRuntime: true,
+            runtimeCatalog: true,
             interactiveCli: true,
             nativeExtensions: true,
             structuredTools: true,
@@ -359,7 +395,7 @@ class PiProbeClient extends ProbeClient {
             guestRefreshDisabled: true,
             nodeProxyConfigured: true,
           },
-          provenance: { piPackage: "0.84.2", node: "22.22.1", git: "2.53.0" },
+          provenance: { piPackage: "0.85.1", node: "22.22.1", git: "2.53.0" },
         })}\n`,
       );
     if (command.executable === "/usr/bin/curl")

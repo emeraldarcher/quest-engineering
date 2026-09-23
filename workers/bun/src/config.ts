@@ -59,6 +59,8 @@ export interface WorkerConfig {
   dataRoot: string;
   piModel?: string;
   piThinking: string;
+  /** Explicit, nonsecret, account/profile-scoped direct evidence imports. */
+  piAccountEvidenceSeedPaths?: string[];
   heartbeatMs: number;
   reconnectMs: number;
   resultTimeoutMs: number;
@@ -202,6 +204,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     dataRoot,
     ...(env.QE_PI_MODEL?.trim() ? { piModel: env.QE_PI_MODEL.trim() } : {}),
     piThinking: env.QE_PI_THINKING?.trim() || "medium",
+    ...(env.QE_PI_ACCOUNT_EVIDENCE_SEEDS?.trim()
+      ? {
+          piAccountEvidenceSeedPaths: csv(env.QE_PI_ACCOUNT_EVIDENCE_SEEDS).map(
+            (path) => absolute(path, "QE_PI_ACCOUNT_EVIDENCE_SEEDS"),
+          ),
+        }
+      : {}),
     heartbeatMs,
     reconnectMs,
     resultTimeoutMs,

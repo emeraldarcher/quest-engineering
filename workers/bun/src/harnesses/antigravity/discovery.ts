@@ -135,6 +135,7 @@ export function parseAntigravityModelCatalog(output: string): {
       provider: ANTIGRAVITY_MODEL_PROVIDER,
       model,
       displayName,
+      accountAvailability: "verified_available",
       reasoningCapability,
     });
   }

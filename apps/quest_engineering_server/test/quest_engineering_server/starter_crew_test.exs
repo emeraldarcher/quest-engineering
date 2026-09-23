@@ -41,6 +41,34 @@ defmodule QuestEngineering.Server.StarterCrewTest do
     assert_counts(2, 2, 1, 1)
   end
 
+  test "execution options expose account availability and schedule unknown but not verified unavailable" do
+    workspace =
+      compatible_workspace!([
+        %{
+          "provider" => "fake",
+          "model" => "unknown",
+          "account_availability" => "unknown"
+        },
+        %{
+          "provider" => "fake",
+          "model" => "unavailable",
+          "account_availability" => "verified_unavailable"
+        }
+      ])
+
+    options =
+      ExecutionOptions.list()
+      |> Enum.filter(fn option ->
+        Enum.any?(option.workspaces, &(&1.workspace_id == workspace.id))
+      end)
+
+    assert %{available: true, account_availability: "unknown"} =
+             Enum.find(options, &(&1.model.model == "unknown"))
+
+    assert %{available: false, account_availability: "verified_unavailable"} =
+             Enum.find(options, &(&1.model.model == "unavailable"))
+  end
+
   test "a newly preferred option does not redefine persisted starter Loadouts" do
     workspace = compatible_workspace!()
     assert {:ok, first} = StarterCrew.create_or_reconcile(workspace.id)
@@ -353,13 +381,17 @@ defmodule QuestEngineering.Server.StarterCrewTest do
           "models" =>
             Enum.map(
               models,
-              &Map.merge(&1, %{
-                "display_name" => "Test model",
-                "reasoning_capability" => %{
-                  "kind" => "enumerated",
-                  "values" => ["low", "medium"]
-                }
-              })
+              &Map.merge(
+                %{
+                  "display_name" => "Test model",
+                  "account_availability" => "verified_available",
+                  "reasoning_capability" => %{
+                    "kind" => "enumerated",
+                    "values" => ["low", "medium"]
+                  }
+                },
+                &1
+              )
             ),
           "supported_tool_policies" => ["exact"],
           "tool_enforcement" => "exact",

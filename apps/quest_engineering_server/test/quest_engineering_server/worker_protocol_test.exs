@@ -88,6 +88,25 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
              WorkerProtocol.decode_hello(unknown)
   end
 
+  test "account availability accepts all three states and rejects unknown values" do
+    path = [
+      "capabilities",
+      "executors",
+      Access.at(0),
+      "models",
+      Access.at(0),
+      "account_availability"
+    ]
+
+    for state <- ["verified_available", "verified_unavailable", "unknown"] do
+      assert {:ok, _hello} =
+               hello() |> put_in(path, state) |> WorkerProtocol.decode_hello()
+    end
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_capabilities}} =
+             hello() |> put_in(path, "metadata_eligible") |> WorkerProtocol.decode_hello()
+  end
+
   test "encodes persisted string source kinds in binding commands" do
     command =
       WorkerProtocol.bind_workspace_source(@worker_id, %{
@@ -420,6 +439,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                 "provider" => "fake",
                 "model" => "test",
                 "display_name" => "Test model",
+                "account_availability" => "verified_available",
                 "reasoning_capability" => %{
                   "kind" => "enumerated",
                   "values" => ["medium"]

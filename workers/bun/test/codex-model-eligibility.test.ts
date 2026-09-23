@@ -1,13 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
-  decodeCodexModelEligibility,
-  fetchCodexModelEligibility,
-  getCodexModelEligibility,
-  intersectCodexModelCatalog,
+  describeCodexModelMetadata,
+  getCodexModelMetadata,
+  readCodexProxyIdentity,
   // @ts-expect-error The immutable guest profile is plain ESM executed by Node.
-} from "../profiles/qe-pi-execution-v1/files/home/.qe-profile/codex-model-eligibility.mjs";
+} from "../profiles/qe-pi-execution-v2/files/home/.qe-profile/codex-model-eligibility.mjs";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -16,193 +15,133 @@ afterEach(async () => {
   );
 });
 
-test("account catalog decodes explicit API, visibility, rollout, and reasoning eligibility", () => {
-  const decoded = decodeCodexModelEligibility({
-    models: [
-      {
-        slug: "eligible",
-        display_name: "Eligible",
-        supported_in_api: true,
-        visibility: "list",
-        default_reasoning_level: "medium",
-        supported_reasoning_levels: [
-          { effort: "low", description: "fast" },
-          { effort: "medium", description: "balanced" },
-        ],
-      },
-      {
-        slug: "hidden",
-        supported_in_api: true,
-        visibility: "hide",
-        supported_reasoning_levels: ["medium"],
-      },
-      {
-        slug: "not-api",
-        supported_in_api: false,
-        visibility: "list",
-        supported_reasoning_levels: ["medium"],
-      },
-      {
-        slug: "not-rolled-out",
-        supported_in_api: true,
-        visibility: "list",
-        rollout_eligible: false,
-        supported_reasoning_levels: ["medium"],
-      },
-    ],
+test("empty authenticated provider metadata is advisory and inconclusive", async () => {
+  const { authPath, snapshotPath } = await fixture("account-a", "a");
+  const metadata = await getCodexModelMetadata({
+    authPath,
+    snapshotPath,
+    fetch: async () =>
+      new Response(JSON.stringify({ models: [] }), { status: 200 }),
   });
-
-  expect(decoded.models).toEqual([
-    {
-      provider: "openai-codex",
-      model: "eligible",
-      displayName: "Eligible",
-      reasoning: ["low", "medium"],
-      defaultReasoning: "medium",
-    },
-  ]);
-  expect(decoded.excluded).toEqual([
-    { model: "hidden", reason: "not_visible" },
-    { model: "not-api", reason: "not_supported_in_api" },
-    { model: "not-rolled-out", reason: "rollout_ineligible" },
-  ]);
-});
-
-test("empty authenticated account catalog is known eligibility, not a bundled fallback", () => {
-  expect(decodeCodexModelEligibility({ models: [] })).toEqual({
-    models: [],
-    excluded: [],
+  expect(metadata).toMatchObject({
+    schemaVersion: 2,
+    authority: "advisory",
+    conclusive: false,
+    authenticated: true,
+    status: 200,
+    modelCount: 0,
+    detail:
+      "Provider returned an empty advisory model list; account availability remains unknown.",
   });
-  expect(
-    intersectCodexModelCatalog(
-      [
-        {
-          provider: "openai-codex",
-          model: "gpt-5.3-codex-spark",
-          displayName: "Spark",
-          reasoning: ["medium"],
-        },
-      ],
-      [],
-    ),
-  ).toEqual([]);
-});
-
-test("harness and account catalogs intersect model identity and reasoning without substitutions", () => {
-  const models = intersectCodexModelCatalog(
-    [
-      {
-        provider: "openai-codex",
-        model: "eligible",
-        displayName: "Harness Name",
-        reasoning: ["low", "medium", "high"],
-      },
-      {
-        provider: "openai-codex",
-        model: "harness-only",
-        displayName: "Harness Only",
-        reasoning: ["medium"],
-      },
-    ],
-    [
-      {
-        provider: "openai-codex",
-        model: "eligible",
-        displayName: "Provider Name",
-        reasoning: ["medium", "high", "xhigh"],
-        defaultReasoning: "medium",
-      },
-      {
-        provider: "openai-codex",
-        model: "provider-only",
-        displayName: "Provider Only",
-        reasoning: ["medium"],
-        defaultReasoning: "medium",
-      },
-    ],
+  expect(metadata.accountScope).toMatch(/^[a-f0-9]{64}$/);
+  expect(metadata.authGeneration).toBe("a".repeat(64));
+  expect(JSON.parse(await readFile(snapshotPath, "utf8"))).toEqual(metadata);
+  expect(describeCodexModelMetadata(metadata)[0]).toContain(
+    "advisory and inconclusive",
   );
-  expect(models).toEqual([
-    {
-      provider: "openai-codex",
-      model: "eligible",
-      displayName: "Harness Name",
-      reasoning: ["medium", "high"],
-    },
-  ]);
 });
 
-test("account-scoped cache is reused briefly and refreshes after invalidation", async () => {
+test("nonempty or malformed provider metadata never becomes availability authority", async () => {
+  const { authPath } = await fixture("account-a", "b");
+  const nonempty = await getCodexModelMetadata({
+    authPath,
+    snapshotPath: null,
+    fetch: async () =>
+      new Response(JSON.stringify({ models: [{ slug: "anything" }] }), {
+        status: 200,
+      }),
+  });
+  expect(nonempty).toMatchObject({
+    authority: "advisory",
+    conclusive: false,
+    modelCount: 1,
+  });
+
+  const malformed = await getCodexModelMetadata({
+    authPath,
+    snapshotPath: null,
+    fetch: async () => new Response("not-json", { status: 200 }),
+  });
+  expect(malformed).toMatchObject({
+    authority: "advisory",
+    conclusive: false,
+    status: 200,
+    modelCount: null,
+  });
+
+  const rejectedMetadata = await getCodexModelMetadata({
+    authPath,
+    snapshotPath: null,
+    fetch: async () => new Response("unauthorized", { status: 401 }),
+  });
+  expect(rejectedMetadata).toMatchObject({
+    authenticated: true,
+    authority: "advisory",
+    conclusive: false,
+    status: 401,
+    modelCount: null,
+  });
+});
+
+test("metadata transport failure is diagnostic and does not invent unavailability", async () => {
+  const { authPath } = await fixture("account-a", "c");
+  const metadata = await getCodexModelMetadata({
+    authPath,
+    snapshotPath: null,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  expect(metadata).toMatchObject({
+    authority: "advisory",
+    conclusive: false,
+    authenticated: true,
+    status: null,
+    modelCount: null,
+  });
+  expect(metadata.detail).toContain("unavailable");
+});
+
+test("proxy identity binds account scope and auth generation without exposing credentials", async () => {
+  const { authPath } = await fixture("account-a", "d");
+  const identity = await readCodexProxyIdentity(authPath);
+  expect(identity.accountId).toBe("account-a");
+  expect(identity.accountScope).toMatch(/^[a-f0-9]{64}$/);
+  expect(identity.authGeneration).toBe("d".repeat(64));
+
+  await writeAuth(authPath, "account-b", "e".repeat(64));
+  const next = await readCodexProxyIdentity(authPath);
+  expect(next.accountScope).not.toBe(identity.accountScope);
+  expect(next.authGeneration).not.toBe(identity.authGeneration);
+});
+
+async function fixture(
+  accountId: string,
+  generation: string,
+): Promise<{ authPath: string; snapshotPath: string }> {
   const parent = join(process.cwd(), ".pi", "tmp");
   await mkdir(parent, { recursive: true });
-  const root = await mkdtemp(join(parent, "codex-eligibility-"));
+  const root = await mkdtemp(join(parent, "codex-metadata-"));
   roots.push(root);
   const authPath = join(root, "auth.json");
-  const snapshotPath = join(root, "eligibility.json");
-  await writeAuth(authPath, "account-a");
-  let requests = 0;
-  const request = async () => {
-    requests += 1;
-    return new Response(JSON.stringify({ models: [] }), { status: 200 });
-  };
+  await writeAuth(authPath, accountId, generation.repeat(64));
+  return { authPath, snapshotPath: join(root, "metadata.json") };
+}
 
-  const first = await fetchCodexModelEligibility({
-    authPath,
-    snapshotPath,
-    fetch: request,
-  });
-  const cached = await getCodexModelEligibility({
-    authPath,
-    snapshotPath,
-    fetch: async () => {
-      throw new Error("fresh request should not run");
-    },
-  });
-  expect(cached.accountScope).toBe(first.accountScope);
-  expect(requests).toBe(1);
-
-  await rm(snapshotPath);
-  const refreshed = await getCodexModelEligibility({
-    authPath,
-    snapshotPath,
-    fetch: request,
-  });
-  expect(refreshed.accountScope).toBe(first.accountScope);
-  expect(requests).toBe(2);
-
-  await writeAuth(authPath, "account-b");
-  const nextAccount = await getCodexModelEligibility({
-    authPath,
-    snapshotPath,
-    fetch: request,
-  });
-  expect(nextAccount.accountScope).not.toBe(first.accountScope);
-  expect(requests).toBe(3);
-});
-
-test("unknown provider eligibility schema fails closed", () => {
-  expect(() => decodeCodexModelEligibility({ data: {} })).toThrow(
-    "no models array",
-  );
-  expect(() =>
-    decodeCodexModelEligibility({
-      models: [
-        {
-          slug: "unknown",
-          supported_in_api: true,
-          visibility: "new-state",
-          supported_reasoning_levels: [],
-        },
-      ],
-    }),
-  ).toThrow("unknown visibility");
-});
-
-async function writeAuth(path: string, accountId: string): Promise<void> {
+async function writeAuth(
+  path: string,
+  accountId: string,
+  authGeneration: string,
+): Promise<void> {
   const payload = Buffer.from(
     JSON.stringify({
       "https://api.openai.com/auth": { chatgpt_account_id: accountId },
     }),
   ).toString("base64url");
+  await writeFile(
+    join(dirname(path), "qe-auth-generation"),
+    `${authGeneration}\n`,
+  );
   await writeFile(
     path,
     `${JSON.stringify({

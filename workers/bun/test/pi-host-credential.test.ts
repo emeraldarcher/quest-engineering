@@ -199,6 +199,7 @@ test("credential helper emits only the token and redacts all failures", async ()
     async (): Promise<HostPiCredentialResolution> => ({
       accessToken: token,
       accountId: "account-1",
+      authGeneration: "c".repeat(64),
       persistedRotation: false,
     }),
     { write: (value) => (stdout += value) },
@@ -235,11 +236,14 @@ test("Pi proxy placeholder is deterministic, account-bound, and cryptographicall
     typ: "JWT",
     kid: "qe-sbx-host-managed-v1",
   });
-  expect(
-    JSON.parse(Buffer.from(payloadPart ?? "", "base64url").toString())[
-      ACCOUNT_CLAIM
-    ].chatgpt_account_id,
-  ).toBe("account-1");
+  const payload = JSON.parse(
+    Buffer.from(payloadPart ?? "", "base64url").toString(),
+  );
+  expect(payload[ACCOUNT_CLAIM].chatgpt_account_id).toBe("account-1");
+  expect(payload.qe_sbx_proxy).toEqual({
+    version: 1,
+    sandbox: expect.stringMatching(/^[a-f0-9]{32}$/),
+  });
   expect(Buffer.from(signature ?? "", "base64url").toString()).toBe(
     "not-a-signature",
   );
@@ -264,6 +268,7 @@ test("sandbox provisioner stores only a scoped resolver command and nonsecret pl
     resolveHostCredential: async () => ({
       accessToken: realToken,
       accountId: "account-1",
+      authGeneration: "d".repeat(64),
       persistedRotation: false,
     }),
     resolverCommand: "/trusted/qe-pi-credential-helper",
@@ -281,5 +286,8 @@ test("sandbox provisioner stores only a scoped resolver command and nonsecret pl
   expect(JSON.stringify(guestCommand)).not.toContain(realToken);
   expect(guestCommand?.environment?.QE_PROXY_ACCESS).toBe(
     provision.placeholder,
+  );
+  expect(guestCommand?.environment?.QE_PROXY_AUTH_GENERATION).toBe(
+    "d".repeat(64),
   );
 });

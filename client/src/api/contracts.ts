@@ -243,6 +243,11 @@ export interface StarterCrewResult {
   tactic: Tactic;
 }
 
+export type AccountAvailability =
+  | "verified_available"
+  | "verified_unavailable"
+  | "unknown";
+
 export interface ExecutionOption {
   harness: string;
   model: {
@@ -258,6 +263,7 @@ export interface ExecutionOption {
     workspace_id: string;
     workspace_access: WorkspaceAccess[];
   }>;
+  account_availability: AccountAvailability;
   available: boolean;
 }
 

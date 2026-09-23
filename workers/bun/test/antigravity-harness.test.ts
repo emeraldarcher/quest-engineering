@@ -266,24 +266,28 @@ gemini-conflict-low\tGemini Conflict (High)
         provider: "antigravity",
         model: "claude-sonnet-4-6",
         displayName: "Claude Sonnet 4.6 (Thinking)",
+        accountAvailability: "verified_available",
         reasoningCapability: { kind: "unsupported" },
       },
       {
         provider: "antigravity",
         model: "gemini-3.8-flash-high",
         displayName: "Gemini 3.8 Flash (High)",
+        accountAvailability: "verified_available",
         reasoningCapability: { kind: "enumerated", values: ["high"] },
       },
       {
         provider: "antigravity",
         model: "gemini-3.8-flash-low",
         displayName: "Gemini 3.8 Flash (Low)",
+        accountAvailability: "verified_available",
         reasoningCapability: { kind: "enumerated", values: ["low"] },
       },
       {
         provider: "antigravity",
         model: "gemini-conflict-low",
         displayName: "Gemini Conflict (High)",
+        accountAvailability: "verified_available",
         reasoningCapability: {
           kind: "unknown",
           detail: "conflicting native effort metadata",

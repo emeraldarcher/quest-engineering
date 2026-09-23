@@ -1645,6 +1645,7 @@ function createStarterFixture(name: FixtureName): ClientFixture {
               {
                 harness: coding.harness,
                 model: { ...coding.model, display_name: "Fixture model" },
+                account_availability: "verified_available",
                 reasoning_capability: {
                   kind: "enumerated",
                   values: ["low", "medium"],
@@ -2267,6 +2268,7 @@ function createTownHudFixture(name: FixtureName): ClientFixture {
         {
           harness: loadout.harness,
           model: { ...loadout.model, display_name: "Fixture model" },
+          account_availability: "verified_available",
           reasoning_capability: {
             kind: "enumerated",
             values: ["medium"],
@@ -2474,6 +2476,7 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
         {
           harness: loadout.harness,
           model: { ...loadout.model, display_name: "Fixture model" },
+          account_availability: "verified_available",
           reasoning_capability: {
             kind: "enumerated",
             values: ["medium"],

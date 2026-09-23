@@ -24,6 +24,73 @@ import type {
 } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
 
+export interface PiCapabilityContract {
+  schemaVersion: 2;
+  compatible: true;
+  capabilities: {
+    nodeRuntime: true;
+    git: true;
+    modelRuntime: true;
+    runtimeCatalog: true;
+    interactiveCli: true;
+    nativeExtensions: true;
+    structuredTools: true;
+    externallyManagedCredential: true;
+    jwtAccountClaim: true;
+    syntheticExpiry: true;
+    guestRefreshDisabled: true;
+    nodeProxyConfigured: true;
+  };
+  provenance: { piPackage: string; node: string; git: string };
+}
+
+export function decodePiCapabilityContract(
+  value: unknown,
+): PiCapabilityContract {
+  const contract = parseObject(value, "Pi capability contract");
+  const capabilities = parseObject(
+    contract.capabilities,
+    "Pi runtime capabilities",
+  );
+  const required = [
+    "nodeRuntime",
+    "git",
+    "modelRuntime",
+    "runtimeCatalog",
+    "interactiveCli",
+    "nativeExtensions",
+    "structuredTools",
+    "externallyManagedCredential",
+    "jwtAccountClaim",
+    "syntheticExpiry",
+    "guestRefreshDisabled",
+    "nodeProxyConfigured",
+  ] as const;
+  if (
+    contract.schemaVersion !== 2 ||
+    contract.compatible !== true ||
+    !required.every((key) => capabilities[key] === true)
+  )
+    throw new EnvironmentBackendError(
+      "backend_incompatible",
+      "The in-sandbox Pi runtime lacks required execution capabilities.",
+      "ensure",
+    );
+  const provenance = parseObject(contract.provenance, "Pi runtime provenance");
+  return {
+    schemaVersion: 2,
+    compatible: true,
+    capabilities: Object.fromEntries(
+      required.map((key) => [key, true]),
+    ) as PiCapabilityContract["capabilities"],
+    provenance: {
+      piPackage: text(provenance.piPackage, "piPackage"),
+      node: text(provenance.node, "node"),
+      git: text(provenance.git, "git"),
+    },
+  };
+}
+
 export interface SbxVerifiedEnvironment {
   markerDigest: string;
   capabilities: readonly EnvironmentCapability[];
@@ -438,12 +505,13 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       "Pi subscription resource probe",
     );
     if (
-      proof.schemaVersion !== 2 ||
+      proof.schemaVersion !== 3 ||
       proof.authenticated !== true ||
-      proof.eligibilityKnown !== true ||
       proof.status !== 200 ||
-      !Number.isSafeInteger(proof.eligibleModelCount) ||
-      Number(proof.eligibleModelCount) < 0
+      proof.metadataAuthority !== "advisory" ||
+      proof.metadataConclusive !== false ||
+      !Number.isSafeInteger(proof.modelCount) ||
+      Number(proof.modelCount) < 0
     )
       throw unhealthy("The sandbox-scoped subscription resource proof failed.");
   }
@@ -456,32 +524,8 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       args: [SBX_PI_RUNTIME_PROBE, "/home/agent/.pi/agent/auth.json"],
       timeoutMs: 60_000,
     });
-    const value = parseObject(result.stdout, "Pi runtime capability probe");
-    const capabilities = parseObject(
-      value.capabilities,
-      "Pi runtime capabilities",
-    );
-    if (
-      value.schemaVersion !== 1 ||
-      value.compatible !== true ||
-      capabilities.nodeRuntime !== true ||
-      capabilities.git !== true ||
-      capabilities.modelRuntime !== true ||
-      capabilities.interactiveCli !== true ||
-      capabilities.nativeExtensions !== true ||
-      capabilities.structuredTools !== true ||
-      capabilities.externallyManagedCredential !== true ||
-      capabilities.jwtAccountClaim !== true ||
-      capabilities.syntheticExpiry !== true ||
-      capabilities.guestRefreshDisabled !== true ||
-      capabilities.nodeProxyConfigured !== true
-    )
-      throw new EnvironmentBackendError(
-        "backend_incompatible",
-        "The in-sandbox Pi runtime lacks required execution capabilities.",
-        "ensure",
-      );
-    const provenance = parseObject(value.provenance, "Pi runtime provenance");
+    const contract = decodePiCapabilityContract(result.stdout);
+    const provenance = contract.provenance;
     return [
       {
         kind: "network_policy",
@@ -494,7 +538,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       {
         kind: "harness_runtime",
         mode: "pi_native_extensions",
-        detail: `pi ${text(provenance.piPackage, "piPackage")}; node ${text(provenance.node, "node")}`,
+        detail: `pi ${provenance.piPackage}; node ${provenance.node}`,
       },
       { kind: "control_channel", mode: "worker_file_mailbox_v1" },
     ];

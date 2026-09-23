@@ -49,17 +49,20 @@ defmodule QuestEngineering.Server.CapabilityMatcher do
       %{
         "provider" => ^provider,
         "model" => ^model,
+        "account_availability" => account_availability,
         "reasoning_capability" => %{"kind" => "unsupported"}
       }
-      when is_nil(reasoning) ->
+      when is_nil(reasoning) and account_availability != "verified_unavailable" ->
         {:ok, %ReasoningCapability{kind: :unsupported, values: []}}
 
       %{
         "provider" => ^provider,
         "model" => ^model,
+        "account_availability" => account_availability,
         "reasoning_capability" => %{"kind" => "enumerated", "values" => values}
       }
-      when is_binary(reasoning) and is_list(values) ->
+      when is_binary(reasoning) and is_list(values) and
+             account_availability != "verified_unavailable" ->
         if reasoning in values,
           do: {:ok, %ReasoningCapability{kind: :enumerated, values: values}},
           else: nil
