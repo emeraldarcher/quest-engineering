@@ -3,6 +3,7 @@ defmodule QuestEngineering.ServerWeb.RunController do
 
   alias QuestEngineering.Server.DeliveryCoordinator
   alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.OperationalRecovery
@@ -62,10 +63,21 @@ defmodule QuestEngineering.ServerWeb.RunController do
 
   def recover_execution_fresh(
         conn,
-        %{"id" => run_id, "occurrence_id" => occurrence_id, "request_id" => request_id}
+        %{
+          "id" => run_id,
+          "occurrence_id" => occurrence_id,
+          "source_attempt_id" => source_attempt_id,
+          "request_id" => request_id
+        }
       )
-      when is_binary(occurrence_id) and is_binary(request_id) and request_id != "" do
-    case OperationalRecovery.authorize_fresh(run_id, occurrence_id, request_id) do
+      when is_binary(occurrence_id) and is_binary(source_attempt_id) and
+             is_binary(request_id) and request_id != "" do
+    case OperationalRecovery.request_fresh(
+           run_id,
+           occurrence_id,
+           source_attempt_id,
+           request_id
+         ) do
       {:ok, _recovery} -> render_run(conn, run_id)
       {:error, error} -> Api.render_error(conn, error)
     end
@@ -75,8 +87,93 @@ defmodule QuestEngineering.ServerWeb.RunController do
     do:
       Api.render_error(conn, %OperationalRecovery.Error{
         code: :invalid_execution_recovery,
-        details: %{fields: ["occurrence_id", "request_id"]}
+        details: %{fields: ["occurrence_id", "source_attempt_id", "request_id"]}
       })
+
+  def recover_pre_prompt_process(
+        conn,
+        %{
+          "id" => run_id,
+          "occurrence_id" => occurrence_id,
+          "source_attempt_id" => source_attempt_id,
+          "request_id" => request_id
+        }
+      )
+      when is_binary(occurrence_id) and is_binary(source_attempt_id) and
+             is_binary(request_id) and request_id != "" do
+    case OperationalRecovery.request_pre_prompt_process(
+           run_id,
+           occurrence_id,
+           source_attempt_id,
+           request_id
+         ) do
+      {:ok, _recovery} -> render_run(conn, run_id)
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def recover_pre_prompt_process(conn, _params),
+    do:
+      Api.render_error(conn, %OperationalRecovery.Error{
+        code: :invalid_execution_recovery,
+        details: %{fields: ["occurrence_id", "source_attempt_id", "request_id"]}
+      })
+
+  def authorize_execution_prompt(
+        conn,
+        %{
+          "id" => run_id,
+          "occurrence_id" => occurrence_id,
+          "attempt_id" => attempt_id,
+          "request_id" => request_id
+        }
+      )
+      when is_binary(occurrence_id) and is_binary(attempt_id) and
+             is_binary(request_id) and request_id != "" do
+    case OperationalRecovery.authorize_prompt(run_id, occurrence_id, attempt_id, request_id) do
+      {:ok, _authorization} -> render_run(conn, run_id)
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def authorize_execution_prompt(conn, _params),
+    do:
+      Api.render_error(conn, %OperationalRecovery.Error{
+        code: :invalid_prompt_authorization,
+        details: %{fields: ["occurrence_id", "attempt_id", "request_id"]}
+      })
+
+  def cancel_execution_attempt(
+        conn,
+        %{
+          "id" => run_id,
+          "attempt_id" => attempt_id,
+          "occurrence_id" => occurrence_id,
+          "request_id" => request_id
+        } = params
+      ) do
+    with :ok <- require_local_tauri(conn),
+         {:ok, cancellation} <-
+           ExecutionCancellation.request(
+             run_id,
+             occurrence_id,
+             attempt_id,
+             request_id,
+             params["reason"]
+           ),
+         {:ok, run} <- RunProjection.get(run_id) do
+      json(conn, %{cancellation: cancellation, run: run})
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def cancel_execution_attempt(conn, _params) do
+    Api.render_error(conn, %ExecutionCancellation.Error{
+      code: :invalid_execution_cancellation,
+      details: %{fields: ["occurrence_id", "attempt_id", "request_id"]}
+    })
+  end
 
   def mark_execution_failed(conn, %{"id" => run_id, "occurrence_id" => occurrence_id})
       when is_binary(occurrence_id) do

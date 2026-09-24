@@ -156,6 +156,7 @@ const launched = await herdr.startAgent({
   name: agentName,
   integrationKind: "agy",
   args: interactiveArgs,
+  expectedTokens: manualProbeOwnership(agentName),
   timeoutMs: 90_000,
 });
 evidence.herdrLaunch = launched;
@@ -449,6 +450,16 @@ function requiredEvidenceRecord(
 
 function randomDigits(length: number): string {
   return String(Math.floor(Math.random() * 10 ** length)).padStart(length, "0");
+}
+
+function manualProbeOwnership(agentName: string): Record<string, string> {
+  return {
+    qe_owner: "quest-engineering-worker",
+    qe_worker_id: "manual-antigravity-probe",
+    qe_lineage_id: agentName,
+    qe_ownership_token: "quest-engineering-worker/v1",
+    qe_session_incarnation: `manual-probe:${agentName}`,
+  };
 }
 
 function required(name: string): string {

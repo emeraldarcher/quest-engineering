@@ -13,6 +13,11 @@ defmodule QuestEngineering.Server.CapabilityMatcher do
 
   def executor_compatible?(capabilities, requested), do: compatible?(capabilities, requested)
 
+  # Missing availability is treated as active for protocol-v8 compatibility.
+  # A maintenance Worker remains registered and observable but is structurally
+  # ineligible for workspace assignment or Action scheduling.
+  def resolve_executor(%{"dispatch_availability" => "maintenance"}, _requested), do: :error
+
   def resolve_executor(%{"executors" => executors}, requested)
       when is_list(executors) and is_map(requested) do
     Enum.find_value(executors, :error, &resolve_profile(&1, requested))
@@ -44,17 +49,20 @@ defmodule QuestEngineering.Server.CapabilityMatcher do
       %{
         "provider" => ^provider,
         "model" => ^model,
+        "account_availability" => account_availability,
         "reasoning_capability" => %{"kind" => "unsupported"}
       }
-      when is_nil(reasoning) ->
+      when is_nil(reasoning) and account_availability != "verified_unavailable" ->
         {:ok, %ReasoningCapability{kind: :unsupported, values: []}}
 
       %{
         "provider" => ^provider,
         "model" => ^model,
+        "account_availability" => account_availability,
         "reasoning_capability" => %{"kind" => "enumerated", "values" => values}
       }
-      when is_binary(reasoning) and is_list(values) ->
+      when is_binary(reasoning) and is_list(values) and
+             account_availability != "verified_unavailable" ->
         if reasoning in values,
           do: {:ok, %ReasoningCapability{kind: :enumerated, values: values}},
           else: nil

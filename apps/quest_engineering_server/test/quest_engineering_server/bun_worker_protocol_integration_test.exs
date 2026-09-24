@@ -6,16 +6,19 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias QuestEngineering.Core.Product.ModelRef
   alias QuestEngineering.Core.Product.TacticSource.Inline
+  alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
+  alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceCandidate
   alias QuestEngineering.Server.Persistence.WorkspaceBindingAttempt
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RuntimeStore
+  alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerStore
   alias QuestEngineering.Server.WorkspaceControl
 
@@ -89,16 +92,11 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
           ])
 
         port =
-          Port.open({:spawn_executable, bun}, [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: [
-              Path.join(root, "workers/bun/src/main.ts"),
-              "--qe-test-worker=#{worker_id}"
-            ],
-            cd: String.to_charlist(root),
-            env: [
+          open_worker_process(
+            bun,
+            [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+            root,
+            [
               {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
               {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
               {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
@@ -109,10 +107,12 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
               {~c"QE_WORKER_PROVIDER", ~c"fake"},
               {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
             ]
-          ])
+          )
+
+        worker_pid = worker_process_pid(port)
 
         on_exit(fn ->
-          stop_worker_process(port, worker_id)
+          stop_worker_process(port, worker_id, worker_pid)
           File.rm_rf!(worker_root)
 
           Application.put_env(
@@ -138,6 +138,287 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         assert File.exists?(Path.join(worker_root, "run-worktrees.sqlite"))
         assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
         assert Repo.get_by!(QuestLaunch, run_id: launched.run_id)
+
+        stop_worker_process(port, worker_id)
+
+        assert_eventually(fn ->
+          match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
+        end)
+    end
+  end
+
+  test "maintenance Worker teardown is exact, disconnects authoritatively, and cannot claim later work" do
+    case System.find_executable("bun") do
+      nil ->
+        IO.puts("Bun Worker maintenance integration skipped: bun executable is unavailable")
+
+      bun ->
+        root = Path.expand("../../../..", __DIR__)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+        start_supervised!(QuestEngineering.Server.RunWorkspaceProvisioner)
+
+        start_supervised!(
+          {QuestEngineering.Server.Dispatcher, claim_owner: "maintenance-worker-test"}
+        )
+
+        start_supervised!(
+          {QuestEngineering.Server.Scheduler, claim_owner: "maintenance-worker-test"}
+        )
+
+        worker_root =
+          Path.join(root, ".pi/tmp/bun-worker-maintenance-#{System.unique_integer([:positive])}")
+
+        source_root = Path.join(worker_root, "source")
+        File.mkdir_p!(source_root)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# maintenance fixture\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
+        worker_id = "bun-maintenance-#{System.unique_integer([:positive])}"
+        {quest, workspace} = product_fixture()
+        binding_id = Ecto.UUID.generate()
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: worker_root,
+              max_access: "read_write",
+              discover_depth: 1,
+              allow_unconfined_shell: true
+            }
+          ])
+
+        bindings =
+          Jason.encode!([
+            %{
+              binding_id: binding_id,
+              workspace_id: workspace.id,
+              authorized_root_key: "repository",
+              source_repository_root: source_root,
+              max_access: "read_write",
+              allow_unconfined_shell: true
+            }
+          ])
+
+        port =
+          open_worker_process(
+            bun,
+            [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+            root,
+            [
+              {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+              {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+              {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_WORKSPACE_BINDINGS_JSON", String.to_charlist(bindings)},
+              {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+              {~c"QE_WORKER_PROVIDER", ~c"fake"},
+              {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"},
+              {~c"QE_WORKER_DISPATCH_AVAILABILITY", ~c"maintenance"}
+            ]
+          )
+
+        worker_pid = worker_process_pid(port)
+
+        on_exit(fn ->
+          stop_worker_process(port, worker_id, worker_pid)
+          File.rm_rf!(worker_root)
+        end)
+
+        assert_eventually(fn ->
+          match?(
+            {:ok,
+             %{
+               status: "connected",
+               capabilities: %{"dispatch_availability" => "maintenance"}
+             }},
+            WorkerStore.fetch(worker_id)
+          )
+        end)
+
+        {:os_pid, exact_worker_pid} = Port.info(port, :os_pid)
+        stop_worker_process(port, worker_id)
+        assert Port.info(port) == nil
+
+        assert_eventually(fn ->
+          match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
+        end)
+
+        assert {_, 1} =
+                 System.cmd("kill", ["-0", Integer.to_string(exact_worker_pid)],
+                   stderr_to_stdout: true
+                 )
+
+        # The Action is created only after exact process exit and authoritative
+        # disconnect. A stale/orphan Worker therefore has no claim window.
+        assert {:ok, launched} = LaunchQuest.launch(quest.id)
+        assert [_action] = launched.actions
+        Process.sleep(150)
+
+        refute Repo.get_by(WorkerDispatch, worker_id: worker_id)
+        assert {:ok, %{status: "disconnected"}} = WorkerStore.fetch(worker_id)
+    end
+  end
+
+  test "real Bun Worker fences a lost topic, rejoins, and reconciles active local work once" do
+    case System.find_executable("bun") do
+      nil ->
+        IO.puts("Bun Worker reconnect integration skipped: bun executable is unavailable")
+
+      bun ->
+        root = Path.expand("../../../..", __DIR__)
+        previous_workspaces = Application.get_env(:quest_engineering_server, :workspaces)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+        start_supervised!({QuestEngineering.Server.Dispatcher, claim_owner: "bun-reconnect-test"})
+        start_supervised!(QuestEngineering.Server.RunWorkspaceProvisioner)
+        start_supervised!({QuestEngineering.Server.Scheduler, claim_owner: "bun-reconnect-test"})
+
+        worker_root =
+          Path.join(root, ".pi/tmp/bun-worker-reconnect-#{System.unique_integer([:positive])}")
+
+        source_root = Path.join(worker_root, "source")
+        File.mkdir_p!(source_root)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# reconnect fixture\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
+        worker_id = "bun-reconnect-#{System.unique_integer([:positive])}"
+        {quest, workspace} = product_fixture()
+
+        Application.put_env(:quest_engineering_server, :workspaces, %{workspace.id => source_root})
+
+        binding_id = Ecto.UUID.generate()
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: worker_root,
+              max_access: "read_write",
+              discover_depth: 1,
+              allow_unconfined_shell: true
+            }
+          ])
+
+        bindings =
+          Jason.encode!([
+            %{
+              binding_id: binding_id,
+              workspace_id: workspace.id,
+              authorized_root_key: "repository",
+              source_repository_root: source_root,
+              max_access: "read_write",
+              allow_unconfined_shell: true
+            }
+          ])
+
+        port =
+          open_worker_process(
+            bun,
+            [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+            root,
+            [
+              {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+              {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+              {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_WORKSPACE_BINDINGS_JSON", String.to_charlist(bindings)},
+              {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+              {~c"QE_WORKER_PROVIDER", ~c"fake"},
+              {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"},
+              {~c"QE_FAKE_DELAY_MS", ~c"1000"},
+              {~c"QE_RECONNECT_MS", ~c"10"}
+            ]
+          )
+
+        worker_pid = worker_process_pid(port)
+
+        on_exit(fn ->
+          stop_worker_process(port, worker_id, worker_pid)
+          File.rm_rf!(worker_root)
+
+          Application.put_env(
+            :quest_engineering_server,
+            :workspaces,
+            previous_workspaces || %{}
+          )
+        end)
+
+        assert_eventually(fn ->
+          match?(
+            {:ok, %{status: "connected", connection_generation: 1}},
+            WorkerStore.fetch(worker_id)
+          )
+        end)
+
+        assert {:ok, launched} = LaunchQuest.launch(quest.id)
+        [action] = launched.actions
+
+        assert_eventually(fn ->
+          match?(%{state: "ready"}, Repo.get(RunWorkspaceAssignment, launched.run_id))
+        end)
+
+        assert_eventually(fn ->
+          match?({:ok, %{state: :running}}, DispatchStore.fetch(action.id))
+        end)
+
+        assert {:ok, %{pid: channel_pid, generation: 1}} =
+                 WorkerConnections.lookup(worker_id)
+
+        GenServer.stop(channel_pid, :normal)
+
+        assert_eventually(fn ->
+          match?(
+            {:ok, %{status: "connected", connection_generation: generation}}
+            when generation >= 2,
+            WorkerStore.fetch(worker_id)
+          )
+        end)
+
+        assert_eventually(fn ->
+          match?({:ok, %{revision: 1}}, RuntimeStore.fetch_run(launched.run_id))
+        end)
+
+        assert {:ok, %{state: :completed}} = DispatchStore.fetch(action.id)
+
+        {dispatch_count, 0} =
+          System.cmd("sqlite3", [
+            Path.join(worker_root, "dispatches.sqlite"),
+            "SELECT count(*) FROM dispatches WHERE action_id='#{action.id}'"
+          ])
+
+        assert String.trim(dispatch_count) == "1"
 
         stop_worker_process(port, worker_id)
 
@@ -181,16 +462,11 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
 
         start_worker = fn ->
           port =
-            Port.open({:spawn_executable, bun}, [
-              :binary,
-              :exit_status,
-              :stderr_to_stdout,
-              args: [
-                Path.join(root, "workers/bun/src/main.ts"),
-                "--qe-test-worker=#{worker_id}"
-              ],
-              cd: String.to_charlist(root),
-              env: [
+            open_worker_process(
+              bun,
+              [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+              root,
+              [
                 {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
                 {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
                 {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
@@ -200,7 +476,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
                 {~c"QE_WORKER_PROVIDER", ~c"fake"},
                 {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
               ]
-            ])
+            )
 
           port
         end
@@ -209,7 +485,8 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
 
         on_exit(fn -> File.rm_rf!(worker_root) end)
         first_port = start_worker.()
-        on_exit(fn -> stop_worker.(first_port) end)
+        first_pid = worker_process_pid(first_port)
+        on_exit(fn -> stop_worker_process(first_port, worker_id, first_pid) end)
 
         assert_eventually(fn ->
           match?(
@@ -265,7 +542,8 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         Repo.delete!(Repo.get!(ProductWorkspace, deleted_workspace.id))
 
         second_port = start_worker.()
-        on_exit(fn -> stop_worker.(second_port) end)
+        second_pid = worker_process_pid(second_port)
+        on_exit(fn -> stop_worker_process(second_port, worker_id, second_pid) end)
 
         assert_eventually(fn ->
           match?(
@@ -326,6 +604,12 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
               persisted["retired"],
               &(&1["workspace_id"] == deleted_workspace.id)
             )
+        end)
+
+        stop_worker.(second_port)
+
+        assert_eventually(fn ->
+          match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
         end)
     end
   end
@@ -403,18 +687,101 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
     {quest, workspace}
   end
 
-  defp stop_worker_process(port, worker_id) do
-    marker = "--qe-test-worker=#{worker_id}"
-    {output, _status} = System.cmd("pgrep", ["-f", "--", marker], stderr_to_stdout: true)
+  defp open_worker_process(bun, args, root, env) do
+    python =
+      System.find_executable("python3") ||
+        raise "python3 is required to create an isolated Worker process group"
 
-    output
-    |> String.split()
-    |> Enum.each(fn pid ->
-      System.cmd("kill", ["-TERM", pid], stderr_to_stdout: true)
+    # The direct Python bootstrap performs only setsid + exec. The resulting
+    # Port PID is the Bun Worker PID and the leader of its own process group.
+    port =
+      Port.open({:spawn_executable, python}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        args: [
+          "-c",
+          "import os,sys; os.getpgrp()==os.getpid() or os.setsid(); os.execv(sys.argv[1], sys.argv[1:])",
+          bun | args
+        ],
+        cd: String.to_charlist(root),
+        env: env
+      ])
+
+    {:os_pid, pid} = Port.info(port, :os_pid)
+
+    expected_identity = List.last(args)
+
+    assert_eventually(fn ->
+      Enum.any?(process_group_members(pid), fn member ->
+        member.pid == pid and member.pgid == pid and
+          String.contains?(member.command, expected_identity)
+      end)
     end)
 
-    Process.sleep(20)
-    if Port.info(port), do: Port.close(port)
+    port
+  end
+
+  defp worker_process_pid(port) do
+    {:os_pid, pid} = Port.info(port, :os_pid)
+    pid
+  end
+
+  defp stop_worker_process(port, worker_id, captured_pid \\ nil) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, pid} -> stop_owned_process(port, worker_id, pid)
+      nil when is_integer(captured_pid) -> stop_owned_process(port, worker_id, captured_pid)
+      nil -> :ok
+    end
+  end
+
+  defp stop_owned_process(port, worker_id, pid) do
+    members = process_group_members(pid)
+    if members != [], do: terminate_owned_process_group(port, worker_id, pid, members)
+    assert Port.info(port) == nil
+  end
+
+  defp terminate_owned_process_group(port, worker_id, pid, members) do
+    expected_identity = "--qe-test-worker=#{worker_id}"
+    assert Enum.any?(members, &String.contains?(&1.command, expected_identity))
+    {_, status} = System.cmd("kill", ["-TERM", "-#{pid}"], stderr_to_stdout: true)
+    assert status in [0, 1]
+
+    receive do
+      {^port, {:exit_status, _status}} -> :ok
+    after
+      2_000 -> :ok
+    end
+
+    unless process_group_members(pid) == [] do
+      {_, kill_status} = System.cmd("kill", ["-KILL", "-#{pid}"], stderr_to_stdout: true)
+      assert kill_status in [0, 1]
+    end
+
+    assert_eventually(fn -> process_group_members(pid) == [] end)
+  end
+
+  defp process_group_members(pgid) do
+    {output, 0} = System.cmd("ps", ["-axo", "pid=,pgid=,command="])
+
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(fn line ->
+      case String.split(String.trim(line), ~r/\s+/, parts: 3) do
+        [pid, process_group, command] ->
+          [
+            %{
+              pid: String.to_integer(pid),
+              pgid: String.to_integer(process_group),
+              command: command
+            }
+          ]
+
+        _ ->
+          []
+      end
+    end)
+    |> Enum.filter(&(&1.pgid == pgid))
   end
 
   defp assert_eventually(fun, attempts \\ 200)

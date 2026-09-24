@@ -119,6 +119,31 @@ function decodeOperation(
         type: "complete_step",
         outputs: record(raw.outputs) as Record<string, JsonValue>,
       };
+    case "report_completion_failure": {
+      const failure = record(raw.failure);
+      if (
+        !["semantic_validation", "stale_context", "infrastructure"].includes(
+          String(failure.kind),
+        ) ||
+        !controlErrorCode(failure.code) ||
+        typeof failure.message !== "string"
+      )
+        throw new HarnessControlError(
+          "invalid_request",
+          "Completion failure payload is invalid.",
+        );
+      return {
+        type: "report_completion_failure",
+        failure: {
+          kind: failure.kind as Extract<
+            HarnessControlOperation,
+            { type: "report_completion_failure" }
+          >["failure"]["kind"],
+          code: failure.code,
+          message: failure.message.slice(0, 500),
+        },
+      };
+    }
     case "request_human_assistance":
       if (
         ![
@@ -215,6 +240,27 @@ function record(value: unknown): Record<string, unknown> {
       "Harness control request must be an object.",
     );
   return value as Record<string, unknown>;
+}
+
+function controlErrorCode(
+  value: unknown,
+): value is Extract<
+  HarnessControlOperation,
+  { type: "report_completion_failure" }
+>["failure"]["code"] {
+  return [
+    "invalid_request",
+    "bridge_generation_mismatch",
+    "unknown_control_context",
+    "stale_control_context",
+    "replayed_request",
+    "invalid_step_result",
+    "invalid_attention",
+    "bridge_unavailable",
+    "bridge_timeout",
+    "invalid_bridge_response",
+    "harness_contract_violation",
+  ].includes(String(value));
 }
 
 function nonEmpty(value: unknown): string {

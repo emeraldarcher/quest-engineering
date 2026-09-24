@@ -144,6 +144,27 @@ defmodule QuestEngineering.Server.RunProjectionTest do
 
     assert Enum.map(second_step.session.events, & &1.type) == ["attention_requested"]
 
+    assert {:ok, _preserved_native_identity} =
+             ExecutionSessionStore.record(
+               worker.id,
+               worker.connection_generation,
+               session(second, :waiting_for_human, attention)
+               |> Map.put(:native_session_id, nil)
+             )
+
+    assert {:ok, native_identity_projection} = RunProjection.get(launched.run_id)
+
+    assert List.last(native_identity_projection.steps).session.native_identity.conversation_id ==
+             "pi-test"
+
+    assert {:error, :session_native_identity_conflict} =
+             ExecutionSessionStore.record(
+               worker.id,
+               worker.connection_generation,
+               session(second, :waiting_for_human, attention)
+               |> Map.put(:native_session_id, "different-native-session")
+             )
+
     assert {:ok, takeover_descriptor} =
              ExecutionSessionStore.attachment_descriptor(
                launched.run_id,
@@ -282,8 +303,18 @@ defmodule QuestEngineering.Server.RunProjectionTest do
              )
 
     assert descriptor.mode == "local_native_terminal"
-    refute descriptor.takeover_allowed
+    assert descriptor.takeover_allowed
     assert {:ok, _session} = ExecutionSessionStore.record_opened(descriptor.descriptor_token)
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record_opened(descriptor.descriptor_token, "takeover")
+
+    {:ok, after_running_takeover} = RunProjection.get(launched.run_id)
+    running_session = List.last(after_running_takeover.steps).session
+    assert running_session.state == "running"
+    assert is_nil(running_session.attention)
+    assert running_session.attachment.can_observe
+    assert running_session.attachment.can_takeover
 
     {:ok, restarted_worker} =
       WorkerStore.register(worker.id, worker.capabilities, Ecto.UUID.generate())
@@ -307,6 +338,72 @@ defmodule QuestEngineering.Server.RunProjectionTest do
     {:ok, reconciled} = RunProjection.get(launched.run_id)
     assert List.last(reconciled.steps).session.state == "running"
     assert List.last(reconciled.steps).session.attachment.available
+    assert List.last(reconciled.steps).session.attachment.can_takeover
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(
+               restarted_worker.id,
+               restarted_worker.connection_generation,
+               session(second, :retained, nil)
+             )
+
+    {:ok, retained} = RunProjection.get(launched.run_id)
+    retained_step = List.last(retained.steps)
+    retained_session = retained_step.session
+    assert retained_session.state == "retained"
+    assert retained_session.attachment.available
+    assert retained_session.attachment.can_observe
+    assert retained_session.attachment.can_takeover
+    assert retained_session.attachment.can_recover
+
+    assert {:ok, retained_descriptor} =
+             ExecutionSessionStore.attachment_descriptor(
+               launched.run_id,
+               second.execution.identity.attempt_id,
+               retained_session.id
+             )
+
+    assert retained_descriptor.takeover_allowed
+    assert retained_descriptor.recovery_allowed
+
+    assert {:ok, still_retained} =
+             ExecutionSessionStore.record_opened(
+               retained_descriptor.descriptor_token,
+               "takeover"
+             )
+
+    assert still_retained.state == "retained"
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(
+               restarted_worker.id,
+               restarted_worker.connection_generation,
+               session(second, :unavailable, nil) |> Map.put(:terminal, nil)
+             )
+
+    {:ok, physically_gone} = RunProjection.get(launched.run_id)
+    gone_step = List.last(physically_gone.steps)
+    gone_session = gone_step.session
+    assert physically_gone.status == retained.status
+    assert gone_step.state == retained_step.state
+    assert gone_step.attempt.state == retained_step.attempt.state
+    assert gone_session.state == "unavailable"
+    refute gone_session.attachment.available
+    assert gone_session.attachment.reason == "terminal_unavailable"
+
+    assert {:error, :attachment_unavailable} =
+             ExecutionSessionStore.attachment_descriptor(
+               launched.run_id,
+               second.execution.identity.attempt_id,
+               gone_session.id
+             )
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(
+               restarted_worker.id,
+               restarted_worker.connection_generation,
+               session(second, :retained, nil)
+             )
 
     assert {:ok, _worker} =
              WorkerStore.disconnect(
@@ -382,6 +479,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
               "provider" => "fake",
               "model" => "test",
               "display_name" => "Test model",
+              "account_availability" => "verified_available",
               "reasoning_capability" => %{
                 "kind" => "enumerated",
                 "values" => ["low", "medium", "high"]

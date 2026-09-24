@@ -1,4 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
+import { createFixture } from "../fixtures/fixtures";
 import { ApiClient } from "./client";
 
 const originalFetch = globalThis.fetch;
@@ -41,6 +42,7 @@ test("decodes projected occurrence and nested attempt history", async () => {
                 control_path: [],
                 attempt: {
                   id: "attempt-2",
+                  action_id: "action-2",
                   number: 2,
                   state: "running",
                   started_at: "2026-09-01T12:01:00Z",
@@ -48,6 +50,16 @@ test("decodes projected occurrence and nested attempt history", async () => {
                   outputs: [],
                   output_produced: false,
                   resolution: null,
+                  can_cancel: true,
+                  cancellation: {
+                    state: "requested",
+                    request_id: "cancel-request-2",
+                    origin: "product_operator",
+                    reason: "preflight complete",
+                    requested_generation: 4,
+                    requested_at: "2026-09-01T12:01:30Z",
+                    cancelled_at: null,
+                  },
                   retry_of_attempt_id: "attempt-1",
                 },
                 attempts: [
@@ -60,10 +72,12 @@ test("decodes projected occurrence and nested attempt history", async () => {
                     outputs: [],
                     output_produced: false,
                     resolution: "retried",
+                    can_cancel: false,
                     retry_of_attempt_id: null,
                   },
                   {
                     id: "attempt-2",
+                    action_id: "action-2",
                     number: 2,
                     state: "running",
                     started_at: "2026-09-01T12:01:00Z",
@@ -71,6 +85,16 @@ test("decodes projected occurrence and nested attempt history", async () => {
                     outputs: [],
                     output_produced: false,
                     resolution: null,
+                    can_cancel: true,
+                    cancellation: {
+                      state: "requested",
+                      request_id: "cancel-request-2",
+                      origin: "product_operator",
+                      reason: "preflight complete",
+                      requested_generation: 4,
+                      requested_at: "2026-09-01T12:01:30Z",
+                      cancelled_at: null,
+                    },
                     retry_of_attempt_id: "attempt-1",
                   },
                 ],
@@ -89,6 +113,12 @@ test("decodes projected occurrence and nested attempt history", async () => {
                 inputs: [],
                 outputs: [],
                 issue: null,
+                recovery: {
+                  can_retry: false,
+                  can_mark_failed: false,
+                  can_authorize_prompt: true,
+                  message: "Explicit authorization is required.",
+                },
               },
             ],
             artifacts: [],
@@ -120,10 +150,93 @@ test("decodes projected occurrence and nested attempt history", async () => {
   expect(run.launch.id).toBe("launch-1");
   expect(run.steps[0]?.attempt?.id).toBe("attempt-2");
   expect(run.steps[0]?.attempts).toHaveLength(2);
+  expect(run.steps[0]?.attempt?.can_cancel).toBe(true);
+  expect(run.steps[0]?.recovery?.can_authorize_prompt).toBe(true);
+  expect(run.steps[0]?.attempt?.cancellation).toMatchObject({
+    state: "requested",
+    request_id: "cancel-request-2",
+    requested_generation: 4,
+  });
   expect(run.steps[0]?.attempts[0]).toMatchObject({
     number: 1,
     state: "uncertain",
     output_produced: false,
     resolution: "retried",
+    can_cancel: false,
   });
 });
+
+test("decodes runtime waiting, blocked, and stalled execution states", async () => {
+  const value = createFixture("work-yard-running");
+  const source = value?.selectedRunId
+    ? value.runs[value.selectedRunId]
+    : undefined;
+  if (!source) throw new Error("Expected running fixture");
+
+  for (const state of ["waiting_for_activity", "blocked", "stalled"] as const) {
+    const projected = structuredClone(source);
+    projected.status = state;
+    const step = projected.steps.at(-1);
+    if (!step) throw new Error("Expected running Step");
+    step.state = state;
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify({ run: projected })),
+    ) as unknown as typeof fetch;
+
+    const decoded = await new ApiClient({
+      httpBaseUrl: "http://example.test/api/v1",
+    }).getRun(projected.id);
+    expect(decoded.status).toBe(state);
+    expect(decoded.steps.at(-1)?.state).toBe(state);
+  }
+});
+
+test("strictly preserves false prompt authorization eligibility", async () => {
+  const run = await decodeFixtureRecovery(false);
+  expect(run.steps.at(-1)?.recovery?.can_authorize_prompt).toBe(false);
+});
+
+test("permits an omitted prompt authorization capability for older projections", async () => {
+  const run = await decodeFixtureRecovery(undefined);
+  const recovery = run.steps.at(-1)?.recovery;
+  expect(recovery).not.toBeNull();
+  expect(recovery && "can_authorize_prompt" in recovery).toBe(false);
+});
+
+test("rejects malformed prompt authorization and cancellation capabilities", async () => {
+  await expect(
+    decodeFixtureRecovery("yes" as unknown as boolean),
+  ).rejects.toMatchObject({ code: "invalid_response" });
+  await expect(decodeFixtureRecovery(true, "yes")).rejects.toMatchObject({
+    code: "invalid_response",
+  });
+});
+
+async function decodeFixtureRecovery(
+  canAuthorizePrompt: boolean | undefined,
+  canCancel: unknown = true,
+) {
+  const value = createFixture("work-yard-running");
+  const source = value?.selectedRunId
+    ? value.runs[value.selectedRunId]
+    : undefined;
+  if (!source) throw new Error("Expected running fixture");
+  const run = structuredClone(source);
+  const step = run.steps.at(-1);
+  if (!step?.attempt) throw new Error("Expected running Attempt");
+  step.attempt.can_cancel = canCancel as boolean;
+  step.recovery = {
+    can_retry: false,
+    can_mark_failed: false,
+    ...(canAuthorizePrompt === undefined
+      ? {}
+      : { can_authorize_prompt: canAuthorizePrompt }),
+    message: "Explicit authorization is required.",
+  };
+  globalThis.fetch = mock(
+    async () => new Response(JSON.stringify({ run })),
+  ) as unknown as typeof fetch;
+  return new ApiClient({
+    httpBaseUrl: "http://example.test/api/v1",
+  }).getRun(run.id);
+}

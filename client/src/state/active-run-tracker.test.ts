@@ -35,38 +35,37 @@ function projection(
       name: `Squad ${id}`,
       members: [member],
     },
-    steps:
-      status === "completed" || status === "failed"
-        ? []
-        : [
-            {
-              occurrence_id: `occ-${id}`,
-              semantic_step_key: "implement",
-              name: "Implement",
-              instruction: "Work",
-              state: "running",
-              phase: null,
-              remediation_cycle: null,
-              control_path: [],
-              attempt: null,
-              attempts: [],
-              member,
-              performer: {
-                selector: "class",
-                class_key: "builder",
-                source_occurrence_id: null,
-                source_semantic_step_key: null,
-              },
-              context: {
-                mode: "fresh",
-                source_occurrence_id: null,
-                source_semantic_step_key: null,
-              },
-              inputs: [],
-              outputs: [],
-              issue: null,
+    steps: ["completed", "failed", "cancelled"].includes(status)
+      ? []
+      : [
+          {
+            occurrence_id: `occ-${id}`,
+            semantic_step_key: "implement",
+            name: "Implement",
+            instruction: "Work",
+            state: "running",
+            phase: null,
+            remediation_cycle: null,
+            control_path: [],
+            attempt: null,
+            attempts: [],
+            member,
+            performer: {
+              selector: "class",
+              class_key: "builder",
+              source_occurrence_id: null,
+              source_semantic_step_key: null,
             },
-          ],
+            context: {
+              mode: "fresh",
+              source_occurrence_id: null,
+              source_semantic_step_key: null,
+            },
+            inputs: [],
+            outputs: [],
+            issue: null,
+          },
+        ],
     artifacts: [],
     review_gate: {
       required: false,
@@ -79,9 +78,13 @@ function projection(
       pending: 0,
       waiting: 0,
       scheduled: 0,
-      running: status === "completed" || status === "failed" ? 0 : 1,
+      waiting_for_activity: 0,
+      running: ["completed", "failed", "cancelled"].includes(status) ? 0 : 1,
+      blocked: 0,
+      stalled: 0,
       completed: status === "completed" ? 1 : 0,
       failed: status === "failed" ? 1 : 0,
+      cancelled: status === "cancelled" ? 1 : 0,
       uncertain: 0,
     },
     issues: [],
@@ -123,7 +126,11 @@ test("tracks zero, one, and multiple nonterminal Runs without historical details
   });
   tracker.updateSummaries([]);
   expect(calls).toEqual([]);
-  tracker.updateSummaries([summary("a"), summary("old", "completed")]);
+  tracker.updateSummaries([
+    summary("a"),
+    summary("old", "completed"),
+    summary("cancelled", "cancelled"),
+  ]);
   await settle();
   expect(calls).toEqual(["a"]);
   expect(latest).toEqual(["a"]);
@@ -181,12 +188,12 @@ test("terminal projections unsubscribe and remove active crew promptly", async (
   tracker.updateSummaries([summary("a")]);
   await settle();
   expect(activeCount).toBe(1);
-  current = projection("a", "completed");
+  current = projection("a", "cancelled");
   tracker.invalidate("a");
   await settle();
   expect(activeCount).toBe(0);
   expect(tracker.trackedRunIds()).toEqual([]);
-  expect(selectedStatuses.at(-1)).toBe("completed");
+  expect(selectedStatuses.at(-1)).toBe("cancelled");
   expect(releases).toBe(1);
 });
 

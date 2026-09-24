@@ -75,6 +75,7 @@ const custom: Loadout = {
 const option: ExecutionOption = {
   harness: coding.harness,
   model: { ...coding.model, display_name: "GPT 5.6 Sol" },
+  account_availability: "verified_available",
   reasoning_capability: {
     kind: "enumerated",
     values: ["low", "medium", "high"],
@@ -354,7 +355,9 @@ test("applying a preset to New Loadout creates ordinary Product fields only", as
   await fireEvent.input(screen.getByRole("textbox", { name: "Name" }), {
     target: { value: "Preset Coding" },
   });
-  expect(screen.getByRole("option", { name: /Available now/ })).toBeTruthy();
+  expect(
+    screen.getByRole("option", { name: /Verified available/ }),
+  ).toBeTruthy();
   await fireEvent.change(screen.getByLabelText(/Configuration preset/), {
     target: { value: optionKey(option) },
   });

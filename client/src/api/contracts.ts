@@ -217,9 +217,13 @@ export type StepState =
   | "pending"
   | "waiting"
   | "scheduled"
+  | "waiting_for_activity"
   | "running"
+  | "blocked"
+  | "stalled"
   | "completed"
   | "failed"
+  | "cancelled"
   | "uncertain";
 
 export type StarterCrewState =
@@ -243,6 +247,11 @@ export interface StarterCrewResult {
   tactic: Tactic;
 }
 
+export type AccountAvailability =
+  | "verified_available"
+  | "verified_unavailable"
+  | "unknown";
+
 export interface ExecutionOption {
   harness: string;
   model: {
@@ -258,6 +267,7 @@ export interface ExecutionOption {
     workspace_id: string;
     workspace_access: WorkspaceAccess[];
   }>;
+  account_availability: AccountAvailability;
   available: boolean;
 }
 
@@ -367,15 +377,41 @@ export interface LocalSessionAttachmentDescriptor {
   };
 }
 
+export interface ExecutionCancellation {
+  action_id: string;
+  worker_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  request_id: string | null;
+  origin: "product_operator" | null;
+  reason: string | null;
+  requested_generation: number | null;
+  requested_at: string | null;
+  state: "cancellation_requested" | "cancelled" | "already_terminal";
+  delivery: "sent" | "pending" | "not_repeated";
+  idempotent_replay: boolean;
+}
+
 export interface RunAttempt {
   id: string;
+  action_id?: string | null;
   number: number;
   state: string;
   started_at: string | null;
   finished_at: string | null;
   outputs: ArtifactRef[];
   output_produced: boolean;
-  resolution: "retried" | "marked_failed" | null;
+  resolution: "retried" | "marked_failed" | "cancelled" | null;
+  can_cancel?: boolean;
+  cancellation?: {
+    state: "requested" | "cancelled";
+    request_id: string;
+    origin: "product_operator";
+    reason: string | null;
+    requested_generation: number;
+    requested_at: string;
+    cancelled_at: string | null;
+  } | null;
   retry_of_attempt_id: string | null;
   execution: {
     harness: string;
@@ -431,6 +467,7 @@ export interface RunStep {
     can_mark_failed: boolean;
     can_human_retry?: boolean;
     can_retry_fresh?: boolean;
+    can_authorize_prompt?: boolean;
     retained_session_available?: boolean;
     classification?: string;
     epoch_exhausted?: boolean;

@@ -9,6 +9,7 @@ import {
   controlDescriptorPath,
   HarnessControlAuthority,
 } from "../src/harnesses/control/authority.ts";
+import { HarnessControlClient } from "../src/harnesses/control/client.ts";
 import { HARNESS_CONTROL_PATH_ENV } from "../src/harnesses/control/descriptor.ts";
 import {
   QE_COMPLETE_STEP_TOOL,
@@ -162,6 +163,33 @@ test("same static MCP command isolates concurrent session A and B environments",
   expect((await collectStepResult(second.dispatch)).envelope.outputs).toEqual({
     change_set: "session-b",
   });
+});
+
+test("the same MCP child follows stable-path rotation and rejects copied C1 credentials", async () => {
+  const value = await fixture();
+  const bound = await bind(value, action());
+  const evidence = join(value.root, "mcp-rotation-startup.jsonl");
+  const client = await connect(bound.descriptor, evidence);
+  const copiedC1 = join(value.root, "copied-c1-control.json");
+  await writeFile(copiedC1, await Bun.file(bound.descriptor).text());
+
+  await value.authority.bind(
+    bound.dispatch,
+    value.registry.getLineage(bound.lineage.lineageId),
+  );
+
+  await expect(
+    new HarnessControlClient(copiedC1).completionStatus(),
+  ).rejects.toMatchObject({ code: "unknown_control_context" });
+  const result = await client.callTool({
+    name: QE_COMPLETE_STEP_TOOL,
+    arguments: { outputs: { change_set: "descriptor-c2" } },
+  });
+  expect(result.isError).not.toBe(true);
+  expect((await collectStepResult(bound.dispatch)).envelope.outputs).toEqual({
+    change_set: "descriptor-c2",
+  });
+  expect((await Bun.file(evidence).text()).trim().split("\n")).toHaveLength(1);
 });
 
 test("MCP child fails closed with absent or stale session context", async () => {

@@ -1,5 +1,6 @@
 import {
   type ArtifactInstance,
+  type CancelDispatch,
   type ExecuteAction,
   isJsonValue,
   type ResolvedExecution,
@@ -14,6 +15,44 @@ export class ProtocolDecodeError extends Error {
   ) {
     super(`${field}: ${message}`);
   }
+}
+
+export function decodeCancelDispatch(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): CancelDispatch {
+  const payload = record(value, "message");
+  exact(payload.type, "cancel_dispatch", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  const cancellation = record(payload.cancellation, "cancellation");
+  exact(cancellation.origin, "product_operator", "cancellation.origin");
+
+  return {
+    type: "cancel_dispatch",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    action_id: string(payload.action_id, "action_id"),
+    run_id: string(payload.run_id, "run_id"),
+    occurrence_id: string(payload.occurrence_id, "occurrence_id"),
+    attempt_id: string(payload.attempt_id, "attempt_id"),
+    cancellation: {
+      request_id: string(cancellation.request_id, "cancellation.request_id"),
+      origin: "product_operator",
+      reason: nullableString(cancellation.reason, "cancellation.reason"),
+      requested_at: string(
+        cancellation.requested_at,
+        "cancellation.requested_at",
+      ),
+    },
+  };
 }
 
 export function decodeExecuteAction(

@@ -53,6 +53,49 @@ defmodule QuestEngineering.Server.MultiHarnessTest do
     assert requested.tool_policy == %NativePermissions{}
   end
 
+  test "unknown availability remains schedulable while verified unavailable is rejected" do
+    unknown =
+      put_in(
+        capabilities([]),
+        ["executors", Access.at(0), "models", Access.at(0), "account_availability"],
+        "unknown"
+      )
+
+    assert {:ok, _resolution} =
+             CapabilityMatcher.resolve_executor(
+               unknown,
+               request("pi", "high", %Exact{tools: ["a"]})
+             )
+
+    unavailable =
+      put_in(
+        unknown,
+        ["executors", Access.at(0), "models", Access.at(0), "account_availability"],
+        "verified_unavailable"
+      )
+
+    assert :error =
+             CapabilityMatcher.resolve_executor(
+               unavailable,
+               request("pi", "high", %Exact{tools: ["a"]})
+             )
+  end
+
+  test "maintenance Workers remain connected but cannot resolve an executor" do
+    maintenance = Map.put(capabilities([]), "dispatch_availability", "maintenance")
+
+    assert :error =
+             CapabilityMatcher.resolve_executor(
+               maintenance,
+               request("pi", "high", %Exact{tools: ["a"]})
+             )
+
+    assert {:ok, _resolution} =
+             maintenance
+             |> Map.put("dispatch_availability", "active")
+             |> CapabilityMatcher.resolve_executor(request("pi", "high", %Exact{tools: ["a"]}))
+  end
+
   test "reasoning null matches only explicit unsupported capability" do
     assert {:ok, %{reasoning_capability: %{kind: :unsupported}}} =
              CapabilityMatcher.resolve_executor(
@@ -93,6 +136,7 @@ defmodule QuestEngineering.Server.MultiHarnessTest do
               "provider" => "shared",
               "model" => "pi",
               "display_name" => "Pi",
+              "account_availability" => "verified_available",
               "reasoning_capability" => %{"kind" => "enumerated", "values" => ["high"]}
             }
           ],
@@ -107,6 +151,7 @@ defmodule QuestEngineering.Server.MultiHarnessTest do
               "provider" => "shared",
               "model" => "agy",
               "display_name" => "Antigravity",
+              "account_availability" => "verified_available",
               "reasoning_capability" => %{"kind" => "unsupported"}
             }
           ],

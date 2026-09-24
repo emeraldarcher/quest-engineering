@@ -1,10 +1,12 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import {
+  readControl,
   writeControlAtomic,
   writeStepResultAtomic,
 } from "../src/harnesses/control/result-envelope.ts";
@@ -20,6 +22,7 @@ import type {
   HostedExecutionRef,
   HostedPane,
   HostedSnapshot,
+  SessionBackendReadiness,
   TerminalAttachmentDescriptor,
   TerminalSessionBackend,
 } from "../src/session-host/types.ts";
@@ -211,6 +214,72 @@ test("retained human recovery receives a minimal continuation prompt", () => {
   expect(prompt).not.toContain("Quest objective:");
 });
 
+test("fresh retained-work recovery receives the full Step plus preservation instructions", () => {
+  const base = action();
+  const recovered = action({
+    execution: {
+      ...base.execution,
+      identity: {
+        ...base.execution.identity,
+        action_id: "fresh-recovery-action",
+        attempt_id: "fresh-recovery-attempt",
+      },
+    },
+    operational_recovery: {
+      epoch_number: 1,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "human",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: base.attempt_id,
+      request_id: "request-fresh",
+    },
+  });
+  const prompt = piPromptFor({ action: recovered });
+  expect(prompt).toContain("retained-work recovery");
+  expect(prompt).toContain(
+    "no native coding-agent conversation is being continued",
+  );
+  expect(prompt).toContain(
+    "inspect the current Git status, diff, and relevant files",
+  );
+  expect(prompt).toContain("Do not reset, clean, overwrite");
+  expect(prompt).toContain(
+    `Quest objective:\n${base.execution.work.quest_objective}`,
+  );
+  expect(prompt).toContain(
+    "produce the declared outputs through the normal completion tool",
+  );
+});
+
+test("Pi discovery fails only its harness when the Herdr Pi integration is unavailable", async () => {
+  const { registry, host, provider } = await fixture();
+  host.backendReadiness = {
+    ...readyBackend("pi"),
+    status: "incompatible",
+    ready: false,
+    missingCapabilities: ["integration.pi.current"],
+    diagnostics: [
+      {
+        code: "missing_capability",
+        capability: "integration.pi.current",
+        message: "Herdr integration 'pi' is not available and current.",
+      },
+    ],
+  };
+
+  const discovery = await provider.discover();
+  expect(discovery.integration).toMatchObject({
+    status: "missing_control_bridge",
+    installed: true,
+    authenticated: false,
+  });
+  expect(discovery.integration.detail).toContain("integration 'pi'");
+  expect(discovery.capabilities.structuredResult).toBe(false);
+  registry.close();
+});
+
 test("access-none stays Run-pinned but uses an isolated non-repository CWD", async () => {
   const { root, registry, host, provider } = await fixture();
   const none = action();
@@ -240,6 +309,7 @@ test("ordinary Pi prose is never classified as human attention", async () => {
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -261,6 +331,7 @@ test("Herdr-only blocked creates one safe provider-neutral attention", async () 
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -296,6 +367,7 @@ test("only actual Herdr blocked state creates generic attention", async () => {
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -323,6 +395,7 @@ test("Herdr blocked to working clears a terminal-derived attention", async () =>
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -360,6 +433,7 @@ test("structured assistance enriches and deduplicates the current Herdr blocked 
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -407,6 +481,7 @@ test("structured assistance can lead Herdr blocked without creating another epis
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -444,6 +519,7 @@ test("Pi inspection reads explicit structured attention and clears on resolution
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -494,6 +570,7 @@ test("conversational checkpoint survives restart and resolves only after explici
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -585,6 +662,7 @@ test("agent settlement while intervention is pending does not collect or release
   const prepared = await provider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -661,6 +739,141 @@ test("agent settlement while intervention is pending does not collect or release
   host.queueAgentState("working");
   host.queueAgentState("idle");
   expect(await operation).toEqual({ change_set: { version: 1 } });
+  expect(host.promptOptions).toBeUndefined();
+  registry.close();
+});
+
+test("native Pi idle remains awaiting-result until a delayed structured result arrives", async () => {
+  const { registry, host, provider } = await fixture();
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("idle");
+  const dispatch = registry.get(accepted.action.action_id);
+  const events: HarnessEvent[] = [];
+  let resolved = false;
+  const operation = provider
+    .sendInputAndCollect(
+      dispatch,
+      { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+      (event) => events.push(event),
+    )
+    .then((outputs) => {
+      resolved = true;
+      return outputs;
+    });
+
+  await waitFor(() => events.some((event) => event.type === "native_idle"));
+  await Bun.sleep(150);
+  expect(resolved).toBe(false);
+  expect(
+    events.some((event) => event.type === "structured_result_received"),
+  ).toBe(false);
+
+  await writeResult(dispatch, "delayed-idle-result");
+  expect(await operation).toEqual({ change_set: { version: 1 } });
+  expect(
+    events.find((event) => event.type === "native_idle")?.inspection.state,
+  ).toBe("retained");
+  expect(events.at(-1)?.type).toBe("structured_result_received");
+  registry.close();
+});
+
+test("native Pi process death before a structured result is an explicit terminal cause", async () => {
+  const { registry, host, provider } = await fixture();
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("done");
+  const dispatch = registry.get(accepted.action.action_id);
+
+  await expect(
+    provider.sendInputAndCollect(
+      dispatch,
+      { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+      () => undefined,
+    ),
+  ).rejects.toMatchObject({
+    code: "native_session_terminated_before_result",
+    classification: "operator_recovery_required",
+  });
+  registry.close();
+});
+
+test("bounded structured-result timeout performs a final drain and accepts a racing result", async () => {
+  const { root, registry, host } = await fixture();
+  const extension = join(
+    import.meta.dir,
+    "..",
+    "src",
+    "harnesses",
+    "pi",
+    "step-result-extension.ts",
+  );
+  const provider = new PiHarness(
+    host,
+    { ...config(root), resultTimeoutMs: 200 },
+    { integrationPath: extension, resultExtensionPath: extension },
+  );
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("idle");
+  const dispatch = registry.get(accepted.action.action_id);
+  const operation = provider.sendInputAndCollect(
+    dispatch,
+    { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+    () => undefined,
+  );
+
+  await Bun.sleep(275);
+  await writeResult(dispatch, "final-drain-result");
+  expect(await operation).toEqual({ change_set: { version: 1 } });
+  registry.close();
+});
+
+test("bounded structured-result timeout fails only after the final drain", async () => {
+  const { root, registry, host } = await fixture();
+  const extension = join(
+    import.meta.dir,
+    "..",
+    "src",
+    "harnesses",
+    "pi",
+    "step-result-extension.ts",
+  );
+  const provider = new PiHarness(
+    host,
+    { ...config(root), resultTimeoutMs: 100 },
+    { integrationPath: extension, resultExtensionPath: extension },
+  );
+  const accepted = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(accepted.lineageId as string);
+  registry.occupy(lineage.lineageId, accepted.action.action_id);
+  const prepared = await provider.start(accepted, lineage);
+  registry.markPromptAccepted(accepted.action.action_id);
+  registry.markNativeActivity(accepted.action.action_id);
+  host.setAgentState("idle");
+
+  await expect(
+    provider.sendInputAndCollect(
+      registry.get(accepted.action.action_id),
+      { ...prepared, lineage: registry.getLineage(lineage.lineageId) },
+      () => undefined,
+    ),
+  ).rejects.toMatchObject({
+    code: "structured_result_timeout",
+    classification: "operator_recovery_required",
+  });
   registry.close();
 });
 
@@ -683,6 +896,7 @@ test("Worker restart restores Herdr-only blocked attention from recovered state"
   const prepared = await initialProvider.start(dispatch, lineage);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
@@ -713,6 +927,29 @@ test("Worker restart restores Herdr-only blocked attention from recovered state"
   restartedRegistry.close();
 });
 
+test("Pi never adopts an execution from a deleted Herdr session incarnation", async () => {
+  const { registry, host, provider } = await fixture();
+  const dispatch = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(dispatch.lineageId as string);
+  const prepared = await provider.start(dispatch, lineage);
+  registry.recordHost(lineage.lineageId, {
+    herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
+    workspaceId: prepared.ref.workspaceId,
+    paneId: prepared.ref.paneId,
+    agentName: prepared.ref.agentName,
+  });
+
+  host.sessionIncarnationId = "replacement-session-incarnation";
+  expect(
+    await provider.recover(registry.getLineage(lineage.lineageId)),
+  ).toMatchObject({
+    found: false,
+    detail: expect.stringContaining("another Herdr session incarnation"),
+  });
+  registry.close();
+});
+
 test("two Herdr sessions keep terminal state and attention independent", async () => {
   const { root, registry, host, provider } = await fixture();
   const first = registry.accept(action()).dispatch;
@@ -734,6 +971,7 @@ test("two Herdr sessions keep terminal state and attention independent", async (
   ] as const)
     registry.recordHost(lineage.lineageId, {
       herdrSession: prepared.ref.sessionName,
+      herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
       workspaceId: prepared.ref.workspaceId,
       paneId: prepared.ref.paneId,
       agentName: prepared.ref.agentName,
@@ -767,13 +1005,28 @@ test("two Herdr sessions keep terminal state and attention independent", async (
   registry.close();
 });
 
-test("adopts safe Herdr provenance when a local dispatch row is missing", async () => {
-  const { root, registry, provider } = await fixture();
-  const dispatch = registry.accept(action()).dispatch;
+test("adopts safe legacy Herdr provenance with truncated IDs and omitted persisted name", async () => {
+  const { root, registry, provider, host } = await fixture();
+  const longPrefix = `quest-launch-${"a".repeat(36)}/occurrence/0/implement-review/`;
+  const dispatch = registry.accept(
+    action({
+      run_id: `quest-launch-${"a".repeat(36)}`,
+      occurrence_id: longPrefix,
+      attempt_id: `${longPrefix}attempt/1`,
+      action_id: `${longPrefix}attempt/1/action/execute-step`,
+    }),
+  ).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
+  expect(Object.keys(host.metadata.at(-1)?.tokens ?? {})).toHaveLength(15);
+  const launchTokens = host.metadata.at(-1)?.tokens as Record<string, string>;
+  expect(launchTokens.qe_agent_name).toBe(prepared.ref.agentName);
+  expect(launchTokens.qe_action_hash).toMatch(/^[a-f0-9]{64}$/);
+  expect(launchTokens.qe_occurrence_hash).toMatch(/^[a-f0-9]{64}$/);
+  expect(launchTokens.qe_attempt_hash).toMatch(/^[a-f0-9]{64}$/);
   registry.recordHost(lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
     ...(prepared.ref.tabId ? { tabId: prepared.ref.tabId } : {}),
     paneId: prepared.ref.paneId,
@@ -787,6 +1040,41 @@ test("adopts safe Herdr provenance when a local dispatch row is missing", async 
     action: dispatch.action,
     nonce: dispatch.resultNonce,
     resultDirectory: dispatch.resultDirectory,
+  });
+  const persistedAgent = (await host.snapshot()).agents[0] as HostedAgent;
+  delete persistedAgent.name;
+  delete persistedAgent.tokens?.qe_action_hash;
+  if (persistedAgent.tokens?.qe_active_action_id)
+    persistedAgent.tokens.qe_active_action_id = dispatch.action.action_id.slice(
+      0,
+      80,
+    );
+  const legacyTokens = persistedAgent.tokens as Record<string, string>;
+  expect(legacyTokens.qe_run_id).toBe(dispatch.action.run_id);
+  expect(
+    dispatch.action.action_id.startsWith(
+      legacyTokens.qe_active_action_id as string,
+    ),
+  ).toBe(true);
+  const persistedControl = await readControl(lineage.resultControlPath);
+  expect(persistedControl.nonce).toBe(dispatch.resultNonce);
+  expect(persistedControl.workerId).toBe("worker-test");
+  expect(legacyTokens.qe_occurrence_hash).toBe(
+    createHash("sha256")
+      .update(persistedControl.action.occurrence_id)
+      .digest("hex"),
+  );
+  expect(legacyTokens.qe_attempt_hash).toBe(
+    createHash("sha256")
+      .update(persistedControl.action.attempt_id)
+      .digest("hex"),
+  );
+  expect(legacyTokens).toMatchObject({
+    qe_worker_id: "worker-test",
+    qe_lineage_id: lineage.lineageId,
+    qe_result_nonce: dispatch.resultNonce,
+    qe_agent_name: prepared.ref.agentName,
+    qe_active_state: "active",
   });
   registry.close();
   const raw = new Database(join(root, "state.sqlite"));
@@ -807,6 +1095,41 @@ test("adopts safe Herdr provenance when a local dispatch row is missing", async 
   restarted.close();
 });
 
+test("known failed dispatch recovers exact pre-prompt orphan without a result control file", async () => {
+  const { registry, provider } = await fixture();
+  const dispatch = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(dispatch.lineageId as string);
+  const prepared = await provider.start(dispatch, lineage);
+  await rm(lineage.resultControlPath);
+  registry.fail(dispatch.action.action_id, {
+    code: "backend_incompatible",
+    message: "Herdr response omitted agent.",
+  });
+
+  const candidates = await provider.discoverAdoptionCandidates([
+    { dispatch: registry.get(dispatch.action.action_id), lineage },
+  ]);
+  expect(candidates).toHaveLength(1);
+  expect(candidates[0]).toMatchObject({
+    action: { action_id: dispatch.action.action_id },
+    lineage: {
+      lineageId: lineage.lineageId,
+      herdrSessionIncarnation: prepared.ref.sessionIncarnation,
+      paneId: prepared.ref.paneId,
+      agentName: prepared.ref.agentName,
+    },
+  });
+  expect(
+    registry.adopt(candidates[0] as (typeof candidates)[number]),
+  ).toMatchObject({ state: "failed" });
+  expect(registry.getLineage(lineage.lineageId)).toMatchObject({
+    herdrSessionIncarnation: prepared.ref.sessionIncarnation,
+    paneId: prepared.ref.paneId,
+    agentName: prepared.ref.agentName,
+  });
+  registry.close();
+});
+
 test("fresh Actions create distinct Pi agents while continuation reuses the original", async () => {
   const { registry, host, provider } = await fixture();
   const first = registry.accept(action()).dispatch;
@@ -814,6 +1137,7 @@ test("fresh Actions create distinct Pi agents while continuation reuses the orig
   const started = await provider.start(first, firstLineage);
   registry.recordHost(firstLineage.lineageId, {
     herdrSession: started.ref.sessionName,
+    herdrSessionIncarnation: started.ref.sessionIncarnation as string,
     workspaceId: started.ref.workspaceId,
     ...(started.ref.tabId ? { tabId: started.ref.tabId } : {}),
     paneId: started.ref.paneId,
@@ -874,6 +1198,10 @@ test("fresh Actions create distinct Pi agents while continuation reuses the orig
 class FakeHost implements TerminalSessionBackend {
   readonly backendKind = "herdr";
   readonly sessionName = "test-herdr";
+  sessionIncarnationId = "test-session-incarnation";
+  sessionIncarnation() {
+    return this.sessionIncarnationId;
+  }
   readonly startedNames: string[] = [];
   readonly createdCwds: string[] = [];
   readonly metadata: Array<{ paneId: string; tokens: Record<string, string> }> =
@@ -881,9 +1209,16 @@ class FakeHost implements TerminalSessionBackend {
   private workspaceCreated = false;
   private panes: HostedPane[] = [];
   private agents: HostedAgent[] = [];
+  promptOptions:
+    | { until?: HostedAgent["status"][]; timeoutMs?: number }
+    | undefined;
   private observedStates: HostedAgent["status"][] = [];
   private observedWaiter: (() => void) | null = null;
+  backendReadiness = readyBackend("pi");
   constructor(private cwd: string) {}
+  async readiness(): Promise<SessionBackendReadiness> {
+    return this.backendReadiness;
+  }
   async snapshot(): Promise<HostedSnapshot> {
     return {
       workspaces: this.workspaceCreated ? [{ workspaceId: "workspace" }] : [],
@@ -957,7 +1292,12 @@ class FakeHost implements TerminalSessionBackend {
     if (!agent) throw new Error(`Unknown fake Herdr agent: ${target}`);
     this.updateAgentState(agent, status, message);
   }
-  async prompt(): Promise<HostedAgent> {
+  async prompt(
+    _target: string,
+    _text: string,
+    options?: { until?: HostedAgent["status"][]; timeoutMs?: number },
+  ): Promise<HostedAgent> {
+    this.promptOptions = options;
     return this.agents[0] as HostedAgent;
   }
   async observeAgentState(): Promise<HostedAgent> {
@@ -980,6 +1320,7 @@ class FakeHost implements TerminalSessionBackend {
       (item) => item.name === target || item.paneId === target,
     ) as HostedAgent;
   }
+  async closePane(): Promise<void> {}
   async sendKeys(): Promise<void> {}
   attachment(ref: HostedExecutionRef): TerminalAttachmentDescriptor {
     return {
@@ -1010,6 +1351,49 @@ class FakeHost implements TerminalSessionBackend {
       cwd: this.cwd,
     };
   }
+}
+
+async function writeResult(
+  dispatch: ReturnType<DispatchRegistry["get"]>,
+  callId: string,
+): Promise<void> {
+  await writeStepResultAtomic(dispatch.resultDirectory, callId, {
+    protocolVersion: 1,
+    kind: "quest_engineering_step_result",
+    workerId: dispatch.action.worker_id,
+    actionId: dispatch.action.action_id,
+    runId: dispatch.action.run_id,
+    occurrenceId: dispatch.action.occurrence_id,
+    attemptId: dispatch.action.attempt_id,
+    nonce: dispatch.resultNonce,
+    createdAt: new Date().toISOString(),
+    outputs: { change_set: { version: 1 } },
+  });
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate() && Date.now() < deadline) await Bun.sleep(10);
+  if (!predicate()) throw new Error("condition was not observed");
+}
+
+function readyBackend(harnessKind: string): SessionBackendReadiness {
+  return {
+    backendKind: "herdr",
+    harnessKind,
+    status: "ready",
+    ready: true,
+    capabilities: [],
+    missingCapabilities: [],
+    diagnostics: [],
+    provenance: {
+      version: "test",
+      protocol: 999,
+      testedProtocol: 22,
+      endpointGeneration: 1,
+      serverGeneration: "test-generation",
+    },
+  };
 }
 
 function config(root: string): WorkerConfig {

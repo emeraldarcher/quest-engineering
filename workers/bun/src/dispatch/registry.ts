@@ -33,6 +33,7 @@ export interface HarnessLineage {
   ownershipToken: string;
   activeActionId: string | null;
   herdrSession: string | null;
+  herdrSessionIncarnation: string | null;
   workspaceId: string | null;
   tabId: string | null;
   paneId: string | null;
@@ -41,21 +42,77 @@ export interface HarnessLineage {
   nativeSession: NativeSessionRef | null;
 }
 
+export interface StructuredCompletionRequirement {
+  /** Every QE Action requires one nonce-bound semantic result, including `{}`. */
+  structuredResultRequired: true;
+  outputs: Array<{ name: string; kind: string }>;
+  physicalExportRequired: boolean;
+}
+
 export interface DispatchRecord {
   action: ExecuteAction;
   state: LocalDispatchState;
   lineageId: string | null;
   resultNonce: string;
   resultDirectory: string;
+  /** Frozen from the typed Step output contract when the Action is accepted. */
+  completionRequirement: StructuredCompletionRequirement;
   outputs: Record<string, JsonValue> | null;
   failure: Record<string, JsonValue> | null;
   promptIntentAt: string | null;
+  promptAcceptedAt: string | null;
+  nativeActivityAt: string | null;
+  providerTurnSettledAt: string | null;
+  nativeIdleAt: string | null;
+  structuredResultReceivedAt: string | null;
+  stalledAt: string | null;
+  settledAt: string | null;
+  promptEvidence: Record<string, JsonValue> | null;
+  promptAuthorizedAt: string | null;
   serverAcknowledgedAt: string | null;
 }
 
 export interface Acceptance {
   created: boolean;
   dispatch: DispatchRecord;
+}
+
+export type PhysicalProcessTransitionMode =
+  | "prepared_process_adopted"
+  | "fresh_process_fallback";
+
+export interface PhysicalProcessTransition {
+  sourceActionId: string;
+  sourceAttemptId: string;
+  targetActionId: string;
+  targetAttemptId: string;
+  sourceLineageId: string;
+  targetLineageId: string;
+  mode: PhysicalProcessTransitionMode;
+  herdrSession: string | null;
+  herdrSessionIncarnation: string | null;
+  workspaceId: string | null;
+  paneId: string | null;
+  terminalId: string | null;
+  agentName: string | null;
+  recordedAt: string;
+}
+
+interface PhysicalProcessTransitionRow {
+  source_action_id: string;
+  source_attempt_id: string;
+  target_action_id: string;
+  target_attempt_id: string;
+  source_lineage_id: string;
+  target_lineage_id: string;
+  mode: PhysicalProcessTransitionMode;
+  herdr_session: string | null;
+  herdr_session_incarnation: string | null;
+  workspace_id: string | null;
+  pane_id: string | null;
+  terminal_id: string | null;
+  agent_name: string | null;
+  recorded_at: string;
 }
 
 interface DispatchRow {
@@ -66,9 +123,19 @@ interface DispatchRow {
   lineage_id: string | null;
   result_nonce: string;
   result_directory: string;
+  completion_requirement_json: string | null;
   outputs_json: string | null;
   failure_json: string | null;
   prompt_intent_at: string | null;
+  prompt_accepted_at: string | null;
+  native_activity_at: string | null;
+  provider_turn_settled_at: string | null;
+  native_idle_at: string | null;
+  structured_result_received_at: string | null;
+  stalled_at: string | null;
+  settled_at: string | null;
+  prompt_evidence_json: string | null;
+  prompt_authorized_at: string | null;
   server_acknowledged_at: string | null;
 }
 interface LineageRow {
@@ -88,6 +155,7 @@ interface LineageRow {
   ownership_token: string;
   active_action_id: string | null;
   herdr_session: string | null;
+  herdr_session_incarnation: string | null;
   workspace_id: string | null;
   tab_id: string | null;
   pane_id: string | null;
@@ -217,8 +285,8 @@ export class DispatchRegistry {
         );
         this.db
           .query(`INSERT INTO dispatches
-        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,completion_requirement_json,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(
             action.action_id,
             action.run_id,
@@ -231,6 +299,7 @@ export class DispatchRegistry {
             lineageId,
             resultNonce,
             resultDirectory,
+            JSON.stringify(structuredCompletionRequirement(action)),
             now(),
             now(),
           );
@@ -249,12 +318,56 @@ export class DispatchRegistry {
     return this.db
       .transaction(() => {
         const existing = this.row(input.action.action_id);
-        if (existing) return mapDispatch(existing);
         const lineage = input.lineage;
+        if (existing) {
+          const dispatch = mapDispatch(existing);
+          const actionJson = canonicalJson(input.action);
+          if (
+            existing.action_hash !== digest(actionJson) ||
+            dispatch.lineageId !== lineage.lineageId ||
+            existing.result_nonce !== input.resultNonce ||
+            existing.result_directory !== input.resultDirectory
+          )
+            throw new Error(
+              `Adopted Action ${input.action.action_id} conflicts with durable dispatch identity.`,
+            );
+          const persisted = this.getLineage(lineage.lineageId);
+          if (persisted.ownershipToken !== lineage.ownershipToken)
+            throw new Error(
+              `Adopted lineage ${lineage.lineageId} has conflicting ownership.`,
+            );
+          if (
+            !lineage.herdrSession ||
+            !lineage.herdrSessionIncarnation ||
+            !lineage.workspaceId ||
+            !lineage.paneId ||
+            !lineage.agentName
+          )
+            throw new Error(
+              `Adopted lineage ${lineage.lineageId} has incomplete physical identity.`,
+            );
+          this.recordHost(lineage.lineageId, {
+            herdrSession: lineage.herdrSession,
+            ...(lineage.herdrSessionIncarnation
+              ? {
+                  herdrSessionIncarnation: lineage.herdrSessionIncarnation,
+                }
+              : {}),
+            workspaceId: lineage.workspaceId,
+            ...(lineage.tabId ? { tabId: lineage.tabId } : {}),
+            paneId: lineage.paneId,
+            ...(lineage.terminalId ? { terminalId: lineage.terminalId } : {}),
+            agentName: lineage.agentName,
+            ...(lineage.nativeSession
+              ? { nativeSession: lineage.nativeSession }
+              : {}),
+          });
+          return this.get(input.action.action_id);
+        }
         this.db
           .query(`INSERT INTO provider_lineages
-        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(lineage_id) DO NOTHING`)
+        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(lineage_id) DO NOTHING`)
           .run(
             lineage.lineageId,
             lineage.logicalLineageId,
@@ -272,6 +385,7 @@ export class DispatchRegistry {
             lineage.ownershipToken,
             input.action.action_id,
             lineage.herdrSession,
+            lineage.herdrSessionIncarnation,
             lineage.workspaceId,
             lineage.tabId,
             lineage.paneId,
@@ -291,11 +405,12 @@ export class DispatchRegistry {
         }
         this.db
           .query(
-            `UPDATE provider_lineages SET active_action_id=?,herdr_session=?,workspace_id=?,tab_id=?,pane_id=?,terminal_id=?,agent_name=?,native_session_json=?,updated_at=? WHERE lineage_id=?`,
+            `UPDATE provider_lineages SET active_action_id=?,herdr_session=?,herdr_session_incarnation=?,workspace_id=?,tab_id=?,pane_id=?,terminal_id=?,agent_name=?,native_session_json=?,updated_at=? WHERE lineage_id=?`,
           )
           .run(
             input.action.action_id,
             lineage.herdrSession,
+            lineage.herdrSessionIncarnation,
             lineage.workspaceId,
             lineage.tabId,
             lineage.paneId,
@@ -310,8 +425,8 @@ export class DispatchRegistry {
         const actionJson = canonicalJson(input.action);
         this.db
           .query(`INSERT INTO dispatches
-        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,prompt_intent_at,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,completion_requirement_json,prompt_intent_at,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(
             input.action.action_id,
             input.action.run_id,
@@ -324,6 +439,7 @@ export class DispatchRegistry {
             lineage.lineageId,
             input.resultNonce,
             input.resultDirectory,
+            JSON.stringify(structuredCompletionRequirement(input.action)),
             now(),
             now(),
             now(),
@@ -426,6 +542,7 @@ export class DispatchRegistry {
     lineageId: string,
     input: {
       herdrSession: string;
+      herdrSessionIncarnation?: string;
       workspaceId: string;
       tabId?: string;
       paneId: string;
@@ -436,10 +553,11 @@ export class DispatchRegistry {
   ): void {
     this.db
       .query(`UPDATE provider_lineages SET
-      herdr_session=?,workspace_id=?,tab_id=?,pane_id=?,terminal_id=?,agent_name=?,native_session_json=?,updated_at=?
+      herdr_session=?,herdr_session_incarnation=COALESCE(?,herdr_session_incarnation),workspace_id=?,tab_id=?,pane_id=?,terminal_id=?,agent_name=?,native_session_json=?,updated_at=?
       WHERE lineage_id=?`)
       .run(
         input.herdrSession,
+        input.herdrSessionIncarnation ?? null,
         input.workspaceId,
         input.tabId ?? null,
         input.paneId,
@@ -484,12 +602,342 @@ export class DispatchRegistry {
     return this.getLineage(lineageId);
   }
 
+  physicalProcessTransition(
+    targetActionId: string,
+  ): PhysicalProcessTransition | null {
+    const row = this.db
+      .query(
+        "SELECT * FROM physical_process_transitions WHERE target_action_id=?",
+      )
+      .get(targetActionId) as PhysicalProcessTransitionRow | null;
+    return row ? mapPhysicalProcessTransition(row) : null;
+  }
+
+  adoptPreparedProcess(
+    sourceActionId: string,
+    targetActionId: string,
+    lineageId: string,
+  ): PhysicalProcessTransition {
+    return this.db
+      .transaction(() => {
+        const existing = this.physicalProcessTransition(targetActionId);
+        if (existing) {
+          if (
+            existing.sourceActionId !== sourceActionId ||
+            existing.sourceLineageId !== lineageId ||
+            existing.targetLineageId !== lineageId ||
+            existing.mode !== "prepared_process_adopted"
+          )
+            throw new Error(
+              `Physical-process transition for ${targetActionId} conflicts with durable ownership history.`,
+            );
+          return existing;
+        }
+        const { source, target, lineage } = this.assertPreparedTransfer(
+          sourceActionId,
+          targetActionId,
+          lineageId,
+        );
+        const recordedAt = now();
+        this.db
+          .query(
+            "UPDATE provider_lineages SET active_action_id=?,session_state='starting',attention_json=NULL,intervention_json=NULL,last_activity_at=?,updated_at=? WHERE lineage_id=? AND active_action_id IS NULL",
+          )
+          .run(targetActionId, recordedAt, recordedAt, lineageId);
+        if (this.getLineage(lineageId).activeActionId !== targetActionId)
+          throw new Error(
+            `Prepared process lineage ${lineageId} could not be transferred atomically.`,
+          );
+        this.insertPhysicalProcessTransition({
+          source,
+          target,
+          sourceLineage: lineage,
+          targetLineageId: lineageId,
+          mode: "prepared_process_adopted",
+          recordedAt,
+        });
+        return this.physicalProcessTransition(
+          targetActionId,
+        ) as PhysicalProcessTransition;
+      })
+      .immediate();
+  }
+
+  replacePreparedProcessWithFresh(
+    sourceActionId: string,
+    targetActionId: string,
+    sourceLineageId: string,
+  ): HarnessLineage {
+    return this.db
+      .transaction(() => {
+        const existing = this.physicalProcessTransition(targetActionId);
+        if (existing) {
+          if (
+            existing.sourceActionId !== sourceActionId ||
+            existing.sourceLineageId !== sourceLineageId ||
+            existing.mode !== "fresh_process_fallback"
+          )
+            throw new Error(
+              `Physical-process fallback for ${targetActionId} conflicts with durable ownership history.`,
+            );
+          return this.getLineage(existing.targetLineageId);
+        }
+        const { source, target, lineage } = this.assertPreparedTransfer(
+          sourceActionId,
+          targetActionId,
+          sourceLineageId,
+        );
+        const recordedAt = now();
+        this.db
+          .query(
+            "UPDATE provider_lineages SET logical_lineage_id=?,updated_at=? WHERE lineage_id=? AND active_action_id IS NULL",
+          )
+          .run(`retired:${sourceLineageId}`, recordedAt, sourceLineageId);
+        const targetLineageId = crypto.randomUUID();
+        const controlPath = this.lineageControlPath(targetLineageId);
+        const configurationJson = physicalConfiguration(target.action);
+        const requestedHarness =
+          target.action.execution.configuration.harness_kind ||
+          this.harnessKind;
+        const requestedCapabilities =
+          typeof this.harnessCapabilities === "function"
+            ? this.harnessCapabilities(requestedHarness)
+            : this.harnessCapabilities;
+        this.db
+          .query(`INSERT INTO provider_lineages
+          (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?)`)
+          .run(
+            targetLineageId,
+            target.action.execution.context.logical_lineage_id,
+            configurationJson,
+            digest(configurationJson),
+            target.action.execution.configuration.model.provider,
+            requestedHarness,
+            "starting",
+            JSON.stringify(requestedCapabilities),
+            null,
+            null,
+            recordedAt,
+            recordedAt,
+            controlPath,
+            `qe-${digest(`${target.action.worker_id}:${targetLineageId}`).slice(0, 24)}`,
+            targetActionId,
+            recordedAt,
+            recordedAt,
+          );
+        this.db
+          .query(
+            "UPDATE dispatches SET lineage_id=?,updated_at=? WHERE action_id=? AND lineage_id=? AND state='accepted'",
+          )
+          .run(targetLineageId, recordedAt, targetActionId, sourceLineageId);
+        if (this.get(targetActionId).lineageId !== targetLineageId)
+          throw new Error(
+            `Fresh fallback for ${targetActionId} could not rotate physical lineage atomically.`,
+          );
+        this.insertPhysicalProcessTransition({
+          source,
+          target,
+          sourceLineage: lineage,
+          targetLineageId,
+          mode: "fresh_process_fallback",
+          recordedAt,
+        });
+        return this.getLineage(targetLineageId);
+      })
+      .immediate();
+  }
+
+  private assertPreparedTransfer(
+    sourceActionId: string,
+    targetActionId: string,
+    lineageId: string,
+  ): {
+    source: DispatchRecord;
+    target: DispatchRecord;
+    lineage: HarnessLineage;
+  } {
+    const source = this.get(sourceActionId);
+    const target = this.get(targetActionId);
+    const lineage = this.getLineage(lineageId);
+    const recovery = target.action.operational_recovery;
+    const sourceLifecycleAbsent =
+      !source.promptIntentAt &&
+      !source.promptAcceptedAt &&
+      !source.nativeActivityAt &&
+      !source.stalledAt &&
+      !source.settledAt;
+    if (
+      source.state !== "failed" ||
+      target.state !== "accepted" ||
+      source.lineageId !== lineageId ||
+      target.lineageId !== lineageId ||
+      recovery?.authorization_kind !== "human" ||
+      recovery.continuation_mode !== "retained" ||
+      recovery.retained_lineage_id !== lineageId ||
+      recovery.source_attempt_id !== source.action.attempt_id ||
+      source.action.run_id !== target.action.run_id ||
+      source.action.occurrence_id !== target.action.occurrence_id ||
+      source.action.execution.execution_workspace.worktree_id !==
+        target.action.execution.execution_workspace.worktree_id ||
+      physicalConfiguration(source.action) !==
+        physicalConfiguration(target.action) ||
+      !sourceLifecycleAbsent ||
+      target.promptIntentAt ||
+      target.promptAcceptedAt ||
+      target.nativeActivityAt ||
+      target.stalledAt ||
+      target.settledAt ||
+      lineage.nativeSession ||
+      lineage.sessionState !== "retained" ||
+      lineage.activeActionId !== null
+    )
+      throw new Error(
+        "Prepared native process does not satisfy the exact pre-prompt ownership-transfer contract.",
+      );
+    const conflicting = this.list().find(
+      (dispatch) =>
+        dispatch.action.action_id !== targetActionId &&
+        dispatch.action.action_id !== sourceActionId &&
+        this.retainsRecoveryOwnership(dispatch) &&
+        (dispatch.lineageId === lineageId ||
+          dispatch.action.execution.execution_workspace.worktree_id ===
+            target.action.execution.execution_workspace.worktree_id),
+    );
+    if (conflicting)
+      throw new Error(
+        `Prepared process or worktree is already owned by ${conflicting.action.attempt_id}.`,
+      );
+    return { source, target, lineage };
+  }
+
+  private retainsRecoveryOwnership(dispatch: DispatchRecord): boolean {
+    if (dispatch.state === "accepted" || dispatch.state === "running")
+      return true;
+    if (dispatch.state !== "uncertain" || !dispatch.lineageId) return false;
+    const lineage = this.db
+      .query(
+        "SELECT logical_lineage_id,session_state,active_action_id FROM provider_lineages WHERE lineage_id=?",
+      )
+      .get(dispatch.lineageId) as {
+      logical_lineage_id: string;
+      session_state: string;
+      active_action_id: string | null;
+    } | null;
+    if (!lineage) return true;
+    return !(
+      lineage.logical_lineage_id === `retired:${dispatch.lineageId}` &&
+      lineage.active_action_id === null &&
+      lineage.session_state === "unavailable"
+    );
+  }
+
+  private insertPhysicalProcessTransition(input: {
+    source: DispatchRecord;
+    target: DispatchRecord;
+    sourceLineage: HarnessLineage;
+    targetLineageId: string;
+    mode: PhysicalProcessTransitionMode;
+    recordedAt: string;
+  }): void {
+    this.db
+      .query(`INSERT INTO physical_process_transitions
+        (source_action_id,source_attempt_id,target_action_id,target_attempt_id,source_lineage_id,target_lineage_id,mode,herdr_session,herdr_session_incarnation,workspace_id,pane_id,terminal_id,agent_name,recorded_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(
+        input.source.action.action_id,
+        input.source.action.attempt_id,
+        input.target.action.action_id,
+        input.target.action.attempt_id,
+        input.sourceLineage.lineageId,
+        input.targetLineageId,
+        input.mode,
+        input.sourceLineage.herdrSession,
+        input.sourceLineage.herdrSessionIncarnation,
+        input.sourceLineage.workspaceId,
+        input.sourceLineage.paneId,
+        input.sourceLineage.terminalId,
+        input.sourceLineage.agentName,
+        input.recordedAt,
+      );
+  }
+
+  authorizePrompt(actionId: string): DispatchRecord {
+    const timestamp = now();
+    this.db
+      .query(
+        "UPDATE dispatches SET prompt_authorized_at=COALESCE(prompt_authorized_at,?),updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(timestamp, timestamp, actionId);
+    return this.get(actionId);
+  }
+
   markPromptIntent(actionId: string): void {
+    const timestamp = now();
     this.db
       .query(
         "UPDATE dispatches SET prompt_intent_at=COALESCE(prompt_intent_at,?),updated_at=? WHERE action_id=?",
       )
-      .run(now(), now(), actionId);
+      .run(timestamp, timestamp, actionId);
+  }
+
+  recordPromptEvidence(
+    actionId: string,
+    evidence: Record<string, JsonValue>,
+  ): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET prompt_evidence_json=COALESCE(prompt_evidence_json,?),updated_at=? WHERE action_id=?",
+      )
+      .run(JSON.stringify(evidence), now(), actionId);
+  }
+
+  markPromptAccepted(actionId: string, acceptedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET prompt_accepted_at=COALESCE(prompt_accepted_at,?),state=CASE WHEN state='accepted' THEN 'running' ELSE state END,updated_at=? WHERE action_id=?",
+      )
+      .run(acceptedAt, now(), actionId);
+  }
+
+  markNativeActivity(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET native_activity_at=COALESCE(native_activity_at,?),native_idle_at=NULL,state=CASE WHEN state='accepted' THEN 'running' ELSE state END,updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(observedAt, now(), actionId);
+  }
+
+  markProviderTurnSettled(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET provider_turn_settled_at=COALESCE(provider_turn_settled_at,?),updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(observedAt, now(), actionId);
+  }
+
+  markNativeIdle(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET native_idle_at=?,updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(observedAt, now(), actionId);
+  }
+
+  markStructuredResultReceived(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET structured_result_received_at=COALESCE(structured_result_received_at,?),updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
+      )
+      .run(observedAt, now(), actionId);
+  }
+
+  markStalled(actionId: string, observedAt = now()): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET stalled_at=COALESCE(stalled_at,?),state=CASE WHEN state='accepted' THEN 'running' ELSE state END,updated_at=? WHERE action_id=?",
+      )
+      .run(observedAt, now(), actionId);
   }
 
   markRunning(actionId: string): void {
@@ -498,6 +946,36 @@ export class DispatchRegistry {
         "UPDATE dispatches SET state='running',updated_at=? WHERE action_id=? AND state IN ('accepted','running')",
       )
       .run(now(), actionId);
+  }
+
+  recordObservationFailure(
+    actionId: string,
+    failure: Record<string, JsonValue>,
+  ): void {
+    this.db
+      .query(
+        "UPDATE dispatches SET failure_json=?,updated_at=? WHERE action_id=? AND state NOT IN ('completed','failed')",
+      )
+      .run(JSON.stringify(failure), now(), actionId);
+  }
+
+  resumeObservationUncertainty(actionId: string): DispatchRecord {
+    return this.db
+      .transaction(() => {
+        const dispatch = this.get(actionId);
+        if (
+          dispatch.state !== "uncertain" ||
+          !isRecoverableObservationUncertainty(dispatch)
+        )
+          return dispatch;
+        this.db
+          .query(
+            "UPDATE dispatches SET state='running',updated_at=? WHERE action_id=? AND state='uncertain'",
+          )
+          .run(now(), actionId);
+        return this.get(actionId);
+      })
+      .immediate();
   }
 
   complete(
@@ -515,9 +993,9 @@ export class DispatchRegistry {
           throw new Error(`Cannot complete ${actionId} from failed.`);
         this.db
           .query(
-            "UPDATE dispatches SET state='completed',outputs_json=?,failure_json=NULL,updated_at=? WHERE action_id=?",
+            "UPDATE dispatches SET state='completed',outputs_json=?,failure_json=NULL,settled_at=COALESCE(settled_at,?),updated_at=? WHERE action_id=?",
           )
-          .run(JSON.stringify(outputs), now(), actionId);
+          .run(JSON.stringify(outputs), now(), now(), actionId);
         // Occupancy is physical harness execution state, not control-plane acknowledgement.
         this.db
           .query(
@@ -559,12 +1037,55 @@ export class DispatchRegistry {
       .immediate();
   }
 
-  acknowledgeServerCompletion(actionId: string): void {
+  cancel(
+    actionId: string,
+    failure: Record<string, JsonValue>,
+  ): { dispatch: DispatchRecord; changed: boolean } {
+    return this.db
+      .transaction(() => {
+        const dispatch = this.get(actionId);
+        if (
+          ["completed", "failed"].includes(dispatch.state) &&
+          dispatch.serverAcknowledgedAt
+        )
+          throw new Error(
+            `Cannot cancel server-acknowledged terminal dispatch ${actionId}.`,
+          );
+        if (
+          dispatch.state === "failed" &&
+          dispatch.failure?.code === "execution_cancelled" &&
+          dispatch.failure.cancellation_request_id ===
+            failure.cancellation_request_id
+        )
+          return { dispatch, changed: false };
+
+        this.db
+          .query(
+            "UPDATE dispatches SET state='failed',outputs_json=NULL,failure_json=?,server_acknowledged_at=NULL,updated_at=? WHERE action_id=?",
+          )
+          .run(JSON.stringify(failure), now(), actionId);
+        if (dispatch.lineageId) {
+          this.db
+            .query(
+              "UPDATE provider_lineages SET active_action_id=NULL,session_state='retained',attention_json=NULL,last_activity_at=?,updated_at=? WHERE lineage_id=? AND active_action_id=?",
+            )
+            .run(now(), now(), dispatch.lineageId, actionId);
+        }
+        return { dispatch: this.get(actionId), changed: true };
+      })
+      .immediate();
+  }
+
+  acknowledgeServerTerminal(actionId: string): void {
     this.db
       .query(
-        "UPDATE dispatches SET server_acknowledged_at=COALESCE(server_acknowledged_at,?),updated_at=? WHERE action_id=? AND state='completed'",
+        "UPDATE dispatches SET server_acknowledged_at=COALESCE(server_acknowledged_at,?),updated_at=? WHERE action_id=? AND state IN ('completed','failed')",
       )
       .run(now(), now(), actionId);
+  }
+
+  acknowledgeServerCompletion(actionId: string): void {
+    this.acknowledgeServerTerminal(actionId);
   }
 
   reconcilePayloads(): ReconcileDispatch[] {
@@ -601,16 +1122,36 @@ export class DispatchRegistry {
         "SELECT * FROM dispatches WHERE occurrence_id=? ORDER BY rowid DESC LIMIT 1",
       )
       .get(action.occurrence_id) as DispatchRow | null;
+    const retainedWorkRecovery = Boolean(
+      previous &&
+        action.operational_recovery?.authorization_kind === "human" &&
+        action.operational_recovery.continuation_mode === "fresh" &&
+        action.operational_recovery.source_attempt_id ===
+          (JSON.parse(previous.action_json) as ExecuteAction).attempt_id &&
+        previous.state === "uncertain" &&
+        previous.lineage_id === existing.lineage_id &&
+        previous.failure_json &&
+        (JSON.parse(previous.failure_json) as Record<string, JsonValue>)
+          .code === "harness_contract_violation",
+    );
     if (
-      existing.active_action_id ||
       !previous ||
-      previous.state !== "failed" ||
-      previous.lineage_id !== existing.lineage_id
+      (!retainedWorkRecovery && previous.state !== "failed") ||
+      previous.lineage_id !== existing.lineage_id ||
+      (existing.active_action_id !== null &&
+        (!retainedWorkRecovery ||
+          existing.active_action_id !== previous.action_id))
     )
       throw new Error(
         `Logical lineage ${logicalLineageId} is not available for a fresh retry.`,
       );
 
+    if (retainedWorkRecovery)
+      this.db
+        .query(
+          "UPDATE provider_lineages SET active_action_id=NULL,session_state='retained',attention_json=NULL,last_activity_at=?,updated_at=? WHERE lineage_id=? AND active_action_id=?",
+        )
+        .run(now(), now(), existing.lineage_id, previous.action_id);
     this.db
       .query(
         "UPDATE provider_lineages SET logical_lineage_id=?,updated_at=? WHERE lineage_id=?",
@@ -643,6 +1184,7 @@ export class DispatchRegistry {
         ownership_token TEXT NOT NULL UNIQUE,
         active_action_id TEXT,
         herdr_session TEXT,
+        herdr_session_incarnation TEXT,
         workspace_id TEXT,
         tab_id TEXT,
         pane_id TEXT,
@@ -664,9 +1206,19 @@ export class DispatchRegistry {
         lineage_id TEXT REFERENCES provider_lineages(lineage_id),
         result_nonce TEXT NOT NULL,
         result_directory TEXT NOT NULL,
+        completion_requirement_json TEXT,
         outputs_json TEXT,
         failure_json TEXT,
         prompt_intent_at TEXT,
+        prompt_accepted_at TEXT,
+        native_activity_at TEXT,
+        provider_turn_settled_at TEXT,
+        native_idle_at TEXT,
+        structured_result_received_at TEXT,
+        stalled_at TEXT,
+        settled_at TEXT,
+        prompt_evidence_json TEXT,
+        prompt_authorized_at TEXT,
         server_acknowledged_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -675,6 +1227,23 @@ export class DispatchRegistry {
       CREATE INDEX IF NOT EXISTS dispatches_attempt_id ON dispatches(attempt_id);
       CREATE INDEX IF NOT EXISTS dispatches_run_occurrence ON dispatches(run_id,occurrence_id);
       CREATE INDEX IF NOT EXISTS dispatches_state ON dispatches(state);
+      CREATE TABLE IF NOT EXISTS physical_process_transitions (
+        target_action_id TEXT PRIMARY KEY,
+        source_action_id TEXT NOT NULL,
+        source_attempt_id TEXT NOT NULL,
+        target_attempt_id TEXT NOT NULL,
+        source_lineage_id TEXT NOT NULL,
+        target_lineage_id TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK(mode IN ('prepared_process_adopted','fresh_process_fallback')),
+        herdr_session TEXT,
+        herdr_session_incarnation TEXT,
+        workspace_id TEXT,
+        pane_id TEXT,
+        terminal_id TEXT,
+        agent_name TEXT,
+        recorded_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS physical_process_transitions_target_attempt ON physical_process_transitions(target_attempt_id);
     `);
     this.ensureColumn("provider_lineages", "logical_lineage_id", "TEXT");
     this.ensureColumn("provider_lineages", "configuration_json", "TEXT");
@@ -696,6 +1265,17 @@ export class DispatchRegistry {
     );
     this.ensureColumn("provider_lineages", "attention_json", "TEXT");
     this.ensureColumn("provider_lineages", "intervention_json", "TEXT");
+    this.ensureColumn("provider_lineages", "herdr_session_incarnation", "TEXT");
+    this.ensureColumn("dispatches", "completion_requirement_json", "TEXT");
+    this.ensureColumn("dispatches", "prompt_accepted_at", "TEXT");
+    this.ensureColumn("dispatches", "native_activity_at", "TEXT");
+    this.ensureColumn("dispatches", "provider_turn_settled_at", "TEXT");
+    this.ensureColumn("dispatches", "native_idle_at", "TEXT");
+    this.ensureColumn("dispatches", "structured_result_received_at", "TEXT");
+    this.ensureColumn("dispatches", "stalled_at", "TEXT");
+    this.ensureColumn("dispatches", "settled_at", "TEXT");
+    this.ensureColumn("dispatches", "prompt_evidence_json", "TEXT");
+    this.ensureColumn("dispatches", "prompt_authorized_at", "TEXT");
     this.ensureColumn(
       "provider_lineages",
       "started_at",
@@ -720,6 +1300,24 @@ export class DispatchRegistry {
         timestamp,
         timestamp,
       );
+    const completionRows = this.db
+      .query(
+        "SELECT action_id,action_json FROM dispatches WHERE completion_requirement_json IS NULL",
+      )
+      .all() as Array<{ action_id: string; action_json: string }>;
+    for (const row of completionRows)
+      this.db
+        .query(
+          "UPDATE dispatches SET completion_requirement_json=? WHERE action_id=? AND completion_requirement_json IS NULL",
+        )
+        .run(
+          JSON.stringify(
+            structuredCompletionRequirement(
+              JSON.parse(row.action_json) as ExecuteAction,
+            ),
+          ),
+          row.action_id,
+        );
     const capabilityRows = this.db
       .query(
         "SELECT lineage_id,harness_kind,capabilities_json FROM provider_lineages",
@@ -790,6 +1388,7 @@ export class DispatchRegistry {
         ownership_token TEXT NOT NULL UNIQUE,
         active_action_id TEXT,
         herdr_session TEXT,
+        herdr_session_incarnation TEXT,
         workspace_id TEXT,
         tab_id TEXT,
         pane_id TEXT,
@@ -800,8 +1399,8 @@ export class DispatchRegistry {
         updated_at TEXT NOT NULL
       );
       INSERT INTO provider_lineages
-        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
-      SELECT lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at
+        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
+      SELECT lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at
       FROM provider_lineages_pi_legacy;
       CREATE TABLE dispatches (
         action_id TEXT PRIMARY KEY,
@@ -815,14 +1414,26 @@ export class DispatchRegistry {
         lineage_id TEXT REFERENCES provider_lineages(lineage_id),
         result_nonce TEXT NOT NULL,
         result_directory TEXT NOT NULL,
+        completion_requirement_json TEXT,
         outputs_json TEXT,
         failure_json TEXT,
         prompt_intent_at TEXT,
+        prompt_accepted_at TEXT,
+        native_activity_at TEXT,
+        provider_turn_settled_at TEXT,
+        native_idle_at TEXT,
+        structured_result_received_at TEXT,
+        stalled_at TEXT,
+        settled_at TEXT,
+        prompt_evidence_json TEXT,
+        prompt_authorized_at TEXT,
         server_acknowledged_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO dispatches SELECT * FROM dispatches_pi_legacy;
+      INSERT INTO dispatches
+        (action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,outputs_json,failure_json,prompt_intent_at,prompt_accepted_at,native_activity_at,stalled_at,settled_at,prompt_evidence_json,prompt_authorized_at,server_acknowledged_at,created_at,updated_at)
+      SELECT action_id,run_id,occurrence_id,attempt_id,semantic_step_key,action_json,action_hash,state,lineage_id,result_nonce,result_directory,outputs_json,failure_json,prompt_intent_at,prompt_accepted_at,native_activity_at,stalled_at,settled_at,prompt_evidence_json,prompt_authorized_at,server_acknowledged_at,created_at,updated_at FROM dispatches_pi_legacy;
       DROP TABLE dispatches_pi_legacy;
       DROP TABLE provider_lineages_pi_legacy;
       COMMIT;
@@ -850,6 +1461,13 @@ function mapDispatch(row: DispatchRow): DispatchRecord {
     lineageId: row.lineage_id,
     resultNonce: row.result_nonce,
     resultDirectory: row.result_directory,
+    completionRequirement: row.completion_requirement_json
+      ? (JSON.parse(
+          row.completion_requirement_json,
+        ) as StructuredCompletionRequirement)
+      : structuredCompletionRequirement(
+          JSON.parse(row.action_json) as ExecuteAction,
+        ),
     outputs: row.outputs_json
       ? (JSON.parse(row.outputs_json) as Record<string, JsonValue>)
       : null,
@@ -857,7 +1475,38 @@ function mapDispatch(row: DispatchRow): DispatchRecord {
       ? (JSON.parse(row.failure_json) as Record<string, JsonValue>)
       : null,
     promptIntentAt: row.prompt_intent_at,
+    promptAcceptedAt: row.prompt_accepted_at,
+    nativeActivityAt: row.native_activity_at,
+    providerTurnSettledAt: row.provider_turn_settled_at,
+    nativeIdleAt: row.native_idle_at,
+    structuredResultReceivedAt: row.structured_result_received_at,
+    stalledAt: row.stalled_at,
+    settledAt: row.settled_at,
+    promptEvidence: row.prompt_evidence_json
+      ? (JSON.parse(row.prompt_evidence_json) as Record<string, JsonValue>)
+      : null,
+    promptAuthorizedAt: row.prompt_authorized_at,
     serverAcknowledgedAt: row.server_acknowledged_at,
+  };
+}
+function mapPhysicalProcessTransition(
+  row: PhysicalProcessTransitionRow,
+): PhysicalProcessTransition {
+  return {
+    sourceActionId: row.source_action_id,
+    sourceAttemptId: row.source_attempt_id,
+    targetActionId: row.target_action_id,
+    targetAttemptId: row.target_attempt_id,
+    sourceLineageId: row.source_lineage_id,
+    targetLineageId: row.target_lineage_id,
+    mode: row.mode,
+    herdrSession: row.herdr_session,
+    herdrSessionIncarnation: row.herdr_session_incarnation,
+    workspaceId: row.workspace_id,
+    paneId: row.pane_id,
+    terminalId: row.terminal_id,
+    agentName: row.agent_name,
+    recordedAt: row.recorded_at,
   };
 }
 function mapLineage(row: LineageRow): HarnessLineage {
@@ -884,6 +1533,7 @@ function mapLineage(row: LineageRow): HarnessLineage {
     ownershipToken: row.ownership_token,
     activeActionId: row.active_action_id,
     herdrSession: row.herdr_session,
+    herdrSessionIncarnation: row.herdr_session_incarnation,
     workspaceId: row.workspace_id,
     tabId: row.tab_id,
     paneId: row.pane_id,
@@ -894,6 +1544,100 @@ function mapLineage(row: LineageRow): HarnessLineage {
       : null,
   };
 }
+export type TurnLifecyclePhase =
+  | "preparing"
+  | "prompt_intent"
+  | "waiting_for_activity"
+  | "working"
+  | "awaiting_result"
+  | "blocked"
+  | "stalled"
+  | "settled"
+  | "uncertain";
+
+export function isRecoverableObservationUncertainty(
+  dispatch: Pick<DispatchRecord, "state" | "failure">,
+): boolean {
+  if (dispatch.state !== "uncertain") return false;
+  const failure = dispatch.failure;
+  if (failure?.code !== "timeout") return false;
+  return (
+    failure.capability === "session.inventory" ||
+    failure.message === "Herdr request timed out: session.snapshot"
+  );
+}
+
+export function turnLifecycle(
+  dispatch: DispatchRecord,
+  sessionState?: HarnessSessionState,
+  attention: HumanAttention | null = null,
+): {
+  phase: TurnLifecyclePhase;
+  promptIntentAt: string | null;
+  promptAcceptedAt: string | null;
+  nativeActivityAt: string | null;
+  providerTurnSettledAt: string | null;
+  nativeIdleAt: string | null;
+  structuredResultReceivedAt: string | null;
+  stalledAt: string | null;
+  settledAt: string | null;
+} {
+  const phase: TurnLifecyclePhase =
+    dispatch.state === "completed" ||
+    dispatch.state === "failed" ||
+    dispatch.settledAt
+      ? "settled"
+      : dispatch.state === "uncertain"
+        ? "uncertain"
+        : attention || sessionState === "waiting_for_human"
+          ? "blocked"
+          : dispatch.nativeIdleAt
+            ? "awaiting_result"
+            : dispatch.nativeActivityAt
+              ? "working"
+              : sessionState === "stalled" || dispatch.stalledAt
+                ? "stalled"
+                : dispatch.promptAcceptedAt
+                  ? "waiting_for_activity"
+                  : dispatch.promptIntentAt
+                    ? "prompt_intent"
+                    : "preparing";
+  return {
+    phase,
+    promptIntentAt: dispatch.promptIntentAt,
+    promptAcceptedAt: dispatch.promptAcceptedAt,
+    nativeActivityAt: dispatch.nativeActivityAt,
+    providerTurnSettledAt: dispatch.providerTurnSettledAt,
+    nativeIdleAt: dispatch.nativeIdleAt,
+    structuredResultReceivedAt: dispatch.structuredResultReceivedAt,
+    stalledAt: dispatch.stalledAt,
+    settledAt: dispatch.settledAt,
+  };
+}
+
+export function structuredCompletionRequirement(
+  action: ExecuteAction,
+): StructuredCompletionRequirement {
+  const outputs = action.execution.work.declared_outputs.map((output) => ({
+    name: output.name,
+    kind: output.kind,
+  }));
+  if (
+    JSON.stringify(outputs.map((output) => output.name)) !==
+    JSON.stringify(action.declared_outputs)
+  )
+    throw new Error(
+      `Action ${action.action_id} has inconsistent typed output declarations.`,
+    );
+  return {
+    structuredResultRequired: true,
+    outputs,
+    physicalExportRequired: outputs.some(
+      (output) => output.kind === "change_set",
+    ),
+  };
+}
+
 export function physicalConfiguration(action: ExecuteAction): string {
   const configuration = action.execution.configuration;
   return canonicalJson({

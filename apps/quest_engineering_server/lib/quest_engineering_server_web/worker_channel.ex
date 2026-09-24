@@ -3,6 +3,8 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
 
   use Phoenix.Channel
 
+  require Logger
+
   alias QuestEngineering.Server.RunWorkspaceProvisioner
   alias QuestEngineering.Server.RunWorkspaceStore
   alias QuestEngineering.Server.WorkerConnections
@@ -36,7 +38,13 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
         |> assign(:connection_generation, worker.connection_generation)
 
       send(self(), :after_worker_join)
-      {:ok, WorkerProtocol.welcome(hello.worker_id, binding_reconciliation), socket}
+
+      {:ok,
+       WorkerProtocol.welcome(
+         hello.worker_id,
+         binding_reconciliation,
+         worker.connection_generation
+       ), socket}
     else
       {:error, %WorkerProtocol.Error{} = error} -> {:error, WorkerProtocol.protocol_error(error)}
       {:error, error} -> {:error, WorkerProtocol.application_error(error)}
@@ -61,6 +69,17 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
       {:error, error} ->
         {:reply, {:error, WorkerProtocol.application_error(error)}, socket}
     end
+  rescue
+    error ->
+      Logger.error(
+        "Worker protocol handler raised for #{socket.assigns.worker_id}: " <>
+          Exception.format(:error, error, __STACKTRACE__)
+      )
+
+      {:reply,
+       {:error,
+        WorkerProtocol.protocol_error(%WorkerProtocol.Error{code: :internal_server_error})},
+       socket}
   end
 
   def handle_in(_event, _payload, socket) do

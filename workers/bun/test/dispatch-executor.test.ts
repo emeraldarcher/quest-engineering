@@ -13,9 +13,16 @@ import type {
   AgentHarness,
   HarnessDiscovery,
   HarnessEvent,
+  HarnessInspection,
   HarnessPreparedExecution,
+  HarnessRecoveredExecution,
 } from "../src/harnesses/types.ts";
-import type { JsonValue, ReconcileDispatch } from "../src/protocol/types.ts";
+import {
+  type JsonValue,
+  type ReconcileDispatch,
+  WORKER_PROTOCOL_VERSION,
+} from "../src/protocol/types.ts";
+import { HerdrApiError } from "../src/session-host/herdr/client.ts";
 import type { HostedAgent } from "../src/session-host/types.ts";
 import { action } from "./support.ts";
 
@@ -76,6 +83,32 @@ function reviewAction(id = "review-action") {
   });
 }
 
+test("disconnect drains started dispatch work before durable stores close", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new FakeHarness({ change_set: { complete: true } });
+  const executor = new DispatchExecutor(registry, harness, async () => false);
+  let release: (() => void) | undefined;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const internal = executor as unknown as {
+    active: Map<string, Promise<void>>;
+  };
+  internal.active.set("active-action", pending);
+
+  let drained = false;
+  const disconnect = executor.disconnect().then(() => {
+    drained = true;
+  });
+  await Bun.sleep(1);
+  expect(drained).toBe(false);
+  release?.();
+  await disconnect;
+  expect(drained).toBe(true);
+  registry.close();
+});
+
 test("independent dispatches enter provider execution concurrently", async () => {
   const { root, database } = await fixture();
   const registry = new DispatchRegistry(database, root);
@@ -109,6 +142,130 @@ test("independent dispatches enter provider execution concurrently", async () =>
 
   provider.releaseAll();
   await Promise.all([firstOperation, secondOperation]);
+  registry.close();
+});
+
+test("explicit cancellation terminalizes while a pending structured result remains absent", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new BlockingProvider(registry);
+  const reports: ReconcileDispatch[] = [];
+  const executor = new DispatchExecutor(registry, harness, async (dispatch) => {
+    reports.push(dispatch);
+    return true;
+  });
+  const dispatch = executor.accept(action()).dispatch;
+  const operation = executor.start(dispatch.action.action_id);
+  for (let attempt = 0; attempt < 100 && harness.running === 0; attempt += 1)
+    await Bun.sleep(1);
+
+  const cancellation = {
+    type: "cancel_dispatch" as const,
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 1,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-request-1",
+      origin: "product_operator" as const,
+      reason: "Operator requested cancellation.",
+      requested_at: new Date().toISOString(),
+    },
+  };
+  await Promise.all([
+    executor.cancel(cancellation),
+    executor.cancel(cancellation),
+  ]);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    failure: {
+      code: "execution_cancelled",
+      classification: "terminal_not_recoverable",
+    },
+    structuredResultReceivedAt: null,
+  });
+  expect(harness.interrupts).toBe(1);
+  expect(reports.at(-1)).toMatchObject({
+    state: "failed",
+    failure: {
+      code: "execution_cancelled",
+      cancellation_request_id: "cancel-request-1",
+      cancellation_worker_generation: 1,
+    },
+  });
+  expect(
+    registry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).not.toBeNull();
+
+  const reportCount = reports.length;
+  await executor.cancel(cancellation);
+  expect(harness.interrupts).toBe(1);
+  expect(reports).toHaveLength(reportCount);
+
+  await expect(
+    executor.cancel({ ...cancellation, attempt_id: "stale-attempt" }),
+  ).rejects.toThrow("Cancellation identity does not match");
+  harness.releaseAll();
+  await operation;
+  expect(registry.get(dispatch.action.action_id).state).toBe("failed");
+  registry.close();
+});
+
+test("authorized cancellation overrides a locally completed result that the server has not accepted", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new BlockingProvider(registry);
+  const reports: ReconcileDispatch[] = [];
+  const executor = new DispatchExecutor(registry, harness, async (dispatch) => {
+    reports.push(dispatch);
+    return true;
+  });
+  const dispatch = executor.accept(action()).dispatch;
+  const operation = executor.start(dispatch.action.action_id);
+  for (let attempt = 0; attempt < 100 && harness.running === 0; attempt += 1)
+    await Bun.sleep(1);
+
+  registry.complete(dispatch.action.action_id, { result: "late" });
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    serverAcknowledgedAt: null,
+  });
+
+  await executor.cancel({
+    type: "cancel_dispatch",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 4,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-wins-completion-race",
+      origin: "product_operator",
+      reason: null,
+      requested_at: new Date().toISOString(),
+    },
+  });
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    outputs: null,
+    failure: {
+      code: "execution_cancelled",
+      cancellation_request_id: "cancel-wins-completion-race",
+    },
+  });
+  expect(() =>
+    registry.complete(dispatch.action.action_id, { result: "stale" }),
+  ).toThrow("Cannot complete");
+  expect(harness.interrupts).toBe(0);
+  harness.releaseAll();
+  await operation;
+  expect(reports.at(-1)?.failure?.code).toBe("execution_cancelled");
   registry.close();
 });
 
@@ -162,6 +319,412 @@ test("Pi and Antigravity selections execute concurrently without Worker-global s
   await Promise.all(operations);
   expect(registry.get(first.action.action_id).state).toBe("completed");
   expect(registry.get(second.action.action_id).state).toBe("completed");
+  registry.close();
+});
+
+test("fresh initial execution reaches a durable zero-inference gate before one authorized prompt", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "pi");
+  const harness = new StagedRecoveryHarness(registry, "pi");
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+  );
+  const initial = action({
+    action_id: "initial-action",
+    attempt_id: "initial-attempt-1",
+    operational_recovery: {
+      epoch_number: 0,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "initial",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: null,
+      request_id: null,
+    },
+  });
+  initial.execution.configuration.harness_kind = "pi";
+  const dispatch = executor.accept(initial).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  expect(harness.promptSubmissions).toBe(0);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "accepted",
+    promptAuthorizedAt: null,
+    promptIntentAt: null,
+    promptAcceptedAt: null,
+  });
+  expect(registry.getLineage(dispatch.lineageId as string)).toMatchObject({
+    sessionState: "waiting_for_human",
+    attention: { category: "needs_confirmation" },
+  });
+
+  await executor.authorizePrompt(dispatch.action.action_id);
+  expect(harness.promptSubmissions).toBe(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    promptAuthorizedAt: expect.any(String),
+    promptIntentAt: expect.any(String),
+  });
+  registry.close();
+});
+
+test("cancelling the prepared initial gate emits no prompt or provider activity", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "pi");
+  const harness = new StagedRecoveryHarness(registry, "pi");
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+  );
+  const initial = action({
+    action_id: "cancel-pre-prompt-action",
+    attempt_id: "cancel-pre-prompt-attempt",
+    operational_recovery: {
+      epoch_number: 0,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "initial",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: null,
+      request_id: null,
+    },
+  });
+  initial.execution.configuration.harness_kind = "pi";
+  const dispatch = executor.accept(initial).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  await executor.cancel({
+    type: "cancel_dispatch",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 2,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-pre-prompt-request",
+      origin: "product_operator",
+      reason: "No-inference probe complete.",
+      requested_at: new Date().toISOString(),
+    },
+  });
+
+  expect(harness.promptSubmissions).toBe(0);
+  expect(harness.interrupts).toBe(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    promptAuthorizedAt: null,
+    promptIntentAt: null,
+    promptAcceptedAt: null,
+    nativeActivityAt: null,
+    failure: {
+      code: "execution_cancelled",
+      cancellation_request_id: "cancel-pre-prompt-request",
+    },
+  });
+  registry.close();
+});
+
+test("cancellation response loss keeps terminal authority until reconciliation acknowledgement", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "pi");
+  const harness = new StagedRecoveryHarness(registry, "pi");
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async () => false,
+  );
+  const initial = action({
+    action_id: "cancel-response-loss-action",
+    attempt_id: "cancel-response-loss-attempt",
+    operational_recovery: {
+      epoch_number: 0,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "initial",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: null,
+      request_id: null,
+    },
+  });
+  initial.execution.configuration.harness_kind = "pi";
+  const dispatch = executor.accept(initial).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  await executor.cancel({
+    type: "cancel_dispatch",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 8,
+    action_id: dispatch.action.action_id,
+    run_id: dispatch.action.run_id,
+    occurrence_id: dispatch.action.occurrence_id,
+    attempt_id: dispatch.action.attempt_id,
+    cancellation: {
+      request_id: "cancel-response-loss-request",
+      origin: "product_operator",
+      reason: null,
+      requested_at: new Date().toISOString(),
+    },
+  });
+
+  expect(
+    registry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).toBeNull();
+  expect(harness.metadataClears).toBe(0);
+  expect(harness.promptSubmissions).toBe(0);
+  registry.close();
+
+  const restartedRegistry = new DispatchRegistry(database, root, "pi");
+  const restartedHarness = new StagedRecoveryHarness(restartedRegistry, "pi");
+  const restartedExecutor = new DispatchExecutor(
+    restartedRegistry,
+    restartedHarness,
+    async () => false,
+    async () => false,
+  );
+  await restartedExecutor.recoverAll();
+  expect(restartedHarness.metadataClears).toBe(0);
+  expect(
+    restartedRegistry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).toBeNull();
+
+  await restartedExecutor.acknowledgeTerminal(dispatch.action.action_id);
+  expect(
+    restartedRegistry.get(dispatch.action.action_id).serverAcknowledgedAt,
+  ).not.toBeNull();
+  expect(restartedHarness.metadataClears).toBe(1);
+  restartedRegistry.close();
+});
+
+test("fresh human recovery reaches a durable zero-inference gate before one authorized prompt", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "antigravity");
+  const harness = new StagedRecoveryHarness(registry, "antigravity");
+  const reports: ReconcileDispatch[] = [];
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async (dispatch) => {
+      reports.push(dispatch);
+      return true;
+    },
+    async () => true,
+  );
+  const recovery = action({
+    action_id: "recovery-action",
+    attempt_id: "recovery-attempt-3",
+    operational_recovery: {
+      epoch_number: 2,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "human",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: "recovery-attempt-2",
+      request_id: "recovery-request-2",
+    },
+  });
+  recovery.execution.configuration.harness_kind = "antigravity";
+  const dispatch = executor.accept(recovery).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  expect(harness.promptSubmissions).toBe(0);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "accepted",
+    promptAuthorizedAt: null,
+    promptIntentAt: null,
+  });
+  expect(registry.getLineage(dispatch.lineageId as string)).toMatchObject({
+    sessionState: "waiting_for_human",
+    attention: {
+      category: "needs_confirmation",
+    },
+  });
+  expect(reports).toHaveLength(0);
+
+  await executor.authorizePrompt(dispatch.action.action_id);
+  expect(harness.promptSubmissions).toBe(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    promptAuthorizedAt: expect.any(String),
+    promptIntentAt: expect.any(String),
+  });
+  await executor.authorizePrompt(dispatch.action.action_id);
+  expect(harness.promptSubmissions).toBe(1);
+  registry.close();
+});
+
+test("pre-authorization native input fences the process and fails without submitting the QE prompt", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "antigravity");
+  const harness = new ContaminatedStagedRecoveryHarness(
+    registry,
+    "antigravity",
+  );
+  const reports: ReconcileDispatch[] = [];
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async (dispatch) => {
+      reports.push(dispatch);
+      return true;
+    },
+    async () => true,
+  );
+  const recovery = action({
+    action_id: "contaminated-recovery-action",
+    attempt_id: "contaminated-recovery-attempt",
+    operational_recovery: {
+      epoch_number: 3,
+      attempt_in_epoch: 2,
+      attempt_allowance: 2,
+      authorization_kind: "human",
+      continuation_mode: "fresh",
+      retained_lineage_id: null,
+      source_attempt_id: "source-attempt",
+      request_id: "recovery-request",
+    },
+  });
+  recovery.execution.configuration.harness_kind = "antigravity";
+  const dispatch = executor.accept(recovery).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+  harness.nativeConversationId = "native-conversation-1";
+  for (
+    let attempt = 0;
+    attempt < 100 && registry.get(dispatch.action.action_id).state !== "failed";
+    attempt += 1
+  )
+    await Bun.sleep(10);
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    promptAuthorizedAt: null,
+    promptIntentAt: null,
+    promptAcceptedAt: null,
+    nativeActivityAt: null,
+    failure: {
+      code: "pre_authorization_native_activity",
+      reason: "pre_authorization_native_activity",
+      classification: "operator_recovery_required",
+      native_conversation_id: "native-conversation-1",
+      process_retired: true,
+    },
+  });
+  expect(registry.getLineage(dispatch.lineageId as string)).toMatchObject({
+    sessionState: "unavailable",
+    nativeSession: {
+      source: "antigravity",
+      kind: "id",
+      value: "native-conversation-1",
+    },
+  });
+  expect(harness.promptSubmissions).toBe(0);
+  expect(harness.retirements).toBe(1);
+  expect(reports.at(-1)).toMatchObject({
+    action_id: dispatch.action.action_id,
+    state: "failed",
+    failure: { code: "pre_authorization_native_activity" },
+  });
+  await executor.authorizePrompt(dispatch.action.action_id);
+  registry.close();
+});
+
+test("terminal pre-prompt recovery adopts one prepared process, records history, and gates one prompt", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "antigravity");
+  const { source, target, lineageId } = preparedProcessRecovery(registry);
+  const harness = new PreparedAdoptionHarness(registry, false);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+  );
+
+  await executor.start(target.action.action_id);
+
+  const staged = registry.get(target.action.action_id);
+  expect(staged).toMatchObject({
+    state: "accepted",
+    lineageId,
+    promptAuthorizedAt: null,
+    promptIntentAt: null,
+    promptAcceptedAt: null,
+    nativeActivityAt: null,
+  });
+  expect(staged.resultNonce).not.toBe(source.resultNonce);
+  expect(harness.adoptionProofs).toBe(1);
+  expect(harness.starts).toBe(0);
+  expect(harness.promptSubmissions).toBe(0);
+  expect(registry.physicalProcessTransition(target.action.action_id)).toEqual(
+    expect.objectContaining({
+      sourceActionId: source.action.action_id,
+      sourceAttemptId: source.action.attempt_id,
+      targetActionId: target.action.action_id,
+      targetAttemptId: target.action.attempt_id,
+      sourceLineageId: lineageId,
+      targetLineageId: lineageId,
+      mode: "prepared_process_adopted",
+      paneId: "pane-prepared",
+      terminalId: "terminal-prepared",
+    }),
+  );
+  expect(registry.get(source.action.action_id)).toMatchObject({
+    state: "failed",
+    promptIntentAt: null,
+    promptAcceptedAt: null,
+    nativeActivityAt: null,
+  });
+
+  await executor.authorizePrompt(target.action.action_id);
+  await executor.authorizePrompt(target.action.action_id);
+  expect(harness.promptSubmissions).toBe(1);
+  expect(registry.list()).toHaveLength(2);
+  registry.close();
+});
+
+test("failed prepared-process proof retires it and stages a fresh-process fallback in the same new Attempt", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root, "antigravity");
+  const { source, target, lineageId } = preparedProcessRecovery(registry);
+  const harness = new PreparedAdoptionHarness(registry, true);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+  );
+
+  await executor.start(target.action.action_id);
+
+  const staged = registry.get(target.action.action_id);
+  expect(staged.action.attempt_id).toBe(target.action.attempt_id);
+  expect(staged.lineageId).not.toBe(lineageId);
+  expect(staged.promptIntentAt).toBeNull();
+  expect(harness.retirements).toBe(1);
+  expect(harness.starts).toBe(1);
+  expect(harness.promptSubmissions).toBe(0);
+  expect(registry.physicalProcessTransition(target.action.action_id)).toEqual(
+    expect.objectContaining({
+      sourceActionId: source.action.action_id,
+      sourceLineageId: lineageId,
+      targetLineageId: staged.lineageId,
+      mode: "fresh_process_fallback",
+    }),
+  );
+  expect(registry.list()).toHaveLength(2);
   registry.close();
 });
 
@@ -350,6 +913,370 @@ test("a genuine synthetic Review blocker can still request conversational attent
   registry.close();
 });
 
+test("pre-prompt backend loss retries the same Action once without duplicate prompt work", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new PrePromptUnavailableHarness(registry);
+  const sessionStates: string[] = [];
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async (_dispatch, lineage) => {
+      sessionStates.push(lineage.sessionState);
+      return true;
+    },
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.list()).toHaveLength(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    action: { attempt_id: dispatch.action.attempt_id },
+  });
+  expect(harness.starts).toBe(2);
+  expect(harness.promptSubmissions).toBe(1);
+  expect(sessionStates).toEqual(
+    expect.arrayContaining(["unavailable", "recovering"]),
+  );
+  registry.close();
+});
+
+test("persistent pre-prompt backend loss uses normal auto-retryable Attempt accounting", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new AlwaysUnavailableHarness(registry);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.list()).toHaveLength(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    promptIntentAt: null,
+    action: { attempt_id: dispatch.action.attempt_id },
+    failure: {
+      code: "backend_unavailable",
+      classification: "auto_retryable",
+    },
+  });
+  expect(harness.starts).toBe(2);
+  registry.close();
+});
+
+test("ambiguous native launch is uncertain and never retried or prompted", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new UncertainLaunchHarness(registry);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "uncertain",
+    promptIntentAt: null,
+    failure: {
+      code: "agent_launch_uncertain",
+      classification: "operator_recovery_required",
+    },
+  });
+  expect(harness.starts).toBe(1);
+  expect(harness.promptSubmissions).toBe(0);
+  registry.close();
+});
+
+test("post-prompt backend loss recovers the exact lineage without resubmission", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new PostPromptUnavailableHarness(registry, false);
+  const sessionStates: string[] = [];
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async (_dispatch, lineage) => {
+      sessionStates.push(lineage.sessionState);
+      return true;
+    },
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    outputs: { change_set: { recovered: true } },
+  });
+  expect(harness.promptSubmissions).toBe(1);
+  expect(harness.recoveries).toBe(1);
+  expect(sessionStates).toEqual(
+    expect.arrayContaining(["unavailable", "recovering"]),
+  );
+  registry.close();
+});
+
+test("one session.snapshot timeout recovers the exact lineage without false uncertainty", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new SnapshotObservationHarness(registry, 0);
+  let recoveredDiagnostic: Record<string, JsonValue> | null = null;
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async (payload) => {
+      if (payload.state === "running")
+        recoveredDiagnostic = registry.get(payload.action_id).failure;
+      return true;
+    },
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id).state).toBe("completed");
+  expect(harness.promptSubmissions).toBe(1);
+  expect(harness.recoveries).toBe(1);
+  expect(recoveredDiagnostic).toMatchObject({
+    code: "timeout",
+    capability: "session.inventory",
+  });
+  registry.close();
+});
+
+test("multiple transient snapshot failures use bounded exact-lineage recovery", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new SnapshotObservationHarness(registry, 2);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id).state).toBe("completed");
+  expect(harness.promptSubmissions).toBe(1);
+  expect(harness.recoveries).toBe(3);
+  registry.close();
+});
+
+test("persisted session.snapshot uncertainty is reversible only after exact recovery", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const unavailable = new SnapshotObservationHarness(registry, 99);
+  const first = new DispatchExecutor(
+    registry,
+    unavailable,
+    async () => true,
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = first.accept(action()).dispatch;
+  await first.start(dispatch.action.action_id);
+  registry.fail(
+    dispatch.action.action_id,
+    {
+      reason: "harness_execution_failed",
+      code: "timeout",
+      classification: "auto_retryable",
+      message: "Herdr request timed out: session.snapshot",
+    },
+    true,
+  );
+
+  const recovered = new NativePermissionRecoveryHarness(registry);
+  let recoveredSession: HarnessLineage | null = null;
+  const second = new DispatchExecutor(
+    registry,
+    recovered,
+    async () => true,
+    async (_dispatch, lineage) => {
+      if (lineage.sessionState === "waiting_for_human")
+        recoveredSession = lineage;
+      return true;
+    },
+    null,
+    0,
+  );
+  await second.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id).state).toBe("completed");
+  expect(unavailable.promptSubmissions).toBe(1);
+  expect(recovered.promptSubmissions).toBe(0);
+  expect(recovered.recoveries).toBe(1);
+  expect(recoveredSession).toMatchObject({
+    sessionState: "waiting_for_human",
+    attention: {
+      attentionId: "native-step-18",
+      category: "needs_permission",
+    },
+  });
+  registry.close();
+});
+
+test("post-prompt recovery uncertainty never duplicates model work", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new PostPromptUnavailableHarness(registry, true);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "uncertain",
+    failure: {
+      code: "backend_unavailable",
+      classification: "auto_retryable",
+    },
+  });
+  expect(harness.promptSubmissions).toBe(1);
+  expect(harness.recoveries).toBe(1);
+
+  const replacement = new SnapshotObservationHarness(registry, 0, false);
+  await new DispatchExecutor(
+    registry,
+    replacement,
+    async () => true,
+    async () => true,
+    null,
+    0,
+  ).start(dispatch.action.action_id);
+  expect(registry.get(dispatch.action.action_id).state).toBe("uncertain");
+  expect(replacement.recoveries).toBe(0);
+  expect(replacement.promptSubmissions).toBe(0);
+  registry.close();
+});
+
+test("a known post-acceptance harness violation is failed, not uncertain", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new AcceptedContractFailureHarness(registry);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    failure: {
+      code: "harness_contract_violation",
+      classification: "terminal_not_recoverable",
+    },
+  });
+  registry.close();
+});
+
+test("restart projects terminal uncertainty with an exited native process as unavailable", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new ExitedNativeHarness(registry);
+  const dispatch = registry.accept(action()).dispatch;
+  registry.occupy(dispatch.lineageId as string, dispatch.action.action_id);
+  registry.fail(
+    dispatch.action.action_id,
+    {
+      code: "harness_contract_violation",
+      classification: "terminal_not_recoverable",
+    },
+    true,
+  );
+  const reported: HarnessLineage[] = [];
+  await new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async (_dispatch, lineage) => {
+      reported.push(lineage);
+      return true;
+    },
+  ).recoverAll();
+
+  expect(harness.starts).toBe(0);
+  expect(registry.get(dispatch.action.action_id).state).toBe("uncertain");
+  expect(registry.getLineage(dispatch.lineageId as string).sessionState).toBe(
+    "unavailable",
+  );
+  expect(reported[0]?.sessionState).toBe("unavailable");
+  registry.close();
+});
+
+test("incompatible backend contract fails visibly without transient retry", async () => {
+  const { root, database } = await fixture();
+  const registry = new DispatchRegistry(database, root);
+  const harness = new IncompatibleBackendHarness(registry);
+  const executor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => false,
+    async () => true,
+    null,
+    0,
+  );
+  const dispatch = executor.accept(action()).dispatch;
+
+  await executor.start(dispatch.action.action_id);
+
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "failed",
+    failure: {
+      code: "backend_incompatible",
+      classification: "operator_recovery_required",
+      message: expect.stringContaining("agent.prompt"),
+    },
+  });
+  expect(harness.starts).toBe(1);
+  expect(registry.getLineage(dispatch.lineageId as string).sessionState).toBe(
+    "unavailable",
+  );
+  registry.close();
+});
+
 test("acceptance and completion are durable before external side effects and reporting", async () => {
   const { root, database } = await fixture();
   const registry = new DispatchRegistry(database, root);
@@ -426,6 +1353,7 @@ class InspectingProvider implements AgentHarness {
   };
   starts = 0;
   interrupts = 0;
+  metadataClears = 0;
   sawDurableAcceptance = false;
   constructor(
     private readonly registry: DispatchRegistry,
@@ -449,6 +1377,7 @@ class InspectingProvider implements AgentHarness {
           provider: "fake",
           model: "test",
           displayName: "Test",
+          accountAvailability: "verified_available",
           reasoningCapability: { kind: "enumerated", values: ["medium"] },
         },
       ],
@@ -478,20 +1407,22 @@ class InspectingProvider implements AgentHarness {
     onEvent({ type: "running", inspection: inspection(_execution.lineage) });
     return { change_set: { version: 1 } };
   }
-  async recover() {
+  async recover(_lineage: HarnessLineage): Promise<HarnessRecoveredExecution> {
     return { found: false, detail: "not used" };
   }
-  async waitAndCollect() {
+  async waitAndCollect(): Promise<Record<string, JsonValue>> {
     return { change_set: { version: 1 } };
   }
   async interrupt() {
     this.interrupts += 1;
   }
-  async inspect(lineage: HarnessLineage) {
+  async inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
     return inspection(lineage);
   }
   async close() {}
-  async clearActiveMetadata() {}
+  async clearActiveMetadata() {
+    this.metadataClears += 1;
+  }
   async discoverAdoptionCandidates() {
     return [];
   }
@@ -506,6 +1437,338 @@ class InspectingProvider implements AgentHarness {
     };
   }
   disconnect() {}
+}
+
+class StagedRecoveryHarness extends InspectingProvider {
+  promptSubmissions = 0;
+
+  override async recover(
+    lineage: HarnessLineage,
+  ): Promise<HarnessRecoveredExecution> {
+    return {
+      found: true,
+      agent: prepared(lineage).agent,
+      detail: "Recovered staged zero-inference process.",
+    };
+  }
+
+  override async sendInputAndCollect(
+    _dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    this.promptSubmissions += 1;
+    onEvent({ type: "running", inspection: inspection(execution.lineage) });
+    return { change_set: { staged: true } };
+  }
+}
+
+class ContaminatedStagedRecoveryHarness extends StagedRecoveryHarness {
+  nativeConversationId: string | null = null;
+  retirements = 0;
+
+  async observePreAuthorizationActivity() {
+    if (!this.nativeConversationId) return null;
+    return {
+      observedAt: "2026-09-19T02:06:44.382Z",
+      nativeSession: {
+        source: "antigravity" as const,
+        agent: "agy",
+        kind: "id" as const,
+        value: this.nativeConversationId,
+      },
+      evidence: "native_user_message" as const,
+    };
+  }
+
+  async retire(): Promise<void> {
+    this.retirements += 1;
+  }
+}
+
+class PreparedAdoptionHarness extends StagedRecoveryHarness {
+  adoptionProofs = 0;
+  retirements = 0;
+
+  constructor(
+    registry: DispatchRegistry,
+    private readonly rejectAdoption: boolean,
+  ) {
+    super(registry, "antigravity");
+  }
+
+  async provePreparedProcessAdoption(): Promise<void> {
+    this.adoptionProofs += 1;
+    if (this.rejectAdoption)
+      throw Object.assign(new Error("Prepared process provenance differs."), {
+        code: "prepared_process_adoption_rejected",
+      });
+  }
+
+  async retire(): Promise<void> {
+    this.retirements += 1;
+  }
+}
+
+function preparedProcessRecovery(registry: DispatchRegistry) {
+  const sourceAction = action({
+    action_id: "prepared-source-action",
+    attempt_id: "prepared-attempt-3",
+  });
+  sourceAction.execution.configuration.harness_kind = "antigravity";
+  const source = registry.accept(sourceAction).dispatch;
+  const lineageId = source.lineageId as string;
+  registry.recordHost(lineageId, {
+    herdrSession: "qe-worker-test",
+    herdrSessionIncarnation: "session-incarnation-1",
+    workspaceId: "workspace-prepared",
+    tabId: "tab-prepared",
+    paneId: "pane-prepared",
+    terminalId: "terminal-prepared",
+    agentName: "agent-prepared",
+  });
+  registry.occupy(lineageId, source.action.action_id);
+  registry.fail(source.action.action_id, {
+    code: "execution_control_readiness_failed",
+    reason: "execution_control_readiness_failed",
+    classification: "operator_recovery_required",
+  });
+
+  const targetAction = action({
+    action_id: "prepared-target-action",
+    attempt_id: "prepared-attempt-4",
+    operational_recovery: {
+      epoch_number: 3,
+      attempt_in_epoch: 1,
+      attempt_allowance: 2,
+      authorization_kind: "human",
+      continuation_mode: "retained",
+      retained_lineage_id: lineageId,
+      source_attempt_id: source.action.attempt_id,
+      request_id: "prepared-recovery-request",
+    },
+  });
+  targetAction.execution.configuration.harness_kind = "antigravity";
+  targetAction.execution.context.logical_lineage_id =
+    source.action.execution.context.logical_lineage_id;
+  const target = registry.accept(targetAction).dispatch;
+  return { source, target, lineageId };
+}
+
+class PrePromptUnavailableHarness extends InspectingProvider {
+  promptSubmissions = 0;
+
+  override async start(
+    _dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+  ): Promise<HarnessPreparedExecution> {
+    this.starts += 1;
+    if (this.starts === 1)
+      throw new HerdrApiError(
+        "backend_unavailable",
+        "Herdr temporarily unavailable before launch.",
+      );
+    return prepared(lineage);
+  }
+
+  override async sendInputAndCollect(
+    _dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    this.promptSubmissions += 1;
+    onEvent({ type: "running", inspection: inspection(execution.lineage) });
+    return { change_set: { recovered: true } };
+  }
+}
+
+class AlwaysUnavailableHarness extends InspectingProvider {
+  override async start(): Promise<HarnessPreparedExecution> {
+    this.starts += 1;
+    throw new HerdrApiError(
+      "backend_unavailable",
+      "Herdr remained unavailable before launch.",
+    );
+  }
+}
+
+class UncertainLaunchHarness extends InspectingProvider {
+  promptSubmissions = 0;
+
+  override async start(): Promise<HarnessPreparedExecution> {
+    this.starts += 1;
+    throw new HerdrApiError(
+      "agent_launch_uncertain",
+      "Herdr accepted launch but native inventory was unavailable.",
+      "agent.interactive_launch",
+    );
+  }
+
+  override async sendInputAndCollect(): Promise<Record<string, JsonValue>> {
+    this.promptSubmissions += 1;
+    return {};
+  }
+}
+
+class PostPromptUnavailableHarness extends InspectingProvider {
+  promptSubmissions = 0;
+  recoveries = 0;
+
+  constructor(
+    registry: DispatchRegistry,
+    private readonly recoveryUnavailable: boolean,
+  ) {
+    super(registry);
+  }
+
+  override async sendInputAndCollect(
+    _dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    this.promptSubmissions += 1;
+    onEvent({
+      type: "prompt_accepted",
+      acceptedAt: new Date().toISOString(),
+      inspection: inspection(execution.lineage),
+    });
+    throw new HerdrApiError(
+      "backend_unavailable",
+      "Herdr disconnected after prompt intent.",
+    );
+  }
+
+  override async recover(
+    lineage: HarnessLineage,
+  ): Promise<HarnessRecoveredExecution> {
+    this.recoveries += 1;
+    if (this.recoveryUnavailable)
+      throw new HerdrApiError(
+        "backend_unavailable",
+        "Herdr remained unavailable during exact-lineage recovery.",
+      );
+    return {
+      found: true,
+      agent: { ...prepared(lineage).agent, status: "working" as const },
+      detail: "Recovered exact test lineage.",
+    };
+  }
+
+  override async waitAndCollect(): Promise<Record<string, JsonValue>> {
+    return { change_set: { recovered: true } };
+  }
+}
+
+class SnapshotObservationHarness extends InspectingProvider {
+  promptSubmissions = 0;
+  recoveries = 0;
+
+  constructor(
+    registry: DispatchRegistry,
+    private readonly transientRecoveryFailures: number,
+    private readonly failInitialCollection = true,
+  ) {
+    super(registry);
+  }
+
+  override async sendInputAndCollect(
+    _dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    this.promptSubmissions += 1;
+    onEvent({
+      type: "prompt_accepted",
+      acceptedAt: new Date().toISOString(),
+      inspection: inspection(execution.lineage),
+    });
+    if (this.failInitialCollection) throw snapshotTimeout();
+    return { change_set: { recovered: true } };
+  }
+
+  override async recover(
+    lineage: HarnessLineage,
+  ): Promise<HarnessRecoveredExecution> {
+    this.recoveries += 1;
+    if (this.recoveries <= this.transientRecoveryFailures)
+      throw snapshotTimeout();
+    return {
+      found: true,
+      agent: { ...prepared(lineage).agent, status: "working" as const },
+      detail:
+        "Recovered the exact lineage after inventory observation resumed.",
+    };
+  }
+
+  override async waitAndCollect(): Promise<Record<string, JsonValue>> {
+    return { change_set: { recovered: true } };
+  }
+}
+
+class NativePermissionRecoveryHarness extends SnapshotObservationHarness {
+  constructor(registry: DispatchRegistry) {
+    super(registry, 0, false);
+  }
+
+  override async inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
+    return {
+      ...inspection(lineage),
+      state: "waiting_for_human" as const,
+      attention: {
+        attentionId: "native-step-18",
+        category: "needs_permission" as const,
+        message: "RunCommand requires approval in Antigravity.",
+        requestedAt: "2026-09-17T04:55:58.365Z",
+        interaction: {
+          kind: "conversational_intervention" as const,
+          controlState: "intervention_pending" as const,
+        },
+      },
+    };
+  }
+}
+
+function snapshotTimeout(): HerdrApiError {
+  return new HerdrApiError(
+    "timeout",
+    "Herdr request timed out: session.snapshot",
+    "session.inventory",
+  );
+}
+
+class AcceptedContractFailureHarness extends InspectingProvider {
+  override async sendInputAndCollect(
+    _dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    onEvent({
+      type: "prompt_accepted",
+      acceptedAt: new Date().toISOString(),
+      inspection: inspection(execution.lineage),
+    });
+    throw new HerdrApiError(
+      "harness_contract_violation",
+      "The native turn settled without an authorized result.",
+    );
+  }
+}
+
+class ExitedNativeHarness extends InspectingProvider {
+  override async inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
+    return { ...inspection(lineage), state: "unavailable" };
+  }
+}
+
+class IncompatibleBackendHarness extends InspectingProvider {
+  override async start(): Promise<HarnessPreparedExecution> {
+    this.starts += 1;
+    throw new HerdrApiError(
+      "backend_incompatible",
+      "Herdr cannot prove QE capability 'agent.prompt'.",
+      "agent.prompt",
+    );
+  }
 }
 
 class BlockingProvider extends InspectingProvider {

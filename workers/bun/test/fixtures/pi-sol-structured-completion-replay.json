@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "source": "sanitized Phase-4 lifecycle metadata",
+  "containsConversationContent": false,
+  "events": [
+    { "kind": "prompt_accepted", "offsetMs": 0 },
+    { "kind": "native_activity", "offsetMs": 3 },
+    { "kind": "provider_turn_settled", "offsetMs": 6152 },
+    { "kind": "file_edit", "offsetMs": 14152 },
+    { "kind": "local_test_passed", "offsetMs": 18152 },
+    { "kind": "structured_result_invoked", "offsetMs": 23152 },
+    { "kind": "native_idle", "offsetMs": 59152 }
+  ]
+}

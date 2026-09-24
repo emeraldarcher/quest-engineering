@@ -79,7 +79,7 @@ function dispatchWithPlan(
       context_requirement: { selector: "fresh", value: null },
       context_lineage_occurrence_id: null,
       worker_id: "worker-1",
-      protocol_version: 7,
+      protocol_version: 9,
       type: "execute_action",
       execution: {
         identity: {

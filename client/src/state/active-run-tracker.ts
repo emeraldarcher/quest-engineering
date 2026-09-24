@@ -13,7 +13,7 @@ export interface ActiveRunTrackerDependencies {
 }
 
 export function isTrackableRun(summary: Pick<RunSummary, "status">): boolean {
-  return summary.status !== "completed" && summary.status !== "failed";
+  return !["completed", "failed", "cancelled"].includes(summary.status);
 }
 
 /**
@@ -130,7 +130,7 @@ export class ActiveRunTracker {
 
   private accept(projection: RunProjection): void {
     this.dependencies.onProjection?.(projection);
-    if (projection.status === "completed" || projection.status === "failed") {
+    if (!isTrackableRun(projection)) {
       this.terminal.add(projection.id);
       this.stopTracking(projection.id);
       return;

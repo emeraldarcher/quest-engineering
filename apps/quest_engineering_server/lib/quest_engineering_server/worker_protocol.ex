@@ -19,11 +19,22 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 7
+  @version 9
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
-  @session_states ~w(starting running waiting_for_human recovering retained closed unavailable)
+  @session_states %{
+    "starting" => :starting,
+    "waiting_for_activity" => :waiting_for_activity,
+    "running" => :running,
+    "waiting_for_human" => :waiting_for_human,
+    "stalled" => :stalled,
+    "recovering" => :recovering,
+    "retained" => :retained,
+    "closed" => :closed,
+    "unavailable" => :unavailable
+  }
+  @turn_phases ~w(preparing prompt_intent waiting_for_activity working awaiting_result blocked stalled settled uncertain)
   @attention_categories ~w(needs_input needs_permission needs_authentication needs_confirmation blocked_external interactive_prompt unknown_interactive_block)
   @interaction_kinds ~w(confirmation text choice multiline_response conversational_intervention)
   @human_control_states ~w(intervention_pending human_control resuming_automation)
@@ -112,13 +123,14 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   def decode_worker_message(_payload, _worker_id), do: error(:malformed_message)
 
-  def welcome(worker_id, binding_reconciliation \\ []) do
+  def welcome(worker_id, binding_reconciliation \\ [], connection_generation \\ nil) do
     %{
       "type" => "worker_welcome",
       "protocol_version" => @version,
       "worker_id" => worker_id,
       "workspace_binding_reconciliation" => binding_reconciliation
     }
+    |> maybe_put("connection_generation", connection_generation)
   end
 
   def reconcile_request(worker_id) do
@@ -217,6 +229,44 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "worker_id" => worker_id,
       "action_id" => action_id,
       "resolution" => Atom.to_string(resolution)
+    }
+  end
+
+  def retire_dispatch_for_recovery(worker_id, action_id, failure) when is_map(failure) do
+    %{
+      "type" => "retire_dispatch_for_recovery",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "action_id" => action_id,
+      "failure" => failure
+    }
+  end
+
+  def cancel_dispatch(dispatch, action, generation) do
+    %{
+      "type" => "cancel_dispatch",
+      "protocol_version" => @version,
+      "worker_id" => dispatch.worker_id,
+      "connection_generation" => generation,
+      "action_id" => action.id,
+      "run_id" => action.run_id,
+      "occurrence_id" => action.occurrence_id,
+      "attempt_id" => action.attempt_id,
+      "cancellation" => %{
+        "request_id" => dispatch.cancellation_request_id,
+        "origin" => dispatch.cancellation_origin,
+        "reason" => dispatch.cancellation_reason,
+        "requested_at" => DateTime.to_iso8601(dispatch.cancellation_requested_at)
+      }
+    }
+  end
+
+  def authorize_dispatch_prompt(worker_id, action_id) do
+    %{
+      "type" => "authorize_dispatch_prompt",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "action_id" => action_id
     }
   end
 
@@ -485,7 +535,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          {:ok, intervention} <- decode_intervention(value["intervention"]),
          {:ok, started_at} <- timestamp(value["started_at"], "session.started_at"),
          {:ok, last_activity_at} <-
-           timestamp(value["last_activity_at"], "session.last_activity_at") do
+           timestamp(value["last_activity_at"], "session.last_activity_at"),
+         {:ok, turn} <- decode_turn(value["turn"], state) do
       {:ok,
        %{
          session_id: session_id,
@@ -503,12 +554,142 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          attention: attention,
          intervention: intervention,
          started_at: started_at,
-         last_activity_at: last_activity_at
+         last_activity_at: last_activity_at,
+         turn: turn
        }}
     end
   end
 
   defp decode_session(_), do: error(:invalid_field, "session")
+
+  defp decode_turn(nil, state) do
+    phase =
+      case state do
+        :waiting_for_activity -> "waiting_for_activity"
+        :running -> "working"
+        :waiting_for_human -> "blocked"
+        :stalled -> "stalled"
+        :retained -> "settled"
+        _ -> "preparing"
+      end
+
+    {:ok,
+     %{
+       "phase" => phase,
+       "prompt_intent_at" => nil,
+       "prompt_accepted_at" => nil,
+       "native_activity_at" => nil,
+       "provider_turn_settled_at" => nil,
+       "native_idle_at" => nil,
+       "structured_result_received_at" => nil,
+       "stalled_at" => nil,
+       "settled_at" => nil,
+       "completion" => nil
+     }}
+  end
+
+  defp decode_turn(%{"phase" => phase} = value, _state) when phase in @turn_phases do
+    fields =
+      ~w(prompt_intent_at prompt_accepted_at native_activity_at provider_turn_settled_at native_idle_at structured_result_received_at stalled_at settled_at)
+
+    Enum.reduce_while(fields, {:ok, %{"phase" => phase}}, fn field, {:ok, decoded} ->
+      case optional_timestamp(value[field], "session.turn.#{field}") do
+        {:ok, nil} ->
+          {:cont, {:ok, Map.put(decoded, field, nil)}}
+
+        {:ok, timestamp} ->
+          {:cont, {:ok, Map.put(decoded, field, DateTime.to_iso8601(timestamp))}}
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> decode_completion(value["completion"], decoded)
+      error -> error
+    end
+    |> case do
+      {:ok, decoded} -> decode_physical_process(value["physical_process"], decoded)
+      error -> error
+    end
+  end
+
+  defp decode_turn(_, _state), do: error(:invalid_field, "session.turn")
+
+  defp decode_completion(nil, turn), do: {:ok, Map.put(turn, "completion", nil)}
+
+  defp decode_completion(
+         %{
+           "structured_result_required" => true,
+           "outputs" => outputs,
+           "physical_export_required" => physical_export_required
+         } = completion,
+         turn
+       )
+       when is_list(outputs) and is_boolean(physical_export_required) do
+    valid_outputs =
+      Enum.all?(outputs, fn
+        %{"name" => name, "kind" => kind}
+        when is_binary(name) and name != "" and is_binary(kind) and kind != "" ->
+          true
+
+        _ ->
+          false
+      end)
+
+    if valid_outputs do
+      {:ok,
+       Map.put(turn, "completion", %{
+         "structured_result_required" => true,
+         "outputs" => completion["outputs"],
+         "physical_export_required" => physical_export_required
+       })}
+    else
+      error(:invalid_field, "session.turn.completion.outputs")
+    end
+  end
+
+  defp decode_completion(_, _turn), do: error(:invalid_field, "session.turn.completion")
+
+  defp decode_physical_process(nil, turn), do: {:ok, turn}
+
+  defp decode_physical_process(%{"mode" => mode} = value, turn)
+       when mode in ["prepared_process_adopted", "fresh_process_fallback"] do
+    with {:ok, source_action_id} <- required_string(value, "source_action_id"),
+         {:ok, source_attempt_id} <- required_string(value, "source_attempt_id"),
+         {:ok, target_action_id} <- required_string(value, "target_action_id"),
+         {:ok, target_attempt_id} <- required_string(value, "target_attempt_id"),
+         {:ok, source_lineage_id} <- required_string(value, "source_lineage_id"),
+         {:ok, target_lineage_id} <- required_string(value, "target_lineage_id"),
+         {:ok, herdr_session} <- optional_string(value["herdr_session"]),
+         {:ok, herdr_incarnation} <- optional_string(value["herdr_session_incarnation"]),
+         {:ok, workspace_id} <- optional_string(value["workspace_id"]),
+         {:ok, pane_id} <- optional_string(value["pane_id"]),
+         {:ok, terminal_id} <- optional_string(value["terminal_id"]),
+         {:ok, agent_name} <- optional_string(value["agent_name"]),
+         {:ok, recorded_at} <- timestamp(value["recorded_at"], "session.turn.recorded_at") do
+      {:ok,
+       Map.put(turn, "physical_process", %{
+         "mode" => mode,
+         "source_action_id" => source_action_id,
+         "source_attempt_id" => source_attempt_id,
+         "target_action_id" => target_action_id,
+         "target_attempt_id" => target_attempt_id,
+         "source_lineage_id" => source_lineage_id,
+         "target_lineage_id" => target_lineage_id,
+         "herdr_session" => herdr_session,
+         "herdr_session_incarnation" => herdr_incarnation,
+         "workspace_id" => workspace_id,
+         "pane_id" => pane_id,
+         "terminal_id" => terminal_id,
+         "agent_name" => agent_name,
+         "recorded_at" => DateTime.to_iso8601(recorded_at)
+       })}
+    end
+  end
+
+  defp decode_physical_process(_, _turn),
+    do: error(:invalid_field, "session.turn.physical_process")
 
   defp decode_session_capabilities(value) when is_map(value) do
     with {:ok, attach} <- required_boolean(value, "can_attach_terminal"),
@@ -655,20 +836,12 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp valid_intervention_timestamps(_state, _handed_back, _resumed),
     do: error(:invalid_field, "session.intervention.lifecycle_timestamps")
 
-  defp session_state(value) when value in @session_states do
-    {:ok,
-     case value do
-       "starting" -> :starting
-       "running" -> :running
-       "waiting_for_human" -> :waiting_for_human
-       "recovering" -> :recovering
-       "retained" -> :retained
-       "closed" -> :closed
-       "unavailable" -> :unavailable
-     end}
+  defp session_state(value) do
+    case Map.fetch(@session_states, value) do
+      {:ok, state} -> {:ok, state}
+      :error -> error(:invalid_field, "session.state", %{received: value})
+    end
   end
-
-  defp session_state(value), do: error(:invalid_field, "session.state", %{received: value})
 
   defp optional_string(nil), do: {:ok, nil}
   defp optional_string(value) when is_binary(value) and value != "", do: {:ok, value}
@@ -1021,6 +1194,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
               is_integer(max_concurrency) and max_concurrency > 0 and max_concurrency <= 1024 and
               is_list(executors) and executors != [] do
     with :ok <- string_list(tags, "capabilities.tags"),
+         {:ok, dispatch_availability} <-
+           validate_dispatch_availability(
+             Map.get(capabilities, "dispatch_availability", "active")
+           ),
          {:ok, executors} <- validate_executors(executors),
          :ok <- validate_workspace_bindings(workspace_bindings),
          features = Map.get(capabilities, "features", []),
@@ -1030,6 +1207,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "os" => os,
          "arch" => arch,
          "max_concurrency" => max_concurrency,
+         "dispatch_availability" => dispatch_availability,
          "tags" => Enum.uniq(tags),
          "executors" => executors,
          "workspace_bindings" => Enum.uniq(workspace_bindings),
@@ -1040,6 +1218,12 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp validate_capabilities(_capabilities),
     do: error(:invalid_capabilities, "capabilities")
+
+  defp validate_dispatch_availability(value) when value in ["active", "maintenance"],
+    do: {:ok, value}
+
+  defp validate_dispatch_availability(_value),
+    do: error(:invalid_field, "capabilities.dispatch_availability")
 
   defp validate_executors(executors) do
     Enum.reduce_while(executors, {:ok, []}, fn executor, {:ok, validated} ->
@@ -1094,9 +1278,11 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "provider" => provider,
          "model" => model,
          "display_name" => display_name,
+         "account_availability" => account_availability,
          "reasoning_capability" => reasoning_capability
        }) do
     non_blank?(provider) and non_blank?(model) and non_blank?(display_name) and
+      account_availability in ["verified_available", "verified_unavailable", "unknown"] and
       valid_reasoning_capability?(reasoning_capability)
   end
 

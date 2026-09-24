@@ -22,6 +22,7 @@ function capabilities(
             provider: "fake",
             model: "test",
             display_name: "Fake test",
+            account_availability: "verified_available",
             reasoning_capability: { kind: "enumerated", values: ["medium"] },
           },
         ],
@@ -36,6 +37,7 @@ function capabilities(
             provider: "antigravity",
             model: "no-effort",
             display_name: "No effort",
+            account_availability: "verified_available",
             reasoning_capability: { kind: "unsupported" },
           },
         ],
@@ -74,6 +76,7 @@ test("capabilities advertise model reasoning and supported tool policies", () =>
           provider: "shared",
           model: "same",
           displayName: "Pi",
+          accountAvailability: "unknown",
           reasoningCapability: { kind: "enumerated", values: ["xhigh"] },
         },
       ],
@@ -94,12 +97,14 @@ test("capabilities advertise model reasoning and supported tool policies", () =>
           provider: "shared",
           model: "none",
           displayName: "None",
+          accountAvailability: "verified_available",
           reasoningCapability: { kind: "unsupported" },
         },
         {
           provider: "shared",
           model: "bad",
           displayName: "Bad",
+          accountAvailability: "verified_available",
           reasoningCapability: { kind: "unknown", detail: "conflict" },
         },
       ],
@@ -109,6 +114,19 @@ test("capabilities advertise model reasoning and supported tool policies", () =>
   expect(executors[0]?.supported_tool_policies).toEqual(["exact"]);
   expect(executors[1]?.supported_tool_policies).toEqual(["native_permissions"]);
   expect(executors[1]?.models).toHaveLength(1);
+});
+
+test("unknown availability schedules and verified unavailable fails the exact selection", () => {
+  const advertised = capabilities();
+  const advertisedModel = advertised.executors[0]?.models[0];
+  if (!advertisedModel) throw new Error("Expected an advertised model fixture");
+  advertisedModel.account_availability = "unknown";
+  expect(() => assertExecutionSupported(action(), advertised)).not.toThrow();
+
+  advertisedModel.account_availability = "verified_unavailable";
+  expect(() => assertExecutionSupported(action(), advertised)).toThrow(
+    "not supported",
+  );
 });
 
 test("Pi exact policy is enforced and cannot resolve as native permissions", () => {

@@ -3,7 +3,7 @@ import type { ExecuteAction } from "../src/protocol/types.ts";
 export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
   const base: ExecuteAction = {
     type: "execute_action",
-    protocol_version: 7,
+    protocol_version: 9,
     worker_id: "worker-test",
     execution: {
       identity: {

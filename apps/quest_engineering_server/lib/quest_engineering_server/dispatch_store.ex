@@ -17,6 +17,11 @@ defmodule QuestEngineering.Server.DispatchStore do
 
   @active_states ~w(acknowledged running uncertain)
 
+  def refresh_worker_occupancy(worker_id) when is_binary(worker_id) do
+    update_active_dispatches!(worker_id)
+    :ok
+  end
+
   def mark_dispatched(action_id, claim_token, generation) do
     case Repo.get_by(WorkerDispatch, action_id: action_id) do
       nil ->
@@ -49,49 +54,74 @@ defmodule QuestEngineering.Server.DispatchStore do
 
   def mark_running(worker_id, generation, action_id) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
-      if dispatch.state in ["completed", "failed", "uncertain"] do
-        dispatch
-      else
-        Repo.update!(
-          Changeset.change(dispatch,
-            state: "running",
-            acknowledged_at: dispatch.acknowledged_at || now(),
-            last_connection_generation: generation
+      cond do
+        dispatch.state in ["completed", "failed"] ->
+          dispatch
+
+        dispatch.state == "uncertain" and
+            not recoverable_observation_uncertainty?(dispatch.failure) ->
+          dispatch
+
+        true ->
+          Repo.update!(
+            Changeset.change(dispatch,
+              state: "running",
+              acknowledged_at: dispatch.acknowledged_at || now(),
+              last_connection_generation: generation
+            )
           )
-        )
       end
     end)
   end
 
   def mark_completed(worker_id, generation, action_id) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
-      if dispatch.state == "failed" do
-        Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
-      else
-        updated =
-          Repo.update!(
-            Changeset.change(dispatch,
-              state: "completed",
-              acknowledged_at: dispatch.acknowledged_at || now(),
-              terminal_at: dispatch.terminal_at || now(),
-              last_connection_generation: generation
-            )
+      cond do
+        dispatch.cancellation_requested_at ->
+          Repo.rollback(
+            error(:execution_cancellation_pending, worker_id, action_id, %{
+              cancellation_request_id: dispatch.cancellation_request_id
+            })
           )
 
-        mark_scheduled_terminal!(action_id, "completed", nil)
-        updated
+        dispatch.state == "failed" ->
+          Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
+
+        true ->
+          updated =
+            Repo.update!(
+              Changeset.change(dispatch,
+                state: "completed",
+                acknowledged_at: dispatch.acknowledged_at || now(),
+                terminal_at: dispatch.terminal_at || now(),
+                last_connection_generation: generation
+              )
+            )
+
+          mark_scheduled_terminal!(action_id, "completed", nil)
+          updated
       end
     end)
   end
 
   def mark_failed(worker_id, generation, action_id, failure) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
+      validate_failure_authority!(dispatch, failure, worker_id)
+
       cond do
         dispatch.state == "completed" ->
           Repo.rollback(error(:conflicting_terminal_dispatch_state, worker_id, action_id))
 
-        dispatch.state == "failed" ->
+        dispatch.state == "failed" and equivalent_failure?(dispatch.failure, failure) ->
           dispatch
+
+        dispatch.state == "failed" ->
+          Repo.rollback(
+            error(:conflicting_terminal_dispatch_fact, worker_id, action_id, %{
+              persisted_failure: dispatch.failure,
+              received_failure: failure
+            })
+          )
 
         true ->
           updated =
@@ -149,19 +179,93 @@ defmodule QuestEngineering.Server.DispatchStore do
 
   def mark_uncertain(worker_id, generation, action_id, failure) do
     transition_from_worker(worker_id, generation, action_id, fn dispatch ->
-      if dispatch.state in ["completed", "failed"] do
-        dispatch
-      else
-        Repo.update!(
-          Changeset.change(dispatch,
-            state: "uncertain",
-            acknowledged_at: dispatch.acknowledged_at || now(),
-            failure: failure,
-            last_connection_generation: generation
+      cond do
+        dispatch.state in ["completed", "failed"] ->
+          dispatch
+
+        dispatch.cancellation_requested_at ->
+          Repo.rollback(
+            error(:execution_cancellation_pending, worker_id, action_id, %{
+              cancellation_request_id: dispatch.cancellation_request_id
+            })
           )
-        )
+
+        dispatch.state == "uncertain" and dispatch.failure != failure ->
+          Repo.rollback(
+            error(:conflicting_dispatch_fact, worker_id, action_id, %{
+              persisted_failure: dispatch.failure,
+              received_failure: failure
+            })
+          )
+
+        dispatch.state == "uncertain" ->
+          dispatch
+
+        true ->
+          Repo.update!(
+            Changeset.change(dispatch,
+              state: "uncertain",
+              acknowledged_at: dispatch.acknowledged_at || now(),
+              failure: failure,
+              last_connection_generation: generation
+            )
+          )
       end
     end)
+  end
+
+  @doc "Durably records one human recovery intent before native process retirement."
+  def request_operational_recovery(action_id, request_id) do
+    transact(fn ->
+      dispatch = lock_dispatch!(action_id)
+
+      if dispatch.operational_recovery_request_id in [nil, request_id] do
+        dispatch
+        |> Changeset.change(
+          operational_recovery_request_id: dispatch.operational_recovery_request_id || request_id,
+          operational_recovery_requested_at: dispatch.operational_recovery_requested_at || now()
+        )
+        |> Repo.update!()
+        |> dispatch_record()
+      else
+        dispatch_record(dispatch)
+      end
+    end)
+  end
+
+  @doc "Durably opens the separate paid-prompt gate for one staged dispatch."
+  def authorize_prompt(action_id, request_id) do
+    transact(fn ->
+      dispatch = lock_dispatch!(action_id)
+
+      if dispatch.state not in ["acknowledged", "running"] do
+        Repo.rollback(
+          error(:dispatch_not_prompt_authorizable, dispatch.worker_id, action_id, %{
+            state: dispatch.state
+          })
+        )
+      end
+
+      dispatch
+      |> Changeset.change(
+        prompt_authorization_request_id: dispatch.prompt_authorization_request_id || request_id,
+        prompt_authorized_at: dispatch.prompt_authorized_at || now()
+      )
+      |> Repo.update!()
+      |> dispatch_record()
+    end)
+  end
+
+  def prompt_authorizations_for_worker(worker_id) do
+    Repo.all(
+      from dispatch in WorkerDispatch,
+        where:
+          dispatch.worker_id == ^worker_id and
+            not is_nil(dispatch.prompt_authorized_at) and
+            dispatch.state in ["acknowledged", "running"],
+        order_by: [asc: dispatch.id],
+        select: dispatch.action_id
+    )
   end
 
   def fetch(action_id) do
@@ -267,11 +371,43 @@ defmodule QuestEngineering.Server.DispatchStore do
     end
   end
 
+  defp validate_failure_authority!(dispatch, failure, worker_id) do
+    cancellation? = failure["code"] == "execution_cancelled"
+    request_id = failure["cancellation_request_id"]
+
+    cond do
+      cancellation? and is_nil(dispatch.cancellation_request_id) ->
+        Repo.rollback(error(:execution_cancellation_unauthorized, worker_id, dispatch.action_id))
+
+      cancellation? and request_id != dispatch.cancellation_request_id ->
+        Repo.rollback(
+          error(:execution_cancellation_identity_mismatch, worker_id, dispatch.action_id, %{
+            expected_request_id: dispatch.cancellation_request_id,
+            received_request_id: request_id
+          })
+        )
+
+      dispatch.cancellation_request_id && not cancellation? ->
+        Repo.rollback(
+          error(:execution_cancellation_pending, worker_id, dispatch.action_id, %{
+            cancellation_request_id: dispatch.cancellation_request_id
+          })
+        )
+
+      true ->
+        :ok
+    end
+  end
+
   defp update_active_dispatches!(worker_id) do
     count =
       Repo.aggregate(
         from(dispatch in WorkerDispatch,
-          where: dispatch.worker_id == ^worker_id and dispatch.state in ^@active_states
+          join: scheduled in ScheduledActionExecution,
+          on: scheduled.action_id == dispatch.action_id,
+          where:
+            dispatch.worker_id == ^worker_id and dispatch.state in ^@active_states and
+              is_nil(dispatch.slot_released_at) and scheduled.state == "active"
         ),
         :count
       )
@@ -303,6 +439,10 @@ defmodule QuestEngineering.Server.DispatchStore do
       claim_expires_at: dispatch.claim_expires_at,
       payload_hash: dispatch.payload_hash,
       failure: dispatch.failure,
+      operational_recovery_request_id: dispatch.operational_recovery_request_id,
+      operational_recovery_requested_at: dispatch.operational_recovery_requested_at,
+      prompt_authorization_request_id: dispatch.prompt_authorization_request_id,
+      prompt_authorized_at: dispatch.prompt_authorized_at,
       last_connection_generation: dispatch.last_connection_generation
     }
   end
@@ -333,6 +473,31 @@ defmodule QuestEngineering.Server.DispatchStore do
         :ok
     end
   end
+
+  defp recoverable_observation_uncertainty?(%{
+         "code" => "timeout",
+         "capability" => "session.inventory"
+       }),
+       do: true
+
+  defp recoverable_observation_uncertainty?(%{
+         "code" => "timeout",
+         "message" => "Herdr request timed out: session.snapshot"
+       }),
+       do: true
+
+  defp recoverable_observation_uncertainty?(_failure), do: false
+
+  defp equivalent_failure?(persisted, received) when persisted == received, do: true
+
+  defp equivalent_failure?(
+         %{"code" => code, "reason" => code},
+         %{"reason" => code}
+       )
+       when code in ["operator_retry_requested", "operator_marked_failed"],
+       do: true
+
+  defp equivalent_failure?(_persisted, _received), do: false
 
   defp error(type, worker_id, action_id \\ nil, details \\ nil) do
     %WorkerError{type: type, worker_id: worker_id, action_id: action_id, details: details}

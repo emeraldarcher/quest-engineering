@@ -93,6 +93,187 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     assert Repo.get!(ScheduledActionExecution, action.id).state == "completed"
   end
 
+  test "offline durable completion reconciles once without re-executing the Attempt", context do
+    worker_id = unique("worker-offline-completion")
+    worker = start_worker(worker_id, context.workspace_root)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    quest = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(quest.id)
+    [action] = launched.actions
+
+    assert_eventually(fn ->
+      match?({:ok, %{state: :acknowledged}}, DispatchStore.fetch(action.id))
+    end)
+
+    :ok = FakeWorker.disconnect(worker)
+    :ok = FakeWorker.complete(worker, action.id, %{})
+    assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
+
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+
+    assert_eventually(fn ->
+      match?({:ok, %{revision: 1}}, RuntimeStore.fetch_run(launched.run_id))
+    end)
+
+    assert {:ok, %{state: :completed}} = DispatchStore.fetch(action.id)
+    assert FakeWorker.execution_count(worker, action.id) == 1
+
+    # A second generation republishes the same immutable completion fact.
+    :ok = FakeWorker.disconnect(worker)
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+
+    assert_eventually(fn ->
+      match?({:ok, %{state: :completed}}, DispatchStore.fetch(action.id))
+    end)
+
+    assert {:ok, %{revision: 1}} = RuntimeStore.fetch_run(launched.run_id)
+    assert FakeWorker.execution_count(worker, action.id) == 1
+  end
+
+  test "offline reconciled completion emits and schedules the next Action exactly once",
+       context do
+    worker_id = unique("worker-offline-next-action")
+    worker = start_worker(worker_id, context.workspace_root, max_concurrency: 2)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    quest = pressure_product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(quest.id)
+    plan = await_action(launched.run_id, "plan", 0)
+
+    :ok = FakeWorker.disconnect(worker)
+    :ok = FakeWorker.complete(worker, plan.id, %{"plan" => %{"summary" => "ship"}})
+    assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
+
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    implement = await_action(launched.run_id, "implement", 0)
+
+    assert implement.inputs["plan"].value == %{"summary" => "ship"}
+    assert {:ok, %{run: run, revision: 1}} = RuntimeStore.fetch_run(launched.run_id)
+    assert run.occurrences[plan.occurrence_id].status == :completed
+    assert run.occurrences[implement.occurrence_id].status == :dispatched
+    assert FakeWorker.execution_count(worker, plan.id) == 1
+    assert FakeWorker.execution_count(worker, implement.id) == 1
+    assert action_count(launched.run_id, "implement") == 1
+
+    :ok = FakeWorker.disconnect(worker)
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    assert action_count(launched.run_id, "implement") == 1
+    assert FakeWorker.execution_count(worker, implement.id) == 1
+  end
+
+  test "equivalent terminal failure is idempotent and conflicting failure is rejected", context do
+    worker_id = unique("worker-failure-facts")
+    worker = start_worker(worker_id, context.workspace_root)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    quest = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(quest.id)
+    [action] = launched.actions
+
+    assert_eventually(fn ->
+      match?({:ok, %{state: :acknowledged}}, DispatchStore.fetch(action.id))
+    end)
+
+    failure = %{
+      "code" => "known_terminal",
+      "classification" => "terminal_not_recoverable"
+    }
+
+    :ok = FakeWorker.fail(worker, action.id, failure)
+
+    assert_eventually(fn ->
+      match?({:ok, %{state: :failed, failure: ^failure}}, DispatchStore.fetch(action.id))
+    end)
+
+    assert {:ok, current_worker} = WorkerStore.fetch(worker_id)
+
+    assert {:ok, %{state: :failed}} =
+             DispatchStore.mark_failed(
+               worker_id,
+               current_worker.connection_generation,
+               action.id,
+               failure
+             )
+
+    assert {:error,
+            %QuestEngineering.Server.WorkerError{type: :conflicting_terminal_dispatch_fact}} =
+             DispatchStore.mark_failed(
+               worker_id,
+               current_worker.connection_generation,
+               action.id,
+               Map.put(failure, "code", "different_terminal")
+             )
+  end
+
+  test "exact snapshot observation uncertainty can resume while genuine uncertainty stays sticky",
+       context do
+    worker_id = unique("worker-observation-recovery")
+    worker = start_worker(worker_id, context.workspace_root)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    quest = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(quest.id)
+    [action] = launched.actions
+
+    assert_eventually(fn ->
+      match?({:ok, %{state: :acknowledged}}, DispatchStore.fetch(action.id))
+    end)
+
+    assert {:ok, current_worker} = WorkerStore.fetch(worker_id)
+
+    observation_failure = %{
+      "reason" => "harness_execution_failed",
+      "code" => "timeout",
+      "classification" => "auto_retryable",
+      "message" => "Herdr request timed out: session.snapshot"
+    }
+
+    assert {:ok, %{state: :uncertain}} =
+             DispatchStore.mark_uncertain(
+               worker_id,
+               current_worker.connection_generation,
+               action.id,
+               observation_failure
+             )
+
+    assert {:ok, resumed} =
+             DispatchStore.mark_running(
+               worker_id,
+               current_worker.connection_generation,
+               action.id
+             )
+
+    assert resumed.state == :running
+    assert resumed.failure == observation_failure
+    assert Repo.get!(ScheduledActionExecution, action.id).state == "active"
+    assert {:ok, %{steps: [%{state: "running"}]}} = RunProjection.get(launched.run_id)
+
+    genuine_failure = %{
+      "reason" => "harness_execution_failed",
+      "code" => "agent_prompt_uncertain",
+      "classification" => "operator_recovery_required"
+    }
+
+    assert {:ok, %{state: :uncertain}} =
+             DispatchStore.mark_uncertain(
+               worker_id,
+               current_worker.connection_generation,
+               action.id,
+               genuine_failure
+             )
+
+    assert {:ok, still_uncertain} =
+             DispatchStore.mark_running(
+               worker_id,
+               current_worker.connection_generation,
+               action.id
+             )
+
+    assert still_uncertain.state == :uncertain
+    assert still_uncertain.failure == genuine_failure
+  end
+
   test "human attention survives reconnect and resumes the same active Attempt", context do
     worker_id = unique("worker-human-assist")
     worker = start_worker(worker_id, context.workspace_root)
@@ -114,8 +295,8 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
            [step] <- projection.steps do
         match?(
           %{
-            state: "running",
-            attempt: %{id: ^attempt_id},
+            state: "blocked",
+            attempt: %{id: ^attempt_id, state: "blocked"},
             session: %{attention: %{"attention_id" => ^attention_id}}
           },
           step
@@ -437,6 +618,18 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     quest
   end
 
+  defp action_count(run_id, semantic_step_key) do
+    Repo.all(
+      from row in RuntimeOutbox,
+        where: row.run_id == ^run_id,
+        order_by: [row.run_revision, row.emission_index]
+    )
+    |> Enum.count(fn row ->
+      {:ok, action} = RuntimeCodec.decode(row.payload)
+      action.semantic_step_key == semantic_step_key
+    end)
+  end
+
   defp start_worker(worker_id, root, options \\ []) do
     max_concurrency = Keyword.get(options, :max_concurrency, 1)
 
@@ -460,6 +653,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
               "provider" => "fake",
               "model" => "test",
               "display_name" => "Test model",
+              "account_availability" => "verified_available",
               "reasoning_capability" => %{
                 "kind" => "enumerated",
                 "values" => ["low", "medium", "high"]

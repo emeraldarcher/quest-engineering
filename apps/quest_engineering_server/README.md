@@ -1,6 +1,6 @@
 # Quest Engineering Server — Reusable Tactic Composition v0.9
 
-The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding path-free launch snapshots to the pure Core Runtime and Worker Protocol v7.
+The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding path-free launch snapshots to the pure Core Runtime and Worker Protocol v9.
 
 ```text
 Quest + Squad + Classes + Loadouts
@@ -9,7 +9,7 @@ quest_launches + runtime_runs + ordered runtime_outbox
               ↓ atomic scheduling
 Member binding + logical context binding + Worker slot
               ↓
-ResolvedExecution → Worker Protocol v7
+ResolvedExecution → Worker Protocol v9
 ```
 
 A Worker remains infrastructure. It is not a Squad Member, Class, Loadout, semantic performer, or logical context.
@@ -30,7 +30,7 @@ Workspace references are configured under `:quest_engineering_server, :workspace
 
 ## Operational recovery policy
 
-`QE_MAX_OPERATIONAL_ATTEMPTS_PER_EPOCH` is Phoenix-authoritative and defaults to `2`. The effective value is snapshotted into each recovery epoch and governs only classified technical execution failures. It is independent of the `max_remediations` bound authored on a semantic Tactic `Until`. See `docs/retry-and-remediation.md`.
+`QE_MAX_OPERATIONAL_ATTEMPTS_PER_EPOCH` is Phoenix-authoritative and defaults to `2`. The effective value is snapshotted into each recovery epoch and governs only classified technical execution failures. It is independent of the `max_remediations` bound authored on a semantic Tactic `Until`. An `initial` epoch authorizes scheduling allowance, not provider use: every non-fake initial or human-recovery Attempt must reach a prepared `needs_confirmation` session and receive the separate durable `/execution/authorize-prompt` decision before prompt intent. See `docs/retry-and-remediation.md`.
 
 ## Deterministic scheduling
 
@@ -46,7 +46,7 @@ One transaction acquires all of:
 - immutable `ResolvedExecution`;
 - Worker dispatch routing.
 
-If any temporary resource is unavailable, that candidate writes nothing. Partial unique indexes enforce one active logical Member `(squad_id, member_key)` across all Runs, one active `(run_id, logical_lineage_id)`, and one nonterminal `(worker_id, worker_slot)`. The frozen launch snapshot supplies `squad_id`; mutable current Squad membership is not consulted during acquisition.
+If any temporary resource is unavailable, that candidate writes nothing. A Worker advertising `dispatch_availability: maintenance` is rejected before workspace assignment and executor matching; it may remain connected for diagnostics but can never claim an Action. Partial unique indexes enforce one active logical Member `(squad_id, member_key)` across all Runs, one active `(run_id, logical_lineage_id)`, and one nonterminal `(worker_id, worker_slot)`. The frozen launch snapshot supplies `squad_id`; mutable current Squad membership is not consulted during acquisition.
 
 `class(key)` selects by launch-snapshot roster order. `same_as` resolves only through the exact source occurrence binding. Logical `continue_from` similarly resolves only through the exact source occurrence context binding. Physical continuation is routed to the Worker owning the source lineage and is rejected across harness kinds.
 
@@ -62,9 +62,11 @@ Pi and Antigravity advertise:
 
 Unknown/custom capabilities are valid Product data but cause `waiting_for_worker` until an executor advertises them.
 
-## Worker Protocol v7
+## Worker Protocol v9
 
-Only protocol version 7 is accepted. `execute_action` carries a provider-neutral immutable `ResolvedExecution` with separate identity, performer, work, configuration, and logical context sections. It carries no unresolved performer/context requirement and no Pi/Herdr lineage ID.
+Only protocol version 9 is accepted. `execute_action` carries a provider-neutral immutable `ResolvedExecution` with separate identity, performer, work, configuration, and logical context sections. It carries no unresolved performer/context requirement and no Pi/Herdr lineage ID. Version 9 adds durable Product cancellation: Phoenix accepts one exact local-operator intent, sends generation-fenced `cancel_dispatch`, and terminalizes only after the Worker returns the matching `execution_cancelled` fact. Pending commands reconcile after disconnect without authorizing prompt work or creating recovery Attempts.
+
+Each advertised model carries `account_availability`: `verified_available`, `verified_unavailable`, or `unknown`. Unknown is schedulable; verified unavailable remains visible in execution diagnostics but cannot match a Loadout. This state is independent of runtime model support and optional QE scope.
 
 Dispatch states are:
 
@@ -88,4 +90,4 @@ PostgreSQL reconstructs launch, binding, occupancy, and Worker-slot state after 
 
 ## Live execution sessions
 
-Worker Protocol v7 reconciles Product-safe harness session and HumanAttention state under the existing connection-generation fence. PostgreSQL links each dispatch usage to a durable session while continuation may reuse that session across Attempts. Local attachment is disabled unless `QE_LOCAL_SESSION_ATTACH_ENABLED=true`; even then the endpoint requires loopback Tauri requests and returns only a 60-second exact-session descriptor. See [`../../docs/live-execution-sessions.md`](../../docs/live-execution-sessions.md).
+Worker Protocol v9 reconciles Product-safe harness session and HumanAttention state under the existing connection-generation fence. PostgreSQL links each dispatch usage to a durable session while continuation may reuse that session across Attempts. Local attachment is disabled unless `QE_LOCAL_SESSION_ATTACH_ENABLED=true`; even then the endpoint requires loopback Tauri requests and returns only a 60-second exact-session descriptor. See [`../../docs/live-execution-sessions.md`](../../docs/live-execution-sessions.md).

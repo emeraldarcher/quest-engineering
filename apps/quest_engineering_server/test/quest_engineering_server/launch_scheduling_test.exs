@@ -11,10 +11,12 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.CompletionAdapter
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.OperationalRecovery
+  alias QuestEngineering.Server.Persistence.ExecutionSession
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
@@ -24,6 +26,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.Persistence.RunDelivery
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Persistence.RuntimeTransition
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.WorkerDispatch
@@ -31,9 +34,11 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Product.TacticLibrary
   alias QuestEngineering.Server.Repo
+  alias QuestEngineering.Server.RunProjection
   alias QuestEngineering.Server.RuntimeStore
   alias QuestEngineering.Server.RunWorkspaceStore
   alias QuestEngineering.Server.SchedulingStore
+  alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerMessageHandler
   alias QuestEngineering.Server.WorkerStore
 
@@ -209,6 +214,31 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
     assert second.execution.identity.semantic_step_key == "second"
     assert second.execution.performer.member_key == "alice"
+  end
+
+  test "retained terminal sessions do not consume Worker execution capacity", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-retained-terminal", context.workspace_root)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %ExecutionSession{}
+    |> ExecutionSession.changeset(%{
+      id: "retained-terminal-session",
+      worker_id: worker.id,
+      harness_kind: "pi",
+      harness_display_name: "Pi",
+      state: "retained",
+      capabilities: %{},
+      last_connection_generation: worker.connection_generation,
+      started_at: now,
+      last_activity_at: now
+    })
+    |> Repo.insert!()
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+    assert dispatch.worker_id == worker.id
+    assert dispatch.worker_slot == 0
   end
 
   test "the frozen logical Member is globally occupied across racing Runs and released",
@@ -769,6 +799,1193 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 1
     assert Repo.aggregate(OperationalAttemptAttribution, :count) == 1
+  end
+
+  test "fresh retained-work recovery preserves uncertain history and appends a new epoch",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-retained-work-retry", context.workspace_root)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    failure = %{
+      "code" => "harness_contract_violation",
+      "classification" => "terminal_not_recoverable",
+      "message" => "The native harness exited without a structured result."
+    }
+
+    assert {:ok, _} =
+             DispatchStore.mark_uncertain(
+               worker.id,
+               worker.connection_generation,
+               first.action_id,
+               failure
+             )
+
+    assert {:ok, projection} = RunProjection.get(launched.run_id)
+
+    projected =
+      Enum.find(
+        projection.steps,
+        &(&1.occurrence_id == first.execution.identity.occurrence_id)
+      )
+
+    assert projected.recovery.can_retry_fresh
+    refute projected.recovery.can_mark_failed
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, recovery} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               request_id
+             )
+
+    assert recovery.epoch_number == 1
+    assert Repo.get_by!(WorkerDispatch, action_id: first.action_id).state == "uncertain"
+    assert Repo.get_by!(WorkerDispatch, action_id: first.action_id).failure == failure
+    assert Repo.get!(ScheduledActionExecution, first.action_id).state == "failed"
+
+    assert {:ok, authorized_projection} = RunProjection.get(launched.run_id)
+
+    authorized_step =
+      Enum.find(
+        authorized_projection.steps,
+        &(&1.occurrence_id == first.execution.identity.occurrence_id)
+      )
+
+    assert authorized_step.state == "waiting"
+    assert authorized_step.attempt.number == 2
+    assert authorized_step.attempt.session == nil
+    assert authorized_step.attempt.execution == nil
+    assert authorized_step.attempt.operational == nil
+
+    assert Enum.any?(
+             authorized_projection.operational_recovery,
+             &(&1.epoch_number == 1 and &1.attempts_scheduled == 0)
+           )
+
+    assert Enum.map(authorized_step.attempts, &{&1.number, &1.state}) == [
+             {1, "uncertain"},
+             {2, "waiting"}
+           ]
+
+    assert is_binary(Jason.encode!(authorized_projection))
+
+    assert {:ok, replayed} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               request_id
+             )
+
+    assert replayed.id == recovery.id
+    assert replayed.idempotent_replay?
+
+    assert {:ok, intent_replay} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert intent_replay.id == recovery.id
+    assert intent_replay.request_id == request_id
+    assert intent_replay.idempotent_replay?
+
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+    assert second.execution.identity.occurrence_id == first.execution.identity.occurrence_id
+    assert second.execution.identity.attempt_id != first.execution.identity.attempt_id
+    assert second.operational_recovery.authorization_kind == "human"
+    assert second.operational_recovery.continuation_mode == "fresh"
+
+    assert second.operational_recovery.source_attempt_id ==
+             first.execution.identity.attempt_id
+
+    assert {:ok, active_replay} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert active_replay.id == recovery.id
+    assert active_replay.request_id == request_id
+    assert active_replay.idempotent_replay?
+
+    assert {:ok, replay_projection} = RunProjection.get(launched.run_id)
+
+    replay_step =
+      Enum.find(
+        replay_projection.steps,
+        &(&1.occurrence_id == first.execution.identity.occurrence_id)
+      )
+
+    assert Enum.map(replay_step.attempts, & &1.number) == [1, 2]
+    assert Enum.map(replay_projection.operational_recovery, & &1.epoch_number) == [0, 1]
+  end
+
+  test "initial execution requires explicit authorization after native preparation", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-staged-initial", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "staged-initial-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+    assert dispatch.operational_recovery.authorization_kind == "initial"
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: Ecto.UUID.generate(),
+               action_id: dispatch.action_id,
+               run_id: launched.run_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id,
+               member_key: dispatch.execution.performer.member_key,
+               harness_kind: "pi",
+               harness_display_name: "Pi",
+               state: :waiting_for_human,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: %{"supports_observation" => true, "supports_takeover" => true},
+               native_session_id: nil,
+               attention: %{
+                 "attention_id" =>
+                   "qe-prompt-authorization-#{dispatch.execution.identity.attempt_id}",
+                 "category" => "needs_confirmation",
+                 "message" => "Initial execution environment ready."
+               },
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    assert {:ok, staged_projection} = RunProjection.get(launched.run_id)
+    [staged_step] = staged_projection.steps
+    assert staged_step.attempt.operational.recovery_kind == "initial"
+    assert staged_step.recovery.can_authorize_prompt
+    assert staged_step.attempt.can_cancel
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, authorization} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id
+             )
+
+    refute authorization.idempotent_replay?
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "authorize_dispatch_prompt",
+                      "action_id" => action_id
+                    }}
+
+    assert action_id == dispatch.action_id
+    persisted = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert persisted.prompt_authorization_request_id == request_id
+    assert persisted.prompt_authorized_at
+  end
+
+  test "Product cancellation is exact, idempotent, terminal, and excludes prompt authorization",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-product-cancellation", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "cancellation-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    unauthorized_failure = %{
+      "code" => "execution_cancelled",
+      "reason" => "execution_cancelled",
+      "classification" => "terminal_not_recoverable",
+      "cancellation_request_id" => Ecto.UUID.generate(),
+      "cancellation_origin" => "product_operator",
+      "cancellation_worker_generation" => worker.connection_generation,
+      "cancelled_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    assert {:error, %{type: :execution_cancellation_unauthorized}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: dispatch.action_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id,
+               failure: unauthorized_failure
+             })
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, cancellation} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id,
+               "Disposable no-inference preflight complete."
+             )
+
+    refute cancellation.idempotent_replay
+    assert cancellation.state == :cancellation_requested
+    assert cancellation.delivery == :sent
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "cancel_dispatch",
+                      "protocol_version" => 9,
+                      "worker_id" => worker_id,
+                      "connection_generation" => generation,
+                      "action_id" => action_id,
+                      "run_id" => run_id,
+                      "occurrence_id" => occurrence_id,
+                      "attempt_id" => attempt_id,
+                      "cancellation" => %{
+                        "request_id" => ^request_id,
+                        "origin" => "product_operator",
+                        "requested_at" => requested_at
+                      }
+                    }}
+
+    assert worker_id == worker.id
+    assert generation == worker.connection_generation
+    assert action_id == dispatch.action_id
+    assert run_id == launched.run_id
+    assert occurrence_id == dispatch.execution.identity.occurrence_id
+    assert attempt_id == dispatch.execution.identity.attempt_id
+    assert is_binary(requested_at)
+
+    assert {:ok, replay} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               occurrence_id,
+               attempt_id,
+               Ecto.UUID.generate(),
+               "A replay must not replace provenance."
+             )
+
+    assert replay.idempotent_replay
+    assert replay.request_id == request_id
+    assert replay.delivery == :not_repeated
+    refute_receive {:worker_protocol, %{"type" => "cancel_dispatch"}}, 20
+
+    assert {:ok, pending_projection} = RunProjection.get(launched.run_id)
+    [pending_step] = pending_projection.steps
+    refute pending_step.attempt.can_cancel
+
+    assert {:error, %{code: :execution_cancellation_pending}} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               occurrence_id,
+               attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert {:error, %{type: :execution_cancellation_pending}} =
+             CompletionAdapter.complete(worker.id, worker.connection_generation, %{
+               action_id: action_id,
+               occurrence_id: occurrence_id,
+               attempt_id: attempt_id,
+               outputs: %{}
+             })
+
+    assert {:ok, _} =
+             WorkerStore.disconnect(
+               worker.id,
+               worker.connection_id,
+               worker.connection_generation
+             )
+
+    assert {:ok, reconnected} =
+             WorkerStore.register(
+               worker.id,
+               worker.capabilities,
+               "cancellation-reconnected"
+             )
+
+    assert reconnected.connection_generation == worker.connection_generation + 1
+
+    failure = %{
+      "code" => "execution_cancelled",
+      "reason" => "execution_cancelled",
+      "classification" => "terminal_not_recoverable",
+      "message" => "The QE Attempt was explicitly cancelled by the Product operator.",
+      "cancellation_request_id" => request_id,
+      "cancellation_origin" => "product_operator",
+      "cancellation_reason" => "Disposable no-inference preflight complete.",
+      "cancellation_requested_at" => requested_at,
+      "cancellation_worker_generation" => generation,
+      "cancelled_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    cancellation_message = %{
+      type: :step_failed,
+      action_id: action_id,
+      occurrence_id: occurrence_id,
+      attempt_id: attempt_id,
+      failure: failure
+    }
+
+    assert {:ok,
+            %{
+              "result" => "execution_cancelled",
+              "idempotent_replay" => false
+            }} =
+             WorkerMessageHandler.handle(
+               reconnected.id,
+               reconnected.connection_generation,
+               cancellation_message
+             )
+
+    assert {:ok, %{"result" => "execution_cancelled", "idempotent_replay" => true}} =
+             WorkerMessageHandler.handle(
+               reconnected.id,
+               reconnected.connection_generation,
+               cancellation_message
+             )
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: action_id)
+    assert persisted.state == "failed"
+    assert persisted.failure == failure
+    assert persisted.cancellation_request_id == request_id
+    assert is_nil(persisted.prompt_authorization_request_id)
+    assert is_nil(persisted.prompt_authorized_at)
+
+    assert Repo.get!(RunWorkspaceAssignment, launched.run_id).state == "retained"
+    assert Repo.reload!(worker).active_dispatches == 0
+    assert Repo.get_by!(ScheduledActionExecution, action_id: action_id).state == "failed"
+
+    cancellation_transition_count =
+      Repo.aggregate(
+        from(transition in RuntimeTransition,
+          where: like(transition.transition_id, "worker-cancellation/v1/%")
+        ),
+        :count
+      )
+
+    assert cancellation_transition_count == 1
+
+    assert {:ok, projection} = RunProjection.get(launched.run_id)
+    assert projection.status == "cancelled"
+    [step] = projection.steps
+    assert step.state == "cancelled"
+    assert step.issue.code == "execution_cancelled"
+    assert is_nil(step.recovery)
+    assert step.attempt.resolution == "cancelled"
+    refute step.attempt.can_cancel
+    assert step.attempt.cancellation.state == "cancelled"
+    assert step.attempt.cancellation.request_id == request_id
+    assert step.attempt.outputs == []
+    assert projection.step_counts["cancelled"] == 1
+  end
+
+  test "authorization that commits before cancellation remains historical while cancellation wins terminal authority",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-authorization-before-cancel", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "authorization-before-cancel",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: Ecto.UUID.generate(),
+               action_id: dispatch.action_id,
+               run_id: launched.run_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id,
+               member_key: dispatch.execution.performer.member_key,
+               harness_kind: "pi",
+               harness_display_name: "Pi",
+               state: :waiting_for_human,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: %{"supports_observation" => true, "supports_takeover" => true},
+               native_session_id: nil,
+               attention: %{
+                 "attention_id" =>
+                   "qe-prompt-authorization-#{dispatch.execution.identity.attempt_id}",
+                 "category" => "needs_confirmation",
+                 "message" => "Initial execution environment ready."
+               },
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    authorization_request_id = Ecto.UUID.generate()
+
+    assert {:ok, _} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               authorization_request_id
+             )
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "authorize_dispatch_prompt",
+                      "action_id" => action_id
+                    }}
+
+    assert action_id == dispatch.action_id
+
+    Repo.get_by!(ExecutionSession, current_action_id: action_id)
+    |> Ecto.Changeset.change(state: "running", attention: nil)
+    |> Repo.update!()
+
+    assert {:ok, before_cancellation} = RunProjection.get(launched.run_id)
+    [before_step] = before_cancellation.steps
+    assert before_step.attempt.can_cancel
+    assert before_step.attempt.session.attachment.can_takeover
+
+    cancellation_request_id = Ecto.UUID.generate()
+
+    assert {:ok, %{state: :cancellation_requested, delivery: :sent}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               cancellation_request_id
+             )
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "cancel_dispatch",
+                      "action_id" => ^action_id,
+                      "cancellation" => %{"request_id" => ^cancellation_request_id}
+                    }}
+
+    assert {:ok, after_cancellation} = RunProjection.get(launched.run_id)
+    [after_step] = after_cancellation.steps
+    refute after_step.attempt.can_cancel
+    refute after_step.attempt.session.attachment.can_takeover
+    refute after_step.attempt.session.attachment.can_recover
+
+    assert {:ok, descriptor} =
+             ExecutionSessionStore.attachment_descriptor(
+               launched.run_id,
+               dispatch.execution.identity.attempt_id,
+               after_step.attempt.session.id
+             )
+
+    refute descriptor.takeover_allowed
+    refute descriptor.recovery_allowed
+    assert {:ok, _} = ExecutionSessionStore.record_opened(descriptor.descriptor_token, "observe")
+
+    assert {:error, :attachment_unavailable} =
+             ExecutionSessionStore.record_opened(descriptor.descriptor_token, "takeover")
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: action_id)
+    assert persisted.prompt_authorization_request_id == authorization_request_id
+    assert persisted.prompt_authorized_at
+    assert persisted.cancellation_request_id == cancellation_request_id
+    assert persisted.cancellation_requested_at
+  end
+
+  test "disconnected cancellation stays pending and is redelivered with the reconnect generation",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-cancellation-reconnect", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    assert {:ok, _} =
+             WorkerStore.disconnect(
+               worker.id,
+               worker.connection_id,
+               worker.connection_generation
+             )
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, %{delivery: :pending, state: :cancellation_requested}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id
+             )
+
+    [command] =
+      ExecutionCancellation.pending_for_worker(worker.id, worker.connection_generation + 1)
+
+    assert command["type"] == "cancel_dispatch"
+    assert command["connection_generation"] == worker.connection_generation + 1
+    assert command["action_id"] == dispatch.action_id
+    assert command["cancellation"]["request_id"] == request_id
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert persisted.state == "acknowledged"
+    assert is_nil(persisted.terminal_at)
+    assert persisted.cancellation_request_id == request_id
+  end
+
+  test "already completed Attempt returns a non-mutating cancellation result", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-cancellation-terminal", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    complete(worker, dispatch)
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok,
+            %{
+              state: :already_terminal,
+              delivery: :not_repeated,
+              request_id: nil,
+              idempotent_replay: true
+            }} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               request_id
+             )
+
+    persisted = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert persisted.state == "completed"
+    assert is_nil(persisted.cancellation_request_id)
+  end
+
+  test "Product cancellation rejects stale Attempt identity and uncertain dispatches", context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-cancellation-rejections", context.workspace_root)
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    assert {:error, %{code: :execution_cancellation_identity_mismatch}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               Ecto.UUID.generate(),
+               Ecto.UUID.generate()
+             )
+
+    assert {:ok, _} =
+             DispatchStore.mark_uncertain(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id,
+               %{"reason" => "transport_lost"}
+             )
+
+    assert {:error, %{code: :execution_cancellation_requires_recovery}} =
+             ExecutionCancellation.request(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+  end
+
+  test "blocked fresh recovery retires immutably, appends one epoch, and stages paid inference",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-staged-fresh-recovery", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "staged-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             fail_operational(worker, first, "operator_recovery_required")
+
+    assert {:ok, _epoch_1} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(worker.id, worker.connection_generation, second.action_id)
+
+    assert {:ok, _} =
+             DispatchStore.mark_running(worker.id, worker.connection_generation, second.action_id)
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, %{state: :retirement_requested}} =
+             OperationalRecovery.request_fresh(
+               launched.run_id,
+               second.execution.identity.occurrence_id,
+               second.execution.identity.attempt_id,
+               request_id
+             )
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "retire_dispatch_for_recovery",
+                      "action_id" => action_id,
+                      "failure" => failure
+                    }}
+
+    assert action_id == second.action_id
+    assert failure["classification"] == "operator_recovery_required"
+    assert failure["code"] == "execution_environment_recovery_required"
+
+    assert {:ok, %{state: :retirement_requested, idempotent_replay?: true}} =
+             OperationalRecovery.request_fresh(
+               launched.run_id,
+               second.execution.identity.occurrence_id,
+               second.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 2
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: second.action_id,
+               occurrence_id: second.execution.identity.occurrence_id,
+               attempt_id: second.execution.identity.attempt_id,
+               failure: failure
+             })
+
+    immutable_second = Repo.get_by!(WorkerDispatch, action_id: second.action_id)
+    assert immutable_second.state == "failed"
+    assert immutable_second.failure == failure
+    assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 3
+
+    assert {:ok, third} = SchedulingStore.schedule_next(launched.run_id)
+    assert third.execution.identity.occurrence_id == second.execution.identity.occurrence_id
+    assert third.execution.identity.attempt_id != second.execution.identity.attempt_id
+    assert third.operational_recovery.epoch_number == 2
+    assert third.operational_recovery.source_attempt_id == second.execution.identity.attempt_id
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(worker.id, worker.connection_generation, third.action_id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: Ecto.UUID.generate(),
+               action_id: third.action_id,
+               run_id: launched.run_id,
+               occurrence_id: third.execution.identity.occurrence_id,
+               attempt_id: third.execution.identity.attempt_id,
+               member_key: third.execution.performer.member_key,
+               harness_kind: "antigravity",
+               harness_display_name: "Antigravity",
+               state: :waiting_for_human,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: %{"supports_observation" => true, "supports_takeover" => true},
+               native_session_id: nil,
+               attention: %{
+                 "attention_id" =>
+                   "qe-prompt-authorization-#{third.execution.identity.attempt_id}",
+                 "category" => "needs_confirmation",
+                 "message" => "Recovery environment ready."
+               },
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    assert {:ok, staged_projection} = RunProjection.get(launched.run_id)
+
+    staged_step =
+      Enum.find(
+        staged_projection.steps,
+        &(&1.occurrence_id == third.execution.identity.occurrence_id)
+      )
+
+    assert Enum.map(staged_step.attempts, & &1.number) == [1, 2, 3]
+
+    assert Enum.map(staged_step.attempts, & &1.id) == [
+             first.execution.identity.attempt_id,
+             second.execution.identity.attempt_id,
+             third.execution.identity.attempt_id
+           ]
+
+    assert staged_step.attempt.id == third.execution.identity.attempt_id
+    assert Enum.map(staged_step.attempts, & &1.can_cancel) == [false, false, true]
+    assert staged_step.recovery.can_authorize_prompt
+    assert staged_step.attempt.session.state == "waiting_for_human"
+    refute staged_step.attempt.session.attachment.can_takeover
+    assert staged_step.attempt.session.attachment.can_observe
+
+    assert {:ok, descriptor} =
+             ExecutionSessionStore.attachment_descriptor(
+               launched.run_id,
+               third.execution.identity.attempt_id,
+               staged_step.attempt.session.id
+             )
+
+    refute descriptor.takeover_allowed
+    assert {:ok, _} = ExecutionSessionStore.record_opened(descriptor.descriptor_token, "observe")
+
+    assert {:error, :attachment_unavailable} =
+             ExecutionSessionStore.record_opened(descriptor.descriptor_token, "takeover")
+
+    staged_session = Repo.get_by!(ExecutionSession, current_action_id: third.action_id)
+
+    Repo.update!(
+      Ecto.Changeset.change(staged_session, native_session_id: "unauthorized-conversation")
+    )
+
+    assert {:ok, contaminated_projection} = RunProjection.get(launched.run_id)
+
+    contaminated_step =
+      Enum.find(
+        contaminated_projection.steps,
+        &(&1.occurrence_id == third.execution.identity.occurrence_id)
+      )
+
+    refute contaminated_step.recovery
+
+    assert {:error, %{code: :prompt_authorization_not_ready}} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               third.execution.identity.occurrence_id,
+               third.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    Repo.get_by!(ExecutionSession, current_action_id: third.action_id)
+    |> Ecto.Changeset.change(native_session_id: nil)
+    |> Repo.update!()
+
+    prompt_request_id = Ecto.UUID.generate()
+
+    assert {:ok, authorization} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               third.execution.identity.occurrence_id,
+               third.execution.identity.attempt_id,
+               prompt_request_id
+             )
+
+    refute authorization.idempotent_replay?
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "authorize_dispatch_prompt",
+                      "action_id" => third_action_id
+                    }}
+
+    assert third_action_id == third.action_id
+
+    session = Repo.get_by!(ExecutionSession, current_action_id: third.action_id)
+
+    Repo.update!(
+      Ecto.Changeset.change(session,
+        state: "running",
+        attention: nil,
+        turn: Map.put(session.turn, "prompt_intent_at", DateTime.to_iso8601(now))
+      )
+    )
+
+    assert {:ok, replayed} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               third.execution.identity.occurrence_id,
+               third.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert replayed.request_id == prompt_request_id
+    assert replayed.idempotent_replay?
+    assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 3
+
+    session = Repo.get_by!(ExecutionSession, current_action_id: third.action_id)
+
+    Repo.update!(
+      Ecto.Changeset.change(session,
+        state: "retained",
+        attention: nil,
+        turn: Map.put(session.turn, "prompt_intent_at", nil)
+      )
+    )
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: third.action_id,
+               occurrence_id: third.execution.identity.occurrence_id,
+               attempt_id: third.execution.identity.attempt_id,
+               failure: %{
+                 "classification" => "operator_recovery_required",
+                 "reason" => "execution_control_readiness_failed",
+                 "message" => "Current bridge authority was unavailable before prompt submission."
+               }
+             })
+
+    assert {:ok, failed_projection} = RunProjection.get(launched.run_id)
+
+    failed_step =
+      Enum.find(
+        failed_projection.steps,
+        &(&1.occurrence_id == third.execution.identity.occurrence_id)
+      )
+
+    refute failed_step.recovery.can_retry_fresh
+    refute failed_step.recovery.can_human_retry
+    assert failed_step.recovery.can_recover_pre_prompt
+    assert failed_step.recovery.retained_session_available
+    assert failed_step.recovery.message =~ "failed before prompt submission"
+  end
+
+  test "terminal pre-prompt control recovery appends one retained-process Attempt and stages inference",
+       context do
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("worker-pre-prompt-process", context.workspace_root)
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "pre-prompt-process-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+    failure = %{
+      "code" => "execution_control_readiness_failed",
+      "reason" => "execution_control_readiness_failed",
+      "classification" => "operator_recovery_required",
+      "message" => "Current bridge authority was unavailable before prompt submission."
+    }
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: first.action_id,
+               occurrence_id: first.execution.identity.occurrence_id,
+               attempt_id: first.execution.identity.attempt_id,
+               failure: failure
+             })
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    lineage_id = Ecto.UUID.generate()
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: lineage_id,
+               action_id: first.action_id,
+               run_id: launched.run_id,
+               occurrence_id: first.execution.identity.occurrence_id,
+               attempt_id: first.execution.identity.attempt_id,
+               member_key: first.execution.performer.member_key,
+               harness_kind: "antigravity",
+               harness_display_name: "Antigravity",
+               state: :retained,
+               capabilities: %{"can_attach_terminal" => true},
+               # Source terminal projection is corroborating presentation data. The Worker
+               # proves the exact durable pane and terminal before process transfer.
+               terminal: nil,
+               native_session_id: nil,
+               attention: nil,
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, recovery} =
+             OperationalRecovery.request_pre_prompt_process(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               first.execution.identity.attempt_id,
+               request_id
+             )
+
+    assert recovery.epoch_number == 1
+    assert recovery.continuation_mode == "retained"
+
+    assert {:ok, replay} =
+             OperationalRecovery.request_pre_prompt_process(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               first.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert replay.id == recovery.id
+    assert replay.idempotent_replay?
+
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+    assert second.execution.identity.occurrence_id == first.execution.identity.occurrence_id
+    assert second.execution.identity.attempt_id != first.execution.identity.attempt_id
+    assert second.operational_recovery.epoch_number == 1
+    assert second.operational_recovery.continuation_mode == "retained"
+    assert second.operational_recovery.retained_lineage_id == lineage_id
+    assert second.operational_recovery.source_attempt_id == first.execution.identity.attempt_id
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(worker.id, worker.connection_generation, second.action_id)
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: lineage_id,
+               action_id: second.action_id,
+               run_id: launched.run_id,
+               occurrence_id: second.execution.identity.occurrence_id,
+               attempt_id: second.execution.identity.attempt_id,
+               member_key: second.execution.performer.member_key,
+               harness_kind: "antigravity",
+               harness_display_name: "Antigravity",
+               state: :waiting_for_human,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: %{
+                 "terminal_target_id" => "w4:p6",
+                 "supports_observation" => true,
+                 "supports_takeover" => true
+               },
+               native_session_id: nil,
+               attention: %{
+                 "attention_id" =>
+                   "qe-prompt-authorization-#{second.execution.identity.attempt_id}",
+                 "category" => "needs_confirmation",
+                 "message" => "Recovery ready."
+               },
+               turn: %{
+                 "phase" => "blocked",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil,
+                 "physical_process" => %{
+                   "mode" => "prepared_process_adopted",
+                   "source_attempt_id" => first.execution.identity.attempt_id,
+                   "target_attempt_id" => second.execution.identity.attempt_id
+                 }
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    assert {:ok, projection} = RunProjection.get(launched.run_id)
+
+    projected =
+      Enum.find(projection.steps, &(&1.occurrence_id == second.execution.identity.occurrence_id))
+
+    assert projected.attempt.number == 2
+    assert projected.attempt.operational.source_attempt_id == first.execution.identity.attempt_id
+    assert projected.attempt.operational.retained_lineage_id == lineage_id
+
+    assert projected.attempt.session.turn["physical_process"]["mode"] ==
+             "prepared_process_adopted"
+
+    assert projected.recovery.can_authorize_prompt
+    refute projected.recovery.can_recover_pre_prompt
+
+    assert Enum.map(projected.attempts, &{&1.number, &1.state}) == [
+             {1, "failed"},
+             {2, "blocked"}
+           ]
+
+    false_conflict = %{
+      "reason" => "harness_execution_failed",
+      "classification" => "operator_recovery_required",
+      "message" =>
+        "Prepared process or worktree is already owned by #{first.execution.identity.attempt_id}."
+    }
+
+    assert {:ok, %{"result" => "operator_recovery_required"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :step_failed,
+               action_id: second.action_id,
+               occurrence_id: second.execution.identity.occurrence_id,
+               attempt_id: second.execution.identity.attempt_id,
+               failure: false_conflict
+             })
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: lineage_id,
+               action_id: second.action_id,
+               run_id: launched.run_id,
+               occurrence_id: second.execution.identity.occurrence_id,
+               attempt_id: second.execution.identity.attempt_id,
+               member_key: second.execution.performer.member_key,
+               harness_kind: "antigravity",
+               harness_display_name: "Antigravity",
+               state: :retained,
+               capabilities: %{"can_attach_terminal" => true},
+               terminal: nil,
+               native_session_id: nil,
+               attention: nil,
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    assert {:ok, retry} =
+             OperationalRecovery.request_pre_prompt_process(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               first.execution.identity.attempt_id,
+               request_id
+             )
+
+    assert retry.id == recovery.id
+    assert retry.epoch_number == 1
+    refute retry.idempotent_replay?
+    assert is_binary(retry.next_action_id)
+
+    assert {:ok, third} = SchedulingStore.schedule_next(launched.run_id)
+    assert third.execution.identity.attempt_id != second.execution.identity.attempt_id
+    assert third.operational_recovery.epoch_number == 1
+    assert third.operational_recovery.attempt_in_epoch == 2
+    assert third.operational_recovery.attempt_allowance == 2
+    assert third.operational_recovery.source_attempt_id == first.execution.identity.attempt_id
+    assert third.operational_recovery.retained_lineage_id == lineage_id
+
+    assert {:ok, replayed_retry} =
+             OperationalRecovery.request_pre_prompt_process(
+               launched.run_id,
+               first.execution.identity.occurrence_id,
+               first.execution.identity.attempt_id,
+               request_id
+             )
+
+    assert replayed_retry.id == recovery.id
+    assert replayed_retry.idempotent_replay?
+    assert Repo.aggregate(OperationalRecoveryEpoch, :count) == 2
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 3
+
+    assert {:ok, retried_projection} = RunProjection.get(launched.run_id)
+
+    retried_step =
+      Enum.find(
+        retried_projection.steps,
+        &(&1.occurrence_id == third.execution.identity.occurrence_id)
+      )
+
+    assert Enum.map(retried_step.attempts, &{&1.number, &1.state}) == [
+             {1, "failed"},
+             {2, "failed"},
+             {3, "scheduled"}
+           ]
   end
 
   test "retained human recovery carries the validated lineage into a new Attempt", context do
@@ -1445,6 +2662,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
               "provider" => "fake",
               "model" => "test",
               "display_name" => "Test model",
+              "account_availability" => "verified_available",
               "reasoning_capability" => %{
                 "kind" => "enumerated",
                 "values" => ["low", "medium", "high"]

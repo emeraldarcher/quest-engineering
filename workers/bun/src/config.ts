@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
   JsonValue,
@@ -33,7 +43,11 @@ export interface WorkerConfig {
   workerToken: string;
   maxConcurrency: number;
   tags: string[];
+  /** Generic scheduler admission state; maintenance Workers stay connected but cannot claim work. */
+  dispatchAvailability?: "active" | "maintenance";
   herdrSession: string;
+  /** Exact host executable used for every Herdr CLI/server launch. */
+  herdrBin?: string;
   allowedRoots: AuthorizedRoot[];
   workspaceBindings: WorkspaceBindingConfig[];
   retiredWorkspaceBindings?: WorkspaceBindingConfig[];
@@ -45,9 +59,13 @@ export interface WorkerConfig {
   dataRoot: string;
   piModel?: string;
   piThinking: string;
+  /** Explicit, nonsecret, account/profile-scoped direct evidence imports. */
+  piAccountEvidenceSeedPaths?: string[];
   heartbeatMs: number;
   reconnectMs: number;
   resultTimeoutMs: number;
+  /** Nonterminal liveness threshold; crossing it never authorizes a retry. */
+  promptActivityStallMs?: number;
   provider: "pi" | "fake";
   enabledHarnesses?: Array<"pi" | "antigravity" | "fake">;
   fakeOutputs: Record<string, JsonValue>;
@@ -60,6 +78,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const controlPlaneUrl = required(env, "QE_CONTROL_PLANE_URL");
   const workerId = required(env, "QE_WORKER_ID");
   const workerToken = required(env, "QE_WORKER_TOKEN");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workerId))
+    throw new Error("QE_WORKER_ID is invalid.");
   const dataRoot = absolute(
     env.QE_WORKER_DATA_ROOT?.trim() || ".quest-engineering-worker",
     "QE_WORKER_DATA_ROOT",
@@ -97,9 +117,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     env.QE_MAX_CONCURRENCY ?? "1",
     "QE_MAX_CONCURRENCY",
   );
-  const herdrSession = validateHerdrSessionName(
-    env.QE_HERDR_SESSION?.trim() || "quest-engineering-worker",
+  const dispatchAvailability = dispatchAvailabilityValue(
+    env.QE_WORKER_DISPATCH_AVAILABILITY ?? "active",
   );
+  const herdrHome = env.HOME?.trim() || homedir();
+  const herdrSession = validateHerdrSessionName(
+    env.QE_HERDR_SESSION?.trim() ||
+      defaultHerdrSessionName(workerId, herdrHome),
+  );
+  assertHerdrDefaultSocketPathSafe(herdrSession, herdrHome);
   const heartbeatMs = positiveInteger(
     env.QE_HEARTBEAT_MS ?? "10000",
     "QE_HEARTBEAT_MS",
@@ -112,13 +138,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     env.QE_RESULT_TIMEOUT_MS ?? "21600000",
     "QE_RESULT_TIMEOUT_MS",
   );
+  const promptActivityStallMs = positiveInteger(
+    env.QE_PROMPT_ACTIVITY_STALL_MS ?? "30000",
+    "QE_PROMPT_ACTIVITY_STALL_MS",
+  );
   const provider = env.QE_WORKER_PROVIDER === "fake" ? "fake" : "pi";
+  const herdrBin = env.QE_HERDR_BIN?.trim()
+    ? exactExecutable(env.QE_HERDR_BIN, "QE_HERDR_BIN")
+    : undefined;
+  if (provider !== "fake" && !herdrBin)
+    throw new Error(
+      "QE_HERDR_BIN is required and must name the exact absolute Herdr executable.",
+    );
   const enabledHarnesses =
     provider === "fake"
       ? (["fake"] as const)
       : harnesses(env.QE_WORKER_HARNESSES ?? "pi,antigravity");
   const executorModels = models(
-    env.QE_EXECUTOR_MODELS ?? env.QE_PI_MODEL,
+    env.QE_EXECUTOR_MODELS !== undefined
+      ? env.QE_EXECUTOR_MODELS
+      : env.QE_PI_MODEL,
     provider,
   );
   const reasoningLevels = reasoning(
@@ -142,8 +181,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   }
   if (!["ws:", "wss:"].includes(parsed.protocol))
     throw new Error("QE_CONTROL_PLANE_URL must use ws:// or wss://.");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workerId))
-    throw new Error("QE_WORKER_ID is invalid.");
 
   return {
     controlPlaneUrl,
@@ -151,7 +188,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     workerToken,
     maxConcurrency,
     tags: csv(env.QE_WORKER_TAGS),
+    dispatchAvailability,
     herdrSession,
+    ...(herdrBin ? { herdrBin } : {}),
     allowedRoots,
     workspaceBindings,
     retiredWorkspaceBindings,
@@ -160,14 +199,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     ),
     workspaceBindingsPath,
     worktreeRoot,
-    executorModels,
+    ...(executorModels === undefined ? {} : { executorModels }),
     reasoningLevels,
     dataRoot,
     ...(env.QE_PI_MODEL?.trim() ? { piModel: env.QE_PI_MODEL.trim() } : {}),
     piThinking: env.QE_PI_THINKING?.trim() || "medium",
+    ...(env.QE_PI_ACCOUNT_EVIDENCE_SEEDS?.trim()
+      ? {
+          piAccountEvidenceSeedPaths: csv(env.QE_PI_ACCOUNT_EVIDENCE_SEEDS).map(
+            (path) => absolute(path, "QE_PI_ACCOUNT_EVIDENCE_SEEDS"),
+          ),
+        }
+      : {}),
     heartbeatMs,
     reconnectMs,
     resultTimeoutMs,
+    promptActivityStallMs,
     provider,
     enabledHarnesses: [...enabledHarnesses],
     fakeOutputs,
@@ -179,6 +226,89 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       ? { gitAuthorEmail: env.QE_GIT_AUTHOR_EMAIL.trim() }
       : {}),
   };
+}
+
+export const HERDR_UNIX_SOCKET_SAFE_PATH_BYTES = 103;
+const HERDR_SESSION_PREFIX = "qe-worker-";
+const HERDR_SESSION_HASH_HEX_LENGTH = 10;
+const HERDR_DEFAULT_SESSION_ROOT = [".config", "herdr", "sessions"] as const;
+const HERDR_API_SOCKET = "herdr.sock";
+const HERDR_CLIENT_SOCKET = "herdr-client.sock";
+
+export interface HerdrDefaultSocketPaths {
+  sessionDirectory: string;
+  apiSocket: string;
+  clientSocket: string;
+}
+
+export function herdrDefaultSocketPaths(
+  sessionName: string,
+  homeDirectory: string = homedir(),
+): HerdrDefaultSocketPaths {
+  const sessionDirectory = join(
+    homeDirectory,
+    ...HERDR_DEFAULT_SESSION_ROOT,
+    sessionName,
+  );
+  return {
+    sessionDirectory,
+    apiSocket: join(sessionDirectory, HERDR_API_SOCKET),
+    clientSocket: join(sessionDirectory, HERDR_CLIENT_SOCKET),
+  };
+}
+
+export function assertHerdrDefaultSocketPathSafe(
+  sessionName: string,
+  homeDirectory: string = homedir(),
+): void {
+  const paths = herdrDefaultSocketPaths(sessionName, homeDirectory);
+  for (const [kind, path] of [
+    ["API", paths.apiSocket],
+    ["client", paths.clientSocket],
+  ] as const) {
+    const bytes = Buffer.byteLength(path, "utf8");
+    if (bytes > HERDR_UNIX_SOCKET_SAFE_PATH_BYTES)
+      throw new Error(
+        `Herdr ${kind} socket path is ${bytes} bytes; the safe Unix-domain socket limit is ${HERDR_UNIX_SOCKET_SAFE_PATH_BYTES} bytes. Shorten the host HOME path or configured Herdr session name.`,
+      );
+  }
+}
+
+export function defaultHerdrSessionName(
+  workerId: string,
+  homeDirectory: string = homedir(),
+): string {
+  const hash = createHash("sha256")
+    .update(workerId)
+    .digest("hex")
+    .slice(0, HERDR_SESSION_HASH_HEX_LENGTH);
+  const fixedBytes = Buffer.byteLength(
+    `${HERDR_SESSION_PREFIX}-${hash}`,
+    "utf8",
+  );
+  const root = join(homeDirectory, ...HERDR_DEFAULT_SESSION_ROOT);
+  const socketWithoutSession = join(root, HERDR_CLIENT_SOCKET);
+  const sessionBudget =
+    HERDR_UNIX_SOCKET_SAFE_PATH_BYTES -
+    Buffer.byteLength(socketWithoutSession, "utf8") -
+    1;
+  const readableBudget = Math.min(32, sessionBudget - fixedBytes);
+  if (readableBudget < 1)
+    throw new Error(
+      "The host HOME path is too long for a collision-resistant default Herdr session socket.",
+    );
+  const readable =
+    workerId
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^[._-]+|[._-]+$/g, "")
+      .slice(0, readableBudget)
+      .replace(/[._-]+$/g, "") || "worker".slice(0, readableBudget);
+  const sessionName = validateHerdrSessionName(
+    `${HERDR_SESSION_PREFIX}${readable}-${hash}`,
+  );
+  assertHerdrDefaultSocketPathSafe(sessionName, homeDirectory);
+  return sessionName;
 }
 
 function parseAllowedRoots(encoded: string | undefined): AuthorizedRoot[] {
@@ -301,6 +431,14 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
   if (!value) throw new Error(`${key} is required.`);
   return value;
 }
+function dispatchAvailabilityValue(value: string): "active" | "maintenance" {
+  const normalized = value.trim();
+  if (normalized === "active" || normalized === "maintenance")
+    return normalized;
+  throw new Error(
+    "QE_WORKER_DISPATCH_AVAILABILITY must be active or maintenance.",
+  );
+}
 function positiveInteger(value: string, key: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1)
@@ -346,11 +484,12 @@ function csv(value: string | undefined): string[] {
 function models(
   value: string | undefined,
   provider: "pi" | "fake",
-): Array<{ provider: string; model: string }> {
+): Array<{ provider: string; model: string }> | undefined {
+  if (value === undefined)
+    return provider === "fake"
+      ? [{ provider: "fake", model: "test" }]
+      : undefined;
   const configured = csv(value);
-  if (configured.length === 0 && provider === "fake")
-    return [{ provider: "fake", model: "test" }];
-  if (configured.length === 0) return [];
   return configured.map((entry) => {
     const separator = entry.indexOf("/");
     if (separator < 1 || separator === entry.length - 1)
@@ -382,5 +521,18 @@ function absolute(value: string, key: string): string {
   const path = resolve(value);
   if (!isAbsolute(path))
     throw new Error(`${key} must resolve to an absolute path.`);
+  return path;
+}
+
+function exactExecutable(value: string, key: string): string {
+  if (!isAbsolute(value)) throw new Error(`${key} must be an absolute path.`);
+  let path: string;
+  try {
+    path = realpathSync(value);
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    accessSync(path, constants.X_OK);
+  } catch {
+    throw new Error(`${key} must identify an existing executable file.`);
+  }
   return path;
 }

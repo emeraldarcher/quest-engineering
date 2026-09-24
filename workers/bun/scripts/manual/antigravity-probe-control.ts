@@ -97,7 +97,7 @@ function probeAction(root: string): ExecuteAction {
   const bindingId = crypto.randomUUID();
   return {
     type: "execute_action",
-    protocol_version: 7,
+    protocol_version: 9,
     worker_id: "manual-antigravity-probe",
     execution: {
       identity: {

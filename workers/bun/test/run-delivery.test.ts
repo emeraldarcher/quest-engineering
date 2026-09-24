@@ -78,14 +78,16 @@ test("preserves agent commits, finalizes remaining files once, pushes, and safel
   expect(removed.state).toBe("removed");
   expect((await worktrees.cleanup(record.worktreeId)).state).toBe("removed");
   expect(
-    await output([
+    await succeeds([
       "git",
       "-C",
       fixture.source,
-      "rev-parse",
+      "show-ref",
+      "--verify",
+      "--quiet",
       `refs/heads/${record.branchName}`,
     ]),
-  ).toBe(published.headRevision);
+  ).toBe(false);
   expect(
     await output([
       "git",
@@ -262,6 +264,11 @@ async function command(argv: string[]): Promise<void> {
   if (code !== 0)
     throw new DeliveryError("command_failed", `${argv.join(" ")}: ${err}`);
 }
+async function succeeds(argv: string[]): Promise<boolean> {
+  const child = Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" });
+  return (await child.exited) === 0;
+}
+
 async function output(argv: string[]): Promise<string> {
   const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([

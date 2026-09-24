@@ -11,7 +11,12 @@ import type {
 } from "../../api/contracts";
 import { canOpenLocalLiveSession } from "../../platform/live-session";
 import { openPullRequest } from "../../platform/open-pull-request";
-import type { AppStore, ProductState } from "../../state/app-store";
+import type {
+  AppStore,
+  ExecutionAttemptIdentity,
+  ExecutionCommandState,
+  ProductState,
+} from "../../state/app-store";
 import "../management/management-window.css";
 import {
   artifactPreview,
@@ -49,6 +54,7 @@ export let scene: string | null = null;
 
 const {
   error: errorStore,
+  executionCommands: executionCommandsStore,
   selectedRun: selectedRunStore,
   sessionFocus: sessionFocusStore,
 } = store;
@@ -72,6 +78,14 @@ let recoveryDialog: HTMLDialogElement;
 let recoveryCancel: HTMLButtonElement;
 let recoveryTrigger: HTMLButtonElement;
 let recoveryAction: "retry" | "mark_failed" | null = null;
+let authorizationDialog: HTMLDialogElement;
+let authorizationCancel: HTMLButtonElement;
+let authorizationTrigger: HTMLButtonElement;
+let authorizationTarget: ExecutionAttemptIdentity | null = null;
+let cancellationDialog: HTMLDialogElement;
+let cancellationKeep: HTMLButtonElement;
+let cancellationTrigger: HTMLButtonElement;
+let cancellationTarget: ExecutionAttemptIdentity | null = null;
 let handledSessionFocus: string | null = null;
 
 $: run = $selectedRunStore;
@@ -99,6 +113,14 @@ $: reviewResult = run ? currentReviewResult(run) : null;
 $: currentAcceptedPlan = run ? acceptedPlan(run) : null;
 $: uncertainStep = run?.steps.find((step) => step.recovery !== null) ?? null;
 $: sessionSteps = uniqueSessionSteps(run?.steps ?? []);
+$: sessionlessOperatorSteps = (run?.steps ?? []).filter(
+  (step) =>
+    !step.session &&
+    step.attempt &&
+    (step.attempt.can_cancel === true ||
+      step.recovery?.can_authorize_prompt === true ||
+      step.attempt.cancellation?.state === "requested"),
+);
 $: localAttachAvailable = canOpenLocalLiveSession();
 $: if (run?.id !== activeRunId) {
   activeRunId = run?.id ?? null;
@@ -132,6 +154,18 @@ $: if (
 ) {
   selectedArtifactId = null;
   selectedArtifact = null;
+}
+$: if (
+  authorizationTarget &&
+  (!run || !executionTargetIsCurrent(authorizationTarget, "authorize"))
+) {
+  closeAuthorizationConfirmation();
+}
+$: if (
+  cancellationTarget &&
+  (!run || !executionTargetIsCurrent(cancellationTarget, "cancel"))
+) {
+  closeCancellationConfirmation();
 }
 
 onMount(async () => {
@@ -206,6 +240,113 @@ async function selectArtifact(summary: ArtifactSummary) {
     selectedArtifact = detail;
     artifactLoading = false;
   }
+}
+
+function executionIdentity(step: RunStep): ExecutionAttemptIdentity | null {
+  if (!run || !step.attempt) return null;
+  return {
+    runId: run.id,
+    occurrenceId: step.occurrence_id,
+    attemptId: step.attempt.id,
+  };
+}
+
+function executionTargetIsCurrent(
+  identity: ExecutionAttemptIdentity,
+  operation: "authorize" | "cancel",
+): boolean {
+  if (run?.id !== identity.runId) return false;
+  const step = run.steps.find(
+    (item) => item.occurrence_id === identity.occurrenceId,
+  );
+  if (step?.attempt?.id !== identity.attemptId) return false;
+  return operation === "authorize"
+    ? step.recovery?.can_authorize_prompt === true
+    : step.attempt.can_cancel === true;
+}
+
+function executionCommandFor(
+  step: RunStep,
+  commands: ExecutionCommandState[],
+) {
+  const identity = executionIdentity(step);
+  if (!identity) return null;
+  return (
+    commands.find(
+      (command) =>
+        command.identity.runId === identity.runId &&
+        command.identity.occurrenceId === identity.occurrenceId &&
+        command.identity.attemptId === identity.attemptId,
+    ) ?? null
+  );
+}
+
+function requestPromptAuthorization(step: RunStep, event: MouseEvent) {
+  const identity = executionIdentity(step);
+  if (
+    !identity ||
+    !executionTargetIsCurrent(identity, "authorize") ||
+    executionCommandFor(step, $executionCommandsStore)?.status === "pending"
+  )
+    return;
+  store.clearExecutionCommand(identity);
+  authorizationTarget = identity;
+  authorizationTrigger = event.currentTarget as HTMLButtonElement;
+  authorizationDialog.showModal();
+  void tick().then(() => authorizationCancel?.focus());
+}
+
+function closeAuthorizationConfirmation() {
+  authorizationDialog?.close();
+  authorizationTarget = null;
+  authorizationTrigger?.focus();
+}
+
+async function confirmPromptAuthorization() {
+  const identity = authorizationTarget;
+  closeAuthorizationConfirmation();
+  if (identity) await store.authorizePrompt(identity);
+}
+
+function requestExecutionCancellation(step: RunStep, event: MouseEvent) {
+  const identity = executionIdentity(step);
+  if (
+    !identity ||
+    !executionTargetIsCurrent(identity, "cancel") ||
+    executionCommandFor(step, $executionCommandsStore)?.status === "pending"
+  )
+    return;
+  store.clearExecutionCommand(identity);
+  cancellationTarget = identity;
+  cancellationTrigger = event.currentTarget as HTMLButtonElement;
+  cancellationDialog.showModal();
+  void tick().then(() => cancellationKeep?.focus());
+}
+
+function closeCancellationConfirmation() {
+  cancellationDialog?.close();
+  cancellationTarget = null;
+  cancellationTrigger?.focus();
+}
+
+async function confirmExecutionCancellation() {
+  const identity = cancellationTarget;
+  closeCancellationConfirmation();
+  if (identity) await store.cancelExecution(identity);
+}
+
+function executionCommandFailure(command: ExecutionCommandState): string {
+  const failure = command.error;
+  if (failure?.code === "stale_execution_attempt")
+    return "The current Attempt changed. Review its latest state before acting.";
+  if (failure?.code === "network_unavailable")
+    return "Quest Engineering could not be reached. The current Attempt was not changed locally.";
+  return (
+    failure?.message ??
+    (command.operation === "authorize"
+      ? "Inference authorization was not accepted."
+      : "Execution cancellation was not accepted.")
+  );
 }
 
 function requestExecutionRecovery(action: "retry" | "mark_failed", event: MouseEvent) {
@@ -495,13 +636,14 @@ function attemptOutput(attempt: RunAttempt): string {
                 </article>
               {/if}
 
-              {#if sessionSteps.length}
+              {#if sessionSteps.length || sessionlessOperatorSteps.length}
                 <section class="live-sessions" aria-labelledby="live-session-title">
-                  <div class="section-heading"><div><span class="eyebrow">Coding-agent execution</span><h3 id="live-session-title">Live Session</h3></div><span>{sessionSteps.length} {sessionSteps.length === 1 ? "session" : "sessions"}</span></div>
+                  <div class="section-heading"><div><span class="eyebrow">Coding-agent execution</span><h3 id="live-session-title">{sessionSteps.length ? "Live Session" : "Execution control"}</h3></div><span>{sessionSteps.length ? `${sessionSteps.length} ${sessionSteps.length === 1 ? "session" : "sessions"}` : `${sessionlessOperatorSteps.length} active`}</span></div>
                   <div class="session-list">
                     {#each sessionSteps as step (step.occurrence_id)}
                       {@const session = step.session}
                       {#if session}
+                        {@const executionCommand = executionCommandFor(step, $executionCommandsStore)}
                         <article class:session-focused={$sessionFocusStore?.sessionId === session.id} class:waiting={session.state === "waiting_for_human"}>
                           <div class="session-copy">
                             <span class="eyebrow">{step.member?.name ?? "Member"} · {step.name ?? humanize(step.semantic_step_key)}</span>
@@ -529,9 +671,53 @@ function attemptOutput(attempt: RunAttempt): string {
                             {:else if step.recovery?.can_retry_fresh}
                               <button class="secondary" disabled={busy} on:click={() => retryFresh(step)}>Retry with fresh session</button>
                             {/if}
+                            {#if step.recovery?.can_authorize_prompt === true}
+                              <button class="primary" disabled={executionCommand?.status === "pending"} on:click={(event) => requestPromptAuthorization(step, event)}>{executionCommand?.operation === "authorize" && executionCommand.status === "pending" ? "Authorizing…" : "Authorize inference"}</button>
+                            {/if}
+                            {#if step.attempt?.can_cancel === true}
+                              <button class="destructive" disabled={executionCommand?.status === "pending"} on:click={(event) => requestExecutionCancellation(step, event)}>{executionCommand?.operation === "cancel" && executionCommand.status === "pending" ? "Requesting cancellation…" : "Cancel execution"}</button>
+                            {:else if step.attempt?.cancellation?.state === "requested"}
+                              <small class="command-status">Cancellation requested · waiting for Worker confirmation.</small>
+                            {:else if step.attempt?.cancellation?.state === "cancelled"}
+                              <small class="command-status">Execution cancelled · session history retained.</small>
+                            {/if}
+                            {#if executionCommand?.status === "error" && executionCommand.error}
+                              <div class="command-error" role="alert">
+                                <strong>{executionCommand.operation === "authorize" ? "Authorization not completed" : "Cancellation not completed"}</strong>
+                                <span>{executionCommandFailure(executionCommand)}</span>
+                                <button class="secondary" on:click={() => store.clearExecutionCommand(executionCommand.identity)}>Dismiss</button>
+                              </div>
+                            {/if}
                           </div>
                         </article>
                       {/if}
+                    {/each}
+                    {#each sessionlessOperatorSteps as step (step.occurrence_id)}
+                      {@const executionCommand = executionCommandFor(step, $executionCommandsStore)}
+                      <article>
+                        <div class="session-copy">
+                          <span class="eyebrow">{step.member?.name ?? "Member"} · {step.name ?? humanize(step.semantic_step_key)}</span>
+                          <h4>Execution preparing</h4>
+                          <p>The exact current Attempt is active; its live session is not yet available.</p>
+                        </div>
+                        <div class="session-actions">
+                          {#if step.recovery?.can_authorize_prompt === true}
+                            <button class="primary" disabled={executionCommand?.status === "pending"} on:click={(event) => requestPromptAuthorization(step, event)}>{executionCommand?.operation === "authorize" && executionCommand.status === "pending" ? "Authorizing…" : "Authorize inference"}</button>
+                          {/if}
+                          {#if step.attempt?.can_cancel === true}
+                            <button class="destructive" disabled={executionCommand?.status === "pending"} on:click={(event) => requestExecutionCancellation(step, event)}>{executionCommand?.operation === "cancel" && executionCommand.status === "pending" ? "Requesting cancellation…" : "Cancel execution"}</button>
+                          {:else if step.attempt?.cancellation?.state === "requested"}
+                            <small class="command-status">Cancellation requested · waiting for Worker confirmation.</small>
+                          {/if}
+                          {#if executionCommand?.status === "error" && executionCommand.error}
+                            <div class="command-error" role="alert">
+                              <strong>{executionCommand.operation === "authorize" ? "Authorization not completed" : "Cancellation not completed"}</strong>
+                              <span>{executionCommandFailure(executionCommand)}</span>
+                              <button class="secondary" on:click={() => store.clearExecutionCommand(executionCommand.identity)}>Dismiss</button>
+                            </div>
+                          {/if}
+                        </div>
+                      </article>
                     {/each}
                   </div>
                 </section>
@@ -714,6 +900,24 @@ function attemptOutput(attempt: RunAttempt): string {
     </section>
   </div>
 
+  <dialog bind:this={authorizationDialog} aria-labelledby="authorization-title" on:cancel|preventDefault={closeAuthorizationConfirmation}>
+    <div class="dialog-card">
+      <span class="dialog-icon authorization" aria-hidden="true">✓</span>
+      <h2 id="authorization-title">Authorize inference?</h2>
+      <p>This allows the current Attempt to submit its configured Pi model prompt.</p>
+      <div class="action-row"><button bind:this={authorizationCancel} class="secondary" on:click={closeAuthorizationConfirmation}>Not yet</button><button class="primary" on:click={confirmPromptAuthorization}>Authorize inference</button></div>
+    </div>
+  </dialog>
+
+  <dialog bind:this={cancellationDialog} aria-labelledby="cancellation-title" on:cancel|preventDefault={closeCancellationConfirmation}>
+    <div class="dialog-card">
+      <span class="dialog-icon" aria-hidden="true">!</span>
+      <h2 id="cancellation-title">Cancel this execution?</h2>
+      <p>This Attempt will end as cancelled and will not submit or continue a model prompt. Existing history will be preserved.</p>
+      <div class="action-row"><button bind:this={cancellationKeep} class="secondary" on:click={closeCancellationConfirmation}>Keep execution</button><button class="destructive" on:click={confirmExecutionCancellation}>Cancel execution</button></div>
+    </div>
+  </dialog>
+
   <dialog bind:this={recoveryDialog} aria-labelledby="recovery-title" on:cancel|preventDefault={closeExecutionRecovery}>
     <div class="dialog-card">
       <span class="dialog-icon" aria-hidden="true">!</span>
@@ -780,7 +984,12 @@ function attemptOutput(attempt: RunAttempt): string {
   .session-history summary { cursor:pointer; color:var(--app-teal-dark); font-weight:750; }
   .session-history ul { margin:.25rem 0 0; padding-left:1rem; }
   .session-copy blockquote { color:#7b443b; font-style:italic; }
-  .session-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
+  .session-actions { display:flex; max-width:18rem; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
+  .session-actions .command-status { flex-basis:100%; color:var(--app-teal-dark); text-align:right; }
+  .command-error { display:grid; flex-basis:100%; grid-template-columns:minmax(0,1fr) auto; gap:.15rem .45rem; padding:.5rem; color:#783f3b; background:#f8ded5; border:1px solid #d69b88; border-radius:6px; font-size:.75rem; text-align:left; }
+  .command-error strong,.command-error span { grid-column:1; }
+  .command-error button { grid-column:2; grid-row:1 / span 2; align-self:center; min-height:1.8rem; padding:.2rem .45rem; }
+  .dialog-icon.authorization { background:var(--app-teal); }
   .step-session { padding:.3rem .45rem; background:#e8f2df; border-radius:5px; }
   .accepted-plan-summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; padding: .9rem 1rem; background: #edf6e7; border: 1px solid #9fb995; border-radius: 9px; }
   .accepted-plan-summary h3, .accepted-plan-summary p { margin: .15rem 0; }

@@ -63,7 +63,8 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
               worker_id,
               generation,
               session,
-              merged_attention(existing, session.attention)
+              merged_attention(existing, session.attention),
+              merged_native_session_id(existing, session.native_session_id)
             )
           )
 
@@ -85,7 +86,7 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
   defp persist_changeset!(existing, attributes),
     do: Repo.update!(ExecutionSession.changeset(existing, attributes))
 
-  defp session_attributes(worker_id, generation, session, attention) do
+  defp session_attributes(worker_id, generation, session, attention, native_session_id) do
     %{
       id: session.session_id,
       worker_id: worker_id,
@@ -95,8 +96,9 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
       state: Atom.to_string(session.state),
       capabilities: session.capabilities,
       terminal: session.terminal,
-      native_session_id: session.native_session_id,
+      native_session_id: native_session_id,
       attention: attention,
+      turn: Map.get(session, :turn),
       last_connection_generation: generation,
       started_at: session.started_at,
       last_activity_at: session.last_activity_at
@@ -141,7 +143,7 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
   end
 
   def attachment_descriptor(run_id, attempt_id, session_id) do
-    with {:ok, %{session: session, worker: worker, action: action}} <-
+    with {:ok, %{session: session, worker: worker, action: action, dispatch: dispatch}} <-
            lookup_usage(run_id, attempt_id, session_id),
          :ok <- available_for_attachment(session, worker),
          token <-
@@ -165,8 +167,11 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
          worker_generation: worker.connection_generation,
          session_id: session.id,
          state: session.state,
-         takeover_allowed: session.state == "waiting_for_human" and not is_nil(session.attention),
-         recovery_allowed: session.state == "retained",
+         takeover_allowed: takeover_available?(session, action, dispatch),
+         recovery_allowed:
+           not cancellation_fenced?(dispatch) and session.current_action_id == action.id and
+             session.state == "retained" and
+             get_in(session.terminal, ["supports_takeover"]) == true,
          terminal: session.terminal
        }}
     end
@@ -180,12 +185,12 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
            Phoenix.Token.verify(Endpoint, @attachment_salt, token,
              max_age: @attachment_ttl_seconds
            ),
-         {:ok, %{session: session, worker: worker, action: action}} <-
+         {:ok, %{session: session, worker: worker, action: action, dispatch: dispatch}} <-
            lookup_usage(claims["run_id"], claims["attempt_id"], claims["session_id"]),
          true <- worker.id == claims["worker_id"],
          true <- worker.connection_generation == claims["worker_generation"],
          :ok <- available_for_attachment(session, worker),
-         :ok <- takeover_allowed(session, mode),
+         :ok <- takeover_allowed(session, action, dispatch, mode),
          {:ok, persisted} <- record_native_open(session, action, mode) do
       RunChangeNotifier.notify(claims["run_id"])
       {:ok, persisted}
@@ -240,7 +245,7 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
          true <- action.run_id == run_id and action.attempt_id == attempt_id,
          %ExecutionSession{} = session <- Repo.get(ExecutionSession, session_id),
          %Worker{} = worker <- Repo.get(Worker, session.worker_id) do
-      {:ok, %{session: session, worker: worker, action: action}}
+      {:ok, %{session: session, worker: worker, action: action, dispatch: dispatch}}
     else
       _ -> nil
     end
@@ -323,14 +328,45 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
 
   defp merged_attention(_existing, incoming), do: incoming
 
-  defp takeover_allowed(_session, "observe"), do: :ok
-  defp takeover_allowed(%{state: "retained"}, "recovery"), do: :ok
-  defp takeover_allowed(_session, "recovery"), do: {:error, :attachment_unavailable}
+  defp merged_native_session_id(nil, incoming), do: incoming
+  defp merged_native_session_id(%{native_session_id: nil}, incoming), do: incoming
+  defp merged_native_session_id(%{native_session_id: current}, nil), do: current
+  defp merged_native_session_id(%{native_session_id: current}, current), do: current
 
-  defp takeover_allowed(session, "takeover") do
-    if session.state == "waiting_for_human" and is_map(session.attention),
+  defp merged_native_session_id(%{native_session_id: _current}, _incoming),
+    do: Repo.rollback(:session_native_identity_conflict)
+
+  defp takeover_allowed(_session, _action, _dispatch, "observe"), do: :ok
+
+  defp takeover_allowed(session, action, dispatch, "recovery") do
+    if not cancellation_fenced?(dispatch) and session.current_action_id == action.id and
+         session.state == "retained" and
+         get_in(session.terminal, ["supports_takeover"]) == true,
+       do: :ok,
+       else: {:error, :attachment_unavailable}
+  end
+
+  defp takeover_allowed(session, action, dispatch, "takeover") do
+    if takeover_available?(session, action, dispatch),
       do: :ok,
       else: {:error, :attachment_unavailable}
+  end
+
+  defp takeover_available?(session, action, dispatch) do
+    not cancellation_fenced?(dispatch) and session.current_action_id == action.id and
+      get_in(session.terminal, ["supports_takeover"]) == true and
+      not pre_prompt_authorization_pending?(session)
+  end
+
+  defp cancellation_fenced?(dispatch), do: not is_nil(dispatch.cancellation_requested_at)
+
+  defp pre_prompt_authorization_pending?(session) do
+    attention_id = get_in(session.attention || %{}, ["attention_id"])
+
+    session.state == "waiting_for_human" and
+      get_in(session.attention || %{}, ["category"]) == "needs_confirmation" and
+      is_binary(attention_id) and String.starts_with?(attention_id, "qe-prompt-authorization-") and
+      is_nil(get_in(session.turn || %{}, ["prompt_intent_at"]))
   end
 
   defp record_native_open(session, action, mode) do

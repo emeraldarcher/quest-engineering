@@ -75,6 +75,9 @@ defmodule QuestEngineering.ServerWeb.Api do
   defp error_view(%{type: :run_not_found}),
     do: {404, "not_found", "The requested resource was not found.", [], %{}}
 
+  defp error_view(%{code: :run_not_found}),
+    do: {404, "not_found", "The requested resource was not found.", [], %{}}
+
   defp error_view(:not_found),
     do: {404, "not_found", "The requested resource was not found.", [], %{}}
 
@@ -87,6 +90,14 @@ defmodule QuestEngineering.ServerWeb.Api do
     do:
       {400, "malformed_request", "The execution recovery request is malformed.", [],
        safe(details)}
+
+  defp error_view(%{code: :invalid_execution_cancellation, details: details}),
+    do:
+      {400, "malformed_request", "The execution cancellation request is malformed.", [],
+       safe(details)}
+
+  defp error_view(%{code: :execution_not_found, details: details}),
+    do: {404, "execution_not_found", "The requested execution was not found.", [], safe(details)}
 
   defp error_view(%{code: code, details: details})
        when code in [
@@ -101,7 +112,13 @@ defmodule QuestEngineering.ServerWeb.Api do
               :stale_recovery_worker_generation,
               :replacement_attempt_already_exists,
               :recovery_workspace_unavailable,
-              :operational_attempt_allowance_exhausted
+              :operational_attempt_allowance_exhausted,
+              :execution_not_ready,
+              :execution_cancellation_not_ready,
+              :execution_cancellation_requires_recovery,
+              :execution_cancellation_identity_mismatch,
+              :execution_cancellation_pending,
+              :execution_cancellation_request_conflict
             ],
        do:
          {409, to_string(code), "The execution cannot begin this recovery cycle.", [],

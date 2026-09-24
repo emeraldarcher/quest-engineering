@@ -118,7 +118,15 @@ defmodule QuestEngineering.Core.Runtime do
     with {:ok, occurrence} <- fetch_completable_occurrence(run, event),
          {:ok, step} <- fetch_step(run.plan, occurrence.semantic_step_key),
          :ok <- validate_attempt(occurrence, event, run.id) do
-      retry_occurrence(run, occurrence, step)
+      retry_occurrence(run, occurrence, step, false)
+    end
+  end
+
+  def transition(%Run{} = run, %Event{type: :step_recovery_requested} = event) do
+    with {:ok, occurrence} <- fetch_completable_occurrence(run, event),
+         {:ok, step} <- fetch_step(run.plan, occurrence.semantic_step_key),
+         :ok <- validate_attempt(occurrence, event, run.id) do
+      retry_occurrence(run, occurrence, step, true)
     end
   end
 
@@ -152,6 +160,15 @@ defmodule QuestEngineering.Core.Runtime do
   def retry_requested(%Action{type: :execute_step} = action) do
     %Event{
       type: :step_retry_requested,
+      occurrence_id: action.occurrence_id,
+      attempt_id: action.attempt_id
+    }
+  end
+
+  @doc "Builds a human-authorized recovery event without rewriting prior Attempt status."
+  def recovery_requested(%Action{type: :execute_step} = action) do
+    %Event{
+      type: :step_recovery_requested,
       occurrence_id: action.occurrence_id,
       attempt_id: action.attempt_id
     }
@@ -900,19 +917,25 @@ defmodule QuestEngineering.Core.Runtime do
 
   defp field_condition_true?(_value, _binding), do: false
 
-  defp retry_occurrence(run, occurrence, step) do
+  defp retry_occurrence(run, occurrence, step, preserve_current_status?) do
     attempt_number = Enum.max([0 | Enum.map(occurrence.attempts, & &1.number)]) + 1
     attempt_id = occurrence.id <> "/attempt/#{attempt_number}"
     attempt = %ExecutionAttempt{id: attempt_id, number: attempt_number, status: :dispatched}
 
-    attempts =
-      Enum.map(occurrence.attempts, fn
-        %ExecutionAttempt{id: id} = current when id == occurrence.current_attempt_id ->
-          %{current | status: :failed}
+    previous_attempts =
+      if preserve_current_status? do
+        occurrence.attempts
+      else
+        Enum.map(occurrence.attempts, fn
+          %ExecutionAttempt{id: id} = current when id == occurrence.current_attempt_id ->
+            %{current | status: :failed}
 
-        previous ->
-          previous
-      end) ++ [attempt]
+          previous ->
+            previous
+        end)
+      end
+
+    attempts = previous_attempts ++ [attempt]
 
     occurrence = %{
       occurrence

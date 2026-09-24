@@ -114,6 +114,7 @@ defmodule QuestEngineering.ServerWeb.StarterCrewApiTest do
               "provider" => "fake",
               "model" => "starter",
               "display_name" => "Test model",
+              "account_availability" => "verified_available",
               "reasoning_capability" => %{
                 "kind" => "enumerated",
                 "values" => ["low", "medium"]

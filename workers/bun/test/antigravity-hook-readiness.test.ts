@@ -100,6 +100,9 @@ test("hook config is namespaced and preserves unrelated user hooks", async () =>
           { type: "command", command: "user-command", timeout: 5 },
         ],
       },
+      "qe-test-stop": {
+        Stop: [{ type: "command", command: "stale-qe-command", timeout: 1 }],
+      },
     })}\n`,
   );
 

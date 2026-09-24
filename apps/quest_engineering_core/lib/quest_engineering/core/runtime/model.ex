@@ -362,7 +362,7 @@ defmodule QuestEngineering.Core.Runtime.Event do
   defstruct [:type, :occurrence_id, :attempt_id, outputs: %{}, failure: nil]
 
   @type t :: %__MODULE__{
-          type: :step_completed | :step_retry_requested | :step_failed,
+          type: :step_completed | :step_retry_requested | :step_recovery_requested | :step_failed,
           occurrence_id: String.t(),
           attempt_id: String.t(),
           outputs: %{optional(String.t()) => ArtifactInstance.value()},

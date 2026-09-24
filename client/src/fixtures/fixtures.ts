@@ -374,15 +374,19 @@ function runAttempt(
 ): RunAttempt {
   return {
     id,
+    action_id: `action-${id}`,
     number,
     state,
     started_at: "2026-09-01T14:20:00Z",
-    finished_at: ["completed", "failed", "uncertain"].includes(state)
+    finished_at: ["completed", "failed", "cancelled", "uncertain"].includes(
+      state,
+    )
       ? "2026-09-01T14:22:00Z"
       : null,
     outputs,
     output_produced: outputs.length > 0,
     resolution: options.resolution ?? null,
+    cancellation: null,
     retry_of_attempt_id: options.retryOf ?? null,
     execution: null,
   };
@@ -408,6 +412,7 @@ function step(
       "running",
       "completed",
       "failed",
+      "cancelled",
       "uncertain",
     ].includes(state)
       ? runAttempt(`attempt-${index + 1}`, 1, state)
@@ -417,6 +422,7 @@ function step(
       "running",
       "completed",
       "failed",
+      "cancelled",
       "uncertain",
     ].includes(state)
       ? [runAttempt(`attempt-${index + 1}`, 1, state)]
@@ -466,9 +472,13 @@ function counts(steps: RunStep[]): RunProjection["step_counts"] {
     pending: 0,
     waiting: 0,
     scheduled: 0,
+    waiting_for_activity: 0,
     running: 0,
+    blocked: 0,
+    stalled: 0,
     completed: 0,
     failed: 0,
+    cancelled: 0,
     uncertain: 0,
   };
   for (const value of steps) result[value.state] += 1;
@@ -1376,9 +1386,13 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
             pending: 0,
             waiting: 0,
             scheduled: 0,
+            waiting_for_activity: 0,
             running: 0,
+            blocked: 0,
+            stalled: 0,
             completed: 2,
             failed: 0,
+            cancelled: 0,
             uncertain: 0,
           },
           delivery: workYardDelivery(
@@ -1645,6 +1659,7 @@ function createStarterFixture(name: FixtureName): ClientFixture {
               {
                 harness: coding.harness,
                 model: { ...coding.model, display_name: "Fixture model" },
+                account_availability: "verified_available",
                 reasoning_capability: {
                   kind: "enumerated",
                   values: ["low", "medium"],
@@ -2267,6 +2282,7 @@ function createTownHudFixture(name: FixtureName): ClientFixture {
         {
           harness: loadout.harness,
           model: { ...loadout.model, display_name: "Fixture model" },
+          account_availability: "verified_available",
           reasoning_capability: {
             kind: "enumerated",
             values: ["medium"],
@@ -2474,6 +2490,7 @@ export function createFixture(nameValue: string | null): ClientFixture | null {
         {
           harness: loadout.harness,
           model: { ...loadout.model, display_name: "Fixture model" },
+          account_availability: "verified_available",
           reasoning_capability: {
             kind: "enumerated",
             values: ["medium"],

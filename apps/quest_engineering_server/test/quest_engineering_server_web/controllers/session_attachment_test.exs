@@ -23,6 +23,12 @@ defmodule QuestEngineering.ServerWeb.SessionAttachmentTest do
     assert json_response(conn, 409)["error"]["code"] == "local_session_attachment_disabled"
 
     Application.put_env(:quest_engineering_server, :local_session_attach_enabled, true)
+
+    assert %{
+             "status" => "ok",
+             "capabilities" => %{"local_session_attachment" => true}
+           } = json_response(get(build_conn(), "/api/v1/health"), 200)
+
     conn = %{build_conn() | host: "127.0.0.1"} |> post(path, %{})
     assert json_response(conn, 409)["error"]["code"] == "local_session_attachment_disabled"
 
@@ -40,5 +46,22 @@ defmodule QuestEngineering.ServerWeb.SessionAttachmentTest do
       |> post(path, %{})
 
     assert json_response(conn, 404)["error"]["code"] == "session_not_found"
+
+    cancellation_path = "/api/v1/runs/run/attempts/attempt/cancel"
+    cancellation_body = %{occurrence_id: "occurrence", request_id: "request"}
+
+    unauthorized =
+      %{build_conn() | host: "127.0.0.1"}
+      |> post(cancellation_path, cancellation_body)
+
+    assert json_response(unauthorized, 409)["error"]["code"] ==
+             "local_session_attachment_disabled"
+
+    authorized =
+      %{build_conn() | host: "127.0.0.1"}
+      |> put_req_header("x-quest-engineering-local-client", "tauri")
+      |> post(cancellation_path, cancellation_body)
+
+    assert json_response(authorized, 404)["error"]["code"] == "not_found"
   end
 end

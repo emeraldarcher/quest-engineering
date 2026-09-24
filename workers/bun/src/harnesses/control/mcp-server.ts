@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { JsonValue } from "../../protocol/types.ts";
 import { HarnessControlClient } from "./client.ts";
 import { HARNESS_CONTROL_PATH_ENV } from "./descriptor.ts";
-import { HarnessControlError } from "./types.ts";
+import { HarnessCompletionError, HarnessControlError } from "./types.ts";
 
 export const QE_COMPLETE_STEP_TOOL = "qe_complete_step";
 export const QE_MCP_STARTUP_EVIDENCE_ENV =
@@ -72,6 +72,18 @@ export function createQeHarnessBridgeMcpServer(
           structuredContent: response,
         };
       } catch (error) {
+        if (error instanceof HarnessCompletionError) {
+          try {
+            await client.reportCompletionFailure({
+              kind: error.kind,
+              code: error.code,
+              message: error.message,
+            });
+          } catch {
+            // The typed tool error still tells Stop to preserve work while the
+            // bridge is unavailable; a later successful report is additive.
+          }
+        }
         return {
           isError: true,
           content: [
@@ -125,9 +137,39 @@ async function writeStartupEvidence(
 }
 
 function toolError(error: unknown): string {
+  if (error instanceof HarnessCompletionError)
+    return JSON.stringify({
+      accepted: false,
+      completed: false,
+      error: {
+        kind: error.kind,
+        code: error.code,
+        message: error.message,
+        retryable: true,
+        requiresCorrection: error.kind === "semantic_validation",
+      },
+    });
   if (error instanceof HarnessControlError)
-    return `Quest Engineering rejected completion (${error.code}): ${error.message}`;
-  return "Quest Engineering rejected completion because the local control bridge failed.";
+    return JSON.stringify({
+      accepted: false,
+      completed: false,
+      error: {
+        kind: "infrastructure",
+        code: error.code,
+        message: error.message,
+        retryable: true,
+      },
+    });
+  return JSON.stringify({
+    accepted: false,
+    completed: false,
+    error: {
+      kind: "infrastructure",
+      code: "bridge_unavailable",
+      message: "Quest Engineering local completion infrastructure failed.",
+      retryable: true,
+    },
+  });
 }
 
 if (import.meta.main) {

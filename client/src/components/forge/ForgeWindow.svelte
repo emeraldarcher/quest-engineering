@@ -297,6 +297,14 @@ function chooseModel(value: string) {
   clearIssues();
 }
 
+function availabilityLabel(option: ExecutionOption): string {
+  if (option.account_availability === "verified_available")
+    return "Verified available";
+  if (option.account_availability === "verified_unavailable")
+    return "Verified unavailable";
+  return "Availability unknown";
+}
+
 function optionSupportsDraft(option: ExecutionOption, value: LoadoutDraft): boolean {
   const reasoningSupported =
     option.reasoning_capability.kind === "unsupported"
@@ -611,7 +619,7 @@ function loadoutModelName(loadout: Loadout): string {
                   <select id="configuration-preset" bind:value={selectedPresetKey}>
                     <option value="">Choose a discovered configuration</option>
                     {#each product.executionOptions as option}
-                      <option value={optionKey(option)}>{presetLabel(option)} — {option.available ? "Available now" : "Not available now"}</option>
+                      <option value={optionKey(option)}>{presetLabel(option)} — {availabilityLabel(option)}{option.available ? "" : " · Not schedulable now"}</option>
                     {/each}
                   </select>
                 </div>

@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 7 as const;
+export const WORKER_PROTOCOL_VERSION = 9 as const;
 
 export type JsonValue =
   | string
@@ -103,7 +103,7 @@ export interface ResolvedExecution {
   };
 }
 
-/** v6 wire message plus normalized identity aliases used by durable internals. */
+/** Wire message plus normalized identity aliases used by durable internals. */
 export interface OperationalRecoveryExecution {
   epoch_number: number;
   attempt_in_epoch: number;
@@ -133,6 +133,23 @@ export interface ExecuteAction {
   operational_recovery?: OperationalRecoveryExecution;
 }
 
+export interface CancelDispatch {
+  type: "cancel_dispatch";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  action_id: string;
+  run_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  cancellation: {
+    request_id: string;
+    origin: "product_operator";
+    reason: string | null;
+    requested_at: string;
+  };
+}
+
 export type DispatchState =
   | "accepted"
   | "running"
@@ -140,6 +157,17 @@ export type DispatchState =
   | "failed"
   | "uncertain";
 export type LocalDispatchState = DispatchState;
+
+export type ExecutionTurnPhase =
+  | "preparing"
+  | "prompt_intent"
+  | "waiting_for_activity"
+  | "working"
+  | "awaiting_result"
+  | "blocked"
+  | "stalled"
+  | "settled"
+  | "uncertain";
 
 export interface ReconcileSession {
   session_id: string;
@@ -152,8 +180,10 @@ export interface ReconcileSession {
   harness_display_name: string;
   state:
     | "starting"
+    | "waiting_for_activity"
     | "running"
     | "waiting_for_human"
+    | "stalled"
     | "recovering"
     | "retained"
     | "closed"
@@ -204,6 +234,38 @@ export interface ReconcileSession {
   } | null;
   started_at: string;
   last_activity_at: string;
+  turn: {
+    phase: ExecutionTurnPhase;
+    prompt_intent_at: string | null;
+    prompt_accepted_at: string | null;
+    native_activity_at: string | null;
+    provider_turn_settled_at: string | null;
+    native_idle_at: string | null;
+    structured_result_received_at: string | null;
+    stalled_at: string | null;
+    settled_at: string | null;
+    completion: {
+      structured_result_required: true;
+      outputs: Array<{ name: string; kind: string }>;
+      physical_export_required: boolean;
+    };
+    physical_process?: {
+      mode: "prepared_process_adopted" | "fresh_process_fallback";
+      source_action_id: string;
+      source_attempt_id: string;
+      target_action_id: string;
+      target_attempt_id: string;
+      source_lineage_id: string;
+      target_lineage_id: string;
+      herdr_session: string | null;
+      herdr_session_incarnation: string | null;
+      workspace_id: string | null;
+      pane_id: string | null;
+      terminal_id: string | null;
+      agent_name: string | null;
+      recorded_at: string;
+    };
+  };
 }
 
 export interface ReconcileDispatch {
@@ -215,12 +277,18 @@ export interface ReconcileDispatch {
   failure?: Record<string, JsonValue>;
 }
 
+export type AccountAvailability =
+  | "verified_available"
+  | "verified_unavailable"
+  | "unknown";
+
 export interface ExecutorCapability {
   harness_kind: string;
   models: Array<{
     provider: string;
     model: string;
     display_name: string;
+    account_availability: AccountAvailability;
     reasoning_capability: ReasoningCapability;
   }>;
   supported_tool_policies: Array<ToolPolicy["kind"]>;
@@ -232,6 +300,7 @@ export interface WorkerCapabilities {
   os: string;
   arch: string;
   max_concurrency: number;
+  dispatch_availability?: "active" | "maintenance";
   tags: string[];
   executors: ExecutorCapability[];
   features?: Array<

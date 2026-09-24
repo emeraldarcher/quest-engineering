@@ -14,6 +14,7 @@ defmodule QuestEngineering.Server.Persistence.ExecutionSession do
     field :terminal, :map
     field :native_session_id, :string
     field :attention, :map
+    field :turn, :map
     field :last_connection_generation, :integer
     field :started_at, :utc_datetime_usec
     field :last_activity_at, :utc_datetime_usec
@@ -33,6 +34,7 @@ defmodule QuestEngineering.Server.Persistence.ExecutionSession do
       :terminal,
       :native_session_id,
       :attention,
+      :turn,
       :last_connection_generation,
       :started_at,
       :last_activity_at
@@ -50,7 +52,7 @@ defmodule QuestEngineering.Server.Persistence.ExecutionSession do
     ])
     |> validate_inclusion(
       :state,
-      ~w(starting running waiting_for_human recovering retained closed unavailable)
+      ~w(starting waiting_for_activity running waiting_for_human stalled recovering retained closed unavailable)
     )
     |> foreign_key_constraint(:worker_id)
     |> foreign_key_constraint(:current_action_id)

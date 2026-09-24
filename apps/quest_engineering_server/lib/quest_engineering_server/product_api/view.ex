@@ -14,6 +14,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
   alias QuestEngineering.Core.Tactics.Until
   alias QuestEngineering.Server.DeliveryEligibility
   alias QuestEngineering.Server.DeliveryStore
+  alias QuestEngineering.Server.ExecutionStatus
   alias QuestEngineering.Server.Persistence.ProductQuest
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RunDelivery
@@ -163,7 +164,7 @@ defmodule QuestEngineering.Server.ProductApi.View do
   end
 
   defp lifecycle_for_run(run_id, %{status: "running"}, _delivery),
-    do: %{state: "working", label: "Working", current_run_id: run_id, primary_action: nil}
+    do: ExecutionStatus.active_lifecycle(run_id)
 
   defp lifecycle_for_run(run_id, %{status: "failed"}, _delivery),
     do: %{

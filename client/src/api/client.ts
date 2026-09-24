@@ -9,6 +9,7 @@ import {
   type ClassDefinition,
   type DeliveryProjection,
   decodeApiError,
+  type ExecutionCancellation,
   type ExecutionOption,
   type HarnessSessionState,
   type JsonValue,
@@ -164,6 +165,21 @@ export class ApiClient {
       { occurrence_id: occurrenceId },
       (value) => decodeRun(asRecord(value, "run").run),
     );
+  authorizeExecutionPrompt = (
+    runId: string,
+    occurrenceId: string,
+    attemptId: string,
+    requestId: string,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/execution/authorize-prompt`,
+      {
+        occurrence_id: occurrenceId,
+        attempt_id: attemptId,
+        request_id: requestId,
+      },
+      (value) => decodeRun(asRecord(value, "run").run),
+    );
   recoverExecutionFresh = (
     runId: string,
     occurrenceId: string,
@@ -173,6 +189,26 @@ export class ApiClient {
       `/runs/${encodeURIComponent(runId)}/execution/recover-fresh`,
       { occurrence_id: occurrenceId, request_id: requestId },
       (value) => decodeRun(asRecord(value, "run").run),
+    );
+  cancelExecutionAttempt = (
+    runId: string,
+    occurrenceId: string,
+    attemptId: string,
+    requestId: string,
+    reason: string | null = null,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/cancel`,
+      { occurrence_id: occurrenceId, request_id: requestId, reason },
+      (value) => {
+        const response = asRecord(value, "execution cancellation");
+        return {
+          cancellation: decodeExecutionCancellation(response.cancellation),
+          run: decodeRun(response.run),
+        };
+      },
+      undefined,
+      true,
     );
   markExecutionFailed = (runId: string, occurrenceId: string) =>
     this.post(
@@ -703,6 +739,16 @@ function decodeExecutionOption(value: unknown): ExecutionOption {
         "current tool profile tools",
       ),
     },
+    account_availability: (() => {
+      const state = asString(x.account_availability, "account availability");
+      if (
+        state !== "verified_available" &&
+        state !== "verified_unavailable" &&
+        state !== "unknown"
+      )
+        throw new Error("Invalid account availability.");
+      return state;
+    })(),
     workspaces: asArray(x.workspaces, "option workspaces").map((item) => {
       const w = asRecord(item, "option workspace");
       return {
@@ -928,9 +974,21 @@ function decodeRun(value: unknown): RunProjection {
       pending: asNumber(counts.pending, "count"),
       waiting: asNumber(counts.waiting, "count"),
       scheduled: asNumber(counts.scheduled, "count"),
+      waiting_for_activity:
+        counts.waiting_for_activity === undefined
+          ? 0
+          : asNumber(counts.waiting_for_activity, "count"),
       running: asNumber(counts.running, "count"),
+      blocked:
+        counts.blocked === undefined ? 0 : asNumber(counts.blocked, "count"),
+      stalled:
+        counts.stalled === undefined ? 0 : asNumber(counts.stalled, "count"),
       completed: asNumber(counts.completed, "count"),
       failed: asNumber(counts.failed, "count"),
+      cancelled:
+        counts.cancelled === undefined
+          ? 0
+          : asNumber(counts.cancelled, "count"),
       uncertain: asNumber(counts.uncertain, "count"),
     },
     issues: asArray(x.issues, "issues").map((item) => {
@@ -1130,6 +1188,14 @@ function decodeRunStep(value: unknown) {
               ),
               can_human_retry: recovery.can_human_retry === true,
               can_retry_fresh: recovery.can_retry_fresh === true,
+              ...(recovery.can_authorize_prompt === undefined
+                ? {}
+                : {
+                    can_authorize_prompt: asBoolean(
+                      recovery.can_authorize_prompt,
+                      "execution prompt authorization",
+                    ),
+                  }),
               retained_session_available:
                 recovery.retained_session_available === true,
               ...(typeof recovery.classification === "string"
@@ -1141,6 +1207,51 @@ function decodeRunStep(value: unknown) {
           })(),
   };
 }
+function decodeExecutionCancellation(value: unknown): ExecutionCancellation {
+  const cancellation = asRecord(value, "execution cancellation");
+  return {
+    action_id: asString(cancellation.action_id, "execution cancellation"),
+    worker_id: asString(cancellation.worker_id, "execution cancellation"),
+    occurrence_id: asString(
+      cancellation.occurrence_id,
+      "execution cancellation",
+    ),
+    attempt_id: asString(cancellation.attempt_id, "execution cancellation"),
+    request_id: nullableString(
+      cancellation.request_id,
+      "execution cancellation",
+    ),
+    origin:
+      cancellation.origin === null
+        ? null
+        : (asString(
+            cancellation.origin,
+            "execution cancellation",
+          ) as "product_operator"),
+    reason: nullableString(cancellation.reason, "execution cancellation"),
+    requested_generation:
+      cancellation.requested_generation === null
+        ? null
+        : asNumber(cancellation.requested_generation, "execution cancellation"),
+    requested_at: nullableString(
+      cancellation.requested_at,
+      "execution cancellation",
+    ),
+    state: asString(cancellation.state, "execution cancellation") as
+      | "cancellation_requested"
+      | "cancelled"
+      | "already_terminal",
+    delivery: asString(cancellation.delivery, "execution cancellation") as
+      | "sent"
+      | "pending"
+      | "not_repeated",
+    idempotent_replay: asBoolean(
+      cancellation.idempotent_replay,
+      "execution cancellation",
+    ),
+  };
+}
+
 function decodeRunAttempt(value: unknown) {
   const attempt = asRecord(value, "step attempt");
   const resolution =
@@ -1148,9 +1259,14 @@ function decodeRunAttempt(value: unknown) {
       ? null
       : (asString(attempt.resolution, "step attempt") as
           | "retried"
-          | "marked_failed");
+          | "marked_failed"
+          | "cancelled");
   return {
     id: asString(attempt.id, "step attempt"),
+    action_id:
+      attempt.action_id == null
+        ? null
+        : nullableString(attempt.action_id, "step attempt"),
     number: asNumber(attempt.number, "step attempt"),
     state: asString(attempt.state, "step attempt"),
     started_at: nullableString(attempt.started_at, "step attempt"),
@@ -1160,6 +1276,18 @@ function decodeRunAttempt(value: unknown) {
     ),
     output_produced: asBoolean(attempt.output_produced, "step attempt"),
     resolution,
+    ...(attempt.can_cancel === undefined
+      ? {}
+      : {
+          can_cancel: asBoolean(
+            attempt.can_cancel,
+            "step attempt cancellation eligibility",
+          ),
+        }),
+    cancellation:
+      attempt.cancellation == null
+        ? null
+        : decodeAttemptCancellation(attempt.cancellation),
     retry_of_attempt_id: nullableString(
       attempt.retry_of_attempt_id,
       "step attempt",
@@ -1176,6 +1304,30 @@ function decodeRunAttempt(value: unknown) {
       attempt.session == null ? null : decodeHarnessSession(attempt.session),
   };
 }
+function decodeAttemptCancellation(value: unknown) {
+  const cancellation = asRecord(value, "attempt cancellation");
+  return {
+    state: asString(cancellation.state, "attempt cancellation") as
+      | "requested"
+      | "cancelled",
+    request_id: asString(cancellation.request_id, "attempt cancellation"),
+    origin: asString(
+      cancellation.origin,
+      "attempt cancellation",
+    ) as "product_operator",
+    reason: nullableString(cancellation.reason, "attempt cancellation"),
+    requested_generation: asNumber(
+      cancellation.requested_generation,
+      "attempt cancellation",
+    ),
+    requested_at: asString(cancellation.requested_at, "attempt cancellation"),
+    cancelled_at: nullableString(
+      cancellation.cancelled_at,
+      "attempt cancellation",
+    ),
+  };
+}
+
 function decodeAttemptExecution(value: unknown) {
   const execution = asRecord(value, "attempt execution");
   const model = asRecord(execution.model, "attempt model");
@@ -1444,9 +1596,13 @@ function stepState(value: unknown): StepState {
       "pending",
       "waiting",
       "scheduled",
+      "waiting_for_activity",
       "running",
+      "blocked",
+      "stalled",
       "completed",
       "failed",
+      "cancelled",
       "uncertain",
     ].includes(state)
   )
