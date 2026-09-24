@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
 import { appendFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -172,7 +174,15 @@ function toolError(error: unknown): string {
   });
 }
 
-if (import.meta.main) {
+// Bun rewrites `import.meta.main` to a CommonJS `require.main` check when this
+// entrypoint is bundled for Node, which is invalid in the emitted ESM guest
+// bundle. Compare the executable module URL instead so both direct Bun tests and
+// the immutable Node guest bundle select the entrypoint without a runtime shim.
+const entrypoint = process.argv[1];
+if (
+  typeof entrypoint === "string" &&
+  resolve(entrypoint) === fileURLToPath(import.meta.url)
+) {
   runQeHarnessBridgeMcpServer().catch((error: unknown) => {
     const message =
       error instanceof HarnessControlError
