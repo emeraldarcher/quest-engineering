@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 3 added independently testable Worker infrastructure for private Git materialization, physical-lineage worktrees, deterministic workspace fingerprints, checkpoints, export, restore, and isolated host-fixture import. Phase 4 wires that infrastructure into production Pi dispatch and Run delivery materialization; Antigravity, server protocol, and UI semantics remain unchanged.
+Phase 3 added independently testable Worker infrastructure for private Git materialization, physical-lineage worktrees, deterministic workspace fingerprints, checkpoints, export, restore, and isolated host-fixture import. Phase 4 wired Pi; Phase 5 routes Antigravity through the same physical-lineage workspace and Run delivery materialization. No harness receives a host `.git` mount.
 
 The implementation is `workers/bun/src/workspace/private-git.ts` with durable state in `private-git-store.ts`. It is a workspace layer above `EnvironmentLease`, not an execution-environment backend capability. An SBX machine can exist without a repository and a Run can materialize more than one repository in future, so no gratuitous `private_git` capability was added to the environment contract.
 

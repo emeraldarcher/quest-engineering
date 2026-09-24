@@ -1,8 +1,8 @@
 # Manual Antigravity strategy probes
 
-These are deliberately human-operated, subscription-backed evidence procedures for `agy 1.2.2`. The scripts refuse to run unless `QE_RUN_SUBSCRIPTION_PROBE=1` is explicitly set. Quest Engineering does not run them as automated tests.
+These are historical, diagnostic-only human-operated procedures from the host-native strategy work. They are not the production launch path and grant no authority to change it. Current profile provenance is `agy 1.2.7`; the scripts still refuse to run unless `QE_RUN_SUBSCRIPTION_PROBE=1` is explicitly set. Quest Engineering does not run them as automated tests.
 
-Both procedures use isolated directories under `.pi/tmp/antigravity-human-probes/`. They request no tools, repository inspection, or file modification from the model. They do not modify global Antigravity MCP or hook configuration.
+The procedures use isolated directories under `.pi/tmp/antigravity-human-probes/`. Production instead owns MCP registration in `qe-coding-execution-v1` and installs the namespaced hook in the lineage-private guest HOME; no operator should register or merge host-global production configuration.
 
 Run commands from the repository root.
 
@@ -156,9 +156,9 @@ The three native IDs—not transcript filenames—are the identity proof. Recall
 
 ## C. Interactive MCP completion gate
 
-This gate was cleared by the bounded human-operated probe on Antigravity CLI 1.2.2. The native TUI invoked `qe_complete_step` once with the expected semantic payload, the bridge attributed it to the exact active Attempt, and the real Stop hook returned `allow`. The static Antigravity registration contains no Run, Attempt, lineage, nonce, descriptor, or credential.
+This historical gate was cleared by the bounded human-operated probe on Antigravity CLI 1.2.2. The native TUI invoked `qe_complete_step` once with the expected semantic payload, the bridge attributed it to the exact active Attempt, and the real Stop hook returned `allow`. The static Antigravity registration contains no Run, Attempt, lineage, nonce, descriptor, or credential.
 
-A human must perform the one-time local Antigravity registration because it changes global Antigravity configuration:
+The following historical command changed global Antigravity configuration and must not be used for the SBX production path:
 
 ```bash
 agy mcp add qe \
