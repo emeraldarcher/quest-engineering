@@ -104,6 +104,27 @@ test("protocol 999 missing a Pi-only capability disables Pi but not Antigravity"
   expect(antigravity.ready).toBe(true);
 });
 
+test("environment-backed harnesses reject Herdr without explicit managed launch", () => {
+  const value = evidence(22, {
+    agentExplicitLaunch: false,
+    missingParameter: ["agent.start", "command"],
+  });
+  for (const harness of ["pi", "antigravity"]) {
+    const readiness = evaluateHerdrCompatibility(harness, value);
+    expect(readiness).toMatchObject({
+      status: "incompatible",
+      ready: false,
+    });
+    expect(readiness.missingCapabilities).toContain("agent.explicit_launch");
+    expect(readiness.diagnostics).toContainEqual({
+      code: "missing_capability",
+      capability: "agent.explicit_launch",
+      message:
+        "Herdr cannot prove generic exact managed launch support in both live capabilities and agent.start schema metadata.",
+    });
+  }
+});
+
 test("protocol 999 with an incompatible operation contract names the semantic capability", () => {
   const value = evidence(999, {
     missingParameter: ["agent.prompt", "wait"],
@@ -329,6 +350,7 @@ function evidence(
     states?: string[];
     integrations?: HerdrCompatibilityEvidence["integrations"];
     missingParameter?: [string, string];
+    agentExplicitLaunch?: boolean;
   } = {},
 ): HerdrCompatibilityEvidence {
   const endpointGeneration = overrides.endpointGeneration ?? 1;
@@ -341,7 +363,7 @@ function evidence(
       endpoint_compatible: true,
       capabilities: {
         endpoint_protocol_generation: endpointGeneration,
-        agent_explicit_launch: true,
+        agent_explicit_launch: overrides.agentExplicitLaunch ?? true,
       },
     },
     schema: schema(
@@ -353,7 +375,7 @@ function evidence(
       version: "test-herdr",
       protocol,
       endpointGeneration,
-      agentExplicitLaunch: true,
+      agentExplicitLaunch: overrides.agentExplicitLaunch ?? true,
     },
     snapshot: { workspaces: [], panes: [], agents: [] },
     integrations: overrides.integrations ?? [

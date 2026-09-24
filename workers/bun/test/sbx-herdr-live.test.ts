@@ -16,7 +16,7 @@ import {
   sbxEnvironmentName,
 } from "../src/execution-environment/sbx-backend.ts";
 import { CliSbxClient } from "../src/execution-environment/sbx-client.ts";
-import { SBX_PI_PROFILE } from "../src/execution-environment/sbx-profile.ts";
+import { SBX_CODING_PROFILE } from "../src/execution-environment/sbx-profile.ts";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import { SbxRunExecutionStore } from "../src/execution-environment/sbx-run-store.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
@@ -35,7 +35,7 @@ const sbxBin = process.env.QE_SBX_BIN ?? "/opt/homebrew/bin/sbx";
  * and therefore cannot authorize a provider/model cycle.
  */
 test.skipIf(!enabled)(
-  "live account eligibility gates exact Herdr/SBX launch without inference",
+  "live mixed-profile Pi launch uses exact Herdr/SBX execution without inference",
   async () => {
     expect(herdrBin.startsWith("/")).toBe(true);
     expect(sbxBin.startsWith("/")).toBe(true);
@@ -137,7 +137,7 @@ test.skipIf(!enabled)(
         reconnectMs: 1_000,
         resultTimeoutMs: 60_000,
         provider: "pi",
-        enabledHarnesses: ["pi"],
+        enabledHarnesses: ["pi", "antigravity"],
         fakeOutputs: {},
         fakeDelayMs: 0,
       };
@@ -159,7 +159,7 @@ test.skipIf(!enabled)(
         workerId,
         dataRoot,
         client: sbxClient,
-        executionProfile: SBX_PI_PROFILE,
+        executionProfile: SBX_CODING_PROFILE,
       });
       manager = new SbxRunExecutionManager(config, worktrees, { backend });
       const catalog = await manager.discover();

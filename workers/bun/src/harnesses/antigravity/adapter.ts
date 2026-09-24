@@ -123,12 +123,32 @@ export class AntigravityHarness implements AgentHarness {
   }
 
   async discover(): Promise<HarnessDiscovery> {
-    const [backend, native] = await Promise.all([
-      this.host.readiness(),
-      this.executionManager
-        ? this.executionManager.discoverAntigravity()
-        : this.discoverModels(this.runNativeCommand),
-    ]);
+    const backend = await this.host.readiness();
+    const onlyBackendIntegrationMissing =
+      backend.missingCapabilities.length > 0 &&
+      backend.missingCapabilities.every(
+        (capability) => capability === "integration.antigravity.current",
+      );
+    if (!backend.ready && !onlyBackendIntegrationMissing)
+      return {
+        kind: this.kind,
+        displayName: this.displayName,
+        strategy: this.integrationStrategy,
+        integration: {
+          status:
+            backend.status === "unavailable"
+              ? "unavailable"
+              : "incompatible_version",
+          detail: backendReadinessDetail(backend),
+          installed: true,
+          authenticated: false,
+        },
+        models: [],
+        capabilities: { ...this.capabilities, structuredResult: false },
+      };
+    const native = this.executionManager
+      ? await this.executionManager.discoverAntigravity()
+      : await this.discoverModels(this.runNativeCommand);
     const registration = native.installed
       ? this.executionManager
         ? {
@@ -148,9 +168,6 @@ export class AntigravityHarness implements AgentHarness {
       native.authenticated &&
       native.compatible &&
       registration.ready;
-    const onlyBackendIntegrationMissing = backend.missingCapabilities.every(
-      (capability) => capability === "integration.antigravity.current",
-    );
     const discovery: HarnessDiscovery = {
       kind: this.kind,
       displayName: this.displayName,

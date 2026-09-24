@@ -227,7 +227,7 @@ export function evaluateHerdrCompatibility(
     }
   }
 
-  if (harnessKind === "pi") {
+  if (harnessKind === "pi" || harnessKind === "antigravity") {
     const explicitLaunchSchema =
       schemaOperations.get("agent.start")?.has("command") === true;
     const explicitLaunchAdvertised = evidence.ping.agentExplicitLaunch === true;

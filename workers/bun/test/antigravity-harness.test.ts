@@ -387,6 +387,50 @@ test("Antigravity discovery still requires Herdr native observation integration"
   }
 });
 
+test("Antigravity discovery rejects missing explicit launch before SBX discovery", async () => {
+  const value = await fixture();
+  let sbxDiscoveries = 0;
+  const discoverAntigravity = value.executionManager.discoverAntigravity.bind(
+    value.executionManager,
+  );
+  value.executionManager.discoverAntigravity = async () => {
+    sbxDiscoveries += 1;
+    return discoverAntigravity();
+  };
+  try {
+    value.host.backendReadiness = {
+      ...readyBackend("antigravity"),
+      status: "incompatible",
+      ready: false,
+      missingCapabilities: ["agent.explicit_launch"],
+      diagnostics: [
+        {
+          code: "missing_capability",
+          capability: "agent.explicit_launch",
+          message:
+            "Herdr cannot prove generic exact managed launch support in both live capabilities and agent.start schema metadata.",
+        },
+      ],
+    };
+    const discovery = await value.harness.discover();
+    expect(discovery).toMatchObject({
+      integration: {
+        status: "incompatible_version",
+        authenticated: false,
+      },
+      models: [],
+      capabilities: { structuredResult: false },
+    });
+    expect(discovery.integration.detail).toContain(
+      "generic exact managed launch support",
+    );
+    expect(sbxDiscoveries).toBe(0);
+    expect(value.host.startRequests).toHaveLength(0);
+  } finally {
+    await value.close();
+  }
+});
+
 test("Antigravity has no host-native execution fallback", async () => {
   const value = await fixture();
   try {
