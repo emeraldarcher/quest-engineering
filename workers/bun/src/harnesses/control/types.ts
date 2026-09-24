@@ -49,6 +49,7 @@ export type HarnessControlOperation =
       type: "native_stop";
       terminationReason: string;
       fullyIdle: boolean;
+      observedModel?: string;
     };
 
 export interface HarnessControlRequest {
@@ -78,7 +79,8 @@ export type NativeStopDecision =
       cause:
         | "completion_omitted"
         | "completion_semantic_validation"
-        | "completion_infrastructure";
+        | "completion_infrastructure"
+        | "readiness_probe";
       enforcementAttempt?: number;
     }
   | {

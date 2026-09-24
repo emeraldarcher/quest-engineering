@@ -224,6 +224,9 @@ function decodeOperation(
         type: "native_stop",
         terminationReason: nonEmpty(raw.terminationReason),
         fullyIdle: raw.fullyIdle === true,
+        ...(typeof raw.observedModel === "string" && raw.observedModel
+          ? { observedModel: raw.observedModel }
+          : {}),
       };
     default:
       throw new HarnessControlError(

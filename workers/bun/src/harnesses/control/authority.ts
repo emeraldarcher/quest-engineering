@@ -239,7 +239,7 @@ export class HarnessControlAuthority {
         };
       }
       case "native_stop":
-        return this.nativeStop(context);
+        return this.nativeStop(context, operation);
     }
   }
 
@@ -423,7 +423,44 @@ export class HarnessControlAuthority {
 
   private async nativeStop(
     context: BoundControlContext,
+    operation: Extract<HarnessControlOperation, { type: "native_stop" }>,
   ): Promise<HarnessControlResult> {
+    const expectedModel = context.dispatch.action.execution.configuration.model;
+    if (
+      context.dispatch.action.execution.configuration.harness_kind ===
+        "antigravity" &&
+      operation.terminationReason !== "qe_zero_inference_readiness" &&
+      operation.observedModel &&
+      operation.observedModel !== expectedModel.model
+    ) {
+      const reason = `Antigravity stopped with model ${operation.observedModel}, but this PhysicalLineage is fenced to ${expectedModel.provider}/${expectedModel.model}. Continue only through a fresh compatible Attempt.`;
+      context.contractViolation = reason;
+      return {
+        accepted: true,
+        completed: false,
+        contractViolation: reason,
+        nativeStop: {
+          decision: "contract_violation",
+          enforcementAttempt: context.enforcementAttempts,
+          reason,
+        },
+      };
+    }
+    if (
+      context.dispatch.action.execution.configuration.harness_kind ===
+        "antigravity" &&
+      operation.terminationReason === "qe_zero_inference_readiness"
+    )
+      return {
+        accepted: true,
+        completed: false,
+        nativeStop: {
+          decision: "continue",
+          cause: "readiness_probe",
+          reason:
+            "Quest Engineering verified the Antigravity Stop-hook transport without authorizing a provider turn.",
+        },
+      };
     if (await hasStepResult(context.dispatch))
       return {
         accepted: true,

@@ -7,12 +7,13 @@ const [mode, event] = process.argv.slice(2);
 
 try {
   if (mode === "hook" && event === "stop") {
-    const payload = record(JSON.parse(await Bun.stdin.text()));
+    const payload = record(JSON.parse(await readStdin()));
     const decision = await HarnessControlClient.fromEnvironment().nativeStop(
       typeof payload.terminationReason === "string"
         ? payload.terminationReason
         : "unknown",
       payload.fullyIdle === true,
+      typeof payload.modelName === "string" ? payload.modelName : undefined,
     );
     if (decision.nativeStop?.decision === "continue")
       output({ decision: "continue", reason: decision.nativeStop.reason });
@@ -24,7 +25,7 @@ try {
       process.exitCode = 3;
     } else output({});
   } else if (mode === "local-control") {
-    const operation = decodeOperation(JSON.parse(await Bun.stdin.text()));
+    const operation = decodeOperation(JSON.parse(await readStdin()));
     output(await HarnessControlClient.fromEnvironment().call(operation));
   } else {
     throw new Error("Usage: qe-harness-bridge hook stop | local-control");
@@ -51,6 +52,13 @@ try {
 
 function output(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin)
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function decodeOperation(value: unknown): HarnessControlOperation {

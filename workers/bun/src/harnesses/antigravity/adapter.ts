@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { WorkerConfig } from "../../config.ts";
 import {
@@ -8,6 +8,10 @@ import {
   type HarnessLineage,
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
+import type {
+  PreparedSbxHarnessExecution,
+  SbxRunExecutionManager,
+} from "../../execution-environment/sbx-run.ts";
 import type { JsonValue, ReasoningCapability } from "../../protocol/types.ts";
 import { HerdrApiError } from "../../session-host/herdr/client.ts";
 import type {
@@ -19,12 +23,7 @@ import type {
 import { materializeExecutionArtifacts } from "../../workspace/execution-artifacts.ts";
 import { controlDescriptorPath } from "../control/authority.ts";
 import { HarnessControlClient } from "../control/client.ts";
-import { HARNESS_CONTROL_PATH_ENV } from "../control/descriptor.ts";
-import {
-  assertCurrentBridgeAuthority,
-  waitForMcpProcessBinding,
-} from "../control/mcp-readiness.ts";
-import { QE_MCP_STARTUP_EVIDENCE_ENV } from "../control/mcp-server.ts";
+import { assertCurrentBridgeAuthority } from "../control/mcp-readiness.ts";
 import {
   collectStepResult,
   readControl,
@@ -63,22 +62,15 @@ import {
   discoverAntigravityModels,
   type NativeCommandRunner,
 } from "./discovery.ts";
-import {
-  type AntigravityCommandHookSpec,
-  inspectAntigravityCommandHook,
-  installAntigravityCommandHook,
-  proveAntigravityStopHookReadiness,
-  removeAntigravityCommandHook,
-  waitForAntigravityHookDiscovery,
-} from "./hook-readiness.ts";
+import type { AntigravityCommandHookSpec } from "./hook-readiness.ts";
 
 const HOOK_NAME = "qe-worker-stop-v1";
 
 interface AntigravityDependencies {
   discoverModels?: typeof discoverAntigravityModels;
   runNativeCommand?: NativeCommandRunner;
-  proveReadiness?: typeof proveAntigravityStopHookReadiness;
   now?: () => string;
+  executionManager?: SbxRunExecutionManager;
 }
 
 /** Interactive-first Antigravity adapter. MCP transports payloads only. */
@@ -109,23 +101,14 @@ export class AntigravityHarness implements AgentHarness {
 
   private readonly discoverModels: typeof discoverAntigravityModels;
   private readonly runNativeCommand: NativeCommandRunner | undefined;
-  private readonly proveReadiness: typeof proveAntigravityStopHookReadiness;
   private readonly now: () => string;
-  private readonly bridgeCliPath = resolve(
-    import.meta.dir,
-    "..",
-    "control",
-    "bridge-cli.ts",
-  );
-  private readonly mcpServerPath = resolve(
-    import.meta.dir,
-    "..",
-    "control",
-    "mcp-server.ts",
-  );
+  private readonly executionManager: SbxRunExecutionManager | undefined;
+  private lastReadyDiscovery: HarnessDiscovery | null = null;
+  private readonly sbxExecutions = new Map<
+    string,
+    PreparedSbxHarnessExecution
+  >();
   private stopped = false;
-  private readonly activeHookWorkspaces = new Map<string, string>();
-  private readonly originalHookContents = new Map<string, string | null>();
 
   constructor(
     private readonly host: TerminalSessionBackend,
@@ -135,18 +118,29 @@ export class AntigravityHarness implements AgentHarness {
     this.discoverModels =
       dependencies.discoverModels ?? discoverAntigravityModels;
     this.runNativeCommand = dependencies.runNativeCommand;
-    this.proveReadiness =
-      dependencies.proveReadiness ?? proveAntigravityStopHookReadiness;
     this.now = dependencies.now ?? (() => new Date().toISOString());
+    this.executionManager = dependencies.executionManager;
   }
 
   async discover(): Promise<HarnessDiscovery> {
     const [backend, native] = await Promise.all([
       this.host.readiness(),
-      this.discoverModels(this.runNativeCommand),
+      this.executionManager
+        ? this.executionManager.discoverAntigravity()
+        : this.discoverModels(this.runNativeCommand),
     ]);
     const registration = native.installed
-      ? await this.inspectMcpRegistration()
+      ? this.executionManager
+        ? {
+            ready: true,
+            detail:
+              "The immutable mixed SBX profile owns QE MCP registration and the guest Stop bridge.",
+          }
+        : {
+            ready: false,
+            detail:
+              "Antigravity execution requires the immutable mixed SBX profile.",
+          }
       : { ready: false, detail: "Antigravity CLI is unavailable." };
     const ready =
       backend.ready &&
@@ -157,7 +151,7 @@ export class AntigravityHarness implements AgentHarness {
     const onlyBackendIntegrationMissing = backend.missingCapabilities.every(
       (capability) => capability === "integration.antigravity.current",
     );
-    return {
+    const discovery: HarnessDiscovery = {
       kind: this.kind,
       displayName: this.displayName,
       strategy: this.integrationStrategy,
@@ -193,6 +187,8 @@ export class AntigravityHarness implements AgentHarness {
       models: native.models,
       capabilities: { ...this.capabilities, structuredResult: ready },
     };
+    if (ready) this.lastReadyDiscovery = discovery;
+    return discovery;
   }
 
   async start(
@@ -200,25 +196,31 @@ export class AntigravityHarness implements AgentHarness {
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     await this.assertExactConfiguration(dispatch);
+    if (!this.executionManager)
+      throw new Error(
+        "Antigravity execution requires the Run-owned mixed SBX boundary.",
+      );
     const sessionIncarnation = requireSessionIncarnation(this.host);
     const physicalLineage = {
       ...lineage,
       herdrSession: this.host.sessionName,
       herdrSessionIncarnation: sessionIncarnation,
     };
-    const cwd = executionCwd(this.config, dispatch);
-    mkdirSync(cwd, { recursive: true });
-    await this.activateHook(lineage, cwd);
-    const environment = this.environment(lineage);
-    const workspaceId = await this.ensureWorkspace(environment, cwd);
+    const sbx = await this.executionManager.prepare(
+      dispatch,
+      physicalLineage,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    this.sbxExecutions.set(lineage.lineageId, sbx);
+    const cwd = sbx.hostCwd;
+    await sbx.installAntigravityHook(this.stopHookSpec(sbx));
+    const workspaceId = await this.ensureWorkspace(sbx.paneEnvironment, cwd);
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    // A dedicated tab guarantees this process receives its immutable session
-    // environment even when the Herdr workspace already existed.
     const pane = await this.host.createTab({
       workspaceId,
       cwd,
       label: displayLabel(dispatch),
-      environment,
+      environment: sbx.paneEnvironment,
     });
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     const agentName = agentNameFor(lineage.lineageId);
@@ -236,19 +238,33 @@ export class AntigravityHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
+    await sbx.syncControl();
     await this.host.reportMetadata({
       paneId: pane.paneId,
       title: displayLabel(dispatch),
       tokens: launchTokens,
     });
-    await prepareStartupEvidence(lineage);
-    const agent = await this.host.startAgent({
-      paneId: pane.paneId,
-      name: agentName,
-      integrationKind: "agy",
-      args: this.args(dispatch, lineage),
-      expectedTokens: launchTokens,
-    });
+    const args = this.args(dispatch, lineage);
+    const command = await sbx.launchDescriptor(args);
+    sbx.startRelay(this.host, pane.paneId);
+    let agent: HostedAgent;
+    try {
+      agent = await this.host.startAgent({
+        paneId: pane.paneId,
+        name: agentName,
+        integrationKind: "agy",
+        args,
+        command,
+        expectedTokens: launchTokens,
+      });
+      await sbx.awaitAttestation();
+    } catch (error) {
+      await sbx.stopRelay().catch(() => undefined);
+      await sbx.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
+      this.sbxExecutions.delete(lineage.lineageId);
+      await this.host.closePane(pane.paneId).catch(() => undefined);
+      throw error;
+    }
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     return {
       lineage: physicalLineage,
@@ -267,34 +283,15 @@ export class AntigravityHarness implements AgentHarness {
     dispatch: DispatchRecord,
     execution: HarnessPreparedExecution,
   ): Promise<void> {
-    const cwd = executionCwd(this.config, dispatch);
     const lineage = execution.lineage;
-    const descriptorPath = controlDescriptorPath(lineage);
-    await waitForMcpProcessBinding({
-      evidencePath: startupEvidencePath(lineage),
-      descriptorPath,
-      timeoutMs: this.config.resultTimeoutMs,
-    });
-    await assertCurrentBridgeAuthority(
-      descriptorPath,
-      expectedControlBinding(dispatch, lineage),
-    );
-    await this.proveReadiness({
-      hookConfigPath: hookConfigPath(cwd),
-      spec: this.stopHookSpec(),
-      logPath: nativeLogPath(lineage),
-      syntheticArgv: [process.execPath, this.bridgeCliPath, "hook", "stop"],
-      syntheticPayload: {
-        conversationId: "00000000-0000-4000-8000-000000000001",
-        executionNum: 0,
-        terminationReason: "qe_zero_inference_readiness",
-        fullyIdle: true,
-        modelName: "synthetic-no-inference",
-      },
-      env: {
-        ...process.env,
-        [HARNESS_CONTROL_PATH_ENV]: descriptorPath,
-      },
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx)
+      throw new Error("Antigravity readiness has no exact SBX execution.");
+    const binding = expectedControlBinding(dispatch, lineage);
+    await assertCurrentBridgeAuthority(controlDescriptorPath(lineage), binding);
+    await sbx.proveAntigravityReadiness({
+      spec: this.stopHookSpec(sbx),
+      binding,
       timeoutMs: Math.min(this.config.resultTimeoutMs, 30_000),
     });
     await writeFile(
@@ -305,7 +302,7 @@ export class AntigravityHarness implements AgentHarness {
           kind: "antigravity_pre_inference_readiness",
           actionId: dispatch.action.action_id,
           attemptId: dispatch.action.attempt_id,
-          workspaceRoot: cwd,
+          workspaceRoot: sbx.hostCwd,
           argv: this.args(dispatch, lineage),
           stopHookReady: true,
           mcpChildReady: true,
@@ -356,7 +353,10 @@ export class AntigravityHarness implements AgentHarness {
       reject(
         "The retained Antigravity process is not idle and conversation-free.",
       );
-    const cwd = executionCwd(this.config, target);
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx)
+      reject("The retained Antigravity process has no exact SBX execution.");
+    const cwd = (sbx as PreparedSbxHarnessExecution).hostCwd;
     if (
       !samePath(agent.cwd ?? agent.foregroundCwd, cwd) ||
       agent.workspaceId !== lineage.workspaceId ||
@@ -365,7 +365,6 @@ export class AntigravityHarness implements AgentHarness {
       reject(
         "The retained Antigravity process does not match the exact workspace, terminal, and pane provenance.",
       );
-    await this.assertPreparedHookConfiguration(cwd);
     const readiness = await readPreparedProcessReadiness(lineage);
     const expectedArgs = this.args(target, lineage);
     if (
@@ -381,11 +380,10 @@ export class AntigravityHarness implements AgentHarness {
       reject(
         "The retained Antigravity launch and readiness evidence do not match the requested Attempt policy.",
       );
-    await waitForMcpProcessBinding({
-      evidencePath: startupEvidencePath(lineage),
-      descriptorPath: controlDescriptorPath(lineage),
-      timeoutMs: this.config.resultTimeoutMs,
-    });
+    await assertCurrentBridgeAuthority(
+      controlDescriptorPath(lineage),
+      expectedControlBinding(target, lineage),
+    );
   }
 
   async continue(
@@ -393,6 +391,10 @@ export class AntigravityHarness implements AgentHarness {
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     await this.assertExactConfiguration(dispatch);
+    if (!this.executionManager)
+      throw new Error(
+        "Antigravity continuation requires the Run-owned mixed SBX boundary.",
+      );
     if (
       !lineage.herdrSessionIncarnation ||
       lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
@@ -400,7 +402,13 @@ export class AntigravityHarness implements AgentHarness {
       throw new Error(
         "The continued Antigravity TUI belongs to another Herdr session incarnation.",
       );
-    await this.activateHook(lineage, executionCwd(this.config, dispatch));
+    const sbx = await this.executionManager.prepare(
+      dispatch,
+      lineage,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    this.sbxExecutions.set(lineage.lineageId, sbx);
+    await sbx.installAntigravityHook(this.stopHookSpec(sbx));
     await writeControlAtomic(lineage.resultControlPath, {
       protocolVersion: 1,
       workerId: dispatch.action.worker_id,
@@ -409,11 +417,14 @@ export class AntigravityHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
+    await sbx.syncControl();
     const agent = await this.findExactLiveAgent(lineage);
     if (!agent || !nativeIdentityMatches(lineage, agent))
       throw new Error(
         "The exact continued Antigravity TUI is missing or has incompatible provenance.",
       );
+    sbx.startRelay(this.host, agent.paneId);
+    await sbx.awaitAttestation();
     await this.host.reportMetadata({
       paneId: agent.paneId,
       title: displayLabel(dispatch),
@@ -445,10 +456,10 @@ export class AntigravityHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
-    const prompt = antigravityPromptFor(
-      dispatch,
-      materializeExecutionArtifacts(this.config, dispatch),
-    );
+    const sbx = this.sbxExecutions.get(execution.lineage.lineageId);
+    if (!sbx) throw new Error("Antigravity prompt has no exact SBX execution.");
+    await sbx.syncControl();
+    const prompt = antigravityPromptFor(dispatch, sbx.materializedArtifacts);
     const evidence = await promptEvidenceCursor(
       "antigravity_log",
       nativeLogPath(execution.lineage),
@@ -476,10 +487,9 @@ export class AntigravityHarness implements AgentHarness {
     agent: HostedAgent,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
-    const prompt = antigravityPromptFor(
-      dispatch,
-      materializeExecutionArtifacts(this.config, dispatch),
-    );
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx) throw new Error("Antigravity wait has no exact SBX execution.");
+    const prompt = antigravityPromptFor(dispatch, sbx.materializedArtifacts);
     const evidence =
       persistedPromptEvidence(dispatch, "antigravity_log", prompt) ??
       (await promptEvidenceCursor(
@@ -496,151 +506,53 @@ export class AntigravityHarness implements AgentHarness {
     );
   }
 
-  async recover(lineage: HarnessLineage): Promise<HarnessRecoveredExecution> {
-    let sessionIncarnation = requireSessionIncarnation(this.host);
-    const live =
-      lineage.herdrSessionIncarnation === sessionIncarnation
-        ? await this.findExactLiveAgent(lineage)
-        : null;
-    sessionIncarnation = requireSessionIncarnation(this.host);
-    if (live && lineage.herdrSessionIncarnation === sessionIncarnation) {
-      if (!nativeIdentityMatches(lineage, live))
-        return {
-          found: false,
-          detail:
-            "The surviving Antigravity TUI has an unverifiable native conversation identity.",
-        };
-      const configuration = persistedConfiguration(lineage);
-      const cwd = persistedExecutionCwd(this.config, lineage, configuration);
-      if (cwd) await this.activateHook(lineage, cwd);
-      return {
-        found: true,
-        agent: live,
-        detail: `Herdr found the original Antigravity TUI in ${live.status} state.`,
-      };
-    }
-    const native = lineage.nativeSession;
-    if (!native || native.kind !== "id" || native.agent !== "agy")
-      return {
-        found: false,
-        detail:
-          "The Antigravity TUI is gone and no verified native conversation ID is available.",
-      };
-    const recoveryLineage = {
-      ...lineage,
-      herdrSession: this.host.sessionName,
-      herdrSessionIncarnation: sessionIncarnation,
-    };
-    const configuration = persistedConfiguration(lineage);
-    await this.assertPersistedConfigurationAvailable(configuration);
-    const cwd = persistedExecutionCwd(this.config, lineage, configuration);
-    if (!cwd)
-      return {
-        found: false,
-        detail: "Recovery workspace provenance is invalid.",
-      };
-    await this.activateHook(lineage, cwd);
-    const environment = {
-      [HARNESS_CONTROL_PATH_ENV]: controlDescriptorPath(lineage),
-      [QE_MCP_STARTUP_EVIDENCE_ENV]: startupEvidencePath(lineage),
-    };
-    const workspaceId = await this.ensureWorkspace(environment, cwd);
-    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    const pane = await this.host.createTab({
-      workspaceId,
-      cwd,
-      label: "Antigravity recovery",
-      environment,
-    });
-    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    const agentName = `${agentNameFor(lineage.lineageId)}-recovery`;
-    let recoveryControl: Awaited<ReturnType<typeof readControl>> | null = null;
-    try {
-      recoveryControl = await readControl(lineage.resultControlPath);
-    } catch (error) {
-      if (
-        lineage.activeActionId ||
-        (error as NodeJS.ErrnoException).code !== "ENOENT"
-      )
-        throw error;
-    }
+  async recover(
+    lineage: HarnessLineage,
+    dispatch?: DispatchRecord,
+  ): Promise<HarnessRecoveredExecution> {
+    const sessionIncarnation = requireSessionIncarnation(this.host);
     if (
-      recoveryControl &&
-      (recoveryControl.workerId !== this.config.workerId ||
-        recoveryControl.lineageId !== lineage.lineageId ||
-        recoveryControl.nonce === "")
-    )
-      throw new Error("Antigravity recovery control provenance is invalid.");
-    const recoveryTokens = {
-      ...retainedProvenance(this.config.workerId, recoveryLineage, agentName),
-      ...(recoveryControl
-        ? {
-            qe_active_state: "active",
-            qe_active_action_id: recoveryControl.action.action_id,
-            qe_action_hash: identityHash(recoveryControl.action.action_id),
-            qe_run_id: recoveryControl.action.run_id,
-            qe_occurrence_hash: identityHash(
-              recoveryControl.action.occurrence_id,
-            ),
-            qe_attempt_hash: identityHash(recoveryControl.action.attempt_id),
-            qe_result_nonce: recoveryControl.nonce,
-          }
-        : {}),
-    };
-    await this.host.reportMetadata({
-      paneId: pane.paneId,
-      title: "Antigravity recovery",
-      tokens: recoveryTokens,
-    });
-    await prepareStartupEvidence(lineage);
-    const model = record(configuration.model);
-    const agent = await this.host.startAgent({
-      paneId: pane.paneId,
-      name: agentName,
-      integrationKind: "agy",
-      args: [
-        "--conversation",
-        native.value,
-        "--model",
-        String(model?.model ?? ""),
-        ...effortArgs(configuration.reasoning),
-        "--log-file",
-        nativeLogPath(lineage),
-      ],
-      expectedTokens: recoveryTokens,
-    });
-    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    if (
-      !agent.nativeSession ||
-      agent.nativeSession.kind !== "id" ||
-      agent.nativeSession.value !== native.value
+      !lineage.herdrSessionIncarnation ||
+      lineage.herdrSessionIncarnation !== sessionIncarnation
     )
       return {
         found: false,
         detail:
-          "Relaunched Antigravity did not verify the retained conversation identity.",
+          "The original Antigravity execution belongs to another Herdr session incarnation.",
       };
-    await this.proveRecoveredProcessReadiness({
-      ...recoveryLineage,
-      agentName,
-      workspaceId: pane.workspaceId,
-      tabId: pane.tabId,
-      paneId: pane.paneId,
-      terminalId: pane.terminalId ?? null,
-      nativeSession: agent.nativeSession,
-    });
+    if (!this.executionManager || !dispatch)
+      return {
+        found: false,
+        detail:
+          "Antigravity recovery requires the exact Run-owned SBX dispatch context.",
+      };
+    const live = await this.findExactLiveAgent(lineage);
+    if (!live)
+      return {
+        found: false,
+        detail:
+          "Herdr cannot verify the original Antigravity TUI; fresh recovery may resume its verified conversation in the lineage-private SBX HOME.",
+      };
+    if (!nativeIdentityMatches(lineage, live))
+      return {
+        found: false,
+        detail:
+          "The surviving Antigravity TUI has an unverifiable native conversation identity.",
+      };
+    const sbx = await this.executionManager.prepare(
+      dispatch,
+      lineage,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    this.sbxExecutions.set(lineage.lineageId, sbx);
+    await sbx.installAntigravityHook(this.stopHookSpec(sbx));
+    await sbx.syncControl();
+    sbx.startRelay(this.host, live.paneId);
+    await sbx.awaitAttestation();
     return {
       found: true,
-      agent,
-      ref: refFor(
-        this.host.sessionName,
-        sessionIncarnation,
-        agentName,
-        pane,
-        agent,
-      ),
-      detail:
-        "Antigravity resumed the verified conversation in a new terminal/process incarnation.",
+      agent: live,
+      detail: `Herdr found the original Antigravity TUI in ${live.status} state.`,
     };
   }
 
@@ -708,11 +620,10 @@ export class AntigravityHarness implements AgentHarness {
     if (!lineage.paneId)
       throw new Error("Antigravity session has no live pane to retire.");
     await this.host.closePane(lineage.paneId);
-    try {
-      await this.deactivateHook(lineage);
-    } catch {
-      // Physical retirement is authoritative; a future launch rewrites its exact hook namespace.
-    }
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    await sbx?.stopRelay();
+    await sbx?.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
+    this.sbxExecutions.delete(lineage.lineageId);
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
@@ -724,7 +635,10 @@ export class AntigravityHarness implements AgentHarness {
   async close(lineage: HarnessLineage): Promise<void> {
     if (lineage.paneId)
       await this.host.sendKeys(lineage.paneId, ["ctrl+c", "ctrl+c"]);
-    await this.deactivateHook(lineage);
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    await sbx?.stopRelay();
+    await sbx?.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
+    this.sbxExecutions.delete(lineage.lineageId);
   }
 
   attachment(lineage: HarnessLineage) {
@@ -765,7 +679,9 @@ export class AntigravityHarness implements AgentHarness {
         // Durable QE state outranks stale terminal metadata.
       }
     }
-    await this.deactivateHook(lineage);
+    await this.sbxExecutions
+      .get(lineage.lineageId)
+      ?.removeAntigravityHook(HOOK_NAME);
   }
 
   async discoverAdoptionCandidates(
@@ -886,91 +802,6 @@ export class AntigravityHarness implements AgentHarness {
   disconnect(): void {
     this.stopped = true;
     this.host.disconnect();
-  }
-
-  private async proveRecoveredProcessReadiness(
-    lineage: HarnessLineage,
-  ): Promise<void> {
-    const configuration = persistedConfiguration(lineage);
-    const cwd = persistedExecutionCwd(this.config, lineage, configuration);
-    if (!cwd) throw new Error("Recovery workspace provenance is invalid.");
-    const descriptorPath = controlDescriptorPath(lineage);
-    await waitForMcpProcessBinding({
-      evidencePath: startupEvidencePath(lineage),
-      descriptorPath,
-      timeoutMs: this.config.resultTimeoutMs,
-    });
-    const control = await readControl(lineage.resultControlPath);
-    await assertCurrentBridgeAuthority(descriptorPath, {
-      actionId: control.action.action_id,
-      attemptId: control.action.attempt_id,
-      lineageId: lineage.lineageId,
-      resultNonce: control.nonce,
-    });
-    const inspection = await inspectAntigravityCommandHook(
-      hookConfigPath(cwd),
-      this.stopHookSpec(),
-    );
-    if (
-      !inspection.namespacedHookPresent ||
-      !inspection.eventRegistered ||
-      !inspection.commandMatches ||
-      !inspection.timeoutMatches
-    )
-      throw new Error(
-        "Recovered Antigravity Stop hook configuration is invalid.",
-      );
-    await waitForAntigravityHookDiscovery({
-      logPath: nativeLogPath(lineage),
-      minimumNamedHooks: inspection.namedHookCount,
-      minimumConfigFiles: 1,
-      timeoutMs: Math.min(this.config.resultTimeoutMs, 30_000),
-    });
-  }
-
-  private async assertPreparedHookConfiguration(cwd: string): Promise<void> {
-    const stop = await inspectAntigravityCommandHook(
-      hookConfigPath(cwd),
-      this.stopHookSpec(),
-    );
-    if (
-      !stop.namespacedHookPresent ||
-      !stop.eventRegistered ||
-      !stop.commandMatches ||
-      !stop.timeoutMatches
-    )
-      rejectPreparedProcessAdoption(
-        "The retained Antigravity process no longer has the exact QE Stop hook.",
-      );
-  }
-
-  private async activateHook(
-    lineage: HarnessLineage,
-    cwd: string,
-  ): Promise<void> {
-    const path = hookConfigPath(cwd);
-    if (!this.originalHookContents.has(cwd))
-      this.originalHookContents.set(cwd, await optionalFile(path));
-    await installAntigravityCommandHook(path, this.stopHookSpec());
-    this.activeHookWorkspaces.set(lineage.lineageId, cwd);
-  }
-
-  private async deactivateHook(lineage: HarnessLineage): Promise<void> {
-    const cwd = this.activeHookWorkspaces.get(lineage.lineageId);
-    if (!cwd) return;
-    this.activeHookWorkspaces.delete(lineage.lineageId);
-    if ([...this.activeHookWorkspaces.values()].includes(cwd)) return;
-    const path = hookConfigPath(cwd);
-    await removeAntigravityCommandHook(path, HOOK_NAME);
-    const original = this.originalHookContents.get(cwd);
-    this.originalHookContents.delete(cwd);
-    if (original !== undefined) {
-      const current = await optionalFile(path);
-      if (semanticallySameHookConfig(current, original)) {
-        if (original !== null)
-          await writeFile(path, original, { encoding: "utf8", mode: 0o600 });
-      }
-    }
   }
 
   private async submitAndCollect(
@@ -1253,59 +1084,32 @@ export class AntigravityHarness implements AgentHarness {
 
   private args(dispatch: DispatchRecord, lineage: HarnessLineage): string[] {
     const configuration = dispatch.action.execution.configuration;
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx?.guestLogPath)
+      throw new Error("Antigravity launch has no exact guest log binding.");
+    const native = lineage.nativeSession;
     return [
+      ...(native?.agent === "agy" && native.kind === "id"
+        ? ["--conversation", native.value]
+        : []),
       "--model",
       configuration.model.model,
       ...effortArgs(configuration.reasoning),
+      "--dangerously-skip-permissions",
       "--log-file",
-      nativeLogPath(lineage),
+      sbx.guestLogPath,
     ];
   }
 
-  private environment(lineage: HarnessLineage): Record<string, string> {
-    return {
-      [HARNESS_CONTROL_PATH_ENV]: controlDescriptorPath(lineage),
-      [QE_MCP_STARTUP_EVIDENCE_ENV]: startupEvidencePath(lineage),
-    };
-  }
-
-  private stopHookSpec(): AntigravityCommandHookSpec {
+  private stopHookSpec(
+    sbx: PreparedSbxHarnessExecution,
+  ): AntigravityCommandHookSpec {
     return {
       name: HOOK_NAME,
       event: "Stop",
-      command: `${process.execPath} '${this.bridgeCliPath}' hook stop`,
+      command: `/usr/bin/node '${sbx.lease.paths.state}/antigravity-control/bridge-cli.mjs' hook stop`,
       timeoutSeconds: 10,
     };
-  }
-
-  private async assertPersistedConfigurationAvailable(
-    configuration: Record<string, unknown>,
-  ): Promise<void> {
-    if (
-      record(configuration.tool_policy)?.kind !== "native_permissions" ||
-      configuration.tool_enforcement !== "native_permissions" ||
-      !Array.isArray(record(configuration.resolved_tool_profile)?.tools)
-    )
-      throw new Error(
-        "The retained Antigravity execution did not freeze its resolved QE semantic capability profile.",
-      );
-    const model = record(configuration.model);
-    const provider = model?.provider;
-    const modelId = model?.model;
-    const effort = configuration.reasoning;
-    const discovery = await this.discover();
-    if (
-      discovery.integration.status !== "ready" ||
-      !discovery.models.some(
-        (candidate) =>
-          candidate.provider === provider &&
-          candidate.model === modelId &&
-          reasoningMatches(candidate.reasoningCapability, effort),
-      )
-    )
-      throw new Error(
-        "The retained Antigravity model/effort pair is unavailable; recovery fallback is forbidden.",
-      );
   }
 
   private async assertExactConfiguration(
@@ -1326,7 +1130,7 @@ export class AntigravityHarness implements AgentHarness {
       throw new Error(
         "Antigravity models must use the antigravity provider namespace.",
       );
-    const discovery = await this.discover();
+    const discovery = this.lastReadyDiscovery ?? (await this.discover());
     if (discovery.integration.status !== "ready")
       throw new Error(discovery.integration.detail);
     const model = discovery.models.find(
@@ -1341,33 +1145,6 @@ export class AntigravityHarness implements AgentHarness {
       throw new Error(
         "The exact Antigravity model/effort pair is not available; fallback is forbidden.",
       );
-  }
-
-  private async inspectMcpRegistration(): Promise<{
-    ready: boolean;
-    detail: string;
-  }> {
-    const result = await (this.runNativeCommand
-      ? this.runNativeCommand(["mcp", "list"])
-      : nativeCommand(["mcp", "list"]));
-    const line = result.stdout
-      .split("\n")
-      .find((value) => /^qe\s/.test(value.trim()));
-    const ready =
-      result.exitCode === 0 &&
-      Boolean(
-        line &&
-          /\bstdio\b/.test(line) &&
-          /\benabled\b/.test(line) &&
-          line.includes(process.execPath) &&
-          line.includes(this.mcpServerPath),
-      );
-    return {
-      ready,
-      detail: ready
-        ? "The qe stdio MCP transport is enabled."
-        : "The qe stdio MCP transport is missing or disabled.",
-    };
   }
 
   private async ensureWorkspace(
@@ -1401,24 +1178,12 @@ export function antigravityPromptFor(
   return harnessPromptFor(dispatch, materialized, {
     completionTool: "qe_complete_step",
     humanAssistanceInstruction:
-      "- Antigravity's native permission prompts remain authoritative. When blocked, leave the interactive prompt visible for human takeover; do not invent approval.",
+      "- The Run-owned SBX filesystem is the workspace authority. If Antigravity requests non-permission human input, leave the interactive prompt visible for takeover; do not invent a response.",
   });
 }
 
-function hookConfigPath(cwd: string): string {
-  return join(cwd, ".agents", "hooks.json");
-}
 function nativeLogPath(lineage: HarnessLineage): string {
   return join(dirname(lineage.resultControlPath), "antigravity.log");
-}
-function startupEvidencePath(lineage: HarnessLineage): string {
-  return join(dirname(lineage.resultControlPath), "mcp-startup.jsonl");
-}
-function executionCwd(config: WorkerConfig, dispatch: DispatchRecord): string {
-  const execution = dispatch.action.execution;
-  return execution.execution_workspace.access === "none"
-    ? join(config.dataRoot, "isolated", execution.context.logical_lineage_id)
-    : execution.execution_workspace.canonical_root;
 }
 function displayLabel(dispatch: DispatchRecord): string {
   return `Antigravity · ${dispatch.action.semantic_step_key.replace(/[-_]/g, " ").slice(0, 60)}`;
@@ -1461,25 +1226,6 @@ function provenance(
           qe_active_action_id: "",
           qe_result_nonce: "",
         }),
-  };
-}
-function retainedProvenance(
-  workerId: string,
-  lineage: HarnessLineage,
-  agentName = lineage.agentName ?? agentNameFor(lineage.lineageId),
-): Record<string, string> {
-  return {
-    qe_owner: "quest-engineering-worker/v1",
-    qe_worker_id: workerId,
-    qe_lineage_id: lineage.lineageId,
-    qe_harness_kind: "antigravity",
-    qe_agent_name: agentName,
-    qe_ownership_token: lineage.ownershipToken,
-    ...(lineage.herdrSessionIncarnation
-      ? { qe_session_incarnation: lineage.herdrSessionIncarnation }
-      : {}),
-    qe_active_state: lineage.activeActionId ? "active" : "inactive",
-    qe_active_action_id: lineage.activeActionId ?? "",
   };
 }
 function refFor(
@@ -1588,37 +1334,11 @@ function reasoningMatches(
         typeof requested === "string" &&
         capability.values.includes(requested);
 }
-async function optionalFile(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-function semanticallySameHookConfig(
-  left: string | null,
-  right: string | null,
-): boolean {
-  if (left === null || right === null) return left === right;
-  try {
-    return (
-      JSON.stringify(JSON.parse(left)) === JSON.stringify(JSON.parse(right))
-    );
-  } catch {
-    return left === right;
-  }
-}
 function withState(
   inspection: HarnessInspection,
   state: "waiting_for_activity" | "running" | "stalled",
 ): HarnessInspection {
   return { ...inspection, state };
-}
-function persistedConfiguration(
-  lineage: HarnessLineage,
-): Record<string, unknown> {
-  return JSON.parse(lineage.configurationJson) as Record<string, unknown>;
 }
 function expectedControlBinding(
   dispatch: DispatchRecord,
@@ -1630,18 +1350,6 @@ function expectedControlBinding(
     lineageId: lineage.lineageId,
     resultNonce: dispatch.resultNonce,
   };
-}
-function persistedExecutionCwd(
-  config: WorkerConfig,
-  lineage: HarnessLineage,
-  configuration: Record<string, unknown>,
-): string | null {
-  if (configuration.workspace_access === "none")
-    return join(config.dataRoot, "isolated", lineage.logicalLineageId);
-  return typeof configuration.workspace_root === "string" &&
-    configuration.workspace_root
-    ? configuration.workspace_root
-    : null;
 }
 function samePath(left: string | undefined, right: string): boolean {
   return Boolean(left && resolve(left) === resolve(right));
@@ -1683,28 +1391,4 @@ function backendReadinessDetail(
     readiness.diagnostics.map((diagnostic) => diagnostic.message).join(" ") ||
     `Herdr backend contract is ready for ${readiness.harnessKind}.`
   );
-}
-
-async function prepareStartupEvidence(lineage: HarnessLineage): Promise<void> {
-  const path = startupEvidencePath(lineage);
-  await mkdir(dirname(path), { recursive: true });
-  const file = Bun.file(path);
-  if (!(await file.exists()))
-    await writeFile(path, "", { encoding: "utf8", mode: 0o600 });
-}
-function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-function nativeCommand(args: string[]) {
-  const result = Bun.spawnSync(["agy", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return {
-    exitCode: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
 }

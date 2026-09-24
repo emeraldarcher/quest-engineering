@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
-import { SBX_PI_EXECUTION_PROFILE_V2 } from "../src/execution-environment/sbx-profile.ts";
+import { SBX_CODING_EXECUTION_PROFILE_V1 } from "../src/execution-environment/sbx-profile.ts";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import {
   ACCOUNT_AVAILABILITY_SCHEMA_VERSION,
@@ -133,8 +133,8 @@ test("production SBX discovery publishes runtime models with evidence annotation
   const seedPath = join(root, "seed.json");
   const productionContext = {
     ...context,
-    profileId: SBX_PI_EXECUTION_PROFILE_V2.id,
-    profileDigest: SBX_PI_EXECUTION_PROFILE_V2.digest,
+    profileId: SBX_CODING_EXECUTION_PROFILE_V1.id,
+    profileDigest: SBX_CODING_EXECUTION_PROFILE_V1.digest,
   };
   await writeFile(
     seedPath,

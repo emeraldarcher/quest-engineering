@@ -508,6 +508,55 @@ test("attention and native Stop enforcement share the same bound authority", asy
   });
 });
 
+test("Antigravity Stop fences a Take Control model switch", async () => {
+  const value = await createFixture(2);
+  const input = action();
+  input.execution.configuration = {
+    ...input.execution.configuration,
+    harness_kind: "antigravity",
+    model: { provider: "antigravity", model: "gemini-3.8-flash-high" },
+    reasoning: "high",
+    reasoning_capability: { kind: "enumerated", values: ["high"] },
+    tool_policy: { kind: "native_permissions" },
+    tool_enforcement: "native_permissions",
+  };
+  const { client } = await bind(value, input);
+  expect(
+    (
+      await client.nativeStop(
+        "qe_zero_inference_readiness",
+        true,
+        "synthetic-no-inference",
+      )
+    ).nativeStop,
+  ).toEqual({
+    decision: "continue",
+    cause: "readiness_probe",
+    reason:
+      "Quest Engineering verified the Antigravity Stop-hook transport without authorizing a provider turn.",
+  });
+  expect(
+    (await client.nativeStop("model_stop", true, "gemini-3.8-flash-high"))
+      .nativeStop,
+  ).toMatchObject({
+    decision: "continue",
+    cause: "completion_omitted",
+    enforcementAttempt: 1,
+  });
+  const result = await client.nativeStop(
+    "model_stop",
+    true,
+    "claude-sonnet-4-6",
+  );
+  expect(result).toMatchObject({
+    contractViolation: expect.stringContaining("fenced"),
+    nativeStop: { decision: "contract_violation" },
+  });
+  expect(await client.completionStatus()).toMatchObject({
+    contractViolation: expect.stringContaining("gemini-3.8-flash-high"),
+  });
+});
+
 test("native Stop preserves a legitimately pending HumanAttention Attempt", async () => {
   const value = await createFixture(0);
   const { client, lineage, dispatch } = await bind(value);

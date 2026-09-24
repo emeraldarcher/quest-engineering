@@ -4,6 +4,11 @@ import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import type {
+  PreparedSbxPiExecution,
+  SbxRunExecutionManager,
+} from "../src/execution-environment/sbx-run.ts";
+import type { HostLaunchDescriptor } from "../src/execution-environment/types.ts";
 import {
   AntigravityHarness,
   antigravityPromptFor,
@@ -136,7 +141,63 @@ async function fixture(
             : `qe stdio enabled ${process.execPath} ${resolve(import.meta.dir, "..", "src", "harnesses", "control", "mcp-server.ts")}\n`,
     stderr: "",
   });
-  const harness = new AntigravityHarness(host, config, { runNativeCommand });
+  const installedHooks: unknown[] = [];
+  const executionManager = {
+    discoverAntigravity: async () =>
+      discoverAntigravityModels(runNativeCommand),
+    prepare: async (
+      _dispatch: unknown,
+      preparedLineage: typeof current,
+      artifacts: PreparedSbxPiExecution["materializedArtifacts"],
+    ) => {
+      const controlRoot = dirname(preparedLineage.resultControlPath);
+      const prepared = {
+        lease: { paths: { state: join(root, "guest-state") } },
+        workspace: {},
+        harnessKind: "antigravity",
+        guestExecutable: "/opt/qe/antigravity/agy",
+        guestHome: join(root, "guest-home"),
+        guestLogPath: join(controlRoot, "antigravity.log"),
+        hostLogPath: join(controlRoot, "antigravity.log"),
+        hostCwd: workspace,
+        paneEnvironment: {
+          [HARNESS_CONTROL_PATH_ENV]: controlDescriptorPath(preparedLineage),
+          [QE_MCP_STARTUP_EVIDENCE_ENV]: join(controlRoot, "mcp-startup.jsonl"),
+        },
+        materializedArtifacts: artifacts,
+        installAntigravityHook: async (spec: unknown) => {
+          installedHooks.push(spec);
+        },
+        removeAntigravityHook: async () => undefined,
+        proveAntigravityReadiness: async () => undefined,
+        syncControl: async () => undefined,
+        launchDescriptor: async (args: readonly string[]) => ({
+          executable: "/usr/local/bin/sbx",
+          args: ["exec", "test-sandbox", "--", ...args],
+          cwd: workspace,
+          environment: {},
+          provenance: {
+            kind: "execution_environment",
+            binding: {
+              physicalLineageId: preparedLineage.lineageId,
+              workspacePath: "/qe/workspaces/test",
+              guestExecutable: "/opt/qe/antigravity/agy",
+              guestCwd: "/qe/workspaces/test",
+              guestArgvSha256: "test-argv",
+            },
+          },
+        }),
+        startRelay: () => undefined,
+        awaitAttestation: async () => undefined,
+        stopRelay: async () => undefined,
+      };
+      return prepared as unknown as PreparedSbxPiExecution;
+    },
+  } as unknown as SbxRunExecutionManager;
+  const harness = new AntigravityHarness(host, config, {
+    runNativeCommand,
+    executionManager,
+  });
   return {
     root,
     workspace,
@@ -149,6 +210,8 @@ async function fixture(
     host,
     harness,
     runNativeCommand,
+    installedHooks,
+    executionManager,
     async close() {
       await server.stop();
       registry.close();
@@ -198,22 +261,22 @@ test("pre-authorization observation detects a native user turn without sending i
 
 test("newer Antigravity provenance remains ready when its native contract passes", async () => {
   const result = await discoverAntigravityModels(
-    antigravityDiscoveryRunner("1.2.3"),
+    antigravityDiscoveryRunner("1.2.8"),
   );
   expect(result).toMatchObject({
     authenticated: true,
     compatible: true,
-    version: "1.2.3",
+    version: "1.2.8",
     missingCapabilities: [],
   });
   expect(result.diagnostics).toContainEqual(
-    expect.stringContaining("newer than QE's human-tested 1.2.2 provenance"),
+    expect.stringContaining("newer than QE's human-tested 1.2.7 provenance"),
   );
 });
 
 test("newer Antigravity provenance missing a required native capability fails specifically", async () => {
   const result = await discoverAntigravityModels(
-    antigravityDiscoveryRunner("1.2.3", "--conversation"),
+    antigravityDiscoveryRunner("1.2.8", "--conversation"),
   );
   expect(result.compatible).toBe(false);
   expect(result.missingCapabilities).toContain("native.conversation_resume");
@@ -236,7 +299,7 @@ test("malformed Antigravity version provenance fails closed without inference", 
 });
 
 test("malformed Antigravity model metadata fails closed without inference", async () => {
-  const run = antigravityDiscoveryRunner("1.2.3");
+  const run = antigravityDiscoveryRunner("1.2.8");
   const result = await discoverAntigravityModels(async (args) =>
     args[0] === "models"
       ? { exitCode: 0, stdout: "not-a-model-record\n", stderr: "" }
@@ -298,7 +361,7 @@ gemini-conflict-low\tGemini Conflict (High)
   });
 });
 
-test("Antigravity discovery fails only its harness when its Herdr integration is unavailable", async () => {
+test("Antigravity discovery still requires Herdr native observation integration", async () => {
   const value = await fixture();
   try {
     value.host.backendReadiness = {
@@ -324,6 +387,21 @@ test("Antigravity discovery fails only its harness when its Herdr integration is
   }
 });
 
+test("Antigravity has no host-native execution fallback", async () => {
+  const value = await fixture();
+  try {
+    const withoutBoundary = new AntigravityHarness(value.host, value.config, {
+      runNativeCommand: value.runNativeCommand,
+    });
+    await expect(
+      withoutBoundary.start(value.dispatch, value.lineage),
+    ).rejects.toThrow("immutable mixed SBX profile");
+    expect(value.host.startRequests).toHaveLength(0);
+  } finally {
+    await value.close();
+  }
+});
+
 test("interactive launch pins model and effort, proves readiness, and keeps the live TUI attachable", async () => {
   const value = await fixture();
   try {
@@ -340,13 +418,22 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
     expect(value.host.agent.tokens?.qe_attempt_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(value.host.startRequests[0]?.args.includes("--print")).toBe(false);
     expect(value.host.startRequests[0]?.args.includes("--tools")).toBe(false);
+    expect(value.host.startRequests[0]?.args.includes("--sandbox")).toBe(false);
     expect(
       value.host.startRequests[0]?.args.includes(
         "--dangerously-skip-permissions",
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(value.host.startRequests[0]).toMatchObject({
       integrationKind: "agy",
+      command: {
+        executable: "/usr/local/bin/sbx",
+        provenance: {
+          binding: {
+            guestExecutable: "/opt/qe/antigravity/agy",
+          },
+        },
+      },
       args: expect.arrayContaining([
         "--model",
         "gemini-test-high",
@@ -354,14 +441,16 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
         "high",
       ]),
     });
-    const hooks = JSON.parse(
-      await Bun.file(join(value.workspace, ".agents", "hooks.json")).text(),
-    );
-    expect(hooks["qe-worker-stop-v1"].Stop).toEqual([
+    expect(
+      await Bun.file(join(value.workspace, ".agents", "hooks.json")).exists(),
+    ).toBe(false);
+    expect(value.installedHooks).toContainEqual(
       expect.objectContaining({
+        name: "qe-worker-stop-v1",
+        event: "Stop",
         command: expect.stringContaining("hook stop"),
       }),
-    ]);
+    );
     await value.harness.ready(value.dispatch, execution);
     await value.authority.bind(value.dispatch, value.lineage);
     value.registry.recordHost(value.lineage.lineageId, {
@@ -491,19 +580,24 @@ test("prepared pre-prompt Antigravity adoption requires exact idle conversation-
     targetAction.execution.context.logical_lineage_id =
       source.action.execution.context.logical_lineage_id;
     const target = value.registry.accept(targetAction).dispatch;
+    value.registry.occupy(value.lineage.lineageId, target.action.action_id);
     const retained = value.registry.getLineage(value.lineage.lineageId);
+    await value.authority.bind(target, retained);
 
-    await expect(
-      value.harness.provePreparedProcessAdoption(source, target, retained),
-    ).resolves.toBeUndefined();
+    await value.harness.provePreparedProcessAdoption(source, target, retained);
 
-    const hookPath = join(value.workspace, ".agents", "hooks.json");
-    const hooks = await Bun.file(hookPath).text();
-    await Bun.write(hookPath, "{}\n");
+    const readinessPath = join(
+      value.root,
+      "lineages",
+      value.lineage.lineageId,
+      "pre-inference-readiness.json",
+    );
+    const readiness = await Bun.file(readinessPath).text();
+    await Bun.write(readinessPath, "{}\n");
     await expect(
       value.harness.provePreparedProcessAdoption(source, target, retained),
     ).rejects.toMatchObject({ code: "prepared_process_adoption_rejected" });
-    await Bun.write(hookPath, hooks);
+    await Bun.write(readinessPath, readiness);
 
     value.host.agent.status = "working";
     await expect(
@@ -540,13 +634,13 @@ test("fresh retained-work recovery uses the same generic launch contract as a no
     expect(Object.keys(normal.host.environment).sort()).toEqual(
       Object.keys(recovery.host.environment).sort(),
     );
-    const normalHooks = JSON.parse(
-      await Bun.file(join(normal.workspace, ".agents", "hooks.json")).text(),
-    );
-    const recoveryHooks = JSON.parse(
-      await Bun.file(join(recovery.workspace, ".agents", "hooks.json")).text(),
-    );
-    expect(recoveryHooks).toEqual(normalHooks);
+    expect(recovery.installedHooks).toHaveLength(1);
+    expect(normal.installedHooks).toHaveLength(1);
+    expect(recovery.installedHooks[0]).toMatchObject({
+      name: "qe-worker-stop-v1",
+      event: "Stop",
+      command: expect.stringContaining("antigravity-control/bridge-cli.mjs"),
+    });
   } finally {
     await Promise.all([normal.close(), recovery.close()]);
   }
@@ -790,7 +884,7 @@ test("native blocked state projects stable HumanAttention and takeover identity"
   }
 });
 
-test("recovery adopts only the exact surviving TUI and verified native conversation", async () => {
+test("recovery adopts only the exact surviving SBX TUI and never host-relaunches it", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
@@ -810,27 +904,23 @@ test("recovery adopts only the exact surviving TUI and verified native conversat
     const persisted = value.registry.getLineage(value.lineage.lineageId);
     const restartedHarness = new AntigravityHarness(value.host, value.config, {
       runNativeCommand: value.runNativeCommand,
+      executionManager: value.executionManager,
     });
-    expect(await restartedHarness.recover(persisted)).toMatchObject({
+    expect(
+      await restartedHarness.recover(persisted, value.dispatch),
+    ).toMatchObject({
       found: true,
       agent: { name: execution.ref.agentName },
     });
     value.host.sessionIncarnationId = "replacement-session-incarnation";
     value.host.removeAgentOnSnapshot = true;
-    const relaunched = await value.harness.recover(persisted);
+    const launches = value.host.startRequests.length;
+    const relaunched = await value.harness.recover(persisted, value.dispatch);
     expect(relaunched).toMatchObject({
-      found: true,
-      ref: {
-        agentName: expect.stringContaining("qe-agy-"),
-        sessionIncarnation: "replacement-session-incarnation",
-      },
-      agent: {
-        nativeSession: { value: "conversation-1" },
-      },
+      found: false,
+      detail: expect.stringContaining("another Herdr session incarnation"),
     });
-    expect(value.host.startRequests.at(-1)?.args).toEqual(
-      expect.arrayContaining(["--conversation", "conversation-1"]),
-    );
+    expect(value.host.startRequests).toHaveLength(launches);
   } finally {
     await value.close();
   }
@@ -975,6 +1065,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     name: string;
     integrationKind: string;
     args: string[];
+    command?: HostLaunchDescriptor;
   }> = [];
   readonly panes: HostedPane[];
   agent: HostedAgent;
@@ -1054,6 +1145,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     name: string;
     integrationKind: string;
     args: string[];
+    command?: HostLaunchDescriptor;
   }): Promise<HostedAgent> {
     this.startRequests.push(input);
     const pane = this.panes.find(

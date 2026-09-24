@@ -1,7 +1,7 @@
 import type { HarnessModelCapability } from "../types.ts";
 
 /** Human-operated runtime probes were last completed against this provenance. */
-export const ANTIGRAVITY_TESTED_VERSION = "1.2.2";
+export const ANTIGRAVITY_TESTED_VERSION = "1.2.7";
 export const ANTIGRAVITY_MODEL_PROVIDER = "antigravity";
 
 const REQUIRED_HELP_CAPABILITIES = {

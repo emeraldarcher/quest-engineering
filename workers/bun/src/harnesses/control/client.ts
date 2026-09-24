@@ -127,8 +127,17 @@ export class HarnessControlClient {
     return this.call({ type: "completion_status" });
   }
 
-  nativeStop(terminationReason: string, fullyIdle: boolean) {
-    return this.call({ type: "native_stop", terminationReason, fullyIdle });
+  nativeStop(
+    terminationReason: string,
+    fullyIdle: boolean,
+    observedModel?: string,
+  ) {
+    return this.call({
+      type: "native_stop",
+      terminationReason,
+      fullyIdle,
+      ...(observedModel ? { observedModel } : {}),
+    });
   }
 
   async call(

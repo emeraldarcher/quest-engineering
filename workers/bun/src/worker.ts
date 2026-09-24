@@ -127,7 +127,9 @@ export class QuestEngineeringWorker {
     this.sbxExecutionManager =
       config.provider !== "fake" &&
       !dependencies.harnesses &&
-      (config.enabledHarnesses ?? ["pi", "antigravity"]).includes("pi")
+      (config.enabledHarnesses ?? ["pi", "antigravity"]).some(
+        (kind) => kind === "pi" || kind === "antigravity",
+      )
         ? new SbxRunExecutionManager(config, this.worktrees)
         : null;
     const harnesses: AgentHarness[] =
@@ -140,7 +142,11 @@ export class QuestEngineeringWorker {
               kind,
             );
             return kind === "antigravity"
-              ? new AntigravityHarness(host, config)
+              ? new AntigravityHarness(host, config, {
+                  ...(this.sbxExecutionManager
+                    ? { executionManager: this.sbxExecutionManager }
+                    : {}),
+                })
               : new PiHarness(host, config, {
                   ...(this.sbxExecutionManager
                     ? { executionManager: this.sbxExecutionManager }
