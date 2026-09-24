@@ -1,11 +1,44 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
+import type {
+  EnvironmentCommand,
+  EnvironmentLease,
+} from "../src/execution-environment/types.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
+
+test("Run-private Antigravity HOME owns cache and temporary directories", async () => {
+  let observed: EnvironmentCommand | undefined;
+  const manager = Object.create(SbxRunExecutionManager.prototype) as {
+    seedAntigravityHome(
+      lease: EnvironmentLease,
+      guestHome: string,
+    ): Promise<void>;
+  };
+  await manager.seedAntigravityHome(
+    {
+      workerExec: async (command) => {
+        observed = command;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    } as EnvironmentLease,
+    "/qe/state/antigravity-lineages/lineage-a/home",
+  );
+  expect(observed?.executable).toBe("/usr/bin/python3");
+  expect(observed?.environment).toEqual({
+    QE_HOME: "/qe/state/antigravity-lineages/lineage-a/home",
+  });
+  expect(observed?.args.join("\n")).toContain("home/'.cache'");
+  expect(observed?.args.join("\n")).toContain("home/'.tmp'");
+  expect(observed?.args.join("\n")).toContain(
+    "p.mkdir(parents=True,exist_ok=True)",
   );
 });
 

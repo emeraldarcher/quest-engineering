@@ -1596,7 +1596,12 @@ async function runGuestGit(
   return runGuest(
     lease,
     GIT,
-    [...(isBare ? ["--git-dir", cwdOrGitDir] : ["-C", cwdOrGitDir]), ...args],
+    [
+      ...(isBare
+        ? ["--git-dir", cwdOrGitDir]
+        : ["-c", `safe.directory=${cwdOrGitDir}`, "-C", cwdOrGitDir]),
+      ...args,
+    ],
     undefined,
     environment,
   );
