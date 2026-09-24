@@ -1,0 +1,9 @@
+{
+  "name": "@quest-engineering/pi-execution-profile",
+  "version": "2.0.0",
+  "private": true,
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1"
+  }
+}

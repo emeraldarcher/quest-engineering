@@ -7,15 +7,14 @@ import type {
   SbxSandboxSummary,
 } from "./sbx-client.ts";
 import { CliSbxClient, SbxClientError } from "./sbx-client.ts";
-import {
-  type SbxPiCredentialProvision,
-  SbxPiCredentialProvisioner,
-} from "./sbx-pi-credential.ts";
+import { SbxMixedCredentialProvisioner } from "./sbx-mixed-credential.ts";
+import { SbxPiCredentialProvisioner } from "./sbx-pi-credential.ts";
 import {
   SBX_DISABLED_CREDENTIAL_ENVIRONMENT,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   type SBX_EXECUTION_PROFILE_V1,
   SBX_GUEST_PATHS,
+  SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
   SBX_SHELL_PROFILE,
   type SbxExecutionProfile,
@@ -58,7 +57,7 @@ import {
 } from "./types.ts";
 
 export interface SbxCredentialProvisioner {
-  provision(sandboxName: string): Promise<SbxPiCredentialProvision>;
+  provision(sandboxName: string): Promise<unknown>;
 }
 
 export interface SbxExecutionEnvironmentBackendOptions {
@@ -123,10 +122,13 @@ export class SbxExecutionEnvironmentBackend
         this.executionProfile,
       );
     this.credentialProvisioner =
-      this.executionProfile.credentialMode === "host_pi_oauth_dynamic_proxy"
-        ? (options.credentialProvisioner ??
-          new SbxPiCredentialProvisioner(this.client))
-        : undefined;
+      options.credentialProvisioner ??
+      (this.executionProfile.credentialMode === "host_pi_oauth_dynamic_proxy"
+        ? new SbxPiCredentialProvisioner(this.client)
+        : this.executionProfile.credentialMode ===
+            "host_mixed_oauth_dynamic_proxies"
+          ? new SbxMixedCredentialProvisioner(this.client)
+          : undefined);
     this.processId = options.processId ?? process.pid;
     this.isProcessAlive = options.isProcessAlive ?? processAlive;
     this.reconciliationPollMs = options.reconciliationPollMs ?? 250;
@@ -959,7 +961,7 @@ export class SbxExecutionEnvironmentBackend
     )
       throw new EnvironmentBackendError(
         "environment_spec_mismatch",
-        "Environment profile does not match qe-execution-v1.",
+        `Environment profile does not match ${this.profile.id}.`,
         operation,
       );
     if (
@@ -997,17 +999,33 @@ export class SbxExecutionEnvironmentBackend
       .filter((requirement) => requirement.capability === "model_provider")
       .flatMap((requirement) => [...requirement.targets])
       .sort();
-    const expectedTargets = [...SBX_PI_RUNTIME_NETWORK_TARGETS].sort();
+    const mixed =
+      this.executionProfile.credentialMode ===
+      "host_mixed_oauth_dynamic_proxies";
+    const expectedTargets = [
+      ...(mixed
+        ? SBX_MIXED_RUNTIME_NETWORK_TARGETS
+        : SBX_PI_RUNTIME_NETWORK_TARGETS),
+    ].sort();
     const exactProviderNetwork =
       spec.networkRequirements.length === 1 &&
       providerTargets.length === expectedTargets.length &&
       providerTargets.every(
         (target, index) => target === expectedTargets[index],
       );
+    const credentials = spec.credentialGrants
+      .map((grant) => `${grant.kind}:${grant.scope ?? ""}`)
+      .sort();
+    const expectedCredentials = (
+      mixed
+        ? ["antigravity-oauth:subscription", "openai-codex-oauth:subscription"]
+        : ["openai-codex-oauth:subscription"]
+    ).sort();
     const exactCredential =
-      spec.credentialGrants.length === 1 &&
-      spec.credentialGrants[0]?.kind === "openai-codex-oauth" &&
-      spec.credentialGrants[0]?.scope === "subscription";
+      credentials.length === expectedCredentials.length &&
+      credentials.every(
+        (credential, index) => credential === expectedCredentials[index],
+      );
     const exactControl =
       spec.controlChannels.length === 1 &&
       spec.controlChannels[0]?.kind === "worker_file_mailbox_v1" &&
@@ -1015,7 +1033,9 @@ export class SbxExecutionEnvironmentBackend
     if (!exactProviderNetwork || !exactCredential || !exactControl)
       throw new EnvironmentBackendError(
         "environment_requirements_unmet",
-        "Pi SBX requires exact ChatGPT subscription egress, one host-managed subscription grant, and the attempt-scoped Worker mailbox relay.",
+        mixed
+          ? "Mixed coding SBX requires exact Pi and Antigravity subscription egress, both host-managed subscription grants, and the attempt-scoped Worker mailbox relay."
+          : "Pi SBX requires exact ChatGPT subscription egress, one host-managed subscription grant, and the attempt-scoped Worker mailbox relay.",
         operation,
       );
   }

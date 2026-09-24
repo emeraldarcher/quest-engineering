@@ -1,0 +1,87 @@
+schemaVersion: "2"
+kind: sandbox
+name: qe-coding-execution-v1
+version: "1.0.0"
+displayName: Quest Engineering mixed coding execution
+# This immutable profile composes the accepted Pi runtime with the exact
+# Antigravity artifact required by mixed-harness Runs. The package lock,
+# artifact digest, setup, credential contracts, and capability probes are
+# repository-owned inputs to the Worker profile digest.
+sandbox:
+  image: "docker.io/docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919"
+  entrypoint: ["/bin/bash"]
+  command:
+    default: ["-l"]
+    interactive: ["-l"]
+
+permissions:
+  network:
+    allow:
+      # Subscription resource requests only. Host-side Pi owns OAuth refresh;
+      # the guest cannot reach the token endpoint.
+      - chatgpt.com
+      # Used only by setup.install. The Worker installs sandbox-scoped denies
+      # immediately after creation and verifies the runtime denies.
+      - registry.npmjs.org
+      - github.com
+      - release-assets.githubusercontent.com
+      # Antigravity subscription/model traffic. OAuth refresh remains host-side.
+      - daily-cloudcode-pa.googleapis.com
+
+environment:
+  variables:
+    PI_CODING_AGENT_DIR: /home/agent/.pi/agent
+    PI_TELEMETRY: "0"
+    # Runtime egress is intentionally closed to Pi's optional GitHub tool
+    # downloads; avoid retrying an operation that policy will reject.
+    PI_OFFLINE: "1"
+    # Pi runs on Node 22.22. Node fetch must opt into HTTPS_PROXY so SBX can
+    # replace the sandbox-scoped placeholder; it is never valid upstream.
+    NODE_USE_ENV_PROXY: "1"
+    # The guest must never open a browser for login. The Antigravity binary is
+    # root-owned and updater endpoints are absent from the runtime network grant.
+    BROWSER: /bin/false
+    GIT_TERMINAL_PROMPT: "0"
+
+setup:
+  install:
+    - command: |
+        set -eu
+        install -d -m 0755 /opt/qe/pi
+        install -m 0644 /home/agent/.qe-profile/package.json /opt/qe/pi/package.json
+        install -m 0644 /home/agent/.qe-profile/package-lock.json /opt/qe/pi/package-lock.json
+        cd /opt/qe/pi
+        npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        chown -R root:root /opt/qe/pi
+        chmod -R go-w /opt/qe/pi
+        install -d -m 0700 -o 1000 -g 1000 /home/agent/.pi/agent
+      user: "0"
+      description: Install the lockfile-pinned Pi runtime into a root-owned prefix
+    - command: |
+        set -eu
+        version='1.2.7'
+        archive='/tmp/qe-antigravity.tar.gz'
+        expected='8ddbb669158de1d1bc4c1fe5c130dca8f51da80d62569a54a4133f06768a723b'
+        url="https://github.com/google-antigravity/antigravity-cli/releases/download/${version}/agy_cli_linux_arm64.tar.gz"
+        curl --fail --silent --show-error --location "$url" --output "$archive"
+        printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict
+        install -d -m 0755 /opt/qe/antigravity
+        tar -xzf "$archive" -C /opt/qe/antigravity antigravity
+        mv /opt/qe/antigravity/antigravity /opt/qe/antigravity/agy
+        chown -R root:root /opt/qe/antigravity
+        chmod -R go-w /opt/qe/antigravity
+        chmod 0755 /opt/qe/antigravity/agy
+        rm -f "$archive"
+        test "$(/opt/qe/antigravity/agy --version)" = "$version"
+        install -d -m 0700 -o 1000 -g 1000 /home/agent/.gemini/antigravity-cli /home/agent/.gemini/config
+        chown 1000:1000 /home/agent/.gemini/config/mcp_config.json
+        chmod 0600 /home/agent/.gemini/config/mcp_config.json
+      user: "0"
+      description: Install the digest-pinned Antigravity Linux runtime into a root-owned prefix
+
+agentInstructions:
+  filename: AGENTS.md
+  content: |
+    This is a Quest Engineering Run-owned execution environment. The Worker
+    supplies the exact workspace, tools, extensions, prompt, and completion
+    authority for each Attempt.
