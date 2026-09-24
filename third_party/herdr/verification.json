@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-09-24T21:02:14Z",
+  "command": "third_party/herdr/reconstruct.sh <new-empty-repo-local-build-root>",
+  "result": "pass",
+  "source": {
+    "upstreamTag": "v0.9.0",
+    "upstreamTagObject": "cca4af8dfad160bc5fb5ae133b70882b5fe28f61",
+    "upstreamCommit": "b99002ac99b09e00b4ca692436cb15a6b0d676f1",
+    "upstreamTree": "a93ca29c745d5658c5ae9001df468628f0d32e93",
+    "cargoLockSha256": "e6745ffdb906690d58c7dc4c9d9cef1ce9ed6746bf49f8376a4f733d7addf375",
+    "patchCommit": "75bfefe8546df7ec0313d65a700eb3d0f6bee115",
+    "patchTree": "5fb5f33b0548b2e8eec931f0ef8eab92469cfa11",
+    "patchSha256": "154213d2f00d919ab502006e89b5bb3a4f04ca6d88b682e4828ad7f731031b3a",
+    "cleanAfterVerification": true
+  },
+  "toolchain": {
+    "target": "aarch64-apple-darwin",
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "cargo": "cargo 1.96.1 (356927216 2026-06-26)",
+    "llvm": "22.1.2",
+    "zig": "0.15.2",
+    "zigArchiveSha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+    "xcode": "16.4 (16F6)",
+    "appleSdk": "15.5 (24F74)",
+    "appleSdkSettingsSha256": "58a133735f0a55a624a1703067059f6e78925e51725ec6e1f966072e142c9c42",
+    "appleClang": "17.0.0 (clang-1700.0.13.5)",
+    "appleLinker": "ld-1167.5",
+    "macosDeploymentTarget": "11.0",
+    "host": "macOS 27.0 arm64"
+  },
+  "tests": [
+    {
+      "name": "api::schema::tests::agent_start_and_prompt_requests_round_trip",
+      "result": "pass"
+    },
+    {
+      "name": "app::tests::unavailable_agent_start_does_not_mutate_topology",
+      "result": "pass"
+    },
+    {
+      "name": "app::tests::failed_agent_start_input_rolls_back_and_can_retry",
+      "result": "pass"
+    },
+    {
+      "name": "release binary explicit absolute launch with literal argv/env/cwd and hostile PATH",
+      "result": "pass"
+    },
+    {
+      "name": "release binary typed explicit-launch failure and shell restoration",
+      "result": "pass"
+    }
+  ],
+  "liveContract": {
+    "version": "0.9.0",
+    "protocol": 22,
+    "endpointProtocolGeneration": 1,
+    "agentExplicitLaunch": true,
+    "agentStartCommandSchema": true
+  },
+  "artifact": {
+    "binarySha256": "2a118542ed2d21aabec0b269c79dd0cb8319f1970f517a93b8079eea6a5d7016",
+    "independentRepeatSha256": "2a118542ed2d21aabec0b269c79dd0cb8319f1970f517a93b8079eea6a5d7016",
+    "acceptedBinarySha256": "37d8fa93f49cac3487105179e91a57d22f4185ca228ae3f6dc2b610a9de4b563",
+    "matchesAcceptedBinary": false,
+    "sizeBytes": 20700064,
+    "acceptedComparison": {
+      "differingBytes": 47,
+      "differingRegions": [
+        "Mach-O LC_UUID payload",
+        "derived linker ad-hoc code-signature digest"
+      ],
+      "allOtherBytesIdentical": true
+    }
+  },
+  "workerResolution": {
+    "environmentVariable": "QE_HERDR_BIN",
+    "requiredValue": "<build-root>/bin/herdr",
+    "absolutePathRequired": true,
+    "pathFallback": false
+  },
+  "globalHerdr": {
+    "path": "/opt/homebrew/bin/herdr",
+    "version": "0.9.0",
+    "sha256": "7257396b19a082193cbf39b4805341eaddabb489d4dbbecaccbba00164339b87",
+    "modified": false
+  }
+}
