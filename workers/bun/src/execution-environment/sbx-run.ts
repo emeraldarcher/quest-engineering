@@ -1447,6 +1447,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           mode: "mixed_subscription_providers_only",
         },
         { kind: "control_channel", mode: "worker_file_mailbox_v1" },
+        { kind: "environment_exec", mode: "available" },
         { kind: "pty_launcher", mode: "available" },
       ],
     };

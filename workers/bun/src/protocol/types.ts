@@ -282,8 +282,22 @@ export type AccountAvailability =
   | "verified_unavailable"
   | "unknown";
 
+export interface ExecutorExecutionEnvironment {
+  backend_kind: string;
+  profile: {
+    id: string;
+    digest: string;
+  };
+  capabilities: Array<{
+    kind: string;
+    mode: string;
+    detail?: string;
+  }>;
+}
+
 export interface ExecutorCapability {
   harness_kind: string;
+  execution_environment?: ExecutorExecutionEnvironment;
   models: Array<{
     provider: string;
     model: string;

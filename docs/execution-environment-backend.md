@@ -94,6 +94,8 @@ Network requirements identify purposes such as QE control, provider egress, regi
 
 The opaque environment ID is not a mutable display name and does not assume an SBX CLI naming convention. `EnvironmentInspection` reports the exact ref, lifecycle state, usability, canonical spec digest, path map, and advertised capabilities.
 
+Executor advertisements carry the verified execution-environment profile and capability vocabulary into Product discovery and scheduling. `terminal.shell` is authorized for SBX only when the executor proves `filesystem_namespace: isolated`, `host_filesystem: unexposed`, `environment_exec: available`, and `pty_launcher: available`. The workspace binding field `allow_unconfined_shell` remains a host-root grant for legacy or explicit HostNative execution; it is not a generic shell switch, is ignored for SBX authority, and cannot make a partial SBX capability set schedulable. Thus an SBX guest shell never grants a HostNative process access to the source root.
+
 `EnvironmentReadiness` is backend-level, side-effect-free readiness with status, diagnostics, capabilities, and contract/implementation provenance. It is distinct from readiness of a particular leased environment and from harness/model readiness.
 
 ## Lease, paths, launch, and exec

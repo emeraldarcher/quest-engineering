@@ -5,6 +5,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   import QuestEngineering.Core.Tactics
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Ecto.Changeset
   alias QuestEngineering.Core.Product.ModelRef
   alias QuestEngineering.Core.Product.TacticSource
   alias QuestEngineering.Core.Product.TacticSource.Inline
@@ -13,6 +14,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionRecovery
+  alias QuestEngineering.Server.ExecutionOptions
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.OperationalRecovery
@@ -184,6 +186,89 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     assert {:waiting, waits} = SchedulingStore.schedule_next(launched.run_id)
     assert Enum.map(waits, & &1.code) == [:waiting_for_run_workspace]
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+  end
+
+  test "isolated SBX shell authority exposes options and schedules with host shell prohibited",
+       context do
+    fixture = product_fixture(tools: ["workspace.filesystem", "terminal.shell"])
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("worker-isolated-shell", context.workspace_root,
+        execution_environment: execution_environment("sbx")
+      )
+
+    insert_binding(worker, fixture.quest.workspace_id, context.workspace_root, false)
+
+    assert Enum.any?(ExecutionOptions.list(), fn option ->
+             option.harness == "fake" and
+               Enum.any?(option.workspaces, &(&1.workspace_id == fixture.quest.workspace_id))
+           end)
+
+    assert {:provision, assignment} = RunWorkspaceStore.ensure_assignment(launched.run_id)
+    assert assignment.worker_id == worker.id
+    assert assignment.workspace_binding_id
+    ready_assignment(assignment)
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+    assert dispatch.worker_id == worker.id
+
+    assert dispatch.execution.configuration.resolved_tool_profile.tools == [
+             "workspace.filesystem",
+             "terminal.shell"
+           ]
+  end
+
+  test "HostNative cannot use isolated shell authority without the host grant", context do
+    fixture = product_fixture(tools: ["workspace.filesystem", "terminal.shell"])
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("worker-host-shell-denied", context.workspace_root,
+        execution_environment: execution_environment("host_native")
+      )
+
+    insert_binding(worker, fixture.quest.workspace_id, context.workspace_root, false)
+
+    refute Enum.any?(ExecutionOptions.list(), fn option ->
+             option.harness == "fake" and
+               Enum.any?(option.workspaces, &(&1.workspace_id == fixture.quest.workspace_id))
+           end)
+
+    assert {:waiting_for_host, assignment} =
+             RunWorkspaceStore.ensure_assignment(launched.run_id)
+
+    assert is_nil(assignment.worker_id)
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+  end
+
+  test "a ready SBX assignment cannot transfer guest shell authority to HostNative", context do
+    fixture = product_fixture(tools: ["workspace.filesystem", "terminal.shell"])
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("worker-shell-authority-change", context.workspace_root,
+        execution_environment: execution_environment("sbx")
+      )
+
+    insert_binding(worker, fixture.quest.workspace_id, context.workspace_root, false)
+    assert {:provision, assignment} = RunWorkspaceStore.ensure_assignment(launched.run_id)
+    ready_assignment(assignment)
+
+    host_capabilities =
+      put_in(
+        worker.capabilities,
+        ["executors", Access.at(0), "execution_environment"],
+        execution_environment("host_native")
+      )
+
+    worker
+    |> Changeset.change(capabilities: host_capabilities)
+    |> Repo.update!()
+
+    assert {:waiting, waits} = SchedulingStore.schedule_next(launched.run_id)
+    assert Enum.map(waits, & &1.code) == [:waiting_for_worker]
     assert Repo.aggregate(ScheduledActionExecution, :count) == 0
   end
 
@@ -2649,39 +2734,88 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     workspace_roots = Keyword.get(options, :workspace_roots, [{"workspace:test", root}])
 
+    executor = %{
+      "harness_kind" => adapter,
+      "models" => [
+        %{
+          "provider" => "fake",
+          "model" => "test",
+          "display_name" => "Test model",
+          "account_availability" => "verified_available",
+          "reasoning_capability" => %{
+            "kind" => "enumerated",
+            "values" => ["low", "medium", "high"]
+          }
+        }
+      ],
+      "supported_tool_policies" => ["exact"],
+      "tool_enforcement" => "exact",
+      "tool_profile" => %{"tools" => tools},
+      "workspaces" =>
+        Enum.map(workspace_roots, fn {ref, workspace_root} ->
+          %{"ref" => ref, "root" => workspace_root, "max_access" => "read_write"}
+        end)
+    }
+
+    executor =
+      case Keyword.get(options, :execution_environment) do
+        nil -> executor
+        environment -> Map.put(executor, "execution_environment", environment)
+      end
+
     capabilities = %{
       "os" => "test",
       "arch" => "test",
       "max_concurrency" => Keyword.get(options, :max_concurrency, 1),
       "tags" => [],
-      "executors" => [
-        %{
-          "harness_kind" => adapter,
-          "models" => [
-            %{
-              "provider" => "fake",
-              "model" => "test",
-              "display_name" => "Test model",
-              "account_availability" => "verified_available",
-              "reasoning_capability" => %{
-                "kind" => "enumerated",
-                "values" => ["low", "medium", "high"]
-              }
-            }
-          ],
-          "supported_tool_policies" => ["exact"],
-          "tool_enforcement" => "exact",
-          "tool_profile" => %{"tools" => tools},
-          "workspaces" =>
-            Enum.map(workspace_roots, fn {ref, workspace_root} ->
-              %{"ref" => ref, "root" => workspace_root, "max_access" => "read_write"}
-            end)
-        }
-      ]
+      "executors" => [executor]
     }
 
     {:ok, worker} = WorkerStore.register(id, capabilities, Ecto.UUID.generate())
     worker
+  end
+
+  defp ready_assignment(assignment) do
+    assignment
+    |> Changeset.change(
+      state: "ready",
+      base_revision: String.duplicate("a", 40),
+      canonical_worktree_root: "/managed/worktrees/" <> assignment.worktree_id,
+      source_dirty_excluded: false,
+      ready_at: DateTime.utc_now()
+    )
+    |> Repo.update!()
+  end
+
+  defp insert_binding(worker, workspace_id, root, allow_unconfined_shell) do
+    Repo.insert!(
+      WorkerWorkspaceBinding.changeset(%{
+        binding_id: Ecto.UUID.generate(),
+        worker_id: worker.id,
+        workspace_id: workspace_id,
+        authorized_root_key: "test",
+        source_repository_root: root,
+        source_fingerprint: nil,
+        max_access: "read_write",
+        allow_unconfined_shell: allow_unconfined_shell,
+        status: "available",
+        last_seen_generation: worker.connection_generation,
+        last_seen_at: DateTime.utc_now()
+      })
+    )
+  end
+
+  defp execution_environment(backend_kind) do
+    %{
+      "backend_kind" => backend_kind,
+      "profile" => %{"id" => "test", "digest" => "sha256:test"},
+      "capabilities" => [
+        %{"kind" => "filesystem_namespace", "mode" => "isolated"},
+        %{"kind" => "host_filesystem", "mode" => "unexposed"},
+        %{"kind" => "environment_exec", "mode" => "available"},
+        %{"kind" => "pty_launcher", "mode" => "available"}
+      ]
+    }
   end
 
   defp unique(prefix), do: prefix <> "-" <> Integer.to_string(System.unique_integer([:positive]))

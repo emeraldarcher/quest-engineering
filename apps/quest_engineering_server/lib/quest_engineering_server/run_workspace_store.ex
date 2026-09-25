@@ -8,6 +8,7 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
   alias QuestEngineering.Core.Product.LaunchSnapshot
   alias QuestEngineering.Core.Tactics.PerformerRequirement
   alias QuestEngineering.Server.CapabilityMatcher
+  alias QuestEngineering.Server.ExecutionShellAuthority
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.QuestLaunch
@@ -365,9 +366,16 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
     }
 
     case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
-      {:ok, %{resolved_tool_profile: %{tools: tools}}} ->
+      {:ok,
+       %{
+         resolved_tool_profile: %{tools: tools},
+         execution_environment: execution_environment
+       }} ->
+        executor = %{"execution_environment" => execution_environment}
+
         access_allowed and
-          ("terminal.shell" not in tools or binding.allow_unconfined_shell)
+          ("terminal.shell" not in tools or
+             ExecutionShellAuthority.authorized?(executor, binding))
 
       :error ->
         false

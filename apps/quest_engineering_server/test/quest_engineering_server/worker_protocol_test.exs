@@ -32,6 +32,41 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
   end
 
+  test "accepts structured execution-environment capabilities and rejects malformed evidence" do
+    environment = %{
+      "backend_kind" => "sbx",
+      "profile" => %{"id" => "qe-coding-execution-v1", "digest" => "sha256:test"},
+      "capabilities" => [
+        %{"kind" => "filesystem_namespace", "mode" => "isolated"},
+        %{"kind" => "host_filesystem", "mode" => "unexposed"},
+        %{"kind" => "environment_exec", "mode" => "available"},
+        %{"kind" => "pty_launcher", "mode" => "available"}
+      ]
+    }
+
+    advertised =
+      put_in(
+        hello(),
+        ["capabilities", "executors", Access.at(0), "execution_environment"],
+        environment
+      )
+
+    assert {:ok, decoded} = WorkerProtocol.decode_hello(advertised)
+
+    assert get_in(decoded.capabilities, ["executors", Access.at(0), "execution_environment"]) ==
+             environment
+
+    malformed =
+      put_in(
+        advertised,
+        ["capabilities", "executors", Access.at(0), "execution_environment", "capabilities"],
+        []
+      )
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_capabilities}} =
+             WorkerProtocol.decode_hello(malformed)
+  end
+
   test "rejects v3 and malformed capabilities" do
     assert {:error, %WorkerProtocol.Error{code: :unsupported_protocol_version}} =
              hello() |> Map.put("protocol_version", 3) |> WorkerProtocol.decode_hello()

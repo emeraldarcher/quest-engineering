@@ -80,9 +80,18 @@ test("production config requires one exact absolute Herdr executable", async () 
 test("dispatch availability defaults active and supports generic maintenance registration", async () => {
   const active = loadConfig(await environment());
   expect(active.dispatchAvailability).toBe("active");
-  expect(
-    workerCapabilities(active, "darwin", "arm64").dispatch_availability,
-  ).toBe("active");
+  const activeCapabilities = workerCapabilities(active, "darwin", "arm64");
+  expect(activeCapabilities.dispatch_availability).toBe("active");
+  expect(activeCapabilities.executors[0]?.execution_environment).toMatchObject({
+    backend_kind: "sbx",
+    profile: { id: "qe-coding-execution-v1" },
+    capabilities: expect.arrayContaining([
+      { kind: "filesystem_namespace", mode: "isolated" },
+      { kind: "host_filesystem", mode: "unexposed" },
+      { kind: "environment_exec", mode: "available" },
+      { kind: "pty_launcher", mode: "available" },
+    ]),
+  });
 
   const maintenance = loadConfig(
     await environment({ QE_WORKER_DISPATCH_AVAILABILITY: "maintenance" }),

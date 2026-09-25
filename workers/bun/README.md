@@ -75,7 +75,7 @@ Dirty source changes are allowed but excluded and reported. Missing, corrupt, br
 - `read_only`: canonical Run worktree CWD with inspection-only mapped tools.
 - `read_write`: canonical Run worktree CWD with requested mutation tools.
 
-`terminal.shell` requires `read_write` and root-specific `allow_unconfined_shell: true`. Pi always starts with `--no-skills`, `--no-prompt-templates`, and `--no-context-files`.
+`terminal.shell` requires `read_write` plus execution-environment authority. Current production Workers advertise it only after the pinned SBX profile proves an isolated filesystem namespace, an unexposed host filesystem, guest exec, and a guest PTY launcher. `allow_unconfined_shell` is retained solely as the root-specific grant for legacy or explicitly `host_native` executors; it does not grant host shell access to SBX Runs and cannot repair incomplete SBX capabilities. Pi always starts with `--no-skills`, `--no-prompt-templates`, and `--no-context-files`.
 
 Continuation requires exact harness kind, model, resolved reasoning capability/value, authored ToolPolicy, resolved enforcement/profile, logical Workspace, binding, worktree, canonical root, and access equality. It never crosses a harness, Run worktree, or Worker.
 

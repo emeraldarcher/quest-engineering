@@ -36,7 +36,10 @@ defmodule QuestEngineering.Server.CapabilityMatcher do
            ),
          {:ok, tool_resolution} <- resolve_tools(executor, requested.tool_policy),
          true <- harness_constraints?(executor["harness_kind"], requested) do
-      {:ok, Map.put(tool_resolution, :reasoning_capability, reasoning_capability)}
+      {:ok,
+       tool_resolution
+       |> Map.put(:reasoning_capability, reasoning_capability)
+       |> Map.put(:execution_environment, Map.get(executor, "execution_environment"))}
     else
       _other -> nil
     end

@@ -10,6 +10,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
   alias QuestEngineering.Core.Tactics.ContextRequirement
   alias QuestEngineering.Core.Tactics.PerformerRequirement
   alias QuestEngineering.Server.CapabilityMatcher
+  alias QuestEngineering.Server.ExecutionShellAuthority
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
@@ -23,6 +24,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerDispatch
+  alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunChangeNotifier
   alias QuestEngineering.Server.RunWorkspaceStore
@@ -328,7 +330,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
     required_worker_id = assignment.worker_id
 
     ensure_continuation_worker!(continuation_worker_id, required_worker_id, action)
-    workers = compatible_workers(requested, required_worker_id)
+    workers = compatible_workers(requested, assignment)
 
     case Enum.find_value(workers, &available_worker/1) do
       {worker, slot, resolution} ->
@@ -352,7 +354,9 @@ defmodule QuestEngineering.Server.SchedulingStore do
   defp ensure_continuation_worker!(_continuation_worker_id, _required_worker_id, action),
     do: Repo.rollback(invariant(:continuation_run_worker_mismatch, %{run_id: action.run_id}))
 
-  defp compatible_workers(requested, required_worker_id) do
+  defp compatible_workers(requested, assignment) do
+    binding = Repo.get(WorkerWorkspaceBinding, assignment.workspace_binding_id)
+
     Repo.all(
       from worker in Worker,
         where: worker.status == "connected",
@@ -361,11 +365,24 @@ defmodule QuestEngineering.Server.SchedulingStore do
     )
     |> Enum.flat_map(fn worker ->
       case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
-        {:ok, resolution} when worker.id == required_worker_id -> [{worker, resolution}]
-        _other -> []
+        {:ok, resolution} when worker.id == assignment.worker_id ->
+          if shell_authorized?(resolution, binding), do: [{worker, resolution}], else: []
+
+        _other ->
+          []
       end
     end)
   end
+
+  defp shell_authorized?(%{resolved_tool_profile: %{tools: tools}} = resolution, binding) do
+    "terminal.shell" not in tools or
+      ExecutionShellAuthority.authorized?(
+        %{"execution_environment" => Map.get(resolution, :execution_environment)},
+        binding
+      )
+  end
+
+  defp shell_authorized?(_resolution, _binding), do: false
 
   defp available_worker({worker, resolution}) do
     case worker_with_free_slot(worker) do

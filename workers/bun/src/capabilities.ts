@@ -1,8 +1,10 @@
 import type { WorkerConfig } from "./config.ts";
+import { SBX_CODING_EXECUTION_PROFILE_V1 } from "./execution-environment/sbx-profile.ts";
 import type { HarnessDiscovery } from "./harnesses/types.ts";
 import type {
   ExecuteAction,
   ExecutorCapability,
+  ExecutorExecutionEnvironment,
   WorkerCapabilities,
 } from "./protocol/types.ts";
 
@@ -14,10 +16,31 @@ export const QE_TOOL_CAPABILITIES = [
   "terminal.shell",
 ] as const;
 
-export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
+export const SBX_EXECUTOR_EXECUTION_ENVIRONMENT: ExecutorExecutionEnvironment =
+  {
+    backend_kind: "sbx",
+    profile: { ...SBX_CODING_EXECUTION_PROFILE_V1 },
+    capabilities: [
+      { kind: "filesystem_namespace", mode: "isolated" },
+      { kind: "host_filesystem", mode: "unexposed" },
+      { kind: "environment_exec", mode: "available" },
+      { kind: "pty_launcher", mode: "available" },
+    ],
+  };
+
+export function executorCapabilities(
+  config: WorkerConfig,
+  executionEnvironment?: ExecutorExecutionEnvironment,
+): ExecutorCapability {
   const reasoning = config.reasoningLevels ?? ["low", "medium", "high"];
   return {
     harness_kind: config.provider,
+    ...(executionEnvironment
+      ? {
+          execution_environment:
+            cloneExecutionEnvironment(executionEnvironment),
+        }
+      : {}),
     models: (
       config.executorModels ??
       (config.piModel
@@ -39,6 +62,7 @@ export function executorCapabilities(config: WorkerConfig): ExecutorCapability {
 
 export function discoveredExecutorCapabilities(
   discoveries: HarnessDiscovery[],
+  executionEnvironment?: ExecutorExecutionEnvironment,
 ): ExecutorCapability[] {
   return discoveries
     .filter(
@@ -49,6 +73,12 @@ export function discoveredExecutorCapabilities(
     )
     .map((discovery) => ({
       harness_kind: discovery.kind,
+      ...(executionEnvironment
+        ? {
+            execution_environment:
+              cloneExecutionEnvironment(executionEnvironment),
+          }
+        : {}),
       models: discovery.models
         .filter(
           (
@@ -86,6 +116,8 @@ export function workerCapabilities(
   arch: string,
   discoveries?: HarnessDiscovery[],
 ): WorkerCapabilities {
+  const executionEnvironment =
+    config.provider === "fake" ? undefined : SBX_EXECUTOR_EXECUTION_ENVIRONMENT;
   return {
     os,
     arch,
@@ -93,8 +125,8 @@ export function workerCapabilities(
     dispatch_availability: config.dispatchAvailability ?? "active",
     tags: config.tags,
     executors: discoveries
-      ? discoveredExecutorCapabilities(discoveries)
-      : [executorCapabilities(config)],
+      ? discoveredExecutorCapabilities(discoveries, executionEnvironment)
+      : [executorCapabilities(config, executionEnvironment)],
     features: [
       "run_delivery_v1",
       "run_worktree_retention_v1",
@@ -123,11 +155,11 @@ export function assertExecutionSupported(
   const compatible =
     binding !== undefined &&
     accessRank[binding.max_access] >= accessRank[workspace.access] &&
-    (!requested.resolved_tool_profile.tools.includes("terminal.shell") ||
-      binding.allow_unconfined_shell) &&
     capabilities.executors.some(
       (executor) =>
         executor.harness_kind === requested.harness_kind &&
+        (!requested.resolved_tool_profile.tools.includes("terminal.shell") ||
+          terminalShellAuthorized(executor, binding)) &&
         executor.models.some(
           (model) =>
             model.provider === requested.model.provider &&
@@ -149,6 +181,41 @@ export function assertExecutionSupported(
     throw new Error(
       "Resolved execution is not supported by advertised capabilities and binding policy.",
     );
+}
+
+export function terminalShellAuthorized(
+  executor: ExecutorCapability,
+  binding: WorkerCapabilities["workspace_bindings"][number],
+): boolean {
+  const environment = executor.execution_environment;
+  // Protocol-v8 Workers did not advertise an execution environment. Preserve
+  // their explicit host-root grant while new Workers publish scoped authority.
+  if (!environment) return binding.allow_unconfined_shell;
+  if (environment.backend_kind === "host_native")
+    return binding.allow_unconfined_shell;
+  if (environment.backend_kind !== "sbx") return false;
+  return [
+    ["filesystem_namespace", "isolated"],
+    ["host_filesystem", "unexposed"],
+    ["environment_exec", "available"],
+    ["pty_launcher", "available"],
+  ].every(([kind, mode]) =>
+    environment.capabilities.some(
+      (capability) => capability.kind === kind && capability.mode === mode,
+    ),
+  );
+}
+
+function cloneExecutionEnvironment(
+  environment: ExecutorExecutionEnvironment,
+): ExecutorExecutionEnvironment {
+  return {
+    backend_kind: environment.backend_kind,
+    profile: { ...environment.profile },
+    capabilities: environment.capabilities.map((capability) => ({
+      ...capability,
+    })),
+  };
 }
 
 function reasoningSupported(

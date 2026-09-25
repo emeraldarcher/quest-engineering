@@ -3,6 +3,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
 
   import Ecto.Query
 
+  alias QuestEngineering.Server.ExecutionShellAuthority
   alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
@@ -49,7 +50,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
            "supported_tool_policies" => supported_policies,
            "tool_enforcement" => tool_enforcement,
            "tool_profile" => %{"tools" => tools}
-         },
+         } = executor,
          bindings,
          available
        )
@@ -59,7 +60,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
     workspaces =
       bindings
       |> Enum.reject(fn binding ->
-        "terminal.shell" in tools and not binding.allow_unconfined_shell
+        "terminal.shell" in tools and not ExecutionShellAuthority.authorized?(executor, binding)
       end)
       |> Enum.map(fn binding ->
         %{workspace_id: binding.workspace_id, workspace_access: access_levels(binding.max_access)}
