@@ -565,7 +565,11 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       ],
     });
     if (harnessKind === "antigravity")
-      await this.seedAntigravityHome(lease, guestHome);
+      await this.seedAntigravityHome(
+        lease,
+        guestHome,
+        workspace.paths.workspace,
+      );
     const extensionPaths: string[] = [];
     for (const bundle of extensions.bundles) {
       const path = posix.join(extensionRoot, bundle.name);
@@ -988,14 +992,15 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   private async seedAntigravityHome(
     lease: EnvironmentLease,
     guestHome: string,
+    guestWorkspace: string,
   ): Promise<void> {
     const result = await lease.workerExec({
       executable: "/usr/bin/python3",
       args: [
         "-c",
-        "import os,pathlib,shutil; home=pathlib.Path(os.environ['QE_HOME']); sources=[('/home/agent/.gemini/config/mcp_config.json',home/'.gemini/config/mcp_config.json'),('/home/agent/.gemini/antigravity-cli/antigravity-oauth-token',home/'.gemini/antigravity-cli/antigravity-oauth-token'),('/home/agent/.gemini/antigravity-cli/qe-auth-generation',home/'.gemini/antigravity-cli/qe-auth-generation'),('/home/agent/.gemini/antigravity-cli/qe-account-scope',home/'.gemini/antigravity-cli/qe-account-scope')];\nfor source,target in sources:\n target.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(source,target); os.chown(target,1000,1000); os.chmod(target,0o600)\nfor p in [home,home/'.cache',home/'.tmp',home/'.gemini',home/'.gemini/config',home/'.gemini/antigravity-cli']:\n p.mkdir(parents=True,exist_ok=True); os.chown(p,1000,1000); os.chmod(p,0o700)",
+        "import json,os,pathlib,shutil; home=pathlib.Path(os.environ['QE_HOME']); sources=[('/home/agent/.gemini/config/mcp_config.json',home/'.gemini/config/mcp_config.json'),('/home/agent/.gemini/antigravity-cli/antigravity-oauth-token',home/'.gemini/antigravity-cli/antigravity-oauth-token'),('/home/agent/.gemini/antigravity-cli/qe-auth-generation',home/'.gemini/antigravity-cli/qe-auth-generation'),('/home/agent/.gemini/antigravity-cli/qe-account-scope',home/'.gemini/antigravity-cli/qe-account-scope'),('/home/agent/.gemini/antigravity-cli/cache/onboarding.json',home/'.gemini/antigravity-cli/cache/onboarding.json')];\nfor source,target in sources:\n target.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(source,target); os.chown(target,1000,1000); os.chmod(target,0o600)\nfor p in [home,home/'.cache',home/'.tmp',home/'.gemini',home/'.gemini/config',home/'.gemini/antigravity-cli']:\n p.mkdir(parents=True,exist_ok=True); os.chown(p,1000,1000); os.chmod(p,0o700)\nsettings=home/'.gemini/antigravity-cli/settings.json'\ntry: value=json.loads(settings.read_text())\nexcept FileNotFoundError: value={}\nvalue['trustedWorkspaces']=[os.environ['QE_WORKSPACE']]\ntemporary=settings.with_name(settings.name+'.qe-new'); temporary.write_text(json.dumps(value,separators=(',',':'))+'\\n'); os.chown(temporary,1000,1000); os.chmod(temporary,0o600); temporary.replace(settings)",
       ],
-      environment: { QE_HOME: guestHome },
+      environment: { QE_HOME: guestHome, QE_WORKSPACE: guestWorkspace },
       timeoutMs: 30_000,
     });
     if (result.exitCode !== 0)

@@ -8,9 +8,16 @@ import type { SbxClient } from "./sbx-client.ts";
 
 export const SBX_ANTIGRAVITY_PROVIDER_HOST =
   "daily-cloudcode-pa.googleapis.com";
+export const SBX_ANTIGRAVITY_USERINFO_HOST = "www.googleapis.com";
+export const SBX_ANTIGRAVITY_CREDENTIAL_HOSTS = Object.freeze([
+  SBX_ANTIGRAVITY_PROVIDER_HOST,
+  SBX_ANTIGRAVITY_USERINFO_HOST,
+]);
 export const SBX_ANTIGRAVITY_PROXY_REFRESH_SENTINEL =
   "qe-sbx-host-managed-no-refresh";
-export const SBX_ANTIGRAVITY_DYNAMIC_SECRET_REFRESH = "5m";
+// Stay strictly inside the host resolver's five-minute validity floor so SBX
+// cannot retain a token through its expiry boundary.
+export const SBX_ANTIGRAVITY_DYNAMIC_SECRET_REFRESH = "1m";
 export const SBX_ANTIGRAVITY_AUTH_PATH =
   "/home/agent/.gemini/antigravity-cli/antigravity-oauth-token";
 export const SBX_ANTIGRAVITY_AUTH_GENERATION_PATH =
@@ -122,7 +129,7 @@ export class SbxAntigravityCredentialProvisioner {
       await this.client.setDynamicSecret({
         sandboxName,
         placeholder,
-        host: SBX_ANTIGRAVITY_PROVIDER_HOST,
+        hosts: SBX_ANTIGRAVITY_CREDENTIAL_HOSTS,
         resolverCommand:
           this.options.resolverCommand ?? defaultResolverCommand(),
         refreshInterval: SBX_ANTIGRAVITY_DYNAMIC_SECRET_REFRESH,

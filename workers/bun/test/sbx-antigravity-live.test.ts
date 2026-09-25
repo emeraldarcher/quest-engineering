@@ -112,6 +112,34 @@ test.skipIf(!enabled)(
       });
       expect(version.exitCode).toBe(0);
       expect(version.stdout.trim()).toBe(SBX_ANTIGRAVITY_VERSION);
+      const userInfo = await lease.exec({
+        executable: "/usr/bin/python3",
+        args: [
+          "-c",
+          `import json,pathlib,subprocess,urllib.parse
+credential=json.loads(pathlib.Path('/home/agent/.gemini/antigravity-cli/antigravity-oauth-token').read_text())
+result=subprocess.run(['/usr/bin/curl','--silent','--show-error','--header','Authorization: Bearer '+credential['token']['access_token'],'https://www.googleapis.com/oauth2/v2/userinfo','--write-out','\\n%{http_code}'],text=True,capture_output=True,timeout=30)
+payload,_,code=result.stdout.rpartition('\\n')
+response={}
+try: response=json.loads(payload)
+except Exception: pass
+picture=response.get('picture') if isinstance(response,dict) else None
+picture_result=subprocess.run(['/usr/bin/curl','--silent','--show-error','--output','/dev/null','--write-out','%{http_code}',picture],text=True,capture_output=True,timeout=30) if isinstance(picture,str) else None
+print(json.dumps({'schemaVersion':1,'exitCode':result.returncode,'httpStatus':int(code) if code.isdigit() else None,'responseTopLevelKeys':sorted(response.keys()),'pictureHostname':urllib.parse.urlparse(picture).hostname if isinstance(picture,str) else None,'pictureHttpStatus':int(picture_result.stdout) if picture_result and picture_result.stdout.isdigit() else None,'credentialSentToPictureHost':False,'credentialRecorded':False},separators=(',',':')))`,
+        ],
+        environment: { HOME: "/home/agent" },
+        timeoutMs: 30_000,
+      });
+      expect(JSON.parse(userInfo.stdout)).toMatchObject({
+        schemaVersion: 1,
+        exitCode: 0,
+        httpStatus: 200,
+        credentialRecorded: false,
+        responseTopLevelKeys: expect.arrayContaining(["email", "id"]),
+        pictureHostname: "lh3.googleusercontent.com",
+        pictureHttpStatus: 200,
+        credentialSentToPictureHost: false,
+      });
       const models = await lease.exec({
         executable: SBX_ANTIGRAVITY_EXECUTABLE,
         args: ["models"],

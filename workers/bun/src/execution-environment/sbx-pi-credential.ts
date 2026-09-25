@@ -130,7 +130,7 @@ export class SbxPiCredentialProvisioner {
       await this.client.setDynamicSecret({
         sandboxName,
         placeholder,
-        host: "chatgpt.com",
+        hosts: ["chatgpt.com"],
         resolverCommand:
           this.options.resolverCommand ?? defaultResolverCommand(),
         refreshInterval: SBX_PI_DYNAMIC_SECRET_REFRESH,

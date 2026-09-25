@@ -45,13 +45,21 @@ Native host `agy models` owns login selection, token refresh, and keyring rotati
 - `qe-sbx-host-managed-no-refresh` instead of refresh authority;
 - nonsecret account/auth-generation hashes.
 
-SBX substitutes the access token only for `daily-cloudcode-pa.googleapis.com`. Tokens are absent from QE durable state, guest files, launch argv, diagnostics, and retained secret metadata.
+SBX substitutes the access token only for the two exact Antigravity 1.2.7 credential consumers: `daily-cloudcode-pa.googleapis.com` for subscription/model APIs and `www.googleapis.com` for `GET /oauth2/v2/userinfo`. The latter is the native interactive startup's access-token validation; it is not an inference request. Runtime policy also permits the exact public image host `lh3.googleusercontent.com`, because 1.2.7 treats a denied profile-picture download as an eligibility failure; no credential is substituted or sent there. Google OAuth refresh remains unreachable. Tokens are absent from QE durable state, guest files, launch argv, diagnostics, and retained secret metadata.
+
+## Human onboarding-state contract
+
+Terms/Data Use choices are human-only. QE does not select controls, call Antigravity's acceptance RPC, or infer acceptance fields. For the pinned 1.2.7 profile, a human completed the native flow once in a disposable HOME. The resulting `.gemini/antigravity-cli/cache/onboarding.json` was copied byte-for-byte into the immutable profile with SHA-256 `1aa3e7b17067c259f56b1c7feb17094172729c977d4a7fcbea030f9247c0bbe4`. It is the only onboarding seed copied into each fresh lineage HOME.
+
+The captured file contains exactly the native coarse booleans `consumerOnboardingComplete=true`, `enterpriseOnboardingComplete=false`, and `onboardingComplete=true`. No separate Terms revision, Data Use selection, privacy choice, credential, installation identity, settings, logs, caches, or post-onboarding progress are present. Accordingly, QE treats this as a 1.2.7 startup-state reproduction—not as independent evidence of legal text, revision, or option semantics. Any Antigravity version change requires a new human review and fresh capture; code and tests must never synthesize or mutate this file.
+
+Credential eligibility is a separate boundary. The initial isolated startup persisted this onboarding state before failing the user-info check because `www.googleapis.com` lacked both the runtime grant and dynamic-secret scope. A same-credential host probe returned 200, and an exact guest-host grant/substitution probe then returned 200. That exposed one further 1.2.7 startup dependency: the user-info response's public profile picture on `lh3.googleusercontent.com`, which returned 200 on the host but was denied in the guest. The narrow fix adds access-token substitution only to `www.googleapis.com` and adds credential-free runtime egress only to the exact image host. It does not change the human-created onboarding state.
 
 ## Permission and state decisions
 
 Antigravity launches with `--dangerously-skip-permissions` **inside the outer SBX only**. The optional native `--sandbox` is deliberately disabled. This avoids two conflicting isolation models and makes root-owned read-only/read-write workspace permissions, private Git, private HOME, exact network grants, disabled ambient credentials, and Worker control authority decisive. The protocol retains `native_permissions` as the compatibility marker because Antigravity has no stable low-level tool catalog; it is not a claim that host command parsing is authoritative.
 
-Each PhysicalLineage gets a deterministic private HOME under `/qe/state/antigravity-lineages/`. Only profile-owned nonsecret credential markers and MCP registration are seeded into it. Native conversation and other retained state survive Attempt and Worker recovery without becoming shared mutable host state. The Stop hook lives in that HOME, not in source, so read-only source stays physically read-only.
+Each PhysicalLineage gets a deterministic private HOME under `/qe/state/antigravity-lineages/`. Only profile-owned nonsecret credential markers, MCP registration, and the exact human-captured 1.2.7 onboarding file are seeded into it. QE also writes the exact Run-private workspace into Antigravity's `trustedWorkspaces`; this is a mechanical consequence of the already-attested outer SBX/private-workspace boundary, not a Terms/Data Use choice, and no host or arbitrary workspace is trusted. Native conversation and other retained state survive Attempt and Worker recovery without becoming shared mutable host state. The Stop hook lives in that HOME, not in source, so read-only source stays physically read-only.
 
 ## Completion, attention, cancellation, and recovery
 

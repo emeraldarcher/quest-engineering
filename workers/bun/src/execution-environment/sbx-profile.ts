@@ -63,6 +63,8 @@ export const SBX_EXECUTION_PROFILE_V1: EnvironmentProfileIdentity =
 export const SBX_PI_RUNTIME_NETWORK_TARGETS = Object.freeze(["chatgpt.com"]);
 export const SBX_ANTIGRAVITY_RUNTIME_NETWORK_TARGETS = Object.freeze([
   "daily-cloudcode-pa.googleapis.com",
+  "www.googleapis.com",
+  "lh3.googleusercontent.com",
 ]);
 export const SBX_PI_INSTALL_NETWORK_TARGET = "registry.npmjs.org";
 export const SBX_ANTIGRAVITY_INSTALL_NETWORK_TARGETS = Object.freeze([
@@ -88,6 +90,10 @@ export const SBX_PI_METADATA_SNAPSHOT =
   "/qe/state/openai-codex-model-metadata.json";
 export const SBX_ANTIGRAVITY_RUNTIME_PROBE =
   "/home/agent/.qe-profile/probe-antigravity-runtime.mjs";
+export const SBX_ANTIGRAVITY_ONBOARDING_STATE_PATH =
+  "/home/agent/.gemini/antigravity-cli/cache/onboarding.json";
+export const SBX_ANTIGRAVITY_ONBOARDING_STATE_SHA256 =
+  "1aa3e7b17067c259f56b1c7feb17094172729c977d4a7fcbea030f9247c0bbe4";
 export const SBX_ANTIGRAVITY_VERSION = "1.2.7";
 export const SBX_ANTIGRAVITY_LINUX_ARM64_ARCHIVE_SHA256 =
   "8ddbb669158de1d1bc4c1fe5c130dca8f51da80d62569a54a4133f06768a723b";
@@ -147,7 +153,7 @@ export const SBX_PI_EXECUTION_PROFILE_V2: EnvironmentProfileIdentity =
 
 const SBX_CODING_PROFILE_ASSETS = Object.freeze({
   "spec.yaml":
-    "ee4b1be7d3fd309c60378de434b67e1c6b0ecc67298c36211fde6fe3078ff1d1",
+    "93c44f069ad98827dd50bf8f4cd8f12821d29b23bd8a74e373412a53b817bf9f",
   "files/home/.qe-profile/package.json":
     "212bd50e14991cd48cb6202e9708175458f17c3c4bf37cb6c81c3911c74611e3",
   "files/home/.qe-profile/package-lock.json":
@@ -161,7 +167,9 @@ const SBX_CODING_PROFILE_ASSETS = Object.freeze({
   "files/home/.qe-profile/probe-resource.mjs":
     "514354d2aef1334886578e8e9733af7dbdfdd030495000977b88c9d049e1e41c",
   "files/home/.qe-profile/probe-antigravity-runtime.mjs":
-    "c4a7b19cc87509e3ca2f11782fdc80ca68b0b40d3b00a1da7aca85ea5fe3d43a",
+    "e631ef482a9b046f586841ea9a1a00fb39550a3f273ce5cbaf6053395984ab2f",
+  "files/home/.gemini/antigravity-cli/cache/onboarding.json":
+    SBX_ANTIGRAVITY_ONBOARDING_STATE_SHA256,
   "files/home/.gemini/config/mcp_config.json":
     "29f1bd0a818cc1824d34953d1dafb97831be0ae6ea477b88c9298a2cdbd45b79",
 });

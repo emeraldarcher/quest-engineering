@@ -82,7 +82,7 @@ test("CLI client registers a sandbox-scoped command secret without retaining res
   await client.setDynamicSecret({
     sandboxName: "qe-test",
     placeholder: "nonsecret-placeholder",
-    host: "chatgpt.com",
+    hosts: ["chatgpt.com", "www.googleapis.com"],
     resolverCommand: "/trusted/credential-helper",
     refreshInterval: "5m",
   });
@@ -94,6 +94,8 @@ test("CLI client registers a sandbox-scoped command secret without retaining res
       "nonsecret-placeholder",
       "--host",
       "chatgpt.com",
+      "--host",
+      "www.googleapis.com",
       "--command",
       "/trusted/credential-helper",
       "--refresh",
@@ -112,7 +114,7 @@ test("CLI client registers a sandbox-scoped command secret without retaining res
     .setDynamicSecret({
       sandboxName: "qe-test",
       placeholder: "nonsecret-placeholder",
-      host: "chatgpt.com",
+      hosts: ["chatgpt.com"],
       resolverCommand: "/trusted/credential-helper",
       refreshInterval: "5m",
     })

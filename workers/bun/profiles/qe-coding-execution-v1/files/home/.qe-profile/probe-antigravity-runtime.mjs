@@ -20,6 +20,13 @@ const accountScopePath =
   "/home/agent/.gemini/antigravity-cli/qe-account-scope";
 const authGeneration = readFileSync(authGenerationPath, "utf8").trim();
 const accountScope = readFileSync(accountScopePath, "utf8").trim();
+const onboardingPath =
+  "/home/agent/.gemini/antigravity-cli/cache/onboarding.json";
+const onboardingBytes = readFileSync(onboardingPath);
+const onboardingSha256 = createHash("sha256")
+  .update(onboardingBytes)
+  .digest("hex");
+const onboarding = JSON.parse(onboardingBytes.toString("utf8"));
 let idClaims = {};
 let idSignature = "";
 try {
@@ -69,6 +76,16 @@ const capabilities = {
     (statSync(authGenerationPath).mode & 0o777) === 0o600 &&
     (statSync(accountScopePath).mode & 0o777) === 0o600,
   guestRefreshDisabled: refresh === "qe-sbx-host-managed-no-refresh",
+  humanCapturedOnboardingState:
+    version === "1.2.7" &&
+    onboardingSha256 ===
+      "1aa3e7b17067c259f56b1c7feb17094172729c977d4a7fcbea030f9247c0bbe4" &&
+    Object.keys(onboarding).sort().join(",") ===
+      "consumerOnboardingComplete,enterpriseOnboardingComplete,onboardingComplete" &&
+    onboarding.consumerOnboardingComplete === true &&
+    onboarding.enterpriseOnboardingComplete === false &&
+    onboarding.onboardingComplete === true &&
+    (statSync(onboardingPath).mode & 0o777) === 0o600,
 };
 const compatible =
   requiredFlags.every((flag) => help.includes(flag)) &&

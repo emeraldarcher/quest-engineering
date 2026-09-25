@@ -27,6 +27,13 @@ permissions:
       - release-assets.githubusercontent.com
       # Antigravity subscription/model traffic. OAuth refresh remains host-side.
       - daily-cloudcode-pa.googleapis.com
+      # Antigravity 1.2.7 validates the loaded OAuth access token here before
+      # eligibility. The same short-lived token is substituted for this exact
+      # host; refresh and ID authority remain host-side.
+      - www.googleapis.com
+      # Antigravity 1.2.7 treats a denied public profile-picture fetch as an
+      # eligibility failure. No credential is sent to this exact image host.
+      - lh3.googleusercontent.com
 
 environment:
   variables:
@@ -74,8 +81,8 @@ setup:
         rm -f "$archive"
         test "$(/opt/qe/antigravity/agy --version)" = "$version"
         install -d -m 0700 -o 1000 -g 1000 /home/agent/.gemini/antigravity-cli /home/agent/.gemini/config
-        chown 1000:1000 /home/agent/.gemini/config/mcp_config.json
-        chmod 0600 /home/agent/.gemini/config/mcp_config.json
+        chown 1000:1000 /home/agent/.gemini/config/mcp_config.json /home/agent/.gemini/antigravity-cli/cache/onboarding.json
+        chmod 0600 /home/agent/.gemini/config/mcp_config.json /home/agent/.gemini/antigravity-cli/cache/onboarding.json
       user: "0"
       description: Install the digest-pinned Antigravity Linux runtime into a root-owned prefix
 

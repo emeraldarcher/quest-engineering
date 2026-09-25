@@ -3,8 +3,8 @@ import type { HostAntigravityCredentialResolution } from "../src/execution-envir
 import { resolveHostAntigravityCredential } from "../src/execution-environment/antigravity-host-credential.ts";
 import { runAntigravityHostCredentialHelper } from "../src/execution-environment/antigravity-host-credential-helper.ts";
 import {
+  SBX_ANTIGRAVITY_CREDENTIAL_HOSTS,
   SBX_ANTIGRAVITY_DYNAMIC_SECRET_REFRESH,
-  SBX_ANTIGRAVITY_PROVIDER_HOST,
   SBX_ANTIGRAVITY_PROXY_REFRESH_SENTINEL,
   SbxAntigravityCredentialProvisioner,
 } from "../src/execution-environment/sbx-antigravity-credential.ts";
@@ -117,10 +117,11 @@ test("SBX receives nonsecret placeholders and no refresh or ID authority", async
     resolverCommand: "/trusted/qe-antigravity-credential-helper",
   });
   const provision = await provisioner.provision("sandbox-a");
+  expect(SBX_ANTIGRAVITY_DYNAMIC_SECRET_REFRESH).toBe("1m");
   expect(dynamicSecret).toEqual({
     sandboxName: "sandbox-a",
     placeholder: provision.placeholder,
-    host: SBX_ANTIGRAVITY_PROVIDER_HOST,
+    hosts: SBX_ANTIGRAVITY_CREDENTIAL_HOSTS,
     resolverCommand: "/trusted/qe-antigravity-credential-helper",
     refreshInterval: SBX_ANTIGRAVITY_DYNAMIC_SECRET_REFRESH,
   });

@@ -51,7 +51,12 @@ test("mixed profile pins Antigravity provenance and revokes installer/updater eg
   expect(SBX_MIXED_RUNTIME_NETWORK_TARGETS).toEqual([
     "chatgpt.com",
     "daily-cloudcode-pa.googleapis.com",
+    "www.googleapis.com",
+    "lh3.googleusercontent.com",
   ]);
+  expect(SBX_MIXED_RUNTIME_NETWORK_TARGETS).not.toContain(
+    "oauth2.googleapis.com",
+  );
   expect(SBX_MIXED_INSTALL_NETWORK_TARGETS).toEqual(
     expect.arrayContaining([
       "registry.npmjs.org",

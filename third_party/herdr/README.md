@@ -46,6 +46,19 @@ export QE_HERDR_BIN="$build_root/bin/herdr"
 
 Worker startup canonicalizes this absolute path and applies its normal live capability/schema checks. There is no `PATH` fallback. `/opt/homebrew/bin/herdr` remains an intentionally incompatible negative fixture while it lacks `agent.explicit_launch`.
 
+## Attaching to an isolated session
+
+Herdr derives its local session socket/state root from `HOME`; `HERDR_CONFIG_PATH` alone does not relocate it. Start the server and every CLI used to inspect or attach that server with the same absolute Herdr control HOME and config path. Use the exact verified binary rather than `PATH`:
+
+```sh
+HERDR_HOME="$PWD/.pi/tmp/herdr-control"
+HERDR_BIN="$build_root/bin/herdr"
+env HOME="$HERDR_HOME" HERDR_CONFIG_PATH="$HERDR_HOME/config.toml" \
+  "$HERDR_BIN" --session <session> agent attach <pane-or-agent> --takeover
+```
+
+Detach with **Ctrl+B, then Q**. Do not point this host-side `HOME` at an Antigravity or Pi guest HOME, and do not copy it into a Run. It contains only Herdr client/server control state and any shell state created in Herdr-owned panes. The managed agent's HOME is independent: QE's explicit launch descriptor and SBX launcher set the exact guest lineage HOME. Keep disposable control HOMEs under the repository's ignored `.pi/tmp/` tree when collecting physical evidence.
+
 ## Toolchain and binary reproducibility
 
 The accepted candidate was built for `aarch64-apple-darwin` with:

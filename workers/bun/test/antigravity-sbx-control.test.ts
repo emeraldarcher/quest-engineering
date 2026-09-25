@@ -14,12 +14,13 @@ afterEach(async () => {
   );
 });
 
-test("Run-private Antigravity HOME owns cache and temporary directories", async () => {
+test("Run-private Antigravity HOME owns runtime directories and trusts only its isolated workspace", async () => {
   let observed: EnvironmentCommand | undefined;
   const manager = Object.create(SbxRunExecutionManager.prototype) as {
     seedAntigravityHome(
       lease: EnvironmentLease,
       guestHome: string,
+      guestWorkspace: string,
     ): Promise<void>;
   };
   await manager.seedAntigravityHome(
@@ -30,13 +31,22 @@ test("Run-private Antigravity HOME owns cache and temporary directories", async 
       },
     } as EnvironmentLease,
     "/qe/state/antigravity-lineages/lineage-a/home",
+    "/qe/workspaces/lineage-a",
   );
   expect(observed?.executable).toBe("/usr/bin/python3");
   expect(observed?.environment).toEqual({
     QE_HOME: "/qe/state/antigravity-lineages/lineage-a/home",
+    QE_WORKSPACE: "/qe/workspaces/lineage-a",
   });
   expect(observed?.args.join("\n")).toContain("home/'.cache'");
   expect(observed?.args.join("\n")).toContain("home/'.tmp'");
+  expect(observed?.args.join("\n")).toContain(
+    "home/'.gemini/antigravity-cli/cache/onboarding.json'",
+  );
+  expect(observed?.args.join("\n")).toContain(
+    "value['trustedWorkspaces']=[os.environ['QE_WORKSPACE']]",
+  );
+  expect(observed?.args.join("\n")).not.toContain("trusted.append");
   expect(observed?.args.join("\n")).toContain(
     "p.mkdir(parents=True,exist_ok=True)",
   );

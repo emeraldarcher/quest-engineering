@@ -59,7 +59,8 @@ export interface SbxExecOptions {
 export interface SbxDynamicSecretRequest {
   sandboxName: string;
   placeholder: string;
-  host: string;
+  /** Exact outbound hosts where SBX may replace this placeholder. */
+  hosts: readonly string[];
   resolverCommand: string;
   refreshInterval: string;
 }
@@ -270,8 +271,7 @@ export class CliSbxClient implements SbxClient {
       "set-custom",
       "--placeholder",
       request.placeholder,
-      "--host",
-      request.host,
+      ...request.hosts.flatMap((host) => ["--host", host]),
       "--command",
       request.resolverCommand,
       "--refresh",
