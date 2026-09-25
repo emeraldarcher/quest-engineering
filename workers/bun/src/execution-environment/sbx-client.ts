@@ -65,10 +65,14 @@ export interface SbxDynamicSecretRequest {
   refreshInterval: string;
 }
 
+export interface SbxRequestOptions {
+  timeoutMs?: number;
+}
+
 export interface SbxClient {
   readonly executable: string;
   version(): Promise<SbxNativeVersion>;
-  list(): Promise<SbxSandboxSummary[]>;
+  list(options?: SbxRequestOptions): Promise<SbxSandboxSummary[]>;
   policies(sandboxName?: string): Promise<SbxPolicyRule[]>;
   setting(key: string): Promise<SbxSetting>;
   registeredMcpServerCount(): Promise<number>;
@@ -91,7 +95,7 @@ export interface SbxClient {
     guestPath: string,
     hostPath: string,
   ): Promise<void>;
-  stop(sandboxName: string): Promise<void>;
+  stop(sandboxName: string, options?: SbxRequestOptions): Promise<void>;
   remove(sandboxName: string): Promise<void>;
   launcherArgs(
     sandboxName: string,
@@ -166,8 +170,8 @@ export class CliSbxClient implements SbxClient {
     };
   }
 
-  async list(): Promise<SbxSandboxSummary[]> {
-    const result = await this.invoke(["ls", "--json"]);
+  async list(options: SbxRequestOptions = {}): Promise<SbxSandboxSummary[]> {
+    const result = await this.invoke(["ls", "--json"], options);
     const value = object(parseJson(result.stdout, ["ls", "--json"]));
     if (!Array.isArray(value.sandboxes))
       throw malformed("sandboxes must be an array", ["ls", "--json"]);
@@ -370,8 +374,11 @@ export class CliSbxClient implements SbxClient {
     });
   }
 
-  async stop(sandboxName: string): Promise<void> {
-    await this.invoke(["stop", sandboxName]);
+  async stop(
+    sandboxName: string,
+    options: SbxRequestOptions = {},
+  ): Promise<void> {
+    await this.invoke(["stop", sandboxName], options);
   }
 
   async remove(sandboxName: string): Promise<void> {

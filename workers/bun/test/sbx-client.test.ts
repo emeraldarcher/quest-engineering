@@ -54,6 +54,24 @@ test("CLI client terminates timed-out commands and classifies the error", async 
   });
 });
 
+test("CLI client applies dedicated lifecycle timeouts to literal stop and inventory argv", async () => {
+  const calls: Array<{ args: readonly string[]; timeoutMs: number }> = [];
+  const client = new CliSbxClient("/fake/sbx", async (request) => {
+    calls.push({ args: [...request.args], timeoutMs: request.timeoutMs });
+    return request.args[0] === "ls"
+      ? { exitCode: 0, stdout: '{"sandboxes":[]}', stderr: "" }
+      : { exitCode: 0, stdout: "", stderr: "" };
+  });
+
+  await client.stop("qe-exact-sandbox", { timeoutMs: 1_234 });
+  await client.list({ timeoutMs: 567 });
+
+  expect(calls).toEqual([
+    { args: ["stop", "qe-exact-sandbox"], timeoutMs: 1_234 },
+    { args: ["ls", "--json"], timeoutMs: 567 },
+  ]);
+});
+
 test("CLI errors redact environment values from retained command arguments", async () => {
   const client = new CliSbxClient("/fake/sbx", async () => ({
     exitCode: 1,

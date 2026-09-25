@@ -8,6 +8,7 @@ import type {
   SbxExecOptions,
   SbxNativeVersion,
   SbxPolicyRule,
+  SbxRequestOptions,
   SbxSandboxSummary,
   SbxSetting,
 } from "../src/execution-environment/sbx-client.ts";
@@ -88,7 +89,7 @@ export class FakeSbxClient implements SbxClient {
     return structuredClone(this.state.version);
   }
 
-  async list(): Promise<SbxSandboxSummary[]> {
+  async list(_options: SbxRequestOptions = {}): Promise<SbxSandboxSummary[]> {
     return [...this.state.sandboxes.values()].map((item) => ({ ...item }));
   }
 
@@ -258,7 +259,10 @@ export class FakeSbxClient implements SbxClient {
     await writeFile(hostPath, data);
   }
 
-  async stop(sandboxName: string): Promise<void> {
+  async stop(
+    sandboxName: string,
+    _options: SbxRequestOptions = {},
+  ): Promise<void> {
     const sandbox = this.state.sandboxes.get(sandboxName);
     if (!sandbox)
       throw new SbxClientError("operation_failed", "sandbox not found", [

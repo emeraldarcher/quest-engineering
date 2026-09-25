@@ -12,12 +12,14 @@ test.skipIf(!live)(
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
     const root = await mkdtemp(join(parent, "sbx-live-"));
-    const backend = new SbxExecutionEnvironmentBackend({
-      workerId: "worker-sbx-test",
-      dataRoot: root,
-      reconciliationPollMs: 500,
-      reconciliationAttempts: 120,
-    });
+    const createBackend = () =>
+      new SbxExecutionEnvironmentBackend({
+        workerId: "worker-sbx-test",
+        dataRoot: root,
+        reconciliationPollMs: 500,
+        reconciliationAttempts: 120,
+      });
+    let backend = createBackend();
     let ref: Awaited<ReturnType<typeof backend.ensure>>["ref"] | null = null;
     try {
       const readiness = await backend.readiness();
@@ -82,13 +84,57 @@ test.skipIf(!live)(
       expect(stdout).toMatch(/(?:24 80|[1-9]\d* [1-9]\d*)/);
       expect(stdout).toContain("qe-tty-in=0");
       expect(stdout).toContain("qe-tty-out=0");
+      expect(
+        (
+          await lease.exec({
+            executable: "/usr/bin/docker",
+            args: ["ps", "--quiet"],
+            timeoutMs: 30_000,
+          })
+        ).stdout.trim(),
+      ).toBe("");
 
+      const retainedPath = `${lease.paths.state}/live-stop-retained.txt`;
+      const retainedBytes = new TextEncoder().encode("retained-across-stop\n");
+      await lease.writeFile({ path: retainedPath, data: retainedBytes });
+      const dockerIdBefore = (
+        await lease.exec({
+          executable: "/usr/bin/docker",
+          args: ["info", "--format", "{{.ID}}"],
+          timeoutMs: 30_000,
+        })
+      ).stdout.trim();
+
+      const stopStartedAt = Date.now();
       await backend.stop(ref);
+      expect(Date.now() - stopStartedAt).toBeLessThan(70_000);
       expect(await backend.inspect(ref)).toMatchObject({
         state: "stopped",
         usable: false,
       });
-      expect((await backend.recover(ref, spec)).ref).toEqual(ref);
+      await backend.stop(ref);
+
+      backend.close();
+      backend = createBackend();
+      expect(await backend.inspect(ref)).toMatchObject({
+        state: "stopped",
+        usable: false,
+      });
+      const recovered = await backend.recover(ref, spec);
+      expect(recovered.ref).toEqual(ref);
+      expect(
+        await recovered.readFile({ path: retainedPath, maxBytes: 1_024 }),
+      ).toEqual(retainedBytes);
+      expect(
+        (
+          await recovered.exec({
+            executable: "/usr/bin/docker",
+            args: ["info", "--format", "{{.ID}}"],
+            timeoutMs: 30_000,
+          })
+        ).stdout.trim(),
+      ).toBe(dockerIdBefore);
+      await backend.stop(ref);
     } finally {
       if (ref) await backend.remove(ref).catch(() => undefined);
       backend.close();
