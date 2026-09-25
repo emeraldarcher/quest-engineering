@@ -213,7 +213,7 @@ test.skipIf(!enabled)(
       const attachment = host.attachment(prepared.ref);
       expect(attachment).toMatchObject({
         mode: "local_native_terminal",
-        terminalTargetId: prepared.ref.paneId,
+        paneId: prepared.ref.paneId,
         supportsObservation: true,
         supportsTakeover: true,
       });

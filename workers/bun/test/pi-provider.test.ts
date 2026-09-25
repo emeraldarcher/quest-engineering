@@ -1327,7 +1327,7 @@ class FakeHost implements TerminalSessionBackend {
       mode: "local_native_terminal",
       backendKind: "herdr",
       terminalSessionId: this.sessionName,
-      terminalTargetId: ref.agentName,
+      paneId: ref.paneId,
       supportsObservation: true,
       supportsTakeover: true,
     };

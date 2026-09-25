@@ -370,7 +370,7 @@ export interface LocalSessionAttachmentDescriptor {
     attachment_mode: "local_native_terminal";
     backend_kind: "herdr";
     terminal_session_id: string;
-    terminal_target_id: string;
+    pane_id: string;
     terminal_id: string | null;
     supports_observation: boolean;
     supports_takeover: boolean;

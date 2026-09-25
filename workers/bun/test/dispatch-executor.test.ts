@@ -1431,7 +1431,7 @@ class InspectingProvider implements AgentHarness {
       mode: "local_native_terminal" as const,
       backendKind: "fake",
       terminalSessionId: "fake",
-      terminalTargetId: lineage.lineageId,
+      paneId: lineage.lineageId,
       supportsObservation: false,
       supportsTakeover: false,
     };

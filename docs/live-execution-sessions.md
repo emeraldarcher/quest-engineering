@@ -41,7 +41,9 @@ observe:  herdr --session <name> agent attach <target>
 takeover: herdr --session <name> agent attach <target> --takeover
 ```
 
-Svelte never constructs these commands.
+Svelte never constructs these commands. The stable Worker Protocol/API field remains `terminal_target_id`, but for Herdr its value is explicitly a protocol-22 pane ID (`w<public-number>:p<public-number>`), not an agent name. Worker and client internals name it `paneId` / `pane_id`; native code validates session names, pane IDs, and agent names as separate identity domains.
+
+On macOS, Tauri passes a private launch descriptor to a short-lived native helper opened as a Terminal document. The helper starts the pinned Herdr executable with `std::process::Command`: session and pane are separate literal argv values, observe mode omits `--takeover`, and no attachment value is interpolated into shell source. The Product descriptor token, Worker generation, Run/Attempt/session binding, local Herdr ownership tokens, terminal identity, and live pane identity remain independently fenced before this launch.
 
 ## Identity and durability
 

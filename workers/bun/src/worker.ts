@@ -1435,7 +1435,7 @@ function harnessSessionPayload(
         attachment_mode: descriptor.mode,
         backend_kind: descriptor.backendKind,
         terminal_session_id: descriptor.terminalSessionId,
-        terminal_target_id: descriptor.terminalTargetId,
+        terminal_target_id: descriptor.paneId,
         ...(descriptor.terminalId
           ? { terminal_id: descriptor.terminalId }
           : {}),

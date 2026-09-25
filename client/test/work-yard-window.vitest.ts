@@ -12,6 +12,7 @@ import { ApiClient } from "../src/api/client";
 import {
   ApiError,
   type HumanAttention,
+  type LocalSessionAttachmentDescriptor,
   type RunProjection,
 } from "../src/api/contracts";
 import WorkYardWindow from "../src/components/work-yard/WorkYardWindow.svelte";
@@ -246,6 +247,49 @@ test("pre-prompt execution exposes distinct confirmed authorization and cancella
   expect(cancelExecution).toHaveBeenCalledWith(identity);
   expect(step.attempt?.id).toBe(identity.attemptId);
   expect(run.id).toBe(identity.runId);
+});
+
+test("Work Yard preserves the exact pane ID through inputless native attachment", async () => {
+  const { value, api, store } = operatorSetup();
+  const descriptor: LocalSessionAttachmentDescriptor = {
+    descriptor_token: "descriptor-token",
+    expires_at: "2099-01-01T00:00:00Z",
+    mode: "local_native_terminal",
+    worker_id: "local-worker",
+    worker_generation: 4,
+    session_id: "session-pre-prompt",
+    state: "waiting_for_human",
+    takeover_allowed: false,
+    recovery_allowed: false,
+    terminal: {
+      attachment_mode: "local_native_terminal",
+      backend_kind: "herdr",
+      terminal_session_id: "worker-session",
+      pane_id: "w2:p2",
+      terminal_id: "terminal-1",
+      supports_observation: true,
+      supports_takeover: true,
+    },
+  };
+  vi.spyOn(api, "getSessionAttachment").mockResolvedValue(descriptor);
+  vi.spyOn(api, "recordSessionOpened").mockResolvedValue("session-pre-prompt");
+  const nativeOpen = vi
+    .spyOn(liveSessionPlatform, "openLocalLiveSession")
+    .mockResolvedValue();
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  await fireEvent.click(screen.getByRole("button", { name: "Open Session" }));
+
+  await waitFor(() =>
+    expect(nativeOpen).toHaveBeenCalledWith(descriptor, "observe"),
+  );
+  expect(descriptor.terminal.pane_id).toBe("w2:p2");
+  expect(api.recordSessionOpened).toHaveBeenCalledWith(
+    "descriptor-token",
+    "observe",
+  );
 });
 
 test("operator command pending state does not block inputless Open Session", async () => {
@@ -878,15 +922,13 @@ function operatorSetup() {
   });
   step.session.native_identity.conversation_id = null;
   step.session.attachment.can_takeover = false;
-  const store = createAppStore(
-    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
-    "ws://fixture.invalid/socket",
-    value,
-  );
+  const api = new ApiClient({ httpBaseUrl: "http://fixture.invalid" });
+  const store = createAppStore(api, "ws://fixture.invalid/socket", value);
   return {
     value,
     run,
     step,
+    api,
     store,
     identity: {
       runId: run.id,

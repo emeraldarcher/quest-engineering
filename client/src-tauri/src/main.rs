@@ -1,8 +1,20 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Deserialize;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[cfg(target_os = "macos")]
+use std::fs::{self, OpenOptions};
+#[cfg(target_os = "macos")]
+use std::io::Write;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "macos")]
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,7 +22,7 @@ struct LocalAttachment {
     mode: String,
     backend_kind: String,
     terminal_session_id: String,
-    terminal_target_id: String,
+    pane_id: String,
     terminal_id: Option<String>,
     worker_id: String,
     session_id: String,
@@ -23,18 +35,20 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
     if descriptor.mode != "local_native_terminal" || descriptor.backend_kind != "herdr" {
         return Err("Unsupported local terminal attachment transport.".into());
     }
-    let interactive = interaction_mode == "takeover" || interaction_mode == "recovery";
     if interaction_mode == "takeover" && !descriptor.takeover_allowed {
         return Err("Interactive takeover is not allowed for this session state.".into());
     }
     if interaction_mode == "recovery" && !descriptor.recovery_allowed {
         return Err("Interactive recovery is not allowed for this session state.".into());
     }
-    if !matches!(interaction_mode.as_str(), "observe" | "takeover" | "recovery") {
+    if !matches!(
+        interaction_mode.as_str(),
+        "observe" | "takeover" | "recovery"
+    ) {
         return Err("Unsupported live-session interaction mode.".into());
     }
     validate_session_name(&descriptor.terminal_session_id)?;
-    validate_agent_name(&descriptor.terminal_target_id)?;
+    validate_herdr_pane_id(&descriptor.pane_id)?;
 
     let herdr = find_herdr()?;
     let sessions = Command::new(&herdr)
@@ -53,7 +67,7 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
             &descriptor.terminal_session_id,
             "agent",
             "get",
-            &descriptor.terminal_target_id,
+            &descriptor.pane_id,
         ])
         .output()
         .map_err(|_| "Could not inspect the local Herdr session.".to_string())?;
@@ -84,27 +98,16 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
 
     #[cfg(target_os = "macos")]
     {
-        let mut command = format!(
-            "exec {} --session {} agent attach {}",
-            shell_quote(herdr.to_string_lossy().as_ref()),
-            shell_quote(&descriptor.terminal_session_id),
-            shell_quote(&descriptor.terminal_target_id)
-        );
-        if interactive {
-            command.push_str(" --takeover");
-        }
-        let script = format!(
-            "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
-            apple_script_string(&command)
-        );
-        let status = Command::new("/usr/bin/osascript")
-            .args(["-e", &script])
-            .status()
-            .map_err(|_| "Could not open the local terminal application.".to_string())?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err("The terminal application rejected the attach request.".into());
+        let launch = TerminalAttachLaunch {
+            herdr_path: herdr,
+            terminal_session_id: descriptor.terminal_session_id,
+            pane_id: descriptor.pane_id,
+            interaction_mode,
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            herdr_config_path: std::env::var_os("HERDR_CONFIG_PATH").map(PathBuf::from),
+        };
+        return open_terminal_attachment(&launch);
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -141,6 +144,7 @@ fn validate_session_name(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn validate_agent_name(value: &str) -> Result<(), String> {
     let mut bytes = value.bytes();
     let first = bytes.next();
@@ -152,6 +156,26 @@ fn validate_agent_name(value: &str) -> Result<(), String> {
         return Err("Invalid Herdr agent identity.".into());
     }
     Ok(())
+}
+
+fn validate_herdr_pane_id(value: &str) -> Result<(), String> {
+    let Some(value) = value.strip_prefix('w') else {
+        return Err("Invalid Herdr pane identity.".into());
+    };
+    let Some((workspace, pane)) = value.split_once(":p") else {
+        return Err("Invalid Herdr pane identity.".into());
+    };
+    if !valid_herdr_public_number(workspace) || !valid_herdr_public_number(pane) {
+        return Err("Invalid Herdr pane identity.".into());
+    }
+    Ok(())
+}
+
+fn valid_herdr_public_number(value: &str) -> bool {
+    const PUBLIC_ID_ALPHABET: &[u8] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
+    !value.is_empty()
+        && value.len() <= 13
+        && value.bytes().all(|byte| PUBLIC_ID_ALPHABET.contains(&byte))
 }
 
 fn session_is_running(bytes: &[u8], expected: &str) -> bool {
@@ -183,12 +207,261 @@ fn json_contains_field(value: &serde_json::Value, keys: &[&str], expected: &str)
     }
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+#[cfg(target_os = "macos")]
+const ATTACH_LAUNCHER_NAME: &str = "quest-engineering-session-attach";
+#[cfg(target_os = "macos")]
+static ATTACH_LAUNCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalAttachLaunch {
+    herdr_path: PathBuf,
+    terminal_session_id: String,
+    pane_id: String,
+    interaction_mode: String,
+    home: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
+    herdr_config_path: Option<PathBuf>,
 }
 
-fn apple_script_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('\"', "\\\""))
+#[cfg(target_os = "macos")]
+#[derive(Deserialize, Serialize)]
+struct TerminalAttachStatus {
+    state: String,
+    message: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+struct NativeCommandSpec {
+    executable: PathBuf,
+    args: Vec<OsString>,
+    environment: Vec<(OsString, OsString)>,
+}
+
+#[cfg(target_os = "macos")]
+fn herdr_attach_command(launch: &TerminalAttachLaunch) -> Result<NativeCommandSpec, String> {
+    validate_session_name(&launch.terminal_session_id)?;
+    validate_herdr_pane_id(&launch.pane_id)?;
+    if !matches!(
+        launch.interaction_mode.as_str(),
+        "observe" | "takeover" | "recovery"
+    ) {
+        return Err("Unsupported live-session interaction mode.".into());
+    }
+    if !launch.herdr_path.is_absolute() || !launch.herdr_path.is_file() {
+        return Err("The pinned Herdr executable is unavailable.".into());
+    }
+
+    let mut args = vec![
+        OsString::from("--session"),
+        launch.terminal_session_id.clone().into(),
+        OsString::from("agent"),
+        OsString::from("attach"),
+        launch.pane_id.clone().into(),
+    ];
+    if launch.interaction_mode != "observe" {
+        args.push(OsString::from("--takeover"));
+    }
+    let mut environment = Vec::new();
+    for (name, value) in [
+        ("HOME", launch.home.as_ref()),
+        ("XDG_CONFIG_HOME", launch.xdg_config_home.as_ref()),
+        ("HERDR_CONFIG_PATH", launch.herdr_config_path.as_ref()),
+    ] {
+        if let Some(value) = value {
+            environment.push((OsString::from(name), value.as_os_str().to_owned()));
+        }
+    }
+    Ok(NativeCommandSpec {
+        executable: launch.herdr_path.clone(),
+        args,
+        environment,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn open_terminal_attachment(launch: &TerminalAttachLaunch) -> Result<(), String> {
+    let _ = herdr_attach_command(launch)?;
+    let directory = create_attachment_launch_directory()?;
+    let launcher_path = directory.join(ATTACH_LAUNCHER_NAME);
+    let descriptor_path = directory.join("launch.json");
+    let status_path = directory.join("status.json");
+    let current_executable = std::env::current_exe()
+        .map_err(|_| "Could not locate the native session-attach launcher.".to_string())?;
+
+    fs::copy(&current_executable, &launcher_path)
+        .map_err(|_| "Could not prepare the native session-attach launcher.".to_string())?;
+    fs::set_permissions(&launcher_path, fs::Permissions::from_mode(0o700))
+        .map_err(|_| "Could not secure the native session-attach launcher.".to_string())?;
+    write_private_json(&descriptor_path, launch)
+        .map_err(|_| "Could not prepare the native session-attach descriptor.".to_string())?;
+
+    let opened = Command::new("/usr/bin/open")
+        .args(["-a", "Terminal"])
+        .arg(&launcher_path)
+        .status()
+        .map_err(|_| "Could not open the local terminal application.".to_string())?;
+    if !opened.success() {
+        cleanup_attachment_launch_directory(&directory);
+        return Err("The terminal application rejected the attach request.".into());
+    }
+
+    for _ in 0..100 {
+        if let Ok(bytes) = fs::read(&status_path) {
+            let status: TerminalAttachStatus = serde_json::from_slice(&bytes).map_err(|_| {
+                "The native session-attach launcher returned invalid status.".to_string()
+            })?;
+            cleanup_attachment_launch_directory(&directory);
+            return if status.state == "started" {
+                Ok(())
+            } else {
+                Err(status
+                    .message
+                    .unwrap_or_else(|| "The native session-attach launcher failed.".into()))
+            };
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    cleanup_attachment_launch_directory(&directory);
+    Err("The native session-attach launcher did not start.".into())
+}
+
+#[cfg(target_os = "macos")]
+fn create_attachment_launch_directory() -> Result<PathBuf, String> {
+    let root = std::env::var_os("QE_SESSION_ATTACH_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("quest-engineering-session-attach"));
+    if !root.is_absolute() {
+        return Err("The native session-attach root must be absolute.".into());
+    }
+    fs::create_dir_all(&root)
+        .map_err(|_| "Could not create the native session-attach root.".to_string())?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .map_err(|_| "Could not secure the native session-attach root.".to_string())?;
+
+    for _ in 0..100 {
+        let sequence = ATTACH_LAUNCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let directory = root.join(format!("launch-{}-{nanos}-{sequence}", std::process::id()));
+        match fs::create_dir(&directory) {
+            Ok(()) => {
+                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(
+                    |_| "Could not secure the native session-attach directory.".to_string(),
+                )?;
+                return Ok(directory);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                return Err("Could not create the native session-attach directory.".into());
+            }
+        }
+    }
+    Err("Could not allocate a native session-attach directory.".into())
+}
+
+#[cfg(target_os = "macos")]
+fn write_private_json(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(value)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()
+}
+
+#[cfg(target_os = "macos")]
+fn write_launcher_status(path: &Path, status: &TerminalAttachStatus) -> std::io::Result<()> {
+    let temporary = path.with_extension("tmp");
+    let _ = fs::remove_file(&temporary);
+    write_private_json(&temporary, status)?;
+    fs::rename(temporary, path)
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_attachment_launch_directory(directory: &Path) {
+    let _ = fs::remove_file(directory.join("launch.json"));
+    let _ = fs::remove_file(directory.join("status.json"));
+    let _ = fs::remove_file(directory.join("status.tmp"));
+    let _ = fs::remove_file(directory.join(ATTACH_LAUNCHER_NAME));
+    let _ = fs::remove_dir(directory);
+}
+
+#[cfg(target_os = "macos")]
+fn attachment_launcher_directory() -> Option<PathBuf> {
+    let invoked_as = PathBuf::from(std::env::args_os().next()?);
+    if invoked_as.file_name()?.to_str()? != ATTACH_LAUNCHER_NAME {
+        return None;
+    }
+    let directory = invoked_as.parent()?.to_path_buf();
+    if !directory.file_name()?.to_str()?.starts_with("launch-") {
+        return None;
+    }
+    Some(directory)
+}
+
+#[cfg(target_os = "macos")]
+fn run_terminal_attachment_launcher(directory: &Path) -> i32 {
+    let descriptor_path = directory.join("launch.json");
+    let status_path = directory.join("status.json");
+    let result = (|| -> Result<i32, String> {
+        let bytes = fs::read(&descriptor_path)
+            .map_err(|_| "The native session-attach descriptor is unavailable.".to_string())?;
+        let launch: TerminalAttachLaunch = serde_json::from_slice(&bytes)
+            .map_err(|_| "The native session-attach descriptor is invalid.".to_string())?;
+        let command = herdr_attach_command(&launch)?;
+        let _ = fs::remove_file(&descriptor_path);
+
+        let mut process = Command::new(&command.executable);
+        process.args(&command.args);
+        for (name, value) in &command.environment {
+            process.env(name, value);
+        }
+        let mut child = process
+            .spawn()
+            .map_err(|_| "Could not start the pinned Herdr attachment.".to_string())?;
+        std::thread::sleep(Duration::from_millis(100));
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|_| "Could not inspect the pinned Herdr attachment.".to_string())?
+        {
+            return Err(format!(
+                "The pinned Herdr attachment exited before becoming observable ({status})."
+            ));
+        }
+        write_launcher_status(
+            &status_path,
+            &TerminalAttachStatus {
+                state: "started".into(),
+                message: None,
+            },
+        )
+        .map_err(|_| "Could not acknowledge the native Herdr attachment.".to_string())?;
+        let status = child
+            .wait()
+            .map_err(|_| "Could not wait for the native Herdr attachment.".to_string())?;
+        Ok(status.code().unwrap_or(1))
+    })();
+
+    match result {
+        Ok(code) => code,
+        Err(message) => {
+            let _ = write_launcher_status(
+                &status_path,
+                &TerminalAttachStatus {
+                    state: "failed".into(),
+                    message: Some(message),
+                },
+            );
+            1
+        }
+    }
 }
 
 #[cfg(test)]
@@ -196,11 +469,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_scoped_herdr_identifiers() {
+    fn validates_distinct_herdr_identifier_domains() {
         assert!(validate_session_name("quest-engineering-worker").is_ok());
         assert!(validate_agent_name("qe-1234-review").is_ok());
+        assert!(validate_herdr_pane_id("w2:p2").is_ok());
+        assert!(validate_herdr_pane_id("w12:p7").is_ok());
+        assert!(validate_herdr_pane_id("wA:pZ0").is_ok());
+
         assert!(validate_session_name("bad; command").is_err());
         assert!(validate_agent_name("Bad Agent").is_err());
+        assert!(validate_agent_name("w2:p2").is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_or_unsafe_herdr_pane_ids() {
+        for value in [
+            "",
+            " ",
+            "w2",
+            "p2",
+            "w:p2",
+            "w2:p",
+            "w2:p2:p3",
+            "w2:t2",
+            "session-name",
+            "w2/p2",
+            "../w2:p2",
+            "w2:p2;open",
+            "w2:p2\nnext",
+            "w2:p2\r",
+            "w2:p2\0",
+            "w2:p2$()",
+            "w2:p2 with-space",
+            "wabcdefghijklmn:p1",
+            "w1:pabcdefghijklmn",
+            "W2:P2",
+            "wI:p1",
+            "w1:pO",
+        ] {
+            assert!(
+                validate_herdr_pane_id(value).is_err(),
+                "unexpectedly accepted {value:?}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn constructs_inputless_and_takeover_herdr_argv_without_shell_source() {
+        let executable = std::env::current_exe().unwrap();
+        let mut launch = TerminalAttachLaunch {
+            herdr_path: executable.clone(),
+            terminal_session_id: "worker-session".into(),
+            pane_id: "w12:p7".into(),
+            interaction_mode: "observe".into(),
+            home: Some(PathBuf::from("/control/home")),
+            xdg_config_home: Some(PathBuf::from("/control/xdg")),
+            herdr_config_path: Some(PathBuf::from("/control/herdr.toml")),
+        };
+        let observe = herdr_attach_command(&launch).unwrap();
+        assert_eq!(observe.executable, executable);
+        assert_eq!(
+            observe.args,
+            ["--session", "worker-session", "agent", "attach", "w12:p7"].map(OsString::from)
+        );
+        assert_eq!(observe.args[4], OsString::from("w12:p7"));
+        assert!(!observe.args.contains(&OsString::from("--takeover")));
+
+        launch.interaction_mode = "takeover".into();
+        let takeover = herdr_attach_command(&launch).unwrap();
+        assert_eq!(takeover.args[4], OsString::from("w12:p7"));
+        assert_eq!(takeover.args.last(), Some(&OsString::from("--takeover")));
     }
 
     #[test]
@@ -224,6 +563,11 @@ mod tests {
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Some(directory) = attachment_launcher_directory() {
+        std::process::exit(run_terminal_attachment_launcher(&directory));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())

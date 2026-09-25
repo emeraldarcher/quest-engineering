@@ -513,7 +513,7 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
       ),
     ).toMatchObject({
       backendKind: "herdr",
-      terminalTargetId: execution.ref.agentName,
+      paneId: execution.ref.paneId,
       supportsObservation: true,
       supportsTakeover: true,
     });
@@ -1253,7 +1253,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
       mode: "local_native_terminal",
       backendKind: "herdr",
       terminalSessionId: ref.sessionName,
-      terminalTargetId: ref.agentName,
+      paneId: ref.paneId,
       ...(ref.terminalId ? { terminalId: ref.terminalId } : {}),
       supportsObservation: true,
       supportsTakeover: true,

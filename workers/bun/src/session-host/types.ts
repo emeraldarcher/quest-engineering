@@ -102,7 +102,7 @@ export interface TerminalAttachmentDescriptor {
   mode: "local_native_terminal";
   backendKind: "herdr" | (string & {});
   terminalSessionId: string;
-  terminalTargetId: string;
+  paneId: string;
   terminalId?: string;
   supportsObservation: boolean;
   supportsTakeover: boolean;

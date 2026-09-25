@@ -292,7 +292,7 @@ test("local session descriptors are unavailable to web clients and marked for Ta
               attachment_mode: "local_native_terminal",
               backend_kind: "herdr",
               terminal_session_id: "quest-engineering-worker",
-              terminal_target_id: "qe-agent",
+              terminal_target_id: "w2:p2",
               terminal_id: "terminal-1",
               supports_observation: true,
               supports_takeover: true,
@@ -314,6 +314,8 @@ test("local session descriptors are unavailable to web clients and marked for Ta
 
   expect(descriptor.session_id).toBe("session");
   expect(descriptor.takeover_allowed).toBe(true);
+  expect(descriptor.terminal.pane_id).toBe("w2:p2");
+  expect("terminal_target_id" in descriptor.terminal).toBe(false);
   expect(
     (request?.headers as Record<string, string>)[
       "x-quest-engineering-local-client"

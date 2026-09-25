@@ -27,7 +27,7 @@ export async function openLocalLiveSession(
       mode: attachment.mode,
       backendKind: attachment.terminal.backend_kind,
       terminalSessionId: attachment.terminal.terminal_session_id,
-      terminalTargetId: attachment.terminal.terminal_target_id,
+      paneId: attachment.terminal.pane_id,
       terminalId: attachment.terminal.terminal_id,
       workerId: attachment.worker_id,
       sessionId: attachment.session_id,

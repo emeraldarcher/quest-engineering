@@ -211,7 +211,7 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
       terminalSessionId: ref.sessionName,
       // Pane identity survives Herdr 0.9 persistence even when its optional
       // custom agent name is no longer projected.
-      terminalTargetId: ref.paneId,
+      paneId: ref.paneId,
       ...(ref.terminalId ? { terminalId: ref.terminalId } : {}),
       supportsObservation: true,
       supportsTakeover: true,
