@@ -69,3 +69,17 @@ test("Take Control resolves the same exact pane ID with a distinct mode", async 
     }),
   );
 });
+
+test("surfaces configured Herdr resolution failures without misclassifying the session", async () => {
+  tauri.invoke.mockRejectedValueOnce(
+    "Compatible Quest Engineering Herdr runtime unavailable. Configure QE_HERDR_BIN with an absolute executable path.",
+  );
+
+  await expect(
+    openLocalLiveSession(attachment(), "observe"),
+  ).rejects.toMatchObject({
+    code: "local_herdr_runtime_unavailable",
+    message:
+      "Compatible Quest Engineering Herdr runtime unavailable. Configure QE_HERDR_BIN with an absolute executable path.",
+  });
+});

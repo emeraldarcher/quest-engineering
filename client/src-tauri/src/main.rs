@@ -5,16 +5,22 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[cfg(target_os = "macos")]
 use std::fs::{self, OpenOptions};
 #[cfg(target_os = "macos")]
 use std::io::Write;
 #[cfg(target_os = "macos")]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const HERDR_BIN_ENV: &str = "QE_HERDR_BIN";
+const HERDR_RUNTIME_UNAVAILABLE: &str = "Compatible Quest Engineering Herdr runtime unavailable. Configure QE_HERDR_BIN with an absolute executable path.";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,14 +56,17 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
     validate_session_name(&descriptor.terminal_session_id)?;
     validate_herdr_pane_id(&descriptor.pane_id)?;
 
-    let herdr = find_herdr()?;
+    let herdr = resolve_herdr_executable()?;
     let sessions = Command::new(&herdr)
         .args(["session", "list", "--json"])
         .output()
         .map_err(|_| "Could not inspect local Herdr sessions.".to_string())?;
-    if !sessions.status.success()
-        || !session_is_running(&sessions.stdout, &descriptor.terminal_session_id)
-    {
+    if !sessions.status.success() {
+        return Err(HERDR_RUNTIME_UNAVAILABLE.into());
+    }
+    let session_running = session_is_running(&sessions.stdout, &descriptor.terminal_session_id)
+        .map_err(|_| HERDR_RUNTIME_UNAVAILABLE.to_string())?;
+    if !session_running {
         return Err("The referenced Worker session is not running on this host.".into());
     }
 
@@ -75,7 +84,7 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
         return Err("The referenced Worker session is not available on this host.".into());
     }
     let agent: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| "Herdr returned an invalid session inspection.".to_string())?;
+        .map_err(|_| HERDR_RUNTIME_UNAVAILABLE.to_string())?;
     if !json_contains_field(&agent, &["qe_owner"], "quest-engineering-worker/v1")
         || !json_contains_field(&agent, &["qe_worker_id"], &descriptor.worker_id)
         || !json_contains_field(&agent, &["qe_lineage_id"], &descriptor.session_id)
@@ -114,22 +123,25 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
     Err("Native Herdr attachment is currently implemented for macOS only.".into())
 }
 
-fn find_herdr() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("PATH") {
-        for directory in std::env::split_paths(&path) {
-            let candidate = directory.join("herdr");
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
+fn resolve_herdr_executable() -> Result<PathBuf, String> {
+    let configured = std::env::var_os(HERDR_BIN_ENV).ok_or(HERDR_RUNTIME_UNAVAILABLE)?;
+    validate_herdr_executable_path(Path::new(&configured))
+}
+
+fn validate_herdr_executable_path(path: &Path) -> Result<PathBuf, String> {
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return Err(HERDR_RUNTIME_UNAVAILABLE.into());
     }
-    for candidate in ["/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"] {
-        let path = PathBuf::from(candidate);
-        if path.is_file() {
-            return Ok(path);
-        }
+    let canonical = std::fs::canonicalize(path).map_err(|_| HERDR_RUNTIME_UNAVAILABLE)?;
+    let metadata = std::fs::metadata(&canonical).map_err(|_| HERDR_RUNTIME_UNAVAILABLE)?;
+    if !metadata.is_file() {
+        return Err(HERDR_RUNTIME_UNAVAILABLE.into());
     }
-    Err("Herdr is not installed or is unavailable to Quest Engineering.".into())
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(HERDR_RUNTIME_UNAVAILABLE.into());
+    }
+    Ok(canonical)
 }
 
 fn validate_session_name(value: &str) -> Result<(), String> {
@@ -178,20 +190,16 @@ fn valid_herdr_public_number(value: &str) -> bool {
         && value.bytes().all(|byte| PUBLIC_ID_ALPHABET.contains(&byte))
 }
 
-fn session_is_running(bytes: &[u8], expected: &str) -> bool {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return false;
-    };
-    value
+fn session_is_running(bytes: &[u8], expected: &str) -> Result<bool, ()> {
+    let value = serde_json::from_slice::<serde_json::Value>(bytes).map_err(|_| ())?;
+    let sessions = value
         .get("sessions")
         .and_then(serde_json::Value::as_array)
-        .map(|sessions| {
-            sessions.iter().any(|session| {
-                session.get("name").and_then(serde_json::Value::as_str) == Some(expected)
-                    && session.get("running").and_then(serde_json::Value::as_bool) == Some(true)
-            })
-        })
-        .unwrap_or(false)
+        .ok_or(())?;
+    Ok(sessions.iter().any(|session| {
+        session.get("name").and_then(serde_json::Value::as_str) == Some(expected)
+            && session.get("running").and_then(serde_json::Value::as_bool) == Some(true)
+    }))
 }
 
 fn json_contains_field(value: &serde_json::Value, keys: &[&str], expected: &str) -> bool {
@@ -250,9 +258,7 @@ fn herdr_attach_command(launch: &TerminalAttachLaunch) -> Result<NativeCommandSp
     ) {
         return Err("Unsupported live-session interaction mode.".into());
     }
-    if !launch.herdr_path.is_absolute() || !launch.herdr_path.is_file() {
-        return Err("The pinned Herdr executable is unavailable.".into());
-    }
+    let herdr_path = validate_herdr_executable_path(&launch.herdr_path)?;
 
     let mut args = vec![
         OsString::from("--session"),
@@ -275,7 +281,7 @@ fn herdr_attach_command(launch: &TerminalAttachLaunch) -> Result<NativeCommandSp
         }
     }
     Ok(NativeCommandSpec {
-        executable: launch.herdr_path.clone(),
+        executable: herdr_path,
         args,
         environment,
     })
@@ -468,6 +474,161 @@ fn run_terminal_attachment_launcher(directory: &Path) -> i32 {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn write_test_executable(path: &Path, body: &str, mode: u32) {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn resolver_test_directory() -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("native-herdr-resolver-tests")
+            .join(format!("{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn run_resolver_subprocess(
+        mode: &str,
+        configured: &Path,
+        hostile_path: &OsString,
+        explicit_marker: &Path,
+        trap_marker: &Path,
+    ) {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::herdr_resolver_subprocess",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("QE_NATIVE_HERDR_RESOLVER_TEST_MODE", mode)
+            .env(HERDR_BIN_ENV, configured)
+            .env("PATH", hostile_path)
+            .env("QE_HERDR_TEST_EXPLICIT_MARKER", explicit_marker)
+            .env("QE_HERDR_TEST_TRAP_MARKER", trap_marker)
+            .status()
+            .unwrap();
+        assert!(status.success(), "resolver subprocess failed for {mode}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "helper invoked by configured_herdr_bypasses_hostile_path_and_fails_closed"]
+    fn herdr_resolver_subprocess() {
+        let Ok(mode) = std::env::var("QE_NATIVE_HERDR_RESOLVER_TEST_MODE") else {
+            return;
+        };
+        match mode.as_str() {
+            "explicit" => {
+                let resolved = resolve_herdr_executable().unwrap();
+                assert_eq!(
+                    resolved,
+                    std::fs::canonicalize(std::env::var_os(HERDR_BIN_ENV).unwrap()).unwrap()
+                );
+                assert!(Command::new(resolved)
+                    .arg("--probe")
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            "missing" | "non-executable" => {
+                assert_eq!(
+                    resolve_herdr_executable().unwrap_err(),
+                    HERDR_RUNTIME_UNAVAILABLE
+                );
+            }
+            other => panic!("unexpected resolver test mode {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_herdr_bypasses_hostile_path_and_fails_closed() {
+        assert_eq!(HERDR_BIN_ENV, "QE_HERDR_BIN");
+        let root = resolver_test_directory();
+        let controlled = root.join("controlled-herdr");
+        let missing = root.join("missing-herdr");
+        let non_executable = root.join("non-executable-herdr");
+        let hostile_directory = root.join("hostile");
+        let hostile = hostile_directory.join("herdr");
+        let explicit_marker = root.join("explicit-invocations");
+        let trap_marker = root.join("path-trap-invocations");
+        std::fs::create_dir_all(&hostile_directory).unwrap();
+        write_test_executable(
+            &controlled,
+            "#!/bin/sh\nprintf 'explicit\\n' >> \"$QE_HERDR_TEST_EXPLICIT_MARKER\"\n",
+            0o755,
+        );
+        write_test_executable(
+            &hostile,
+            "#!/bin/sh\nprintf 'trap\\n' >> \"$QE_HERDR_TEST_TRAP_MARKER\"\n",
+            0o755,
+        );
+        write_test_executable(&non_executable, "#!/bin/sh\nexit 0\n", 0o644);
+        let hostile_path = std::env::join_paths(
+            std::iter::once(hostile_directory.clone()).chain(
+                std::env::var_os("PATH")
+                    .into_iter()
+                    .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>()),
+            ),
+        )
+        .unwrap();
+
+        run_resolver_subprocess(
+            "explicit",
+            &controlled,
+            &hostile_path,
+            &explicit_marker,
+            &trap_marker,
+        );
+        run_resolver_subprocess(
+            "missing",
+            &missing,
+            &hostile_path,
+            &explicit_marker,
+            &trap_marker,
+        );
+        run_resolver_subprocess(
+            "non-executable",
+            &non_executable,
+            &hostile_path,
+            &explicit_marker,
+            &trap_marker,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&explicit_marker).unwrap(),
+            "explicit\n"
+        );
+        assert!(!trap_marker.exists(), "PATH Herdr trap was invoked");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_unconfigured_or_relative_herdr_runtime() {
+        assert_eq!(
+            validate_herdr_executable_path(Path::new("herdr")).unwrap_err(),
+            HERDR_RUNTIME_UNAVAILABLE
+        );
+        assert_eq!(
+            validate_herdr_executable_path(Path::new("./herdr")).unwrap_err(),
+            HERDR_RUNTIME_UNAVAILABLE
+        );
+        assert_eq!(
+            validate_herdr_executable_path(Path::new("")).unwrap_err(),
+            HERDR_RUNTIME_UNAVAILABLE
+        );
+    }
+
     #[test]
     fn validates_distinct_herdr_identifier_domains() {
         assert!(validate_session_name("quest-engineering-worker").is_ok());
@@ -545,9 +706,10 @@ mod tests {
     #[test]
     fn requires_an_existing_running_named_session() {
         let body = br#"{"sessions":[{"name":"worker-a","running":true},{"name":"worker-b","running":false}]}"#;
-        assert!(session_is_running(body, "worker-a"));
-        assert!(!session_is_running(body, "worker-b"));
-        assert!(!session_is_running(body, "worker-c"));
+        assert_eq!(session_is_running(body, "worker-a"), Ok(true));
+        assert_eq!(session_is_running(body, "worker-b"), Ok(false));
+        assert_eq!(session_is_running(body, "worker-c"), Ok(false));
+        assert_eq!(session_is_running(b"not-json", "worker-a"), Err(()));
         let agent: serde_json::Value = serde_json::from_str(
             r#"{"result":{"agent":{"status":"blocked","tokens":{"qe_owner":"quest-engineering-worker/v1","qe_worker_id":"worker-a","qe_lineage_id":"session-a"}}}}"#,
         )
