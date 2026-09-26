@@ -218,7 +218,7 @@ async function openQuestRun(runId: string) {
         <strong>{attention.memberName} needs your help</strong>
         <p>{attention.questTitle} <span aria-hidden="true">·</span> {attention.stepName}</p>
         <small>{attention.harnessName} is waiting: {attention.message}</small>
-        <button class="toast-open" on:click={() => store.focusAttention(attention, true)}>Open Session</button>
+        <button class="toast-open" on:click={() => store.openSession(attention)}>Open Session</button>
       </article>
     {/each}
   </div>

@@ -5,7 +5,6 @@ import {
   type ArtifactDetail,
   type ClassDefinition,
   type ExecutionOption,
-  type HarnessSessionProjection,
   type Loadout,
   type Quest,
   type RunProjection,
@@ -46,6 +45,10 @@ export interface ExecutionAttemptIdentity {
   runId: string;
   occurrenceId: string;
   attemptId: string;
+}
+
+export interface LiveSessionActionTarget extends ExecutionAttemptIdentity {
+  sessionId: string;
 }
 
 export interface ExecutionCommandState {
@@ -162,7 +165,7 @@ export function createAppStore(
   });
   if (!fixture) {
     void initializeAttentionNotifications((target) => {
-      void focusAttention(target, true);
+      void openSession(target);
     });
     activeRunTracker = new ActiveRunTracker({
       getRun: (runId) => api.getRun(runId),
@@ -444,12 +447,60 @@ export function createAppStore(
     return command(() => api.getArtifact(runId, artifactId));
   }
 
-  async function openLiveSession(
-    runId: string,
-    attemptId: string,
-    session: HarnessSessionProjection,
+  function liveSessionFor(target: LiveSessionActionTarget) {
+    const projection = get(selectedRun);
+    if (!projection || projection.id !== target.runId) return null;
+    const step = projection.steps.find(
+      (item) => item.occurrence_id === target.occurrenceId,
+    );
+    if (
+      step?.attempt?.id !== target.attemptId ||
+      step.session?.id !== target.sessionId
+    )
+      return null;
+    return step.session;
+  }
+
+  async function focusAttention(target: LiveSessionActionTarget) {
+    await selectRun(target.runId);
+    sessionFocus.set({
+      runId: target.runId,
+      occurrenceId: target.occurrenceId,
+      attemptId: target.attemptId,
+      sessionId: target.sessionId,
+    });
+    selectBuildingId("work-area");
+  }
+
+  async function attachLiveSession(
+    target: LiveSessionActionTarget,
     mode: SessionOpenMode,
   ) {
+    const session = liveSessionFor(target);
+    if (!session) {
+      reportError(
+        new ApiError(
+          "stale_execution_session",
+          "The live-session action no longer matches the current Attempt and session.",
+        ),
+      );
+      return false;
+    }
+    const authorized =
+      mode === "observe"
+        ? session.attachment.can_observe
+        : mode === "takeover"
+          ? session.attachment.can_takeover
+          : session.attachment.can_recover === true;
+    if (!session.attachment.available || !authorized) {
+      reportError(
+        new ApiError(
+          `session_${mode}_unavailable`,
+          `The current Product state does not authorize session ${mode}.`,
+        ),
+      );
+      return false;
+    }
     if (!canOpenLocalLiveSession()) {
       reportError(
         new ApiError(
@@ -460,9 +511,34 @@ export function createAppStore(
       return false;
     }
     const attachment = await command(() =>
-      api.getSessionAttachment(runId, attemptId, session.id),
+      api.getSessionAttachment(
+        target.runId,
+        target.attemptId,
+        target.sessionId,
+      ),
     );
     if (!attachment) return false;
+    if (!liveSessionFor(target) || attachment.session_id !== target.sessionId) {
+      reportError(
+        new ApiError(
+          "stale_session_attachment",
+          "The attachment descriptor no longer matches the current Attempt and session.",
+        ),
+      );
+      return false;
+    }
+    if (
+      (mode === "takeover" && !attachment.takeover_allowed) ||
+      (mode === "recovery" && attachment.recovery_allowed !== true)
+    ) {
+      reportError(
+        new ApiError(
+          `session_${mode}_unavailable`,
+          `The attachment descriptor does not authorize session ${mode}.`,
+        ),
+      );
+      return false;
+    }
     const opened = await command(async () => {
       await openLocalLiveSession(attachment, mode);
       // Native Tauri validation and Terminal launch succeeded; descriptor
@@ -472,27 +548,19 @@ export function createAppStore(
     return Boolean(opened);
   }
 
-  async function focusAttention(target: AttentionTarget, open = false) {
-    await selectRun(target.runId);
-    sessionFocus.set({
-      runId: target.runId,
-      occurrenceId: target.occurrenceId,
-      attemptId: target.attemptId,
-      sessionId: target.sessionId,
-    });
-    selectBuildingId("work-area");
-    if (!open) return;
-    const projection = get(selectedRun);
-    const step = projection?.steps.find(
-      (item) => item.occurrence_id === target.occurrenceId,
-    );
-    if (projection && step?.attempt?.id === target.attemptId && step.session)
-      await openLiveSession(
-        projection.id,
-        target.attemptId,
-        step.session,
-        "takeover",
-      );
+  async function openSession(target: LiveSessionActionTarget) {
+    await focusAttention(target);
+    return attachLiveSession(target, "observe");
+  }
+
+  async function takeControl(target: LiveSessionActionTarget) {
+    await focusAttention(target);
+    return attachLiveSession(target, "takeover");
+  }
+
+  async function recoverSession(target: LiveSessionActionTarget) {
+    await focusAttention(target);
+    return attachLiveSession(target, "recovery");
   }
 
   function dismissAttention(attentionId: string) {
@@ -793,7 +861,9 @@ export function createAppStore(
     command,
     reportError,
     loadArtifact,
-    openLiveSession,
+    openSession,
+    takeControl,
+    recoverSession,
     focusAttention,
     dismissAttention,
     authorizePrompt,

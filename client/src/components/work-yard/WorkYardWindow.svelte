@@ -15,6 +15,7 @@ import type {
   AppStore,
   ExecutionAttemptIdentity,
   ExecutionCommandState,
+  LiveSessionActionTarget,
   ProductState,
 } from "../../state/app-store";
 import "../management/management-window.css";
@@ -380,17 +381,40 @@ async function confirmExecutionRecovery() {
   }
 }
 
-async function openSession(
+function liveSessionTarget(step: RunStep): LiveSessionActionTarget | null {
+  if (!run || !step.attempt || !step.session) return null;
+  return {
+    runId: run.id,
+    occurrenceId: step.occurrence_id,
+    attemptId: step.attempt.id,
+    sessionId: step.session.id,
+  };
+}
+
+async function runSessionAction(
   step: RunStep,
-  mode: "observe" | "takeover" | "recovery",
+  action: (target: LiveSessionActionTarget) => Promise<boolean>,
 ) {
-  if (!run || !step.attempt || !step.session || busy) return;
+  const target = liveSessionTarget(step);
+  if (!target || busy) return;
   busy = true;
   try {
-    await store.openLiveSession(run.id, step.attempt.id, step.session, mode);
+    await action(target);
   } finally {
     busy = false;
   }
+}
+
+async function openSession(step: RunStep) {
+  await runSessionAction(step, store.openSession);
+}
+
+async function takeControl(step: RunStep) {
+  await runSessionAction(step, store.takeControl);
+}
+
+async function recoverSession(step: RunStep) {
+  await runSessionAction(step, store.recoverSession);
 }
 
 async function retryFresh(step: RunStep) {
@@ -661,12 +685,12 @@ function attemptOutput(attempt: RunAttempt): string {
                           </div>
                           <div class="session-actions">
                             {#if localAttachAvailable && session.attachment.available && session.attachment.can_observe}
-                              <button class="secondary" disabled={busy} on:click={() => openSession(step, "observe")}>{session.state === "retained" ? "Inspect Session" : "Open Session"}</button>
+                              <button class="secondary" disabled={busy} on:click={() => openSession(step)}>{session.state === "retained" ? "Inspect Session" : "Open Session"}</button>
                             {/if}
                             {#if localAttachAvailable && session.attachment.can_takeover}
-                              <button class="primary" disabled={busy} on:click={() => openSession(step, "takeover")}>Take Control</button>
+                              <button class="primary" disabled={busy} on:click={() => takeControl(step)}>Take Control</button>
                             {:else if localAttachAvailable && session.attachment.can_recover && step.recovery?.can_human_retry}
-                              <button class="primary" disabled={busy} on:click={() => openSession(step, "recovery")}>Help &amp; Retry</button>
+                              <button class="primary" disabled={busy} on:click={() => recoverSession(step)}>Help &amp; Retry</button>
                               <small>Discuss the failure, then run <code>/qe-retry</code>.</small>
                             {:else if step.recovery?.can_retry_fresh}
                               <button class="secondary" disabled={busy} on:click={() => retryFresh(step)}>Retry with fresh session</button>

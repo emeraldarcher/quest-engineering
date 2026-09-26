@@ -154,7 +154,8 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
     "ws://fixture.invalid/socket",
     value,
   );
-  const open = vi.spyOn(store, "openLiveSession").mockResolvedValue(true);
+  const observe = vi.spyOn(store, "openSession").mockResolvedValue(true);
+  const takeover = vi.spyOn(store, "takeControl").mockResolvedValue(true);
   render(WorkYardWindow, {
     props: { store, product: value.product, onClose: vi.fn() },
   });
@@ -168,12 +169,13 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
   await fireEvent.click(
     within(waitingCard).getByRole("button", { name: "Take Control" }),
   );
-  expect(open).toHaveBeenCalledWith(
-    run.id,
-    second.attempt.id,
-    second.session,
-    "takeover",
-  );
+  expect(takeover).toHaveBeenCalledWith({
+    runId: run.id,
+    occurrenceId: second.occurrence_id,
+    attemptId: second.attempt.id,
+    sessionId: second.session?.id,
+  });
+  expect(observe).not.toHaveBeenCalled();
   const runningCard = cards[0] as HTMLElement;
   expect(
     within(runningCard).queryByRole("button", { name: "Take Control" }),
@@ -181,12 +183,13 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
   await fireEvent.click(
     within(runningCard).getByRole("button", { name: "Open Session" }),
   );
-  expect(open).toHaveBeenCalledWith(
-    run.id,
-    first.attempt.id,
-    first.session,
-    "observe",
-  );
+  expect(observe).toHaveBeenCalledWith({
+    runId: run.id,
+    occurrenceId: first.occurrence_id,
+    attemptId: first.attempt.id,
+    sessionId: first.session?.id,
+  });
+  expect(takeover).toHaveBeenCalledTimes(1);
 });
 
 test("pre-prompt execution exposes distinct confirmed authorization and cancellation commands", async () => {
@@ -303,7 +306,7 @@ test("operator command pending state does not block inputless Open Session", asy
       error: null,
     },
   ]);
-  const open = vi.spyOn(store, "openLiveSession").mockResolvedValue(true);
+  const open = vi.spyOn(store, "openSession").mockResolvedValue(true);
   render(WorkYardWindow, {
     props: { store, product: value.product, onClose: vi.fn() },
   });
@@ -319,12 +322,12 @@ test("operator command pending state does not block inputless Open Session", asy
   expect(cancelButton.disabled).toBe(true);
   expect((openButton as HTMLButtonElement).disabled).toBe(false);
   await fireEvent.click(openButton);
-  expect(open).toHaveBeenCalledWith(
-    identity.runId,
-    identity.attemptId,
-    step.session,
-    "observe",
-  );
+  expect(open).toHaveBeenCalledWith({
+    runId: identity.runId,
+    occurrenceId: identity.occurrenceId,
+    attemptId: identity.attemptId,
+    sessionId: step.session?.id,
+  });
 });
 
 test("cancellation remains available before a live session is projected", () => {
