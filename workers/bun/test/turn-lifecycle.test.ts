@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   errorProvesPromptSubmission,
   observeAntigravityNativeActivity,
+  observeAntigravityPromptDispatch,
+  observeLatestAntigravityConversation,
   observePiNativeActivity,
   promptEvidenceCursor,
   waitingForActivitySince,
@@ -90,6 +92,50 @@ test("Antigravity activity comes only from its post-baseline native conversation
       value: "22222222-2222-4222-8222-222222222222",
     },
   });
+});
+
+test("Antigravity recovery selects the latest accepted native conversation", async () => {
+  const root = await fixture("agy-conversation-recovery");
+  const path = join(root, "antigravity.log");
+  await Bun.write(
+    path,
+    "Sending user message to conversation 11111111-1111-4111-8111-111111111111 (items=1, media=0)\n" +
+      "Sending user message to conversation 22222222-2222-4222-8222-222222222222 (items=1, media=0)\n",
+  );
+  expect(await observeLatestAntigravityConversation({ logPath: path })).toEqual(
+    {
+      source: "antigravity",
+      agent: "agy",
+      kind: "id",
+      value: "22222222-2222-4222-8222-222222222222",
+    },
+  );
+});
+
+test("Antigravity dispatch rejection is distinct from native acceptance", async () => {
+  const root = await fixture("agy-dispatch-rejection");
+  const path = join(root, "antigravity.log");
+  await Bun.write(path, "CLI ready for user input\n");
+  const evidence = await promptEvidenceCursor(
+    "antigravity_log",
+    path,
+    "prompt",
+  );
+  await Bun.write(
+    path,
+    (await Bun.file(path).text()) +
+      "Starting new conversation (agent=false)\n" +
+      "SendUserMessage failed: no active conversation\n",
+  );
+  expect(
+    await observeAntigravityPromptDispatch({ logPath: path, evidence }),
+  ).toMatchObject({
+    state: "rejected",
+    message: "no active conversation",
+  });
+  expect(
+    await observeAntigravityNativeActivity({ logPath: path, evidence }),
+  ).toEqual({ working: false, observedAt: null });
 });
 
 test("an observation threshold projects stalled without claiming uncertainty", () => {

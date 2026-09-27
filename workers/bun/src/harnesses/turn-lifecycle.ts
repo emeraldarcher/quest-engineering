@@ -12,6 +12,19 @@ export interface NativeTurnActivity {
   nativeSession?: NativeSessionRef;
 }
 
+export type AntigravityPromptDispatchObservation =
+  | { state: "pending"; observedAt: null }
+  | {
+      state: "accepted";
+      observedAt: string;
+      nativeSession: NativeSessionRef;
+    }
+  | { state: "rejected"; observedAt: string; message: string };
+
+const ANTIGRAVITY_ACCEPTED_PROMPT =
+  /Sending user message to conversation ([0-9a-f]{8}-[0-9a-f-]{27,}) \(items=\d+, media=\d+\)/i;
+const ANTIGRAVITY_REJECTED_PROMPT = /SendUserMessage failed:\s*(.+)$/i;
+
 export function promptActivityStallMs(config: WorkerConfig): number {
   return config.promptActivityStallMs ?? 30_000;
 }
@@ -101,29 +114,69 @@ export async function observePiNativeActivity(input: {
  * first post-baseline successful user-message send belongs to the exclusively
  * owned QE TUI and proves native activity without scraping terminal output.
  */
+export async function observeAntigravityPromptDispatch(input: {
+  logPath: string;
+  evidence: PromptEvidenceCursor;
+}): Promise<AntigravityPromptDispatchObservation> {
+  const lines = await appendedLines(input.logPath, input.evidence.cursor);
+  for (const line of lines) {
+    const acceptedMatch = line.match(ANTIGRAVITY_ACCEPTED_PROMPT);
+    if (acceptedMatch) {
+      const conversationId = acceptedMatch[1] as string;
+      return {
+        state: "accepted",
+        observedAt: new Date().toISOString(),
+        nativeSession: {
+          source: "antigravity",
+          agent: "agy",
+          kind: "id",
+          value: conversationId,
+        },
+      };
+    }
+    const rejectedMatch = line.match(ANTIGRAVITY_REJECTED_PROMPT);
+    if (rejectedMatch)
+      return {
+        state: "rejected",
+        observedAt: new Date().toISOString(),
+        message: (rejectedMatch[1] as string).trim(),
+      };
+  }
+  return { state: "pending", observedAt: null };
+}
+
+/** Recover the most recently accepted native conversation from owned logs. */
+export async function observeLatestAntigravityConversation(input: {
+  logPath: string;
+  cursor?: number;
+}): Promise<NativeSessionRef | null> {
+  const lines = await appendedLines(input.logPath, input.cursor ?? 0);
+  let nativeSession: NativeSessionRef | null = null;
+  for (const line of lines) {
+    const match = line.match(ANTIGRAVITY_ACCEPTED_PROMPT);
+    if (!match) continue;
+    nativeSession = {
+      source: "antigravity",
+      agent: "agy",
+      kind: "id",
+      value: match[1] as string,
+    };
+  }
+  return nativeSession;
+}
+
 export async function observeAntigravityNativeActivity(input: {
   logPath: string;
   evidence: PromptEvidenceCursor;
 }): Promise<NativeTurnActivity> {
-  const lines = await appendedLines(input.logPath, input.evidence.cursor);
-  const pattern =
-    /Sending user message to conversation ([0-9a-f]{8}-[0-9a-f-]{27,}) \(items=\d+, media=\d+\)/i;
-  for (const line of lines) {
-    const match = line.match(pattern);
-    if (!match) continue;
-    const conversationId = match[1] as string;
-    return {
-      working: true,
-      observedAt: new Date().toISOString(),
-      nativeSession: {
-        source: "antigravity",
-        agent: "agy",
-        kind: "id",
-        value: conversationId,
-      },
-    };
-  }
-  return { working: false, observedAt: null };
+  const observation = await observeAntigravityPromptDispatch(input);
+  return observation.state === "accepted"
+    ? {
+        working: true,
+        observedAt: observation.observedAt,
+        nativeSession: observation.nativeSession,
+      }
+    : { working: false, observedAt: null };
 }
 
 export async function structuredResultExists(

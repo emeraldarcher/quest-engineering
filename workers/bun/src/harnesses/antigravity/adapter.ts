@@ -8,9 +8,10 @@ import {
   type HarnessLineage,
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
-import type {
-  PreparedSbxHarnessExecution,
-  SbxRunExecutionManager,
+import {
+  InitialAntigravityConversationDispatchError,
+  type PreparedSbxHarnessExecution,
+  type SbxRunExecutionManager,
 } from "../../execution-environment/sbx-run.ts";
 import type { JsonValue, ReasoningCapability } from "../../protocol/types.ts";
 import { HerdrApiError } from "../../session-host/herdr/client.ts";
@@ -33,7 +34,10 @@ import { harnessPromptFor } from "../prompt.ts";
 import {
   ambiguousPromptError,
   errorProvesPromptSubmission,
+  type NativeTurnActivity,
   observeAntigravityNativeActivity,
+  observeAntigravityPromptDispatch,
+  observeLatestAntigravityConversation,
   persistedPromptEvidence,
   promptActivityStallMs,
   promptEvidenceCursor,
@@ -107,6 +111,10 @@ export class AntigravityHarness implements AgentHarness {
   private readonly sbxExecutions = new Map<
     string,
     PreparedSbxHarnessExecution
+  >();
+  private readonly promptReadiness = new Map<
+    string,
+    { conversation: "none" | "active"; initialConversationDispatch: boolean }
   >();
   private stopped = false;
 
@@ -311,16 +319,47 @@ export class AntigravityHarness implements AgentHarness {
       binding,
       timeoutMs: Math.min(this.config.resultTimeoutMs, 30_000),
     });
+    const nativeSession =
+      lineage.nativeSession ?? execution.agent.nativeSession;
+    if (!lineage.nativeSession && nativeSession)
+      throw new OperationalExecutionError(
+        "Fresh Antigravity readiness unexpectedly found an active native conversation before prompt authorization.",
+        "operator_recovery_required",
+        "pre_authorization_native_activity",
+        { native_conversation_id: nativeSession.value },
+      );
+    if (
+      lineage.nativeSession &&
+      (!execution.agent.nativeSession ||
+        !nativeIdentityMatches(lineage, execution.agent))
+    )
+      throw new OperationalExecutionError(
+        "Retained Antigravity readiness could not prove the exact native conversation.",
+        "operator_recovery_required",
+        "antigravity_conversation_identity_mismatch",
+      );
+    const readiness = {
+      conversation: nativeSession ? ("active" as const) : ("none" as const),
+      initialConversationDispatch: !nativeSession,
+    };
+    this.promptReadiness.set(lineage.lineageId, readiness);
     await writeFile(
       join(dirname(nativeLogPath(lineage)), "pre-inference-readiness.json"),
       `${JSON.stringify(
         {
-          version: 1,
+          version: 2,
           kind: "antigravity_pre_inference_readiness",
           actionId: dispatch.action.action_id,
           attemptId: dispatch.action.attempt_id,
           workspaceRoot: sbx.hostCwd,
           argv: this.args(dispatch, lineage),
+          conversationState: readiness.conversation,
+          initialConversationDispatchReady:
+            readiness.initialConversationDispatch,
+          initialConversationDispatchMechanism:
+            readiness.initialConversationDispatch
+              ? "native_prompt_interactive"
+              : null,
           stopHookReady: true,
           mcpChildReady: true,
           bridgeContextValid: true,
@@ -435,8 +474,11 @@ export class AntigravityHarness implements AgentHarness {
       resultDirectory: dispatch.resultDirectory,
     });
     await sbx.syncControl();
-    const agent = await this.findExactLiveAgent(lineage);
-    if (!agent || !nativeIdentityMatches(lineage, agent))
+    const liveAgent = await this.findExactLiveAgent(lineage);
+    const agent = liveAgent
+      ? await this.reconcileNativeIdentity(lineage, liveAgent)
+      : null;
+    if (!agent)
       throw new Error(
         "The exact continued Antigravity TUI is missing or has incompatible provenance.",
       );
@@ -477,11 +519,17 @@ export class AntigravityHarness implements AgentHarness {
     if (!sbx) throw new Error("Antigravity prompt has no exact SBX execution.");
     await sbx.syncControl();
     const prompt = antigravityPromptFor(dispatch, sbx.materializedArtifacts);
-    const evidence = await promptEvidenceCursor(
+    const baseline = await promptEvidenceCursor(
       "antigravity_log",
       nativeLogPath(execution.lineage),
       prompt,
     );
+    // The native first-message process has its own log generation. Cursor zero
+    // remains valid across Worker restart even if the preauthorization log was
+    // larger than the new process log before the relay observed the switch.
+    const evidence = execution.lineage.nativeSession
+      ? baseline
+      : { ...baseline, cursor: 0 };
     onEvent({
       type: "prompt_baseline",
       evidence,
@@ -543,22 +591,31 @@ export class AntigravityHarness implements AgentHarness {
         detail:
           "Antigravity recovery requires the exact Run-owned SBX dispatch context.",
       };
-    const live = await this.findExactLiveAgent(lineage);
-    if (!live)
+    const found = await this.findExactLiveAgent(lineage);
+    if (!found)
       return {
         found: false,
         detail:
           "Herdr cannot verify the original Antigravity TUI; fresh recovery may resume its verified conversation in the lineage-private SBX HOME.",
       };
-    if (!nativeIdentityMatches(lineage, live))
+    const live = await this.reconcileNativeIdentity(
+      lineage,
+      found,
+      Boolean(dispatch.promptIntentAt),
+    );
+    if (!live)
       return {
         found: false,
         detail:
           "The surviving Antigravity TUI has an unverifiable native conversation identity.",
       };
+    const recoveredLineage =
+      live.nativeSession && !lineage.nativeSession
+        ? { ...lineage, nativeSession: live.nativeSession }
+        : lineage;
     const sbx = await this.executionManager.prepare(
       dispatch,
-      lineage,
+      recoveredLineage,
       materializeExecutionArtifacts(this.config, dispatch),
     );
     this.sbxExecutions.set(lineage.lineageId, sbx);
@@ -617,7 +674,7 @@ export class AntigravityHarness implements AgentHarness {
         nativeSession: agent.nativeSession,
         evidence: "native_session",
       };
-    const activity = await observeAntigravityNativeActivity({
+    const activity = await observeAntigravityPromptDispatch({
       logPath: nativeLogPath(lineage),
       evidence: {
         kind: "antigravity_log",
@@ -625,10 +682,11 @@ export class AntigravityHarness implements AgentHarness {
         promptHash: "pre-authorization-gate",
       },
     });
-    if (!activity.working) return null;
+    if (activity.state === "pending") return null;
     return {
-      observedAt: activity.observedAt ?? this.now(),
-      nativeSession: activity.nativeSession ?? null,
+      observedAt: activity.observedAt,
+      nativeSession:
+        activity.state === "accepted" ? activity.nativeSession : null,
       evidence: "native_user_message",
     };
   }
@@ -641,6 +699,7 @@ export class AntigravityHarness implements AgentHarness {
     await sbx?.stopRelay();
     await sbx?.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
     this.sbxExecutions.delete(lineage.lineageId);
+    this.promptReadiness.delete(lineage.lineageId);
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
@@ -656,6 +715,7 @@ export class AntigravityHarness implements AgentHarness {
     await sbx?.stopRelay();
     await sbx?.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
     this.sbxExecutions.delete(lineage.lineageId);
+    this.promptReadiness.delete(lineage.lineageId);
   }
 
   attachment(lineage: HarnessLineage) {
@@ -775,6 +835,11 @@ export class AntigravityHarness implements AgentHarness {
           (agent.name !== undefined && agent.name !== expectedAgentName)
         )
           continue;
+        const nativeSession =
+          agent.nativeSession ??
+          (await observeLatestAntigravityConversation({
+            logPath: join(dirname(resultControlPath), "antigravity.log"),
+          }));
         candidates.push({
           action: control.action,
           state: ["working", "blocked", "unknown"].includes(agent.status)
@@ -806,7 +871,7 @@ export class AntigravityHarness implements AgentHarness {
             paneId: agent.paneId,
             terminalId: agent.terminalId ?? null,
             agentName: expectedAgentName,
-            nativeSession: agent.nativeSession ?? null,
+            nativeSession,
           },
         });
       } catch {
@@ -830,64 +895,175 @@ export class AntigravityHarness implements AgentHarness {
     evidence: PromptEvidenceCursor,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
-    let current = initial;
-    let acceptedAt: string;
-    try {
-      // Submission acknowledgement is independent from native turn activity.
-      current = await this.host.prompt(target, prompt);
-      acceptedAt = this.now();
-    } catch (error) {
-      if (errorProvesPromptSubmission(error)) {
-        acceptedAt = this.now();
-        current = await this.host.inspectAgentState(target);
-      } else if (ambiguousPromptError(error)) {
-        const resolution = await reconcileAmbiguousPrompt({
-          observe: () =>
-            observeAntigravityNativeActivity({
-              logPath: nativeLogPath(lineage),
-              evidence,
-            }),
-          resultExists: () => structuredResultExists(dispatch.resultDirectory),
-          timeoutMs: promptActivityStallMs(this.config),
-        });
-        if (resolution === "settled") {
-          const outputs = (await collectStepResult(dispatch)).envelope.outputs;
-          acceptedAt = this.now();
-          onEvent({
-            type: "prompt_accepted",
-            acceptedAt,
-            inspection: withState(
-              this.inspectionFor(lineage, current),
-              "waiting_for_activity",
-            ),
-          });
-          onEvent({
-            type: "structured_result_received",
-            observedAt: this.now(),
-            inspection: this.inspectionFor(lineage, current),
-          });
-          return outputs;
-        }
-        if (!resolution) throw uncertainPrompt(error);
-        acceptedAt = resolution.observedAt ?? this.now();
-      } else throw error;
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx) throw new Error("Antigravity prompt has no exact SBX execution.");
+    const readiness = this.promptReadiness.get(lineage.lineageId);
+    if (!readiness)
+      throw new Error(
+        "Antigravity prompt dispatch has no current preauthorization readiness proof.",
+      );
+    const retainedConversation = lineage.nativeSession;
+    if (retainedConversation) {
+      if (
+        readiness.conversation !== "active" ||
+        retainedConversation.agent !== "agy" ||
+        retainedConversation.kind !== "id" ||
+        !initial.nativeSession ||
+        initial.nativeSession.agent !== "agy" ||
+        initial.nativeSession.kind !== "id" ||
+        initial.nativeSession.value !== retainedConversation.value
+      )
+        throw new OperationalExecutionError(
+          "The retained Antigravity conversation does not match the exact PhysicalLineage.",
+          "operator_recovery_required",
+          "antigravity_conversation_identity_mismatch",
+        );
+      try {
+        await this.host.prompt(target, prompt);
+      } catch (error) {
+        if (!errorProvesPromptSubmission(error) && !ambiguousPromptError(error))
+          throw new OperationalExecutionError(
+            `Antigravity continuation transport failed before native acceptance: ${error instanceof Error ? error.message : String(error)}`,
+            "operator_recovery_required",
+            "antigravity_continuation_dispatch_failed",
+          );
+      }
+    } else {
+      if (
+        readiness.conversation !== "none" ||
+        !readiness.initialConversationDispatch ||
+        initial.nativeSession
+      )
+        throw new OperationalExecutionError(
+          "Fresh Antigravity dispatch is not conversation-free.",
+          "operator_recovery_required",
+          "antigravity_initial_dispatch_not_fresh",
+        );
+      try {
+        await sbx.dispatchInitialAntigravityPrompt(prompt);
+      } catch (error) {
+        if (
+          !(
+            error instanceof InitialAntigravityConversationDispatchError &&
+            error.outcome === "uncertain"
+          )
+        )
+          throw new OperationalExecutionError(
+            `Antigravity initial conversation could not start before native prompt acceptance: ${error instanceof Error ? error.message : String(error)}`,
+            "operator_recovery_required",
+            "antigravity_initial_dispatch_failed",
+            { provider_cycles: 0 },
+          );
+        // Request delivery may have succeeded. Native log acceptance/rejection
+        // remains authoritative and no second prompt may be submitted.
+      }
     }
+
+    const accepted = await this.awaitNativePromptAcceptance(
+      lineage,
+      evidence,
+      retainedConversation?.value,
+    );
+    let current = initial;
+    try {
+      current = await this.host.inspectAgentState(target);
+    } catch {
+      // The native append-only log remains authoritative for conversation identity.
+    }
+    current = { ...current, nativeSession: accepted.nativeSession };
     onEvent({
       type: "prompt_accepted",
-      acceptedAt,
+      acceptedAt: accepted.observedAt,
       inspection: withState(
         this.inspectionFor(lineage, current),
         "waiting_for_activity",
       ),
     });
+    onEvent({
+      type: "native_activity",
+      observedAt: accepted.observedAt,
+      inspection: withState(this.inspectionFor(lineage, current), "running"),
+    });
     return this.waitForAuthorizedResult(
       dispatch,
-      lineage,
+      { ...lineage, nativeSession: accepted.nativeSession },
       current,
       evidence,
       onEvent,
-      acceptedAt,
+      accepted.observedAt,
+      accepted.observedAt,
     );
+  }
+
+  private async awaitNativePromptAcceptance(
+    lineage: HarnessLineage,
+    evidence: PromptEvidenceCursor,
+    expectedConversationId?: string,
+  ): Promise<{
+    observedAt: string;
+    nativeSession: NonNullable<HostedAgent["nativeSession"]>;
+  }> {
+    const deadline = Date.now() + promptActivityStallMs(this.config);
+    while (Date.now() < deadline) {
+      const observation = await this.observeNativePromptDispatch(
+        lineage,
+        evidence,
+        expectedConversationId,
+      );
+      if (observation.working && observation.nativeSession)
+        return {
+          observedAt: observation.observedAt ?? this.now(),
+          nativeSession: observation.nativeSession,
+        };
+      await Bun.sleep(50);
+    }
+    throw uncertainPrompt(
+      new Error(
+        expectedConversationId
+          ? "Antigravity continuation produced no authoritative native acceptance or rejection evidence."
+          : "Antigravity initial dispatch produced no authoritative native acceptance or rejection evidence.",
+      ),
+    );
+  }
+
+  private async observeNativePromptDispatch(
+    lineage: HarnessLineage,
+    evidence: PromptEvidenceCursor,
+    expectedConversationId?: string,
+  ): Promise<NativeTurnActivity> {
+    const observation = await observeAntigravityPromptDispatch({
+      logPath: nativeLogPath(lineage),
+      evidence,
+    });
+    if (observation.state === "rejected")
+      throw new OperationalExecutionError(
+        `Antigravity rejected the authorized prompt before provider activity: ${observation.message}`,
+        "operator_recovery_required",
+        expectedConversationId
+          ? "antigravity_continuation_dispatch_failed"
+          : "antigravity_initial_dispatch_failed",
+        { provider_cycles: 0 },
+      );
+    if (observation.state !== "accepted")
+      return { working: false, observedAt: null };
+    if (
+      expectedConversationId &&
+      observation.nativeSession.value !== expectedConversationId
+    )
+      throw new OperationalExecutionError(
+        "Antigravity accepted the continuation into a different native conversation.",
+        "operator_recovery_required",
+        "antigravity_conversation_identity_mismatch",
+        {
+          expected_conversation_id: expectedConversationId,
+          observed_conversation_id: observation.nativeSession.value,
+        },
+      );
+    return {
+      working: true,
+      observedAt: observation.observedAt,
+      nativeSession: observation.nativeSession,
+    };
   }
 
   private async waitForAuthorizedResult(
@@ -897,19 +1073,23 @@ export class AntigravityHarness implements AgentHarness {
     evidence: PromptEvidenceCursor,
     onEvent: (event: HarnessEvent) => void,
     acceptedAt = dispatch.promptAcceptedAt,
+    nativeActivityObservedAt?: string,
   ): Promise<Record<string, JsonValue>> {
     let current = initial;
     const target = current.paneId || lineage.paneId;
     let previous = "";
-    let nativeActivity = Boolean(dispatch.nativeActivityAt);
+    let nativeActivity = Boolean(
+      dispatch.nativeActivityAt || nativeActivityObservedAt,
+    );
     let stalled = Boolean(dispatch.stalledAt && !nativeActivity);
     if (!acceptedAt) {
       const resolution = await reconcileAmbiguousPrompt({
         observe: () =>
-          observeAntigravityNativeActivity({
-            logPath: nativeLogPath(lineage),
+          this.observeNativePromptDispatch(
+            lineage,
             evidence,
-          }),
+            lineage.nativeSession?.value,
+          ),
         resultExists: () => structuredResultExists(dispatch.resultDirectory),
         timeoutMs: promptActivityStallMs(this.config),
       });
@@ -1007,7 +1187,15 @@ export class AntigravityHarness implements AgentHarness {
         continue;
       }
       if (!target) throw new Error("Antigravity lineage has no agent target.");
-      current = await this.host.inspectAgentState(target);
+      const observed = await this.host.inspectAgentState(target);
+      current = {
+        ...observed,
+        ...(observed.nativeSession
+          ? { nativeSession: observed.nativeSession }
+          : lineage.nativeSession
+            ? { nativeSession: lineage.nativeSession }
+            : {}),
+      };
       let inspection = await this.currentInspectionFor(lineage, current);
       if (!nativeActivity) {
         const state = waitingForActivitySince(
@@ -1097,6 +1285,29 @@ export class AntigravityHarness implements AgentHarness {
     )
       return null;
     return agent;
+  }
+
+  private async reconcileNativeIdentity(
+    lineage: HarnessLineage,
+    agent: HostedAgent,
+    discoverAfterPromptIntent = false,
+  ): Promise<HostedAgent | null> {
+    const observed =
+      agent.nativeSession ??
+      (await observeLatestAntigravityConversation({
+        logPath: nativeLogPath(lineage),
+      }));
+    if (!lineage.nativeSession) {
+      if (!observed) return agent;
+      return discoverAfterPromptIntent
+        ? { ...agent, nativeSession: observed }
+        : null;
+    }
+    return observed?.agent === lineage.nativeSession.agent &&
+      observed.kind === lineage.nativeSession.kind &&
+      observed.value === lineage.nativeSession.value
+      ? { ...agent, nativeSession: observed }
+      : null;
   }
 
   private args(dispatch: DispatchRecord, lineage: HarnessLineage): string[] {

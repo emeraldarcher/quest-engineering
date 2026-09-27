@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
@@ -6,6 +7,11 @@ import type {
   EnvironmentCommand,
   EnvironmentLease,
 } from "../src/execution-environment/types.ts";
+import {
+  initialConversationArgs,
+  parseInitialConversationBinding,
+  parseInitialConversationRequest,
+} from "../src/harnesses/antigravity/initial-conversation.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -92,6 +98,92 @@ test("guest Stop bridge is bundled for Node and never resolves a host executable
   expect(exitCode).toBe(2);
   expect(stderr).not.toContain("Bun is not defined");
   expect(stderr).toContain("QE_HARNESS_CONTROL_PATH");
+});
+
+test("native initial-conversation launch preserves frozen model and effort and passes the exact prompt once", () => {
+  const base = [
+    "--model",
+    "gemini-3.8-flash-high",
+    "--effort",
+    "high",
+    "--dangerously-skip-permissions",
+    "--log-file",
+    "/qe/control/antigravity.log",
+  ];
+  const prompt = "exact Product prompt\nwith literal newlines";
+  expect(
+    initialConversationArgs(
+      base,
+      prompt,
+      "/qe/control/antigravity-conversation.log",
+    ),
+  ).toEqual([
+    ...base.slice(0, -1),
+    "/qe/control/antigravity-conversation.log",
+    "--prompt-interactive",
+    prompt,
+  ]);
+  expect(() =>
+    initialConversationArgs(
+      ["--conversation", "stale", ...base],
+      prompt,
+      "/qe/control/antigravity-conversation.log",
+    ),
+  ).toThrow("fresh conversation-free argv");
+});
+
+test("initial-conversation request is identity fenced", () => {
+  const binding = {
+    actionId: "action-1",
+    attemptId: "attempt-1",
+    lineageId: "lineage-1",
+    resultNonce: "nonce-1",
+    environmentId: "environment-1",
+    incarnation: "incarnation-1",
+  };
+  const prompt = "exact prompt";
+  const request = JSON.stringify({
+    schemaVersion: 1,
+    kind: "antigravity_initial_conversation",
+    nonce: "request-1",
+    ...binding,
+    prompt,
+    promptHash: createHash("sha256").update(prompt).digest("hex"),
+    requestedAt: "2026-09-27T00:00:00.000Z",
+  });
+  expect(parseInitialConversationRequest(request, binding)).toMatchObject({
+    ...binding,
+    prompt,
+  });
+  expect(() =>
+    parseInitialConversationRequest(request, {
+      ...binding,
+      lineageId: "another-lineage",
+    }),
+  ).toThrow("lineageId is stale");
+
+  const launchBinding = parseInitialConversationBinding(
+    JSON.stringify({
+      lineageId: binding.lineageId,
+      environmentId: binding.environmentId,
+      incarnation: binding.incarnation,
+    }),
+  );
+  expect(
+    parseInitialConversationRequest(
+      JSON.stringify({
+        ...JSON.parse(request),
+        actionId: "adopted-action",
+        attemptId: "adopted-attempt",
+        resultNonce: "adopted-result-nonce",
+      }),
+      launchBinding,
+    ),
+  ).toMatchObject({
+    actionId: "adopted-action",
+    attemptId: "adopted-attempt",
+    lineageId: binding.lineageId,
+  });
 });
 
 test("guest attestation launcher refuses every executable except pinned Antigravity", async () => {
