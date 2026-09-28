@@ -6,6 +6,11 @@ import {
 
 const HERDR_RUNTIME_UNAVAILABLE =
   "Compatible Quest Engineering Herdr runtime unavailable.";
+const HERDR_CONTEXT_ERRORS = [
+  "Compatible Quest Engineering Herdr session context unavailable.",
+  "The desktop Herdr session context does not match the Worker context.",
+  "The configured Herdr session namespace does not contain the referenced Worker session.",
+] as const;
 
 export type SessionOpenMode = "observe" | "takeover" | "recovery";
 
@@ -34,6 +39,7 @@ export async function openLocalLiveSession(
         mode: attachment.mode,
         backendKind: attachment.terminal.backend_kind,
         terminalSessionId: attachment.terminal.terminal_session_id,
+        localContextId: attachment.terminal.local_context_id,
         paneId: attachment.terminal.pane_id,
         terminalId: attachment.terminal.terminal_id,
         workerId: attachment.worker_id,
@@ -52,6 +58,8 @@ export async function openLocalLiveSession(
           : "";
     if (message.startsWith(HERDR_RUNTIME_UNAVAILABLE))
       throw new ApiError("local_herdr_runtime_unavailable", message);
+    if (HERDR_CONTEXT_ERRORS.some((prefix) => message.startsWith(prefix)))
+      throw new ApiError("local_herdr_context_mismatch", message);
     throw cause;
   }
 }

@@ -61,6 +61,24 @@ Antigravity launches with `--dangerously-skip-permissions` **inside the outer SB
 
 Each PhysicalLineage gets a deterministic private HOME under `/qe/state/antigravity-lineages/`. Only profile-owned nonsecret credential markers, MCP registration, and the exact human-captured 1.2.7 onboarding file are seeded into it. QE also writes the exact Run-private workspace into Antigravity's `trustedWorkspaces`; this is a mechanical consequence of the already-attested outer SBX/private-workspace boundary, not a Terms/Data Use choice, and no host or arbitrary workspace is trusted. Native conversation and other retained state survive Attempt and Worker recovery without becoming shared mutable host state. The Stop hook lives in that HOME, not in source, so read-only source stays physically read-only.
 
+## Local Herdr context and Open Session
+
+Herdr 0.9.0 has two separate path authorities. `HERDR_CONFIG_PATH` overrides only the TOML config file loaded by `config::config_path()`; it does **not** move named sessions or sockets. On macOS/Linux, `XDG_CONFIG_HOME` selects the configuration directory (falling back to `HOME/.config`), and named `--session <name>` state lives at `<XDG_CONFIG_HOME>/herdr/sessions/<name>` with `herdr.sock` and `herdr-client.sock` beneath it. An explicit named session takes precedence over `HERDR_SOCKET_PATH`; without a named session, `HERDR_SOCKET_PATH` overrides the API socket and determines the client socket, while `HERDR_CLIENT_SOCKET_PATH` is only the legacy client fallback. Herdr state/log paths using `XDG_STATE_HOME` are separate and do not select named-session sockets.
+
+Production Worker startup therefore requires three explicit, canonical local values: `QE_HERDR_BIN`, `XDG_CONFIG_HOME`, and `HERDR_CONFIG_PATH`. The Worker applies the latter two to every pinned Herdr CLI/server process and removes ambient session/socket/pane selectors. The built Tauri process must receive the same three values. It resolves them independently, applies them to `session list`, `agent get`, and the Terminal-owned `agent attach`, and removes the same ambient selectors. Worker and desktop `HOME` values may intentionally differ; neither side uses `HOME` to discover the named session once `XDG_CONFIG_HOME` is explicit.
+
+For a disposable local context, use one short private root (short enough for Unix-domain socket paths) without creating another QE-specific path variable:
+
+```sh
+export QE_HERDR_BIN=/absolute/pinned/herdr
+export XDG_CONFIG_HOME=/absolute/private/qe-herdr-context
+export HERDR_CONFIG_PATH="$XDG_CONFIG_HOME/herdr/config.toml"
+mkdir -p "$XDG_CONFIG_HOME/herdr"
+# Write the accepted config.toml before starting either process.
+```
+
+The Worker reports the canonical executable, config home, config file, and a `sha256:` local-context ID in local diagnostics. Product receives only that digest with the existing session/pane and ownership fences—never executable, config, socket, or other filesystem authority. Tauri recomputes the digest from its own environment before inspecting Herdr. A split context fails closed before attach with an actionable `local_herdr_context_mismatch`; finding no named session in an otherwise matching context reports that the configured namespace lacks the Worker session. There is no alternate-root probe, PATH lookup, descriptor-carried path, or retry.
+
 ## Completion, attention, cancellation, and recovery
 
 MCP is only transport. `HarnessControlAuthority` remains the authority for typed completion, HumanAttention, Stop enforcement, stale-context fencing, and idempotency. The guest MCP child must publish startup/liveness evidence for the exact descriptor path; current authority is checked independently. The guest Stop command must be discovered by Antigravity and pass a synthetic zero-inference call before authorization. A real Stop payload reporting a different model fences the PhysicalLineage after Take Control rather than accepting a silent switch.

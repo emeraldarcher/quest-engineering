@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, openSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { HerdrLocalContext } from "../../config.ts";
 import type { SessionBackendReadiness } from "../types.ts";
 import {
   HerdrApiError,
@@ -87,8 +88,8 @@ type ServerStarter = (sessionName: string) => StartedServer;
 interface ProviderDependencies {
   workerId: string;
   dataRoot: string;
-  /** Absolute Herdr executable. Required when real host processes are used. */
-  herdrExecutable?: string;
+  /** Canonical executable plus named-session/socket context for every Herdr process. */
+  herdrContext: HerdrLocalContext;
   runCommand?: CommandRunner;
   createClient?: ClientFactory;
   startServer?: ServerStarter;
@@ -132,6 +133,7 @@ export class LocalHerdrConnectionProvider {
   private startupServer: StartedServer | undefined;
   private readonly workerId: string;
   private readonly ownershipPath: string;
+  private readonly herdrContext: HerdrLocalContext;
   private readonly runCommand: CommandRunner;
   private readonly createClient: ClientFactory;
   private readonly startNamedServer: ServerStarter;
@@ -145,8 +147,8 @@ export class LocalHerdrConnectionProvider {
       dependencies.dataRoot,
       "herdr-session-ownership.json",
     );
-    const executable = dependencies.herdrExecutable;
-    if (executable && !executable.startsWith("/"))
+    this.herdrContext = dependencies.herdrContext;
+    if (!this.herdrContext.executable.startsWith("/"))
       throw new HerdrApiError(
         "backend_incompatible",
         "The configured Herdr executable must be absolute.",
@@ -154,7 +156,7 @@ export class LocalHerdrConnectionProvider {
       );
     this.runCommand =
       dependencies.runCommand ??
-      ((args) => runHerdrCommand(requiredExecutable(executable), args));
+      ((args) => runHerdrCommand(this.herdrContext, args));
     this.createClient =
       dependencies.createClient ??
       ((socketPath, onUnavailable) =>
@@ -163,7 +165,7 @@ export class LocalHerdrConnectionProvider {
       dependencies.startServer ??
       ((name) =>
         startHerdrServer(
-          requiredExecutable(executable),
+          this.herdrContext,
           name,
           join(dependencies.dataRoot, "herdr-server-startup.log"),
         ));
@@ -173,6 +175,10 @@ export class LocalHerdrConnectionProvider {
 
   sessionIncarnation(): string | null {
     return this.currentOwnership?.sessionIncarnation ?? null;
+  }
+
+  localContextId(): string {
+    return this.herdrContext.id;
   }
 
   /** May create/start infrastructure, but never creates a QE execution agent. */
@@ -1125,24 +1131,14 @@ function visit(
   }
 }
 
-function requiredExecutable(value: string | undefined): string {
-  if (!value)
-    throw new HerdrApiError(
-      "backend_incompatible",
-      "An exact Herdr executable was not configured.",
-      "backend.explicit_executable",
-    );
-  return value;
-}
-
 async function runHerdrCommand(
-  executable: string,
+  context: HerdrLocalContext,
   args: string[],
 ): Promise<CommandResult> {
   let child: ReturnType<typeof Bun.spawn>;
   try {
-    child = Bun.spawn([executable, ...args], {
-      env: explicitEnvironment(),
+    child = Bun.spawn([context.executable, ...args], {
+      env: herdrProcessEnvironment(process.env, context),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -1161,7 +1157,7 @@ async function runHerdrCommand(
 }
 
 function startHerdrServer(
-  executable: string,
+  context: HerdrLocalContext,
   sessionName: string,
   diagnosticsPath: string,
 ): StartedServer {
@@ -1173,13 +1169,16 @@ function startHerdrServer(
   }
   const diagnostics = openSync(diagnosticsPath, "a", 0o600);
   try {
-    const child = Bun.spawn([executable, "--session", sessionName, "server"], {
-      env: explicitEnvironment(),
-      stdin: "ignore",
-      stdout: diagnostics,
-      stderr: diagnostics,
-      detached: true,
-    });
+    const child = Bun.spawn(
+      [context.executable, "--session", sessionName, "server"],
+      {
+        env: herdrProcessEnvironment(process.env, context),
+        stdin: "ignore",
+        stdout: diagnostics,
+        stderr: diagnostics,
+        detached: true,
+      },
+    );
     child.unref();
     return {
       exited: child.exited,
@@ -1191,8 +1190,15 @@ function startHerdrServer(
   }
 }
 
-function explicitEnvironment(): Record<string, string | undefined> {
-  const environment = { ...process.env };
+export function herdrProcessEnvironment(
+  base: NodeJS.ProcessEnv,
+  context: HerdrLocalContext,
+): Record<string, string | undefined> {
+  const environment: Record<string, string | undefined> = {
+    ...base,
+    XDG_CONFIG_HOME: context.configHome,
+    HERDR_CONFIG_PATH: context.configPath,
+  };
   delete environment.HERDR_SESSION;
   delete environment.HERDR_SOCKET_PATH;
   delete environment.HERDR_WORKSPACE_ID;

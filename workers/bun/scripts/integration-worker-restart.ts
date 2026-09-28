@@ -1,6 +1,7 @@
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { WorkerConfig } from "../src/config.ts";
+import { resolveHerdrLocalContext, type WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
@@ -24,7 +25,11 @@ if (process.argv[2] === "--child") {
   );
   const connectionProvider = new LocalHerdrConnectionProvider(
     config.herdrSession,
-    { workerId: config.workerId, dataRoot: config.dataRoot },
+    {
+      workerId: config.workerId,
+      dataRoot: config.dataRoot,
+      herdrContext: contextFromConfig(config),
+    },
   );
   await connectionProvider.ensureInfrastructure();
   const provider = new PiHarness(
@@ -78,6 +83,12 @@ const model = {
   provider: configuredModel.slice(0, separator),
   model: configuredModel.slice(separator + 1),
 };
+const configuredHerdr = process.env.QE_HERDR_BIN?.trim();
+if (!configuredHerdr) throw new Error("QE_HERDR_BIN is required.");
+const herdrContext = resolveHerdrLocalContext(
+  process.env,
+  realpathSync(configuredHerdr),
+);
 
 const config: WorkerConfig = {
   controlPlaneUrl: "ws://127.0.0.1/unused",
@@ -86,6 +97,10 @@ const config: WorkerConfig = {
   maxConcurrency: 1,
   tags: ["integration"],
   herdrSession: `qe-restart-${id}`,
+  herdrBin: herdrContext.executable,
+  herdrConfigHome: herdrContext.configHome,
+  herdrConfigPath: herdrContext.configPath,
+  herdrLocalContextId: herdrContext.id,
   allowedRoots: [
     {
       key: "integration",
@@ -225,7 +240,11 @@ const lineageBefore = registry.getLineage(before.lineageId as string);
 registry.close();
 const inspectionProvider = new LocalHerdrConnectionProvider(
   config.herdrSession,
-  { workerId: config.workerId, dataRoot: config.dataRoot },
+  {
+    workerId: config.workerId,
+    dataRoot: config.dataRoot,
+    herdrContext: contextFromConfig(config),
+  },
 );
 await inspectionProvider.ensureInfrastructure();
 const inspectionHost = new HerdrTerminalBackend(inspectionProvider, "pi");
@@ -290,6 +309,16 @@ console.log(JSON.stringify(proof, null, 2));
 registry.close();
 provider.disconnect();
 process.exit(0);
+
+function contextFromConfig(config: WorkerConfig) {
+  const executable = config.herdrBin;
+  const configHome = config.herdrConfigHome;
+  const configPath = config.herdrConfigPath;
+  const contextId = config.herdrLocalContextId;
+  if (!executable || !configHome || !configPath || !contextId)
+    throw new Error("Serialized Herdr local context is incomplete.");
+  return { executable, configHome, configPath, id: contextId };
+}
 
 async function waitForState(
   subject: WorkerConfig,

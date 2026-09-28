@@ -9,6 +9,8 @@ QE_CONTROL_PLANE_URL=ws://127.0.0.1:4000/worker/websocket
 QE_WORKER_ID=stable-worker-id
 QE_WORKER_TOKEN=...
 QE_HERDR_BIN=/absolute/pinned/herdr
+XDG_CONFIG_HOME=/absolute/private/qe-herdr-context
+HERDR_CONFIG_PATH=/absolute/private/qe-herdr-context/herdr/config.toml
 QE_ALLOWED_ROOTS_JSON=[{"key":"code","path":"/absolute/code","max_access":"read_write","discover_depth":4,"allow_unconfined_shell":false}]
 QE_WORKER_HARNESSES=pi,antigravity
 ```
@@ -27,7 +29,7 @@ QE_WORKER_DISPATCH_AVAILABILITY=active
 QE_PROMPT_ACTIVITY_STALL_MS=30000
 ```
 
-`QE_HERDR_BIN` is required in production. It must be one absolute executable path; Worker startup canonicalizes it and uses that exact binary for every Herdr CLI and server subprocess. There is no `herdr` PATH fallback. `QE_HERDR_SESSION` is an optional explicit override. Omit it to use the collision-resistant session name derived from `QE_WORKER_ID`.
+`QE_HERDR_BIN`, `XDG_CONFIG_HOME`, and `HERDR_CONFIG_PATH` are required in production and must identify an existing executable, directory, and config file respectively. Worker startup canonicalizes them, records the resolved local context, and applies that exact narrow context to every Herdr CLI/server subprocess. There is no `herdr` PATH fallback and Herdr session discovery does not depend on the Worker's general `HOME`. `HERDR_CONFIG_PATH` selects only Herdr's TOML file; `XDG_CONFIG_HOME` selects the named-session/socket namespace under `<XDG_CONFIG_HOME>/herdr/sessions`. The built desktop must receive the same three values for Open Session, although its `HOME` may differ. `QE_HERDR_SESSION` is an optional explicit override. Omit it to use the collision-resistant session name derived from `QE_WORKER_ID` and the explicit config root.
 
 Pi publishes every `openai-codex` model supported by the immutable execution profile's runtime. Host `enabledModels`, `defaultModel`, and `defaultThinkingLevel` are optional Pi UX preferences and do not constrain Worker scheduling. The authenticated `originator: pi` models-resource response is advisory diagnostics only; empty, nonempty, malformed, or unavailable metadata neither grants nor removes account availability.
 
@@ -118,8 +120,8 @@ bun run check
 bun test
 bun run integration:herdr-pi
 bun run integration:worker-restart
-QE_RUN_HERDR_STARTUP_LIVE=1 QE_HERDR_BIN=/absolute/patched/herdr bun test test/herdr-startup-live.test.ts
-QE_RUN_SBX_HERDR_LIVE=1 QE_HERDR_BIN=/absolute/patched/herdr QE_SBX_BIN=/absolute/sbx bun test test/sbx-herdr-live.test.ts
+QE_RUN_HERDR_STARTUP_LIVE=1 QE_HERDR_BIN=/absolute/patched/herdr XDG_CONFIG_HOME=/absolute/private/qe-herdr-context HERDR_CONFIG_PATH=/absolute/private/qe-herdr-context/herdr/config.toml bun test test/herdr-startup-live.test.ts
+QE_RUN_SBX_HERDR_LIVE=1 QE_HERDR_BIN=/absolute/patched/herdr XDG_CONFIG_HOME=/absolute/private/qe-herdr-context HERDR_CONFIG_PATH=/absolute/private/qe-herdr-context/herdr/config.toml QE_SBX_BIN=/absolute/sbx bun test test/sbx-herdr-live.test.ts
 QE_RUN_SBX_ANTIGRAVITY_LIVE=1 QE_SBX_BIN=/absolute/sbx bun test test/sbx-antigravity-live.test.ts
 ```
 

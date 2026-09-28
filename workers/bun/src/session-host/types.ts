@@ -102,6 +102,8 @@ export interface TerminalAttachmentDescriptor {
   mode: "local_native_terminal";
   backendKind: "herdr" | (string & {});
   terminalSessionId: string;
+  /** Digest-only fence; never a path or executable authority. */
+  localContextId: string;
   paneId: string;
   terminalId?: string;
   supportsObservation: boolean;

@@ -66,6 +66,12 @@ interface WorkerDependencies {
   harnesses?: AgentHarness[];
 }
 
+function requiredHerdrConfig(value: string | undefined, label: string): string {
+  if (!value)
+    throw new Error(`${label} is required for the Herdr session host.`);
+  return value;
+}
+
 export class QuestEngineeringWorker {
   readonly registry: DispatchRegistry;
   readonly executor: DispatchExecutor;
@@ -121,7 +127,21 @@ export class QuestEngineeringWorker {
           new LocalHerdrConnectionProvider(config.herdrSession, {
             workerId: config.workerId,
             dataRoot: config.dataRoot,
-            ...(config.herdrBin ? { herdrExecutable: config.herdrBin } : {}),
+            herdrContext: {
+              executable: requiredHerdrConfig(config.herdrBin, "QE_HERDR_BIN"),
+              configHome: requiredHerdrConfig(
+                config.herdrConfigHome,
+                "XDG_CONFIG_HOME",
+              ),
+              configPath: requiredHerdrConfig(
+                config.herdrConfigPath,
+                "HERDR_CONFIG_PATH",
+              ),
+              id: requiredHerdrConfig(
+                config.herdrLocalContextId,
+                "Herdr local context ID",
+              ),
+            },
           }));
     this.herdr = provider;
     this.sbxExecutionManager =
@@ -1435,6 +1455,7 @@ function harnessSessionPayload(
         attachment_mode: descriptor.mode,
         backend_kind: descriptor.backendKind,
         terminal_session_id: descriptor.terminalSessionId,
+        local_context_id: descriptor.localContextId,
         terminal_target_id: descriptor.paneId,
         ...(descriptor.terminalId
           ? { terminal_id: descriptor.terminalId }

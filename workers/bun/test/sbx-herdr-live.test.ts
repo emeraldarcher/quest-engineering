@@ -39,6 +39,14 @@ test.skipIf(!enabled)(
   async () => {
     expect(herdrBin.startsWith("/")).toBe(true);
     expect(sbxBin.startsWith("/")).toBe(true);
+    const herdrContext = {
+      executable: herdrBin,
+      configHome: process.env.XDG_CONFIG_HOME ?? "",
+      configPath: process.env.HERDR_CONFIG_PATH ?? "",
+      id: `sha256:${"4".repeat(64)}`,
+    };
+    expect(herdrContext.configHome.startsWith("/")).toBe(true);
+    expect(herdrContext.configPath.startsWith("/")).toBe(true);
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
     const root = await mkdtemp(join(parent, "sbx-herdr-live-"));
@@ -199,7 +207,7 @@ test.skipIf(!enabled)(
       const provider = new LocalHerdrConnectionProvider(sessionName, {
         workerId,
         dataRoot,
-        herdrExecutable: herdrBin,
+        herdrContext,
       });
       const infrastructure = await provider.ensureInfrastructure();
       const host = new HerdrTerminalBackend(provider);
@@ -345,7 +353,7 @@ test.skipIf(!enabled)(
       const restartedProvider = new LocalHerdrConnectionProvider(sessionName, {
         workerId,
         dataRoot,
-        herdrExecutable: herdrBin,
+        herdrContext,
       });
       const adopted = await restartedProvider.ensureInfrastructure();
       expect(adopted.sessionIncarnation).toBe(

@@ -292,6 +292,7 @@ test("local session descriptors are unavailable to web clients and marked for Ta
               attachment_mode: "local_native_terminal",
               backend_kind: "herdr",
               terminal_session_id: "quest-engineering-worker",
+              local_context_id: `sha256:${"a".repeat(64)}`,
               terminal_target_id: "w2:p2",
               terminal_id: "terminal-1",
               supports_observation: true,
@@ -314,6 +315,7 @@ test("local session descriptors are unavailable to web clients and marked for Ta
 
   expect(descriptor.session_id).toBe("session");
   expect(descriptor.takeover_allowed).toBe(true);
+  expect(descriptor.terminal.local_context_id).toBe(`sha256:${"a".repeat(64)}`);
   expect(descriptor.terminal.pane_id).toBe("w2:p2");
   expect("terminal_target_id" in descriptor.terminal).toBe(false);
   expect(

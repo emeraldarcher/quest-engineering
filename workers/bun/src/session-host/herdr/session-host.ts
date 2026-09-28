@@ -209,6 +209,7 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
       mode: "local_native_terminal",
       backendKind: "herdr",
       terminalSessionId: ref.sessionName,
+      localContextId: this.provider.localContextId(),
       // Pane identity survives Herdr 0.9 persistence even when its optional
       // custom agent name is no longer projected.
       paneId: ref.paneId,

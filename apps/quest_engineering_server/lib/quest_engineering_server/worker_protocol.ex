@@ -733,19 +733,23 @@ defmodule QuestEngineering.Server.WorkerProtocol do
            "attachment_mode" => "local_native_terminal",
            "backend_kind" => backend,
            "terminal_session_id" => session_id,
+           "local_context_id" => context_id,
            "terminal_target_id" => target_id,
            "supports_observation" => observation,
            "supports_takeover" => takeover
          } = terminal
        )
        when is_binary(backend) and backend != "" and is_binary(session_id) and session_id != "" and
-              is_binary(target_id) and target_id != "" and is_boolean(observation) and
+              is_binary(context_id) and byte_size(context_id) == 71 and
+              binary_part(context_id, 0, 7) == "sha256:" and is_binary(target_id) and
+              target_id != "" and is_boolean(observation) and
               is_boolean(takeover) do
     {:ok,
      %{
        "attachment_mode" => "local_native_terminal",
        "backend_kind" => backend,
        "terminal_session_id" => session_id,
+       "local_context_id" => context_id,
        "terminal_target_id" => target_id,
        "terminal_id" => terminal["terminal_id"],
        "supports_observation" => observation,

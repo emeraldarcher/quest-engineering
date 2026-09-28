@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,7 +21,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const HERDR_BIN_ENV: &str = "QE_HERDR_BIN";
+const HERDR_CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
+const HERDR_CONFIG_PATH_ENV: &str = "HERDR_CONFIG_PATH";
+const HERDR_CONTEXT_VERSION: &str = "qe-herdr-local-context-v1";
 const HERDR_RUNTIME_UNAVAILABLE: &str = "Compatible Quest Engineering Herdr runtime unavailable. Configure QE_HERDR_BIN with an absolute executable path.";
+const HERDR_CONTEXT_UNAVAILABLE: &str = "Compatible Quest Engineering Herdr session context unavailable. Configure XDG_CONFIG_HOME and HERDR_CONFIG_PATH as absolute existing paths shared by the Worker and desktop.";
+const HERDR_CONTEXT_MISMATCH: &str = "The desktop Herdr session context does not match the Worker context. Ensure the Worker and desktop use the same QE_HERDR_BIN, XDG_CONFIG_HOME, and HERDR_CONFIG_PATH.";
+const HERDR_SESSION_CONTEXT_MISMATCH: &str = "The configured Herdr session namespace does not contain the referenced Worker session. Ensure the Worker and desktop use the same XDG_CONFIG_HOME and HERDR_CONFIG_PATH.";
+const HERDR_TRANSIENT_ENV: &[&str] = &[
+    "HERDR_SESSION",
+    "HERDR_SOCKET_PATH",
+    "HERDR_WORKSPACE_ID",
+    "HERDR_TAB_ID",
+    "HERDR_PANE_ID",
+];
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,12 +42,21 @@ struct LocalAttachment {
     mode: String,
     backend_kind: String,
     terminal_session_id: String,
+    local_context_id: String,
     pane_id: String,
     terminal_id: Option<String>,
     worker_id: String,
     session_id: String,
     takeover_allowed: bool,
     recovery_allowed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HerdrLocalContext {
+    executable: PathBuf,
+    config_home: PathBuf,
+    config_path: PathBuf,
+    id: String,
 }
 
 #[tauri::command]
@@ -55,11 +78,16 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
     }
     validate_session_name(&descriptor.terminal_session_id)?;
     validate_herdr_pane_id(&descriptor.pane_id)?;
-
-    let herdr = resolve_herdr_executable()?;
-    let sessions = Command::new(&herdr)
-        .args(["session", "list", "--json"])
-        .output()
+    let context = resolve_herdr_local_context()?;
+    require_matching_herdr_context(&descriptor.local_context_id, &context)?;
+    eprintln!(
+        "QE Herdr local context resolved: executable={} config_home={} config_path={} context_id={}",
+        context.executable.display(),
+        context.config_home.display(),
+        context.config_path.display(),
+        context.id
+    );
+    let sessions = herdr_output(&context, &["session", "list", "--json"])
         .map_err(|_| "Could not inspect local Herdr sessions.".to_string())?;
     if !sessions.status.success() {
         return Err(HERDR_RUNTIME_UNAVAILABLE.into());
@@ -67,21 +95,25 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
     let session_running = session_is_running(&sessions.stdout, &descriptor.terminal_session_id)
         .map_err(|_| HERDR_RUNTIME_UNAVAILABLE.to_string())?;
     if !session_running {
-        return Err("The referenced Worker session is not running on this host.".into());
+        return Err(HERDR_SESSION_CONTEXT_MISMATCH.into());
     }
 
-    let output = Command::new(&herdr)
-        .args([
+    let output = herdr_output(
+        &context,
+        &[
             "--session",
             &descriptor.terminal_session_id,
             "agent",
             "get",
             &descriptor.pane_id,
-        ])
-        .output()
-        .map_err(|_| "Could not inspect the local Herdr session.".to_string())?;
+        ],
+    )
+    .map_err(|_| "Could not inspect the local Herdr session.".to_string())?;
     if !output.status.success() {
-        return Err("The referenced Worker session is not available on this host.".into());
+        return Err(
+            "The referenced Worker session is not available in the configured Herdr context."
+                .into(),
+        );
     }
     let agent: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| HERDR_RUNTIME_UNAVAILABLE.to_string())?;
@@ -108,13 +140,13 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
     #[cfg(target_os = "macos")]
     {
         let launch = TerminalAttachLaunch {
-            herdr_path: herdr,
+            herdr_path: context.executable,
             terminal_session_id: descriptor.terminal_session_id,
             pane_id: descriptor.pane_id,
             interaction_mode,
             home: std::env::var_os("HOME").map(PathBuf::from),
-            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
-            herdr_config_path: std::env::var_os("HERDR_CONFIG_PATH").map(PathBuf::from),
+            xdg_config_home: context.config_home,
+            herdr_config_path: context.config_path,
         };
         return open_terminal_attachment(&launch);
     }
@@ -126,6 +158,96 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
 fn resolve_herdr_executable() -> Result<PathBuf, String> {
     let configured = std::env::var_os(HERDR_BIN_ENV).ok_or(HERDR_RUNTIME_UNAVAILABLE)?;
     validate_herdr_executable_path(Path::new(&configured))
+}
+
+fn resolve_herdr_local_context() -> Result<HerdrLocalContext, String> {
+    let executable = resolve_herdr_executable()?;
+    let config_home = canonical_context_path(HERDR_CONFIG_HOME_ENV, true)?;
+    let config_path = canonical_context_path(HERDR_CONFIG_PATH_ENV, false)?;
+    let id = herdr_local_context_id(&executable, &config_home, &config_path)?;
+    Ok(HerdrLocalContext {
+        executable,
+        config_home,
+        config_path,
+        id,
+    })
+}
+
+fn canonical_context_path(name: &str, directory: bool) -> Result<PathBuf, String> {
+    let configured = std::env::var_os(name).ok_or(HERDR_CONTEXT_UNAVAILABLE)?;
+    let path = PathBuf::from(configured);
+    if !path.is_absolute() {
+        return Err(HERDR_CONTEXT_UNAVAILABLE.into());
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|_| HERDR_CONTEXT_UNAVAILABLE)?;
+    let metadata = std::fs::metadata(&canonical).map_err(|_| HERDR_CONTEXT_UNAVAILABLE)?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err(HERDR_CONTEXT_UNAVAILABLE.into());
+    }
+    Ok(canonical)
+}
+
+fn herdr_local_context_id(
+    executable: &Path,
+    config_home: &Path,
+    config_path: &Path,
+) -> Result<String, String> {
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| HERDR_CONTEXT_UNAVAILABLE.to_string())?;
+    let config_home = config_home
+        .to_str()
+        .ok_or_else(|| HERDR_CONTEXT_UNAVAILABLE.to_string())?;
+    let config_path = config_path
+        .to_str()
+        .ok_or_else(|| HERDR_CONTEXT_UNAVAILABLE.to_string())?;
+    let mut digest = Sha256::new();
+    digest.update(HERDR_CONTEXT_VERSION.as_bytes());
+    digest.update([0]);
+    digest.update(executable.as_bytes());
+    digest.update([0]);
+    digest.update(config_home.as_bytes());
+    digest.update([0]);
+    digest.update(config_path.as_bytes());
+    Ok(format!("sha256:{:x}", digest.finalize()))
+}
+
+fn validate_herdr_context_id(value: &str) -> Result<(), String> {
+    if value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        Ok(())
+    } else {
+        Err(HERDR_CONTEXT_MISMATCH.into())
+    }
+}
+
+fn require_matching_herdr_context(
+    expected_id: &str,
+    actual: &HerdrLocalContext,
+) -> Result<(), String> {
+    validate_herdr_context_id(expected_id)?;
+    if expected_id == actual.id {
+        Ok(())
+    } else {
+        Err(HERDR_CONTEXT_MISMATCH.into())
+    }
+}
+
+fn herdr_output(
+    context: &HerdrLocalContext,
+    args: &[&str],
+) -> std::io::Result<std::process::Output> {
+    let mut command = Command::new(&context.executable);
+    command.args(args);
+    for name in HERDR_TRANSIENT_ENV {
+        command.env_remove(name);
+    }
+    command
+        .env(HERDR_CONFIG_HOME_ENV, &context.config_home)
+        .env(HERDR_CONFIG_PATH_ENV, &context.config_path)
+        .output()
 }
 
 fn validate_herdr_executable_path(path: &Path) -> Result<PathBuf, String> {
@@ -229,8 +351,8 @@ struct TerminalAttachLaunch {
     pane_id: String,
     interaction_mode: String,
     home: Option<PathBuf>,
-    xdg_config_home: Option<PathBuf>,
-    herdr_config_path: Option<PathBuf>,
+    xdg_config_home: PathBuf,
+    herdr_config_path: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
@@ -259,6 +381,8 @@ fn herdr_attach_command(launch: &TerminalAttachLaunch) -> Result<NativeCommandSp
         return Err("Unsupported live-session interaction mode.".into());
     }
     let herdr_path = validate_herdr_executable_path(&launch.herdr_path)?;
+    let xdg_config_home = validate_context_path_value(&launch.xdg_config_home, true)?;
+    let herdr_config_path = validate_context_path_value(&launch.herdr_config_path, false)?;
 
     let mut args = vec![
         OsString::from("--session"),
@@ -270,21 +394,37 @@ fn herdr_attach_command(launch: &TerminalAttachLaunch) -> Result<NativeCommandSp
     if launch.interaction_mode != "observe" {
         args.push(OsString::from("--takeover"));
     }
-    let mut environment = Vec::new();
-    for (name, value) in [
-        ("HOME", launch.home.as_ref()),
-        ("XDG_CONFIG_HOME", launch.xdg_config_home.as_ref()),
-        ("HERDR_CONFIG_PATH", launch.herdr_config_path.as_ref()),
-    ] {
-        if let Some(value) = value {
-            environment.push((OsString::from(name), value.as_os_str().to_owned()));
-        }
+    let mut environment = vec![
+        (
+            OsString::from(HERDR_CONFIG_HOME_ENV),
+            xdg_config_home.into_os_string(),
+        ),
+        (
+            OsString::from(HERDR_CONFIG_PATH_ENV),
+            herdr_config_path.into_os_string(),
+        ),
+    ];
+    if let Some(home) = &launch.home {
+        environment.push((OsString::from("HOME"), home.as_os_str().to_owned()));
     }
     Ok(NativeCommandSpec {
         executable: herdr_path,
         args,
         environment,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn validate_context_path_value(path: &Path, directory: bool) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(HERDR_CONTEXT_UNAVAILABLE.into());
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| HERDR_CONTEXT_UNAVAILABLE)?;
+    let metadata = fs::metadata(&canonical).map_err(|_| HERDR_CONTEXT_UNAVAILABLE)?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err(HERDR_CONTEXT_UNAVAILABLE.into());
+    }
+    Ok(canonical)
 }
 
 #[cfg(target_os = "macos")]
@@ -426,6 +566,9 @@ fn run_terminal_attachment_launcher(directory: &Path) -> i32 {
 
         let mut process = Command::new(&command.executable);
         process.args(&command.args);
+        for name in HERDR_TRANSIENT_ENV {
+            process.env_remove(name);
+        }
         for (name, value) in &command.environment {
             process.env(name, value);
         }
@@ -613,6 +756,177 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    fn run_context_subprocess(
+        mode: &str,
+        executable: &Path,
+        config_home: &Path,
+        config_path: &Path,
+        expected_config_home: &Path,
+        expected_config_path: &Path,
+        home: &Path,
+        expected_id: &str,
+        marker: &Path,
+    ) {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::herdr_context_subprocess",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("QE_NATIVE_HERDR_CONTEXT_TEST_MODE", mode)
+            .env(HERDR_BIN_ENV, executable)
+            .env(HERDR_CONFIG_HOME_ENV, config_home)
+            .env(HERDR_CONFIG_PATH_ENV, config_path)
+            .env("QE_HERDR_TEST_EXPECTED_CONFIG_HOME", expected_config_home)
+            .env("QE_HERDR_TEST_EXPECTED_CONFIG_PATH", expected_config_path)
+            .env("HOME", home)
+            .env("QE_HERDR_TEST_EXPECTED_CONTEXT_ID", expected_id)
+            .env("QE_HERDR_TEST_CONTEXT_MARKER", marker)
+            .status()
+            .unwrap();
+        assert!(status.success(), "context subprocess failed for {mode}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "helper invoked by differing_home_uses_one_context_and_split_root_fails_closed"]
+    fn herdr_context_subprocess() {
+        let Ok(mode) = std::env::var("QE_NATIVE_HERDR_CONTEXT_TEST_MODE") else {
+            return;
+        };
+        let context = resolve_herdr_local_context().unwrap();
+        let expected = std::env::var("QE_HERDR_TEST_EXPECTED_CONTEXT_ID").unwrap();
+        if mode == "split" {
+            assert_eq!(
+                require_matching_herdr_context(&expected, &context).unwrap_err(),
+                HERDR_CONTEXT_MISMATCH
+            );
+            return;
+        }
+        assert_eq!(mode, "shared");
+        require_matching_herdr_context(&expected, &context).unwrap();
+        let sessions = herdr_output(&context, &["session", "list", "--json"]).unwrap();
+        assert!(sessions.status.success());
+        assert_eq!(
+            session_is_running(&sessions.stdout, "worker-session"),
+            Ok(true)
+        );
+        let agent = herdr_output(
+            &context,
+            &["--session", "worker-session", "agent", "get", "w2:p2"],
+        )
+        .unwrap();
+        assert!(agent.status.success());
+        let agent: serde_json::Value = serde_json::from_slice(&agent.stdout).unwrap();
+        assert!(json_contains_field(&agent, &["qe_worker_id"], "worker-a"));
+        assert!(json_contains_field(&agent, &["qe_lineage_id"], "lineage-a"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn differing_home_uses_one_context_and_split_root_fails_closed() {
+        let root = resolver_test_directory();
+        let executable = root.join("herdr");
+        let shared_config_home = root.join("shared-config-home");
+        let split_config_home = root.join("split-config-home");
+        let config_path = root.join("config.toml");
+        let worker_home = root.join("worker-home");
+        let desktop_home = root.join("desktop-home");
+        let marker = root.join("invocations");
+        for directory in [
+            &shared_config_home,
+            &split_config_home,
+            &worker_home,
+            &desktop_home,
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(&config_path, "theme = \"default\"\n").unwrap();
+        write_test_executable(
+            &executable,
+            r#"#!/bin/sh
+if [ "$XDG_CONFIG_HOME" != "$QE_HERDR_TEST_EXPECTED_CONFIG_HOME" ] || [ "$HERDR_CONFIG_PATH" != "$QE_HERDR_TEST_EXPECTED_CONFIG_PATH" ]; then
+  exit 91
+fi
+printf '%s|%s|%s|%s\n' "$HOME" "$XDG_CONFIG_HOME" "$HERDR_CONFIG_PATH" "$*" >> "$QE_HERDR_TEST_CONTEXT_MARKER"
+case "$*" in
+  "session list --json") printf '%s\n' '{"sessions":[{"name":"worker-session","running":true}]}' ;;
+  "--session worker-session agent get w2:p2") printf '%s\n' '{"result":{"agent":{"qe_owner":"quest-engineering-worker/v1","qe_worker_id":"worker-a","qe_lineage_id":"lineage-a","terminal_id":"terminal-a","status":"idle"}}}' ;;
+  *) exit 92 ;;
+esac
+"#,
+            0o755,
+        );
+        let canonical_executable = std::fs::canonicalize(&executable).unwrap();
+        let canonical_home = std::fs::canonicalize(&shared_config_home).unwrap();
+        let canonical_config = std::fs::canonicalize(&config_path).unwrap();
+        let expected_id =
+            herdr_local_context_id(&canonical_executable, &canonical_home, &canonical_config)
+                .unwrap();
+
+        let worker = Command::new(&canonical_executable)
+            .args(["session", "list", "--json"])
+            .env("HOME", &worker_home)
+            .env(HERDR_CONFIG_HOME_ENV, &canonical_home)
+            .env(HERDR_CONFIG_PATH_ENV, &canonical_config)
+            .env("QE_HERDR_TEST_EXPECTED_CONFIG_HOME", &canonical_home)
+            .env("QE_HERDR_TEST_EXPECTED_CONFIG_PATH", &canonical_config)
+            .env("QE_HERDR_TEST_CONTEXT_MARKER", &marker)
+            .output()
+            .unwrap();
+        assert!(worker.status.success());
+        assert_eq!(
+            session_is_running(&worker.stdout, "worker-session"),
+            Ok(true)
+        );
+
+        run_context_subprocess(
+            "shared",
+            &canonical_executable,
+            &canonical_home,
+            &canonical_config,
+            &canonical_home,
+            &canonical_config,
+            &desktop_home,
+            &expected_id,
+            &marker,
+        );
+        let before_split = std::fs::read_to_string(&marker).unwrap();
+        run_context_subprocess(
+            "split",
+            &canonical_executable,
+            &split_config_home,
+            &canonical_config,
+            &canonical_home,
+            &canonical_config,
+            &desktop_home,
+            &expected_id,
+            &marker,
+        );
+
+        let invocations = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(invocations, before_split, "split context invoked Herdr");
+        assert!(invocations.contains(worker_home.to_str().unwrap()));
+        assert!(invocations.contains(desktop_home.to_str().unwrap()));
+        assert!(invocations.contains(canonical_home.to_str().unwrap()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn herdr_context_digest_matches_worker_vector() {
+        assert_eq!(
+            herdr_local_context_id(
+                Path::new("/opt/qe/herdr"),
+                Path::new("/var/run/qe-herdr"),
+                Path::new("/etc/qe/herdr.toml"),
+            )
+            .unwrap(),
+            "sha256:2baa25a6a46e4124aba866c27b9cb716748cb7d3b0ec9fad01c00a7e259dd2d0"
+        );
+    }
+
     #[test]
     fn rejects_unconfigured_or_relative_herdr_runtime() {
         assert_eq!(
@@ -679,14 +993,19 @@ mod tests {
     #[test]
     fn constructs_inputless_and_takeover_herdr_argv_without_shell_source() {
         let executable = std::env::current_exe().unwrap();
+        let root = resolver_test_directory();
+        let config_home = root.join("config-home");
+        let config_path = root.join("config.toml");
+        std::fs::create_dir(&config_home).unwrap();
+        std::fs::write(&config_path, "theme = \"default\"\n").unwrap();
         let mut launch = TerminalAttachLaunch {
             herdr_path: executable.clone(),
             terminal_session_id: "worker-session".into(),
             pane_id: "w12:p7".into(),
             interaction_mode: "observe".into(),
             home: Some(PathBuf::from("/control/home")),
-            xdg_config_home: Some(PathBuf::from("/control/xdg")),
-            herdr_config_path: Some(PathBuf::from("/control/herdr.toml")),
+            xdg_config_home: config_home.clone(),
+            herdr_config_path: config_path.clone(),
         };
         let observe = herdr_attach_command(&launch).unwrap();
         assert_eq!(observe.executable, executable);
@@ -701,6 +1020,15 @@ mod tests {
         let takeover = herdr_attach_command(&launch).unwrap();
         assert_eq!(takeover.args[4], OsString::from("w12:p7"));
         assert_eq!(takeover.args.last(), Some(&OsString::from("--takeover")));
+        assert!(observe.environment.contains(&(
+            OsString::from(HERDR_CONFIG_HOME_ENV),
+            std::fs::canonicalize(config_home).unwrap().into_os_string(),
+        )));
+        assert!(observe.environment.contains(&(
+            OsString::from(HERDR_CONFIG_PATH_ENV),
+            std::fs::canonicalize(config_path).unwrap().into_os_string(),
+        )));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

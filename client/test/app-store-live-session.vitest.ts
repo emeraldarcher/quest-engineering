@@ -54,6 +54,7 @@ function setup(canObserve: boolean, canTakeover: boolean) {
       attachment_mode: "local_native_terminal",
       backend_kind: "herdr",
       terminal_session_id: "worker-session",
+      local_context_id: `sha256:${"a".repeat(64)}`,
       pane_id: "w2:p2",
       terminal_id: "terminal-1",
       supports_observation: true,

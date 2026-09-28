@@ -267,6 +267,12 @@ test("readiness fences a stale observation failure after newer success and reval
   const provider = new LocalHerdrConnectionProvider("test-herdr", {
     workerId: "test-worker",
     dataRoot: root,
+    herdrContext: {
+      executable: process.execPath,
+      configHome: root,
+      configPath: join(root, "config.toml"),
+      id: `sha256:${"1".repeat(64)}`,
+    },
     runCommand: async (args) => ({
       exitCode: 0,
       stdout: JSON.stringify(

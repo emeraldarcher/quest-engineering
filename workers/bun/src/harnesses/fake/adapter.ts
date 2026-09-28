@@ -333,6 +333,7 @@ export class FakeHarness implements AgentHarness {
       mode: "local_native_terminal" as const,
       backendKind: "fake",
       terminalSessionId: "fake",
+      localContextId: `sha256:${"0".repeat(64)}`,
       paneId: `fake-${lineage.lineageId}`,
       supportsObservation: false,
       supportsTakeover: false,

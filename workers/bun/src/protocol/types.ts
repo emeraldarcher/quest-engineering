@@ -207,6 +207,7 @@ export interface ReconcileSession {
     attachment_mode: "local_native_terminal";
     backend_kind: string;
     terminal_session_id: string;
+    local_context_id: string;
     terminal_target_id: string;
     terminal_id?: string;
     supports_observation: boolean;

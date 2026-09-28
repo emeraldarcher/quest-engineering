@@ -827,6 +827,10 @@ function decodeSessionAttachment(
         terminal.terminal_session_id,
         "session terminal",
       ),
+      local_context_id: asString(
+        terminal.local_context_id,
+        "session terminal context",
+      ),
       pane_id: asString(terminal.terminal_target_id, "session terminal pane"),
       terminal_id: nullableString(terminal.terminal_id, "session terminal"),
       supports_observation: asBoolean(

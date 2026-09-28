@@ -395,7 +395,7 @@ test("configuration derives the default session and retains explicit overrides",
 });
 
 test("default session names are deterministic, bounded, normalized, and collision-resistant", () => {
-  const home = "/Users/kylec";
+  const home = "/Users/kylec/.config";
   const ids = [
     "worker-a",
     "phase4-paid-9311592d-24f4-4626-8817-78dbbef44779",
@@ -424,9 +424,10 @@ test("default session names are deterministic, bounded, normalized, and collisio
 
 test("derived names keep both native Herdr sockets below the Unix path contract", async () => {
   const home = "/Users/kylec";
+  const configHome = "/Users/kylec/.config";
   const failedWorkerId = "phase4-paid-9311592d-24f4-4626-8817-78dbbef44779";
-  const derived = defaultHerdrSessionName(failedWorkerId, home);
-  const paths = herdrDefaultSocketPaths(derived, home);
+  const derived = defaultHerdrSessionName(failedWorkerId, configHome);
+  const paths = herdrDefaultSocketPaths(derived, configHome);
   expect(Buffer.byteLength(paths.apiSocket)).toBeLessThanOrEqual(
     HERDR_UNIX_SOCKET_SAFE_PATH_BYTES,
   );
@@ -435,16 +436,17 @@ test("derived names keep both native Herdr sockets below the Unix path contract"
   );
 
   const failedName = "qe-worker-phase4-paid-9311592d-24f4-4626-8-88bd5a28f4";
-  const failedPaths = herdrDefaultSocketPaths(failedName, home);
+  const failedPaths = herdrDefaultSocketPaths(failedName, configHome);
   expect(Buffer.byteLength(failedPaths.apiSocket)).toBe(100);
   expect(Buffer.byteLength(failedPaths.clientSocket)).toBe(107);
-  expect(() => assertHerdrDefaultSocketPathSafe(failedName, home)).toThrow(
-    "107 bytes",
-  );
+  expect(() =>
+    assertHerdrDefaultSocketPathSafe(failedName, configHome),
+  ).toThrow("107 bytes");
 
   const root = await fixtureRoot();
   const baseEnvironment: NodeJS.ProcessEnv = {
     HOME: home,
+    XDG_CONFIG_HOME: configHome,
     QE_CONTROL_PLANE_URL: "ws://127.0.0.1/worker/websocket",
     QE_WORKER_ID: failedWorkerId,
     QE_WORKER_TOKEN: "unused",
@@ -468,7 +470,7 @@ test("derived names keep both native Herdr sockets below the Unix path contract"
     QE_WORKTREE_ROOT: join(longDataRoot, "worktrees"),
   });
   expect(configuration.herdrSession).toBe(derived);
-  assertHerdrDefaultSocketPathSafe(configuration.herdrSession, home);
+  assertHerdrDefaultSocketPathSafe(configuration.herdrSession, configHome);
 });
 
 async function fixtureRoot(): Promise<string> {
@@ -491,6 +493,12 @@ async function setup(workerId: string) {
     new LocalHerdrConnectionProvider(sessionName, {
       workerId: id,
       dataRoot: root,
+      herdrContext: {
+        executable: process.execPath,
+        configHome: root,
+        configPath: join(root, "config.toml"),
+        id: `sha256:${"2".repeat(64)}`,
+      },
       runCommand: (args) => runtime.run(args),
       createClient: (_socket, onUnavailable) =>
         new FakeHerdrClient(runtime, onUnavailable),

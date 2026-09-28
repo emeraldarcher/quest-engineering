@@ -30,6 +30,7 @@ function attachment(): LocalSessionAttachmentDescriptor {
       attachment_mode: "local_native_terminal",
       backend_kind: "herdr",
       terminal_session_id: "worker-session",
+      local_context_id: `sha256:${"a".repeat(64)}`,
       pane_id: "w2:p2",
       terminal_id: "terminal-1",
       supports_observation: true,
@@ -47,6 +48,7 @@ test("passes the exact Product pane ID to native observation without mutation", 
       mode: "local_native_terminal",
       backendKind: "herdr",
       terminalSessionId: "worker-session",
+      localContextId: `sha256:${"a".repeat(64)}`,
       paneId: "w2:p2",
       terminalId: "terminal-1",
       workerId: "worker-1",
@@ -68,6 +70,19 @@ test("Take Control resolves the same exact pane ID with a distinct mode", async 
       interactionMode: "takeover",
     }),
   );
+});
+
+test("surfaces a split Worker/desktop Herdr context as an actionable local error", async () => {
+  tauri.invoke.mockRejectedValueOnce(
+    "The desktop Herdr session context does not match the Worker context. Ensure the Worker and desktop use the same QE_HERDR_BIN, XDG_CONFIG_HOME, and HERDR_CONFIG_PATH.",
+  );
+
+  await expect(
+    openLocalLiveSession(attachment(), "observe"),
+  ).rejects.toMatchObject({
+    code: "local_herdr_context_mismatch",
+    message: expect.stringContaining("XDG_CONFIG_HOME"),
+  });
 });
 
 test("surfaces configured Herdr resolution failures without misclassifying the session", async () => {

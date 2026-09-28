@@ -1583,6 +1583,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
       mode: "local_native_terminal",
       backendKind: "herdr",
       terminalSessionId: ref.sessionName,
+      localContextId: `sha256:${"0".repeat(64)}`,
       paneId: ref.paneId,
       ...(ref.terminalId ? { terminalId: ref.terminalId } : {}),
       supportsObservation: true,

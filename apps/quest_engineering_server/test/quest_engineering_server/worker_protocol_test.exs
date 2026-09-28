@@ -272,6 +272,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
           "attachment_mode" => "local_native_terminal",
           "backend_kind" => "herdr",
           "terminal_session_id" => "worker",
+          "local_context_id" => "sha256:" <> String.duplicate("a", 64),
           "terminal_target_id" => "qe-agent",
           "supports_observation" => true,
           "supports_takeover" => true
@@ -354,6 +355,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert {:error, %WorkerProtocol.Error{field: "session.attention"}} =
              WorkerProtocol.decode_worker_message(invalid, @worker_id)
+
+    missing_context =
+      update_in(payload, ["session", "terminal"], &Map.delete(&1, "local_context_id"))
+
+    assert {:error, %WorkerProtocol.Error{field: "session.terminal"}} =
+             WorkerProtocol.decode_worker_message(missing_context, @worker_id)
   end
 
   test "encodes exact generation-fenced Product cancellation commands" do
