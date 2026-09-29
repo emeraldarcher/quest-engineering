@@ -268,6 +268,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     bundles: ExtensionBundle[];
   }> | null = null;
   private readonly accountAvailability: AccountAvailabilityEvidenceStore;
+  private readonly accountAvailabilityNow: () => Date;
   constructor(
     private readonly config: WorkerConfig,
     private readonly worktrees: RunWorktreeRegistry,
@@ -275,6 +276,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       backend?: SbxExecutionEnvironmentBackend;
       privateGit?: PrivateGitWorkspaceManager;
       store?: SbxRunExecutionStore;
+      accountAvailabilityNow?: () => Date;
     } = {},
   ) {
     const executionProfile = resolveRunExecutionProfile(
@@ -294,6 +296,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     this.accountAvailability = new AccountAvailabilityEvidenceStore(
       join(config.dataRoot, "pi-account-availability.json"),
     );
+    this.accountAvailabilityNow =
+      options.accountAvailabilityNow ?? (() => new Date());
   }
 
   async discover(): Promise<DiscoveredPiModelCatalog> {
@@ -331,6 +335,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       discovered.models = await this.accountAvailability.annotate(
         discovered.models,
         context,
+        this.accountAvailabilityNow(),
       );
       const configured =
         this.config.executorModels ??
