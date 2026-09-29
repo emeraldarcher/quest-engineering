@@ -2,18 +2,48 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { LocalSessionAttachmentDescriptor } from "../src/api/contracts";
 
 const tauri = vi.hoisted(() => ({
-  invoke: vi.fn(async () => undefined),
+  invoke: vi.fn(),
   isTauri: vi.fn(() => true),
+  listen: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => tauri);
+vi.mock("@tauri-apps/api/event", () => ({ listen: tauri.listen }));
 
-import { openLocalLiveSession } from "../src/platform/live-session";
+import {
+  closeLocalLiveSession,
+  type LocalObservationSession,
+  openLocalLiveSession,
+  watchLocalLiveSessions,
+} from "../src/platform/live-session";
 
 beforeEach(() => {
-  tauri.invoke.mockClear();
+  tauri.invoke.mockReset();
   tauri.isTauri.mockReturnValue(true);
+  tauri.listen.mockReset();
 });
+
+const owner = {
+  runId: "run-1",
+  occurrenceId: "occurrence-1",
+  attemptId: "attempt-1",
+  sessionId: "lineage-1",
+};
+
+function observation(
+  state: LocalObservationSession["state"] = "attached",
+): LocalObservationSession {
+  return {
+    ...owner,
+    localSessionId: "local-observation-1",
+    terminalSessionId: "worker-session",
+    paneId: "w2:p2",
+    terminalId: "terminal-1",
+    mode: "observe",
+    state,
+    reason: null,
+  };
+}
 
 function attachment(): LocalSessionAttachmentDescriptor {
   return {
@@ -39,8 +69,9 @@ function attachment(): LocalSessionAttachmentDescriptor {
   };
 }
 
-test("passes the exact Product pane ID to native observation without mutation", async () => {
-  await openLocalLiveSession(attachment(), "observe");
+test("passes the exact Product pane and owner to native observation", async () => {
+  tauri.invoke.mockResolvedValueOnce(observation());
+  await openLocalLiveSession(attachment(), "observe", owner);
 
   expect(tauri.invoke).toHaveBeenCalledOnce();
   expect(tauri.invoke).toHaveBeenCalledWith("open_live_session", {
@@ -57,17 +88,20 @@ test("passes the exact Product pane ID to native observation without mutation", 
       recoveryAllowed: false,
     },
     interactionMode: "observe",
+    owner,
   });
 });
 
 test("Take Control resolves the same exact pane ID with a distinct mode", async () => {
-  await openLocalLiveSession(attachment(), "takeover");
+  tauri.invoke.mockResolvedValueOnce({ ...observation(), mode: "takeover" });
+  await openLocalLiveSession(attachment(), "takeover", owner);
 
   expect(tauri.invoke).toHaveBeenCalledWith(
     "open_live_session",
     expect.objectContaining({
       descriptor: expect.objectContaining({ paneId: "w2:p2" }),
       interactionMode: "takeover",
+      owner,
     }),
   );
 });
@@ -78,7 +112,7 @@ test("surfaces a split Worker/desktop Herdr context as an actionable local error
   );
 
   await expect(
-    openLocalLiveSession(attachment(), "observe"),
+    openLocalLiveSession(attachment(), "observe", owner),
   ).rejects.toMatchObject({
     code: "local_herdr_context_mismatch",
     message: expect.stringContaining("XDG_CONFIG_HOME"),
@@ -91,10 +125,46 @@ test("surfaces configured Herdr resolution failures without misclassifying the s
   );
 
   await expect(
-    openLocalLiveSession(attachment(), "observe"),
+    openLocalLiveSession(attachment(), "observe", owner),
   ).rejects.toMatchObject({
     code: "local_herdr_runtime_unavailable",
     message:
       "Compatible Quest Engineering Herdr runtime unavailable. Configure QE_HERDR_BIN with an absolute executable path.",
   });
+});
+
+test("closes only the exact native observation handle", async () => {
+  const closed = { ...observation("detached"), reason: "explicit_close" };
+  tauri.invoke.mockResolvedValueOnce(closed);
+
+  await expect(closeLocalLiveSession(observation())).resolves.toEqual(closed);
+  expect(tauri.invoke).toHaveBeenCalledWith("close_live_session", {
+    session: observation(),
+  });
+});
+
+test("forwards authoritative manual and unexpected close events", async () => {
+  const stop = vi.fn();
+  let callback:
+    | ((event: { payload: LocalObservationSession }) => void)
+    | undefined;
+  tauri.listen.mockImplementationOnce(
+    async (
+      _name: string,
+      listener: (event: { payload: LocalObservationSession }) => void,
+    ) => {
+      callback = listener;
+      return stop;
+    },
+  );
+  const observer = vi.fn();
+  await expect(watchLocalLiveSessions(observer)).resolves.toBe(stop);
+
+  const closed = {
+    ...observation("detached"),
+    reason: "terminal_closed",
+  };
+  if (!callback) throw new Error("Expected native event callback");
+  callback({ payload: closed });
+  expect(observer).toHaveBeenCalledWith(closed);
 });

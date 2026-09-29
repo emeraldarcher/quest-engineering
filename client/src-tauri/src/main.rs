@@ -6,6 +6,23 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::io::{BufRead, BufReader};
+#[cfg(target_os = "macos")]
+use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(target_os = "macos")]
+use std::os::unix::process::ExitStatusExt;
+#[cfg(target_os = "macos")]
+use std::process::ExitStatus;
+#[cfg(target_os = "macos")]
+use std::sync::{mpsc, Arc, Condvar, Mutex};
+#[cfg(target_os = "macos")]
+use std::thread;
+#[cfg(target_os = "macos")]
+use tauri::{AppHandle, Emitter};
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -18,7 +35,7 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "macos")]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HERDR_BIN_ENV: &str = "QE_HERDR_BIN";
 const HERDR_CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
@@ -51,6 +68,62 @@ struct LocalAttachment {
     recovery_allowed: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalSessionOwner {
+    run_id: String,
+    occurrence_id: String,
+    attempt_id: String,
+    session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalObservationStatus {
+    local_session_id: String,
+    run_id: String,
+    occurrence_id: String,
+    attempt_id: String,
+    session_id: String,
+    terminal_session_id: String,
+    pane_id: String,
+    terminal_id: Option<String>,
+    mode: String,
+    state: String,
+    reason: Option<String>,
+}
+
+impl LocalObservationStatus {
+    fn same_attachment(&self, other: &Self) -> bool {
+        self.local_session_id == other.local_session_id
+            && self.run_id == other.run_id
+            && self.occurrence_id == other.occurrence_id
+            && self.attempt_id == other.attempt_id
+            && self.session_id == other.session_id
+            && self.terminal_session_id == other.terminal_session_id
+            && self.pane_id == other.pane_id
+            && self.terminal_id == other.terminal_id
+            && self.mode == other.mode
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct LocalObservationEntry {
+    status: Mutex<LocalObservationStatus>,
+    changed: Condvar,
+    control: Mutex<UnixStream>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct LocalObservationRegistry {
+    sessions: Mutex<HashMap<String, Arc<LocalObservationEntry>>>,
+}
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+struct LocalObservationRegistry;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HerdrLocalContext {
     executable: PathBuf,
@@ -60,10 +133,20 @@ struct HerdrLocalContext {
 }
 
 #[tauri::command]
-fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> Result<(), String> {
+fn open_live_session(
+    descriptor: LocalAttachment,
+    interaction_mode: String,
+    owner: LocalSessionOwner,
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, LocalObservationRegistry>,
+) -> Result<LocalObservationStatus, String> {
     if descriptor.mode != "local_native_terminal" || descriptor.backend_kind != "herdr" {
         return Err("Unsupported local terminal attachment transport.".into());
     }
+    if owner.session_id != descriptor.session_id {
+        return Err("The local observation owner does not match the execution session.".into());
+    }
+    validate_local_session_owner(&owner)?;
     if interaction_mode == "takeover" && !descriptor.takeover_allowed {
         return Err("Interactive takeover is not allowed for this session state.".into());
     }
@@ -139,6 +222,19 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
 
     #[cfg(target_os = "macos")]
     {
+        let status = LocalObservationStatus {
+            local_session_id: new_local_session_id(&owner, &descriptor),
+            run_id: owner.run_id,
+            occurrence_id: owner.occurrence_id,
+            attempt_id: owner.attempt_id,
+            session_id: owner.session_id,
+            terminal_session_id: descriptor.terminal_session_id.clone(),
+            pane_id: descriptor.pane_id.clone(),
+            terminal_id: descriptor.terminal_id.clone(),
+            mode: interaction_mode.clone(),
+            state: "attached".into(),
+            reason: None,
+        };
         let launch = TerminalAttachLaunch {
             herdr_path: context.executable,
             terminal_session_id: descriptor.terminal_session_id,
@@ -148,11 +244,33 @@ fn open_live_session(descriptor: LocalAttachment, interaction_mode: String) -> R
             xdg_config_home: context.config_home,
             herdr_config_path: context.config_path,
         };
-        return open_terminal_attachment(&launch);
+        let opened = open_terminal_attachment(&launch, &status)?;
+        register_local_observation(&registry, &app, status.clone(), opened)?;
+        Ok(status)
     }
 
     #[cfg(not(target_os = "macos"))]
-    Err("Native Herdr attachment is currently implemented for macOS only.".into())
+    {
+        let _ = (app, registry);
+        Err("Native Herdr attachment is currently implemented for macOS only.".into())
+    }
+}
+
+#[tauri::command]
+fn close_live_session(
+    session: LocalObservationStatus,
+    registry: tauri::State<'_, LocalObservationRegistry>,
+) -> Result<LocalObservationStatus, String> {
+    #[cfg(target_os = "macos")]
+    {
+        close_local_observation(&registry, &session)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (session, registry);
+        Err("Native Herdr attachment is currently implemented for macOS only.".into())
+    }
 }
 
 fn resolve_herdr_executable() -> Result<PathBuf, String> {
@@ -278,6 +396,49 @@ fn validate_session_name(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_local_session_owner(owner: &LocalSessionOwner) -> Result<(), String> {
+    for value in [
+        &owner.run_id,
+        &owner.occurrence_id,
+        &owner.attempt_id,
+        &owner.session_id,
+    ] {
+        if value.is_empty()
+            || value.len() > 512
+            || value
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte == 0x7f)
+        {
+            return Err("Invalid local observation owner identity.".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn new_local_session_id(owner: &LocalSessionOwner, descriptor: &LocalAttachment) -> String {
+    let sequence = ATTACH_LAUNCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut digest = Sha256::new();
+    for value in [
+        owner.run_id.as_str(),
+        owner.attempt_id.as_str(),
+        owner.session_id.as_str(),
+        descriptor.terminal_session_id.as_str(),
+        descriptor.pane_id.as_str(),
+    ] {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    digest.update(std::process::id().to_le_bytes());
+    digest.update(nanos.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    format!("local-observation-{:x}", digest.finalize())
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn validate_agent_name(value: &str) -> Result<(), String> {
     let mut bytes = value.bytes();
@@ -356,10 +517,87 @@ struct TerminalAttachLaunch {
 }
 
 #[cfg(target_os = "macos")]
+const ATTACH_START_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(target_os = "macos")]
+const ATTACH_DETACH_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(target_os = "macos")]
+const ATTACH_FORCE_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(target_os = "macos")]
+const ATTACH_CLOSE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(7);
+#[cfg(target_os = "macos")]
+const ATTACH_CONTROL_SOCKET_SUFFIX: &str = ".sock";
+#[cfg(target_os = "macos")]
+const LOCAL_OBSERVATION_EVENT: &str = "qe://local-observation-state";
+
+#[cfg(target_os = "macos")]
 #[derive(Deserialize, Serialize)]
-struct TerminalAttachStatus {
+#[serde(rename_all = "camelCase")]
+struct TerminalAttachEnvelope {
+    launch: TerminalAttachLaunch,
+    session: LocalObservationStatus,
+    control_token: String,
+    control_socket: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum TerminalAttachControl {
+    Started {
+        local_session_id: String,
+        attach_pid: u32,
+    },
+    Detach {
+        local_session_id: String,
+        control_token: String,
+    },
+    Closed {
+        local_session_id: String,
+        state: String,
+        reason: String,
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        forced: bool,
+    },
+    Failed {
+        local_session_id: String,
+        message: String,
+    },
+}
+
+#[cfg(target_os = "macos")]
+struct OpenedTerminalAttachment {
+    stream: UnixStream,
+}
+
+#[cfg(target_os = "macos")]
+enum AttachmentLauncherEvent {
+    DetachRequested(TerminalAttachControl),
+    TerminalClosed,
+    ControlDisconnected,
+    ChildExited(std::io::Result<ExitStatus>),
+}
+
+#[cfg(target_os = "macos")]
+struct AttachmentChildOutcome {
     state: String,
-    message: Option<String>,
+    reason: String,
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+    forced: bool,
+}
+
+#[cfg(target_os = "macos")]
+struct UnregisteredAttachmentChild(Option<std::process::Child>);
+
+#[cfg(target_os = "macos")]
+impl Drop for UnregisteredAttachmentChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -428,20 +666,42 @@ fn validate_context_path_value(path: &Path, directory: bool) -> Result<PathBuf, 
 }
 
 #[cfg(target_os = "macos")]
-fn open_terminal_attachment(launch: &TerminalAttachLaunch) -> Result<(), String> {
+fn open_terminal_attachment(
+    launch: &TerminalAttachLaunch,
+    session: &LocalObservationStatus,
+) -> Result<OpenedTerminalAttachment, String> {
     let _ = herdr_attach_command(launch)?;
     let directory = create_attachment_launch_directory()?;
     let launcher_path = directory.join(ATTACH_LAUNCHER_NAME);
     let descriptor_path = directory.join("launch.json");
-    let status_path = directory.join("status.json");
+    let control_socket = attachment_control_socket_path(&directory)?;
+    let listener = UnixListener::bind(&control_socket)
+        .map_err(|_| "Could not create the native session-attach control channel.".to_string())?;
+    fs::set_permissions(&control_socket, fs::Permissions::from_mode(0o600))
+        .map_err(|_| "Could not secure the native session-attach control channel.".to_string())?;
     let current_executable = std::env::current_exe()
         .map_err(|_| "Could not locate the native session-attach launcher.".to_string())?;
+    let control_token = local_attachment_control_token(session);
+    let envelope = TerminalAttachEnvelope {
+        launch: TerminalAttachLaunch {
+            herdr_path: launch.herdr_path.clone(),
+            terminal_session_id: launch.terminal_session_id.clone(),
+            pane_id: launch.pane_id.clone(),
+            interaction_mode: launch.interaction_mode.clone(),
+            home: launch.home.clone(),
+            xdg_config_home: launch.xdg_config_home.clone(),
+            herdr_config_path: launch.herdr_config_path.clone(),
+        },
+        session: session.clone(),
+        control_token,
+        control_socket: control_socket.clone(),
+    };
 
     fs::copy(&current_executable, &launcher_path)
         .map_err(|_| "Could not prepare the native session-attach launcher.".to_string())?;
     fs::set_permissions(&launcher_path, fs::Permissions::from_mode(0o700))
         .map_err(|_| "Could not secure the native session-attach launcher.".to_string())?;
-    write_private_json(&descriptor_path, launch)
+    write_private_json(&descriptor_path, &envelope)
         .map_err(|_| "Could not prepare the native session-attach descriptor.".to_string())?;
 
     let opened = Command::new("/usr/bin/open")
@@ -454,38 +714,100 @@ fn open_terminal_attachment(launch: &TerminalAttachLaunch) -> Result<(), String>
         return Err("The terminal application rejected the attach request.".into());
     }
 
-    for _ in 0..100 {
-        if let Ok(bytes) = fs::read(&status_path) {
-            let status: TerminalAttachStatus = serde_json::from_slice(&bytes).map_err(|_| {
-                "The native session-attach launcher returned invalid status.".to_string()
-            })?;
+    let stream = match accept_terminal_attachment(listener, &control_socket) {
+        Ok(stream) => stream,
+        Err(message) => {
             cleanup_attachment_launch_directory(&directory);
-            return if status.state == "started" {
-                Ok(())
-            } else {
-                Err(status
-                    .message
-                    .unwrap_or_else(|| "The native session-attach launcher failed.".into()))
-            };
+            return Err(message);
         }
-        std::thread::sleep(Duration::from_millis(100));
+    };
+    stream
+        .set_read_timeout(Some(ATTACH_START_TIMEOUT))
+        .map_err(|_| "Could not bound the native session-attach acknowledgement.".to_string())?;
+    let mut reader =
+        BufReader::new(stream.try_clone().map_err(|_| {
+            "Could not inspect the native session-attach acknowledgement.".to_string()
+        })?);
+    let message = read_terminal_attach_control(&mut reader)
+        .map_err(|_| "The native session-attach launcher returned invalid status.".to_string())?;
+    stream
+        .set_read_timeout(None)
+        .map_err(|_| "Could not restore the native session-attach control channel.".to_string())?;
+    match message {
+        TerminalAttachControl::Started {
+            local_session_id,
+            attach_pid,
+        } if local_session_id == session.local_session_id && attach_pid > 0 => {
+            Ok(OpenedTerminalAttachment { stream })
+        }
+        TerminalAttachControl::Failed {
+            local_session_id,
+            message,
+        } if local_session_id == session.local_session_id => {
+            cleanup_attachment_launch_directory(&directory);
+            Err(message)
+        }
+        _ => {
+            cleanup_attachment_launch_directory(&directory);
+            Err("The native session-attach launcher returned mismatched status.".into())
+        }
     }
-    cleanup_attachment_launch_directory(&directory);
-    Err("The native session-attach launcher did not start.".into())
+}
+
+#[cfg(target_os = "macos")]
+fn local_attachment_control_token(session: &LocalObservationStatus) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"qe-local-observation-control-v1");
+    digest.update([0]);
+    digest.update(session.local_session_id.as_bytes());
+    digest.update([0]);
+    digest.update(session.terminal_session_id.as_bytes());
+    digest.update([0]);
+    digest.update(session.pane_id.as_bytes());
+    format!("sha256:{:x}", digest.finalize())
+}
+
+#[cfg(target_os = "macos")]
+fn accept_terminal_attachment(
+    listener: UnixListener,
+    control_socket: &Path,
+) -> Result<UnixStream, String> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let waiter = thread::spawn(move || {
+        let _ = sender.send(listener.accept());
+    });
+    let accepted = receiver.recv_timeout(ATTACH_START_TIMEOUT);
+    if accepted.is_err() {
+        let _ = UnixStream::connect(control_socket);
+    }
+    let _ = waiter.join();
+    match accepted {
+        Ok(Ok((stream, _))) => Ok(stream),
+        Ok(Err(_)) => Err("Could not accept the native session-attach control channel.".into()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err("The native session-attach launcher did not start within 10 seconds.".into())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("The native session-attach launcher did not start.".into())
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn create_attachment_launch_directory() -> Result<PathBuf, String> {
-    let root = std::env::var_os("QE_SESSION_ATTACH_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("quest-engineering-session-attach"));
-    if !root.is_absolute() {
-        return Err("The native session-attach root must be absolute.".into());
-    }
-    fs::create_dir_all(&root)
-        .map_err(|_| "Could not create the native session-attach root.".to_string())?;
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-        .map_err(|_| "Could not secure the native session-attach root.".to_string())?;
+    let root = if let Some(configured) = std::env::var_os("QE_SESSION_ATTACH_ROOT") {
+        let root = PathBuf::from(configured);
+        if !root.is_absolute() {
+            return Err("The native session-attach root must be absolute.".into());
+        }
+        fs::create_dir_all(&root)
+            .map_err(|_| "Could not create the native session-attach root.".to_string())?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "Could not secure the native session-attach root.".to_string())?;
+        root
+    } else {
+        std::env::temp_dir()
+    };
 
     for _ in 0..100 {
         let sequence = ATTACH_LAUNCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -493,7 +815,10 @@ fn create_attachment_launch_directory() -> Result<PathBuf, String> {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let directory = root.join(format!("launch-{}-{nanos}-{sequence}", std::process::id()));
+        let directory = root.join(format!(
+            "qe-a-{:x}-{sequence:x}-{nanos:x}",
+            std::process::id()
+        ));
         match fs::create_dir(&directory) {
             Ok(()) => {
                 fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(
@@ -523,18 +848,21 @@ fn write_private_json(path: &Path, value: &impl Serialize) -> std::io::Result<()
 }
 
 #[cfg(target_os = "macos")]
-fn write_launcher_status(path: &Path, status: &TerminalAttachStatus) -> std::io::Result<()> {
-    let temporary = path.with_extension("tmp");
-    let _ = fs::remove_file(&temporary);
-    write_private_json(&temporary, status)?;
-    fs::rename(temporary, path)
+fn attachment_control_socket_path(directory: &Path) -> Result<PathBuf, String> {
+    let name = directory
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| value.starts_with("qe-a-"))
+        .ok_or_else(|| "The native session-attach control identity is invalid.".to_string())?;
+    Ok(PathBuf::from("/tmp").join(format!("{name}{ATTACH_CONTROL_SOCKET_SUFFIX}")))
 }
 
 #[cfg(target_os = "macos")]
 fn cleanup_attachment_launch_directory(directory: &Path) {
     let _ = fs::remove_file(directory.join("launch.json"));
-    let _ = fs::remove_file(directory.join("status.json"));
-    let _ = fs::remove_file(directory.join("status.tmp"));
+    if let Ok(control_socket) = attachment_control_socket_path(directory) {
+        let _ = fs::remove_file(control_socket);
+    }
     let _ = fs::remove_file(directory.join(ATTACH_LAUNCHER_NAME));
     let _ = fs::remove_dir(directory);
 }
@@ -546,23 +874,229 @@ fn attachment_launcher_directory() -> Option<PathBuf> {
         return None;
     }
     let directory = invoked_as.parent()?.to_path_buf();
-    if !directory.file_name()?.to_str()?.starts_with("launch-") {
+    if !directory.file_name()?.to_str()?.starts_with("qe-a-") {
         return None;
     }
     Some(directory)
 }
 
 #[cfg(target_os = "macos")]
+fn register_local_observation(
+    registry: &LocalObservationRegistry,
+    app: &AppHandle,
+    status: LocalObservationStatus,
+    opened: OpenedTerminalAttachment,
+) -> Result<(), String> {
+    let read_stream = opened
+        .stream
+        .try_clone()
+        .map_err(|_| "Could not monitor the native observation session.".to_string())?;
+    let entry = Arc::new(LocalObservationEntry {
+        status: Mutex::new(status.clone()),
+        changed: Condvar::new(),
+        control: Mutex::new(opened.stream),
+    });
+    let app = app.clone();
+    let monitor_entry = entry.clone();
+    let monitor_status = status.clone();
+    let monitor = thread::Builder::new()
+        .name(format!(
+            "local-observation-{}",
+            &status.local_session_id[status.local_session_id.len().saturating_sub(12)..]
+        ))
+        .spawn(move || {
+            let mut reader = BufReader::new(read_stream);
+            let update = match read_terminal_attach_control(&mut reader) {
+                Ok(TerminalAttachControl::Closed {
+                    local_session_id,
+                    state,
+                    reason,
+                    ..
+                }) if local_session_id == monitor_status.local_session_id
+                    && matches!(state.as_str(), "detached" | "unavailable") =>
+                {
+                    Some((state, Some(reason)))
+                }
+                Ok(TerminalAttachControl::Failed {
+                    local_session_id,
+                    message,
+                }) if local_session_id == monitor_status.local_session_id => {
+                    Some(("unavailable".into(), Some(message)))
+                }
+                Ok(_) => Some((
+                    "unavailable".into(),
+                    Some("mismatched_launcher_status".into()),
+                )),
+                Err(_) => Some((
+                    "unavailable".into(),
+                    Some("launcher_control_disconnected".into()),
+                )),
+            };
+            if let Some((state, reason)) = update {
+                let event = {
+                    let mut current = monitor_entry
+                        .status
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    current.state = state;
+                    current.reason = reason;
+                    current.clone()
+                };
+                monitor_entry.changed.notify_all();
+                let _ = app.emit(LOCAL_OBSERVATION_EVENT, &event);
+            }
+        });
+    if monitor.is_err() {
+        let request = TerminalAttachControl::Detach {
+            local_session_id: status.local_session_id.clone(),
+            control_token: local_attachment_control_token(&status),
+        };
+        if let Ok(mut stream) = entry.control.lock() {
+            let _ = write_terminal_attach_control(&mut stream, &request);
+        }
+        return Err("Could not monitor the native observation session.".into());
+    }
+    registry
+        .sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(status.local_session_id.clone(), entry);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn close_local_observation(
+    registry: &LocalObservationRegistry,
+    requested: &LocalObservationStatus,
+) -> Result<LocalObservationStatus, String> {
+    let entry = registry
+        .sessions
+        .lock()
+        .map_err(|_| "The local observation registry is unavailable.".to_string())?
+        .get(&requested.local_session_id)
+        .cloned()
+        .ok_or_else(|| "The local observation session is stale or unavailable.".to_string())?;
+
+    let mut current = entry
+        .status
+        .lock()
+        .map_err(|_| "The local observation session is unavailable.".to_string())?;
+    if !current.same_attachment(requested) {
+        return Err(
+            "The local observation close request does not match the owned attachment.".into(),
+        );
+    }
+    if matches!(current.state.as_str(), "detached" | "unavailable") {
+        return Ok(current.clone());
+    }
+    if current.state == "attached" {
+        let request = TerminalAttachControl::Detach {
+            local_session_id: current.local_session_id.clone(),
+            control_token: local_attachment_control_token(&current),
+        };
+        current.state = "detaching".into();
+        current.reason = Some("explicit_close_requested".into());
+        let write_result = entry
+            .control
+            .lock()
+            .map_err(|_| "The native observation control channel is unavailable.".to_string())
+            .and_then(|mut stream| {
+                write_terminal_attach_control(&mut stream, &request)
+                    .map_err(|_| "Could not request native observation detachment.".to_string())
+            });
+        if write_result.is_err() {
+            current.state = "unavailable".into();
+            current.reason = Some("launcher_control_disconnected".into());
+            entry.changed.notify_all();
+            return Ok(current.clone());
+        }
+    }
+
+    let deadline = Instant::now() + ATTACH_CLOSE_RESPONSE_TIMEOUT;
+    while current.state == "detaching" {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            current.state = "unavailable".into();
+            current.reason = Some("detach_ack_timeout".into());
+            entry.changed.notify_all();
+            return Ok(current.clone());
+        }
+        let (next, timeout) = entry
+            .changed
+            .wait_timeout(current, remaining)
+            .map_err(|_| "The local observation session is unavailable.".to_string())?;
+        current = next;
+        if timeout.timed_out() && current.state == "detaching" {
+            current.state = "unavailable".into();
+            current.reason = Some("detach_ack_timeout".into());
+            entry.changed.notify_all();
+            return Ok(current.clone());
+        }
+    }
+    Ok(current.clone())
+}
+
+#[cfg(target_os = "macos")]
+fn read_terminal_attach_control(
+    reader: &mut impl BufRead,
+) -> std::io::Result<TerminalAttachControl> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "attachment control channel closed",
+        ));
+    }
+    serde_json::from_str(&line)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(target_os = "macos")]
+fn write_terminal_attach_control(
+    stream: &mut UnixStream,
+    message: &TerminalAttachControl,
+) -> std::io::Result<()> {
+    serde_json::to_writer(&mut *stream, message)?;
+    stream.write_all(b"\n")?;
+    stream.flush()
+}
+
+#[cfg(target_os = "macos")]
+fn signal_attachment_child(pid: u32, signal: i32) -> std::io::Result<()> {
+    let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn run_terminal_attachment_launcher(directory: &Path) -> i32 {
     let descriptor_path = directory.join("launch.json");
-    let status_path = directory.join("status.json");
     let result = (|| -> Result<i32, String> {
         let bytes = fs::read(&descriptor_path)
             .map_err(|_| "The native session-attach descriptor is unavailable.".to_string())?;
-        let launch: TerminalAttachLaunch = serde_json::from_slice(&bytes)
+        let envelope: TerminalAttachEnvelope = serde_json::from_slice(&bytes)
             .map_err(|_| "The native session-attach descriptor is invalid.".to_string())?;
-        let command = herdr_attach_command(&launch)?;
+        if envelope.control_socket != attachment_control_socket_path(directory)? {
+            return Err("The native session-attach control identity is invalid.".into());
+        }
+        let command = herdr_attach_command(&envelope.launch)?;
         let _ = fs::remove_file(&descriptor_path);
+        let mut stream = UnixStream::connect(&envelope.control_socket).map_err(|_| {
+            "Could not connect the native session-attach control channel.".to_string()
+        })?;
+
+        let (sender, receiver) = mpsc::channel();
+        let signal_sender = sender.clone();
+        ctrlc::set_handler(move || {
+            let _ = signal_sender.send(AttachmentLauncherEvent::TerminalClosed);
+        })
+        .map_err(|_| "Could not monitor native terminal closure.".to_string())?;
+        let control_stream = stream
+            .try_clone()
+            .map_err(|_| "Could not monitor native detach requests.".to_string())?;
 
         let mut process = Command::new(&command.executable);
         process.args(&command.args);
@@ -572,10 +1106,12 @@ fn run_terminal_attachment_launcher(directory: &Path) -> i32 {
         for (name, value) in &command.environment {
             process.env(name, value);
         }
-        let mut child = process
-            .spawn()
-            .map_err(|_| "Could not start the pinned Herdr attachment.".to_string())?;
-        std::thread::sleep(Duration::from_millis(100));
+        let mut unregistered_child = UnregisteredAttachmentChild(Some(
+            process
+                .spawn()
+                .map_err(|_| "Could not start the pinned Herdr attachment.".to_string())?,
+        ));
+        let child = unregistered_child.0.as_mut().expect("attachment child");
         if let Some(status) = child
             .try_wait()
             .map_err(|_| "Could not inspect the pinned Herdr attachment.".to_string())?
@@ -584,31 +1120,252 @@ fn run_terminal_attachment_launcher(directory: &Path) -> i32 {
                 "The pinned Herdr attachment exited before becoming observable ({status})."
             ));
         }
-        write_launcher_status(
-            &status_path,
-            &TerminalAttachStatus {
-                state: "started".into(),
-                message: None,
+        write_terminal_attach_control(
+            &mut stream,
+            &TerminalAttachControl::Started {
+                local_session_id: envelope.session.local_session_id.clone(),
+                attach_pid: child.id(),
             },
         )
         .map_err(|_| "Could not acknowledge the native Herdr attachment.".to_string())?;
-        let status = child
-            .wait()
-            .map_err(|_| "Could not wait for the native Herdr attachment.".to_string())?;
-        Ok(status.code().unwrap_or(1))
+
+        let control_sender = sender.clone();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(control_stream);
+            let event = match read_terminal_attach_control(&mut reader) {
+                Ok(message) => AttachmentLauncherEvent::DetachRequested(message),
+                Err(_) => AttachmentLauncherEvent::ControlDisconnected,
+            };
+            let _ = control_sender.send(event);
+        });
+        let child_sender = sender;
+        let child = unregistered_child.0.take().expect("attachment child");
+        let pid = child.id();
+        let (lifecycle_sender, lifecycle_receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut child = child;
+            let _ = child_sender.send(AttachmentLauncherEvent::ChildExited(child.wait()));
+        });
+        thread::spawn(move || {
+            while let Ok(event) = receiver.recv() {
+                if lifecycle_sender.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let outcome = run_attachment_pid_lifecycle(
+            pid,
+            lifecycle_receiver,
+            &envelope.session.local_session_id,
+            &envelope.control_token,
+            ATTACH_DETACH_TIMEOUT,
+            ATTACH_FORCE_TIMEOUT,
+        );
+        write_terminal_attach_control(
+            &mut stream,
+            &TerminalAttachControl::Closed {
+                local_session_id: envelope.session.local_session_id,
+                state: outcome.state.clone(),
+                reason: outcome.reason,
+                exit_code: outcome.exit_code,
+                signal: outcome.signal,
+                forced: outcome.forced,
+            },
+        )
+        .map_err(|_| "Could not acknowledge native observation closure.".to_string())?;
+        Ok(if outcome.state == "detached" { 0 } else { 1 })
     })();
 
-    match result {
+    let code = match result {
         Ok(code) => code,
         Err(message) => {
-            let _ = write_launcher_status(
-                &status_path,
-                &TerminalAttachStatus {
-                    state: "failed".into(),
-                    message: Some(message),
-                },
-            );
+            if let Ok(control_socket) = attachment_control_socket_path(directory) {
+                if let Ok(mut stream) = UnixStream::connect(control_socket) {
+                    let local_session_id = fs::read(&descriptor_path)
+                        .ok()
+                        .and_then(|bytes| {
+                            serde_json::from_slice::<TerminalAttachEnvelope>(&bytes).ok()
+                        })
+                        .map(|envelope| envelope.session.local_session_id)
+                        .unwrap_or_default();
+                    let _ = write_terminal_attach_control(
+                        &mut stream,
+                        &TerminalAttachControl::Failed {
+                            local_session_id,
+                            message,
+                        },
+                    );
+                }
+            }
             1
+        }
+    };
+    cleanup_attachment_launch_directory(directory);
+    code
+}
+
+#[cfg(target_os = "macos")]
+fn request_attachment_child_exit(
+    pid: u32,
+    deadline: &mut Option<Instant>,
+    timeout: Duration,
+) -> Result<(), AttachmentChildOutcome> {
+    if deadline.is_some() {
+        return Ok(());
+    }
+    *deadline = Some(Instant::now() + timeout);
+    match signal_attachment_child(pid, libc::SIGTERM) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+        Err(_) => Err(AttachmentChildOutcome {
+            state: "unavailable".into(),
+            reason: "attach_client_signal_failed".into(),
+            exit_code: None,
+            signal: None,
+            forced: false,
+        }),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_forced_attachment_exit(
+    receiver: &mpsc::Receiver<AttachmentLauncherEvent>,
+    timeout: Duration,
+) -> AttachmentChildOutcome {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(AttachmentLauncherEvent::ChildExited(Ok(status))) => {
+                return AttachmentChildOutcome {
+                    state: "unavailable".into(),
+                    reason: "attach_client_term_timeout".into(),
+                    exit_code: status.code(),
+                    signal: status.signal(),
+                    forced: true,
+                };
+            }
+            Ok(_) => continue,
+            Err(_) => {
+                return AttachmentChildOutcome {
+                    state: "unavailable".into(),
+                    reason: "attach_client_unreaped".into(),
+                    exit_code: None,
+                    signal: None,
+                    forced: true,
+                };
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_attachment_pid_lifecycle(
+    pid: u32,
+    receiver: mpsc::Receiver<AttachmentLauncherEvent>,
+    local_session_id: &str,
+    control_token: &str,
+    detach_timeout: Duration,
+    force_timeout: Duration,
+) -> AttachmentChildOutcome {
+    let mut reason = "attach_client_exited".to_string();
+    let mut deadline: Option<Instant> = None;
+    loop {
+        let event = if let Some(until) = deadline {
+            match receiver.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                Ok(event) => event,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    match signal_attachment_child(pid, libc::SIGKILL) {
+                        Ok(()) => {}
+                        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {}
+                        Err(_) => {
+                            return AttachmentChildOutcome {
+                                state: "unavailable".into(),
+                                reason: "attach_client_force_signal_failed".into(),
+                                exit_code: None,
+                                signal: None,
+                                forced: false,
+                            };
+                        }
+                    }
+                    return wait_for_forced_attachment_exit(&receiver, force_timeout);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return AttachmentChildOutcome {
+                        state: "unavailable".into(),
+                        reason: "attach_client_wait_failed".into(),
+                        exit_code: None,
+                        signal: None,
+                        forced: false,
+                    };
+                }
+            }
+        } else {
+            match receiver.recv() {
+                Ok(event) => event,
+                Err(_) => AttachmentLauncherEvent::ControlDisconnected,
+            }
+        };
+
+        match event {
+            AttachmentLauncherEvent::DetachRequested(TerminalAttachControl::Detach {
+                local_session_id: requested_id,
+                control_token: requested_token,
+            }) if requested_id == local_session_id && requested_token == control_token => {
+                reason = "explicit_close".into();
+                if let Err(outcome) =
+                    request_attachment_child_exit(pid, &mut deadline, detach_timeout)
+                {
+                    return outcome;
+                }
+            }
+            AttachmentLauncherEvent::TerminalClosed => {
+                reason = "terminal_closed".into();
+                if let Err(outcome) =
+                    request_attachment_child_exit(pid, &mut deadline, detach_timeout)
+                {
+                    return outcome;
+                }
+            }
+            AttachmentLauncherEvent::ControlDisconnected => {
+                reason = "native_client_disconnected".into();
+                if let Err(outcome) =
+                    request_attachment_child_exit(pid, &mut deadline, detach_timeout)
+                {
+                    return outcome;
+                }
+            }
+            AttachmentLauncherEvent::ChildExited(result) => {
+                return match result {
+                    Ok(status)
+                        if status.success()
+                            && matches!(reason.as_str(), "explicit_close" | "terminal_closed") =>
+                    {
+                        AttachmentChildOutcome {
+                            state: "detached".into(),
+                            reason,
+                            exit_code: status.code(),
+                            signal: status.signal(),
+                            forced: false,
+                        }
+                    }
+                    Ok(status) => AttachmentChildOutcome {
+                        state: "unavailable".into(),
+                        reason: "attach_client_exited_unexpectedly".into(),
+                        exit_code: status.code(),
+                        signal: status.signal(),
+                        forced: false,
+                    },
+                    Err(_) => AttachmentChildOutcome {
+                        state: "unavailable".into(),
+                        reason: "attach_client_wait_failed".into(),
+                        exit_code: None,
+                        signal: None,
+                        forced: false,
+                    },
+                };
+            }
+            AttachmentLauncherEvent::DetachRequested(_) => {}
         }
     }
 }
@@ -621,6 +1378,171 @@ mod tests {
     fn write_test_executable(path: &Path, body: &str, mode: u32) {
         std::fs::write(path, body).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "helper invoked by native observation lifecycle tests"]
+    fn attachment_signal_test_child() {
+        if std::env::var_os("QE_NATIVE_ATTACHMENT_SIGNAL_CHILD").is_none() {
+            return;
+        }
+        ctrlc::set_handler(|| std::process::exit(0)).unwrap();
+        println!("QE_ATTACHMENT_CHILD_READY");
+        std::io::stdout().flush().unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_attachment_signal_test_child() -> std::process::Child {
+        use std::process::Stdio;
+
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::attachment_signal_test_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("QE_NATIVE_ATTACHMENT_SIGNAL_CHILD", "1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            if line.contains("QE_ATTACHMENT_CHILD_READY") {
+                break;
+            }
+        }
+        child
+    }
+
+    #[cfg(target_os = "macos")]
+    fn run_test_attachment_lifecycle(
+        child: std::process::Child,
+        requests: Vec<AttachmentLauncherEvent>,
+    ) -> AttachmentChildOutcome {
+        let pid = child.id();
+        let (sender, receiver) = mpsc::channel();
+        let child_sender = sender.clone();
+        thread::spawn(move || {
+            let mut child = child;
+            let _ = child_sender.send(AttachmentLauncherEvent::ChildExited(child.wait()));
+        });
+        for request in requests {
+            sender.send(request).unwrap();
+        }
+        run_attachment_pid_lifecycle(
+            pid,
+            receiver,
+            "local-observation-test",
+            "control-test",
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn detach_request(id: &str, token: &str) -> AttachmentLauncherEvent {
+        AttachmentLauncherEvent::DetachRequested(TerminalAttachControl::Detach {
+            local_session_id: id.into(),
+            control_token: token.into(),
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn explicit_observation_detach_terms_only_the_owned_attach_child() {
+        let mut pane = spawn_attachment_signal_test_child();
+        let attach = spawn_attachment_signal_test_child();
+        let outcome = run_test_attachment_lifecycle(
+            attach,
+            vec![detach_request("local-observation-test", "control-test")],
+        );
+
+        assert_eq!(outcome.state, "detached");
+        assert_eq!(outcome.reason, "explicit_close");
+        assert!(!outcome.forced);
+        assert!(
+            pane.try_wait().unwrap().is_none(),
+            "Herdr pane was signalled"
+        );
+        pane.kill().unwrap();
+        pane.wait().unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn terminal_close_reconciles_as_normal_detach() {
+        let attach = spawn_attachment_signal_test_child();
+        let outcome =
+            run_test_attachment_lifecycle(attach, vec![AttachmentLauncherEvent::TerminalClosed]);
+
+        assert_eq!(outcome.state, "detached");
+        assert_eq!(outcome.reason, "terminal_closed");
+        assert!(!outcome.forced);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn repeated_detach_is_one_bounded_owned_child_lifecycle() {
+        let attach = spawn_attachment_signal_test_child();
+        let outcome = run_test_attachment_lifecycle(
+            attach,
+            vec![
+                detach_request("local-observation-test", "control-test"),
+                detach_request("local-observation-test", "control-test"),
+            ],
+        );
+
+        assert_eq!(outcome.state, "detached");
+        assert_eq!(outcome.reason, "explicit_close");
+        assert!(!outcome.forced);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stale_detach_cannot_target_the_current_observer() {
+        let attach = spawn_attachment_signal_test_child();
+        let outcome = run_test_attachment_lifecycle(
+            attach,
+            vec![
+                detach_request("stale-observation", "stale-control"),
+                detach_request("local-observation-test", "control-test"),
+            ],
+        );
+
+        assert_eq!(outcome.state, "detached");
+        assert_eq!(outcome.reason, "explicit_close");
+        assert!(!outcome.forced);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unexpected_attach_child_exit_is_truthfully_unavailable() {
+        let status = Command::new("/usr/bin/false").status().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(AttachmentLauncherEvent::ChildExited(Ok(status)))
+            .unwrap();
+        let outcome = run_attachment_pid_lifecycle(
+            u32::MAX,
+            receiver,
+            "local-observation-test",
+            "control-test",
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(outcome.state, "unavailable");
+        assert_eq!(outcome.reason, "attach_client_exited_unexpectedly");
+        assert!(!outcome.forced);
     }
 
     #[cfg(unix)]
@@ -1059,9 +1981,13 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .manage(LocalObservationRegistry::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![open_live_session])
+        .invoke_handler(tauri::generate_handler![
+            open_live_session,
+            close_live_session
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Quest Engineering client");
 }

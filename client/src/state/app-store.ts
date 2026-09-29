@@ -24,8 +24,11 @@ import {
 } from "../platform/attention-notification";
 import {
   canOpenLocalLiveSession,
+  closeLocalLiveSession,
+  type LocalObservationSession,
   openLocalLiveSession,
   type SessionOpenMode,
+  watchLocalLiveSessions,
 } from "../platform/live-session";
 import { RealtimeClient, type RealtimeStatus } from "../realtime/client";
 import { projectActiveCrewActivities } from "../world/crew/active-crew";
@@ -101,6 +104,9 @@ export function createAppStore(
   const loading = writable(true);
   const error = writable<ApiError | null>(null);
   const executionCommands = writable<ExecutionCommandState[]>([]);
+  const localObservations = writable<Record<string, LocalObservationSession>>(
+    {},
+  );
   const realtimeStatus = writable<RealtimeStatus>(
     fixture?.realtimeStatus ?? "disconnected",
   );
@@ -133,6 +139,20 @@ export function createAppStore(
   let refetchNeeded = false;
   let productRefetching = false;
   let productRefetchNeeded = false;
+  let disposed = false;
+  let stopWatchingLocalSessions: (() => void) | null = null;
+  const pendingLocalObservationEvents = new Map<
+    string,
+    LocalObservationSession
+  >();
+  const localObservationOpenings = new Map<string, Promise<boolean>>();
+
+  void watchLocalLiveSessions(reconcileLocalObservation)
+    .then((stop) => {
+      if (disposed) stop();
+      else stopWatchingLocalSessions = stop;
+    })
+    .catch(reportError);
 
   const realtime = new RealtimeClient(socketUrl, {
     onStatus: (status) => {
@@ -472,10 +492,63 @@ export function createAppStore(
     selectBuildingId("work-area");
   }
 
-  async function attachLiveSession(
+  function sameLocalObservation(
+    left: LocalObservationSession,
+    right: LocalObservationSession,
+  ): boolean {
+    return (
+      left.localSessionId === right.localSessionId &&
+      left.runId === right.runId &&
+      left.occurrenceId === right.occurrenceId &&
+      left.attemptId === right.attemptId &&
+      left.sessionId === right.sessionId &&
+      left.terminalSessionId === right.terminalSessionId &&
+      left.paneId === right.paneId &&
+      left.terminalId === right.terminalId &&
+      left.mode === right.mode
+    );
+  }
+
+  function reconcileLocalObservation(next: LocalObservationSession) {
+    if (next.mode !== "observe") return;
+    let matched = false;
+    localObservations.update((values) => {
+      const current = values[next.sessionId];
+      if (!current || !sameLocalObservation(current, next)) return values;
+      matched = true;
+      return { ...values, [next.sessionId]: next };
+    });
+    if (!matched) {
+      pendingLocalObservationEvents.set(next.localSessionId, next);
+      if (pendingLocalObservationEvents.size > 100) {
+        const oldest = pendingLocalObservationEvents.keys().next().value;
+        if (oldest) pendingLocalObservationEvents.delete(oldest);
+      }
+    }
+  }
+
+  function localObservationFor(target: LiveSessionActionTarget) {
+    const observation = get(localObservations)[target.sessionId];
+    return observation &&
+      observation.runId === target.runId &&
+      observation.occurrenceId === target.occurrenceId &&
+      observation.attemptId === target.attemptId &&
+      observation.sessionId === target.sessionId
+      ? observation
+      : null;
+  }
+
+  async function attachLiveSessionOnce(
     target: LiveSessionActionTarget,
     mode: SessionOpenMode,
   ) {
+    const existing = localObservationFor(target);
+    if (
+      mode === "observe" &&
+      existing?.mode === "observe" &&
+      (existing.state === "attached" || existing.state === "detaching")
+    )
+      return true;
     const session = liveSessionFor(target);
     if (!session) {
       reportError(
@@ -539,13 +612,99 @@ export function createAppStore(
       );
       return false;
     }
-    const opened = await command(async () => {
-      await openLocalLiveSession(attachment, mode);
+    let localSession: LocalObservationSession | null = null;
+    try {
+      localSession = await openLocalLiveSession(attachment, mode, target);
       // Native Tauri validation and Terminal launch succeeded; descriptor
       // issuance alone is never recorded as a human attachment.
-      return api.recordSessionOpened(attachment.descriptor_token, mode);
-    });
-    return Boolean(opened);
+      await api.recordSessionOpened(attachment.descriptor_token, mode);
+      if (mode === "observe") {
+        const pending = pendingLocalObservationEvents.get(
+          localSession.localSessionId,
+        );
+        const reconciled =
+          pending && sameLocalObservation(localSession, pending)
+            ? pending
+            : localSession;
+        pendingLocalObservationEvents.delete(localSession.localSessionId);
+        localObservations.update((values) => ({
+          ...values,
+          [target.sessionId]: reconciled,
+        }));
+      }
+      error.set(null);
+      return true;
+    } catch (cause) {
+      if (localSession) {
+        try {
+          await closeLocalLiveSession(localSession);
+        } catch {
+          // The native lifecycle remains authoritative and emits its own state.
+        }
+        pendingLocalObservationEvents.delete(localSession.localSessionId);
+      }
+      reportError(cause);
+      return false;
+    }
+  }
+
+  function attachLiveSession(
+    target: LiveSessionActionTarget,
+    mode: SessionOpenMode,
+  ): Promise<boolean> {
+    if (mode !== "observe") return attachLiveSessionOnce(target, mode);
+    const key = JSON.stringify([
+      target.runId,
+      target.occurrenceId,
+      target.attemptId,
+      target.sessionId,
+    ]);
+    const pending = localObservationOpenings.get(key);
+    if (pending) return pending;
+    const opening = attachLiveSessionOnce(target, mode);
+    localObservationOpenings.set(key, opening);
+    const clearOpening = () => {
+      if (localObservationOpenings.get(key) === opening)
+        localObservationOpenings.delete(key);
+    };
+    void opening.then(clearOpening, clearOpening);
+    return opening;
+  }
+
+  async function detachSession(target: LiveSessionActionTarget) {
+    const observation = localObservationFor(target);
+    if (!observation || observation.mode !== "observe") {
+      reportError(
+        new ApiError(
+          "stale_local_observation",
+          "The local observation no longer matches this execution session.",
+        ),
+      );
+      return false;
+    }
+    try {
+      const closed = await closeLocalLiveSession(observation);
+      localObservations.update((values) => {
+        const current = values[target.sessionId];
+        return current && sameLocalObservation(current, closed)
+          ? { ...values, [target.sessionId]: closed }
+          : values;
+      });
+      if (closed.state !== "detached") {
+        reportError(
+          new ApiError(
+            "local_observation_unavailable",
+            "The local observation closed unexpectedly.",
+          ),
+        );
+        return false;
+      }
+      error.set(null);
+      return true;
+    } catch (cause) {
+      reportError(cause);
+      return false;
+    }
   }
 
   async function openSession(target: LiveSessionActionTarget) {
@@ -829,6 +988,9 @@ export function createAppStore(
     );
   }
   function dispose() {
+    disposed = true;
+    stopWatchingLocalSessions?.();
+    stopWatchingLocalSessions = null;
     if (!fixture) {
       activeRunTracker?.dispose();
       realtime.disconnect();
@@ -848,6 +1010,7 @@ export function createAppStore(
     loading,
     error,
     executionCommands,
+    localObservations,
     realtimeStatus,
     serverReachable,
     bootstrapRunning,
@@ -862,6 +1025,7 @@ export function createAppStore(
     reportError,
     loadArtifact,
     openSession,
+    detachSession,
     takeControl,
     recoverSession,
     focusAttention,

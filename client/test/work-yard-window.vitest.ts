@@ -309,7 +309,7 @@ test("pre-prompt execution exposes distinct confirmed authorization and cancella
 });
 
 test("Work Yard preserves the exact pane ID through inputless native attachment", async () => {
-  const { value, api, store } = operatorSetup();
+  const { value, api, run, step, store } = operatorSetup();
   const descriptor: LocalSessionAttachmentDescriptor = {
     descriptor_token: "descriptor-token",
     expires_at: "2099-01-01T00:00:00Z",
@@ -333,9 +333,33 @@ test("Work Yard preserves the exact pane ID through inputless native attachment"
   };
   vi.spyOn(api, "getSessionAttachment").mockResolvedValue(descriptor);
   vi.spyOn(api, "recordSessionOpened").mockResolvedValue("session-pre-prompt");
+  const owner = {
+    runId: run.id,
+    occurrenceId: step.occurrence_id,
+    attemptId: step.attempt?.id ?? "",
+    sessionId: "session-pre-prompt",
+  };
+  const localObservation = {
+    ...owner,
+    localSessionId: "local-observation-1",
+    terminalSessionId: "worker-session",
+    paneId: "w2:p2",
+    terminalId: "terminal-1",
+    mode: "observe" as const,
+    state: "attached" as const,
+    reason: null,
+  };
   const nativeOpen = vi
     .spyOn(liveSessionPlatform, "openLocalLiveSession")
-    .mockResolvedValue();
+    .mockResolvedValue(localObservation);
+  const nativeClose = vi
+    .spyOn(liveSessionPlatform, "closeLocalLiveSession")
+    .mockResolvedValue({
+      ...localObservation,
+      state: "detached",
+      reason: "explicit_close",
+    });
+  const cancelExecution = vi.spyOn(api, "cancelExecutionAttempt");
   render(WorkYardWindow, {
     props: { store, product: value.product, onClose: vi.fn() },
   });
@@ -343,7 +367,27 @@ test("Work Yard preserves the exact pane ID through inputless native attachment"
   await fireEvent.click(screen.getByRole("button", { name: "Open Session" }));
 
   await waitFor(() =>
-    expect(nativeOpen).toHaveBeenCalledWith(descriptor, "observe"),
+    expect(nativeOpen).toHaveBeenCalledWith(descriptor, "observe", owner),
+  );
+  await waitFor(() =>
+    expect(get(store.localObservations)[owner.sessionId]).toMatchObject({
+      localSessionId: "local-observation-1",
+      state: "attached",
+    }),
+  );
+  const detach = await screen.findByRole("button", {
+    name: "Detach Session",
+  });
+  await waitFor(() =>
+    expect((detach as HTMLButtonElement).disabled).toBe(false),
+  );
+  await fireEvent.click(detach);
+  await waitFor(() =>
+    expect(nativeClose).toHaveBeenCalledWith(localObservation),
+  );
+  expect(cancelExecution).not.toHaveBeenCalled();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Open Session" })).toBeTruthy(),
   );
   expect(descriptor.terminal.pane_id).toBe("w2:p2");
   expect(api.recordSessionOpened).toHaveBeenCalledWith(

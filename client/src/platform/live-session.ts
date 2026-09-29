@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ApiError,
   type LocalSessionAttachmentDescriptor,
@@ -14,6 +15,25 @@ const HERDR_CONTEXT_ERRORS = [
 
 export type SessionOpenMode = "observe" | "takeover" | "recovery";
 
+export interface LocalSessionOwner {
+  runId: string;
+  occurrenceId: string;
+  attemptId: string;
+  sessionId: string;
+}
+
+export interface LocalObservationSession extends LocalSessionOwner {
+  localSessionId: string;
+  terminalSessionId: string;
+  paneId: string;
+  terminalId: string | null;
+  mode: SessionOpenMode;
+  state: "attached" | "detaching" | "detached" | "unavailable";
+  reason: string | null;
+}
+
+const LOCAL_OBSERVATION_EVENT = "qe://local-observation-state";
+
 export function canOpenLocalLiveSession(): boolean {
   return isTauri();
 }
@@ -22,7 +42,8 @@ export function canOpenLocalLiveSession(): boolean {
 export async function openLocalLiveSession(
   attachment: LocalSessionAttachmentDescriptor,
   mode: SessionOpenMode,
-): Promise<void> {
+  owner: LocalSessionOwner,
+): Promise<LocalObservationSession> {
   if (!isTauri())
     throw new Error(
       "Live sessions can only be opened from the local desktop app.",
@@ -34,7 +55,7 @@ export async function openLocalLiveSession(
   if (mode === "recovery" && !attachment.recovery_allowed)
     throw new Error("Interactive recovery is not available for this session.");
   try {
-    await invoke("open_live_session", {
+    return await invoke<LocalObservationSession>("open_live_session", {
       descriptor: {
         mode: attachment.mode,
         backendKind: attachment.terminal.backend_kind,
@@ -48,6 +69,7 @@ export async function openLocalLiveSession(
         recoveryAllowed: attachment.recovery_allowed,
       },
       interactionMode: mode,
+      owner,
     });
   } catch (cause) {
     const message =
@@ -62,4 +84,23 @@ export async function openLocalLiveSession(
       throw new ApiError("local_herdr_context_mismatch", message);
     throw cause;
   }
+}
+
+export async function closeLocalLiveSession(
+  session: LocalObservationSession,
+): Promise<LocalObservationSession> {
+  if (!isTauri())
+    throw new Error(
+      "Live sessions can only be closed from the local desktop app.",
+    );
+  return invoke<LocalObservationSession>("close_live_session", { session });
+}
+
+export async function watchLocalLiveSessions(
+  observer: (session: LocalObservationSession) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri()) return () => undefined;
+  return listen<LocalObservationSession>(LOCAL_OBSERVATION_EVENT, (event) =>
+    observer(event.payload),
+  );
 }

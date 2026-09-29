@@ -6,6 +6,7 @@ import type {
   RunProjection,
 } from "../src/api/contracts";
 import { createFixture } from "../src/fixtures/fixtures";
+import type { LocalObservationSession } from "../src/platform/live-session";
 import * as liveSessionPlatform from "../src/platform/live-session";
 import {
   createAppStore,
@@ -15,9 +16,20 @@ import { attachTestLiveSession } from "./live-session-fixture";
 
 afterEach(() => vi.restoreAllMocks());
 
+let localObservationListener:
+  | ((session: LocalObservationSession) => void)
+  | null = null;
+
 beforeEach(() => {
+  localObservationListener = null;
   vi.spyOn(liveSessionPlatform, "canOpenLocalLiveSession").mockReturnValue(
     true,
+  );
+  vi.spyOn(liveSessionPlatform, "watchLocalLiveSessions").mockImplementation(
+    async (observer) => {
+      localObservationListener = observer;
+      return () => undefined;
+    },
   );
 });
 
@@ -61,9 +73,23 @@ function setup(canObserve: boolean, canTakeover: boolean) {
       supports_takeover: true,
     },
   };
+  const localObservation: LocalObservationSession = {
+    localSessionId: "local-observation-1",
+    runId: target.runId,
+    occurrenceId: target.occurrenceId,
+    attemptId: target.attemptId,
+    sessionId: target.sessionId,
+    terminalSessionId: descriptor.terminal.terminal_session_id,
+    paneId: descriptor.terminal.pane_id,
+    terminalId: descriptor.terminal.terminal_id,
+    mode: "observe",
+    state: "attached",
+    reason: null,
+  };
   const api = {
     getSessionAttachment: vi.fn(async () => descriptor),
     recordSessionOpened: vi.fn(async () => session.id),
+    cancelExecutionAttempt: vi.fn(),
   };
   const store = createAppStore(
     api as unknown as ApiClient,
@@ -72,8 +98,26 @@ function setup(canObserve: boolean, canTakeover: boolean) {
   );
   const nativeOpen = vi
     .spyOn(liveSessionPlatform, "openLocalLiveSession")
-    .mockResolvedValue();
-  return { api, descriptor, fixture, nativeOpen, run, step, store, target };
+    .mockResolvedValue(localObservation);
+  const nativeClose = vi
+    .spyOn(liveSessionPlatform, "closeLocalLiveSession")
+    .mockImplementation(async (value) => ({
+      ...value,
+      state: "detached",
+      reason: "explicit_close",
+    }));
+  return {
+    api,
+    descriptor,
+    fixture,
+    localObservation,
+    nativeClose,
+    nativeOpen,
+    run,
+    step,
+    store,
+    target,
+  };
 }
 
 test("observe-only Product authority opens once and never invokes takeover", async () => {
@@ -81,7 +125,7 @@ test("observe-only Product authority opens once and never invokes takeover", asy
 
   expect(await store.openSession(target)).toBe(true);
   expect(nativeOpen).toHaveBeenCalledOnce();
-  expect(nativeOpen).toHaveBeenCalledWith(descriptor, "observe");
+  expect(nativeOpen).toHaveBeenCalledWith(descriptor, "observe", target);
   expect(api.recordSessionOpened).toHaveBeenCalledWith(
     "descriptor-token",
     "observe",
@@ -93,6 +137,41 @@ test("observe-only Product authority opens once and never invokes takeover", asy
   expect(get(store.error)?.code).toBe("session_takeover_unavailable");
 });
 
+test("concurrent observation requests share one native attachment", async () => {
+  const { api, localObservation, nativeOpen, store, target } = setup(
+    true,
+    false,
+  );
+  const response = deferred<LocalObservationSession>();
+  nativeOpen.mockImplementation(async () => response.promise);
+
+  const first = store.openSession(target);
+  const second = store.openSession(target);
+  await vi.waitFor(() => expect(nativeOpen).toHaveBeenCalledOnce());
+  response.resolve(localObservation);
+
+  expect(await first).toBe(true);
+  expect(await second).toBe(true);
+  expect(api.getSessionAttachment).toHaveBeenCalledOnce();
+  expect(api.recordSessionOpened).toHaveBeenCalledOnce();
+  expect(nativeOpen).toHaveBeenCalledOnce();
+});
+
+test("a Product open-recording failure closes the exact local attachment", async () => {
+  const { api, localObservation, nativeClose, store, target } = setup(
+    true,
+    false,
+  );
+  api.recordSessionOpened.mockRejectedValueOnce(
+    new Error("Product open record failed"),
+  );
+
+  expect(await store.openSession(target)).toBe(false);
+  expect(nativeClose).toHaveBeenCalledOnce();
+  expect(nativeClose).toHaveBeenCalledWith(localObservation);
+  expect(get(store.localObservations)).toEqual({});
+});
+
 test("dual authority keeps observation and takeover on distinct native modes", async () => {
   const { api, descriptor, nativeOpen, store, target } = setup(true, true);
 
@@ -100,8 +179,8 @@ test("dual authority keeps observation and takeover on distinct native modes", a
   expect(await store.takeControl(target)).toBe(true);
 
   expect(nativeOpen.mock.calls).toEqual([
-    [descriptor, "observe"],
-    [descriptor, "takeover"],
+    [descriptor, "observe", target],
+    [descriptor, "takeover", target],
   ]);
   expect(api.recordSessionOpened.mock.calls).toEqual([
     ["descriptor-token", "observe"],
@@ -127,7 +206,7 @@ test("takeover authority does not imply observation authority", async () => {
 
   expect(api.getSessionAttachment).toHaveBeenCalledTimes(1);
   expect(nativeOpen).toHaveBeenCalledOnce();
-  expect(nativeOpen).toHaveBeenCalledWith(descriptor, "takeover");
+  expect(nativeOpen).toHaveBeenCalledWith(descriptor, "takeover", target);
 });
 
 test("a replacement Attempt fences a descriptor before native attachment", async () => {
@@ -157,6 +236,82 @@ test("a replacement Attempt fences a descriptor before native attachment", async
   expect(nativeOpen).not.toHaveBeenCalled();
   expect(api.recordSessionOpened).not.toHaveBeenCalled();
   expect(get(store.error)?.code).toBe("stale_session_attachment");
+});
+
+test("normal observer detach is local, idempotent, and never cancels or takes over", async () => {
+  const { api, localObservation, nativeClose, nativeOpen, store, target } =
+    setup(true, false);
+
+  expect(await store.openSession(target)).toBe(true);
+  expect(get(store.localObservations)[target.sessionId]).toEqual(
+    localObservation,
+  );
+  expect(await store.detachSession(target)).toBe(true);
+  expect(await store.detachSession(target)).toBe(true);
+
+  expect(nativeOpen).toHaveBeenCalledTimes(1);
+  expect(nativeClose).toHaveBeenCalledTimes(2);
+  expect(nativeClose).toHaveBeenNthCalledWith(1, localObservation);
+  expect(api.cancelExecutionAttempt).not.toHaveBeenCalled();
+  expect(nativeOpen.mock.calls.some((call) => call[1] === "takeover")).toBe(
+    false,
+  );
+  expect(get(store.localObservations)[target.sessionId]).toMatchObject({
+    localSessionId: localObservation.localSessionId,
+    state: "detached",
+    reason: "explicit_close",
+  });
+});
+
+test("manual and unexpected observer exits reconcile truthful local state", async () => {
+  const { localObservation, store, target } = setup(true, false);
+  expect(await store.openSession(target)).toBe(true);
+  expect(localObservationListener).not.toBeNull();
+
+  localObservationListener?.({
+    ...localObservation,
+    state: "detached",
+    reason: "terminal_closed",
+  });
+  expect(get(store.localObservations)[target.sessionId]).toMatchObject({
+    state: "detached",
+    reason: "terminal_closed",
+  });
+
+  localObservationListener?.({
+    ...localObservation,
+    state: "unavailable",
+    reason: "attach_client_exited_unexpectedly",
+  });
+  expect(get(store.localObservations)[target.sessionId]).toMatchObject({
+    state: "unavailable",
+    reason: "attach_client_exited_unexpectedly",
+  });
+});
+
+test("a stale observer close cannot detach a newer local observation", async () => {
+  const { localObservation, nativeClose, nativeOpen, store, target } = setup(
+    true,
+    false,
+  );
+  expect(await store.openSession(target)).toBe(true);
+  expect(await store.detachSession(target)).toBe(true);
+
+  const newer = {
+    ...localObservation,
+    localSessionId: "local-observation-2",
+    state: "attached" as const,
+  };
+  nativeOpen.mockResolvedValueOnce(newer);
+  expect(await store.openSession(target)).toBe(true);
+  localObservationListener?.({
+    ...localObservation,
+    state: "detached",
+    reason: "late_old_close",
+  });
+
+  expect(get(store.localObservations)[target.sessionId]).toEqual(newer);
+  expect(nativeClose).toHaveBeenCalledTimes(1);
 });
 
 test("open result remains non-optimistic until realtime Product state reconciles", async () => {

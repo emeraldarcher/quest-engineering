@@ -9,7 +9,10 @@ import type {
   RunStep,
   SnapshotMember,
 } from "../../api/contracts";
-import { canOpenLocalLiveSession } from "../../platform/live-session";
+import {
+  canOpenLocalLiveSession,
+  type LocalObservationSession,
+} from "../../platform/live-session";
 import { openPullRequest } from "../../platform/open-pull-request";
 import type {
   AppStore,
@@ -56,6 +59,7 @@ export let scene: string | null = null;
 const {
   error: errorStore,
   executionCommands: executionCommandsStore,
+  localObservations: localObservationsStore,
   selectedRun: selectedRunStore,
   sessionFocus: sessionFocusStore,
 } = store;
@@ -426,6 +430,10 @@ async function openSession(step: RunStep) {
   await runSessionAction(step, store.openSession);
 }
 
+async function detachSession(step: RunStep) {
+  await runSessionAction(step, store.detachSession);
+}
+
 async function takeControl(step: RunStep) {
   await runSessionAction(step, store.takeControl);
 }
@@ -516,6 +524,24 @@ function uniqueSessionSteps(steps: RunStep[]): RunStep[] {
     if (step.session) bySession.set(step.session.id, step);
   }
   return [...bySession.values()];
+}
+
+function localObservationIsActive(
+  step: RunStep,
+  observation: LocalObservationSession | undefined,
+): boolean {
+  const target = liveSessionTarget(step);
+  if (!target) return false;
+  return Boolean(
+    observation &&
+      observation.mode === "observe" &&
+      observation.runId === target.runId &&
+      observation.occurrenceId === target.occurrenceId &&
+      observation.attemptId === target.attemptId &&
+      observation.sessionId === target.sessionId &&
+      (observation.state === "attached" ||
+        observation.state === "detaching"),
+  );
 }
 
 function sessionControlLabel(step: RunStep): string {
@@ -685,6 +711,7 @@ function attemptOutput(attempt: RunAttempt): string {
                       {@const session = step.session}
                       {#if session}
                         {@const executionCommand = executionCommandFor(step, $executionCommandsStore)}
+                        {@const localObservation = $localObservationsStore[session.id]}
                         <article class:session-focused={$sessionFocusStore?.sessionId === session.id} class:waiting={session.state === "waiting_for_human"}>
                           <div class="session-copy">
                             <span class="eyebrow">{step.member?.name ?? "Member"} · {step.name ?? humanize(step.semantic_step_key)}</span>
@@ -701,7 +728,9 @@ function attemptOutput(attempt: RunAttempt): string {
                             {:else if !session.attachment.available}<small>Session unavailable · {humanize(session.attachment.reason ?? "attachment unavailable")}</small>{/if}
                           </div>
                           <div class="session-actions">
-                            {#if localAttachAvailable && session.attachment.available && session.attachment.can_observe}
+                            {#if localObservationIsActive(step, localObservation)}
+                              <button class="secondary" disabled={busy} on:click={() => detachSession(step)}>Detach Session</button>
+                            {:else if localAttachAvailable && session.attachment.available && session.attachment.can_observe}
                               <button class="secondary" disabled={busy} on:click={() => openSession(step)}>{session.state === "retained" ? "Inspect Session" : "Open Session"}</button>
                             {/if}
                             {#if localAttachAvailable && session.attachment.can_takeover}
