@@ -192,6 +192,62 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
   expect(takeover).toHaveBeenCalledTimes(1);
 });
 
+test("an already-open empty Work Yard selects the first realtime Run and keeps observation eligible", async () => {
+  const { value, run, step } = operatorSetup();
+  const populatedProduct = value.product;
+  value.selectedRunId = null;
+  value.product = { ...populatedProduct, runs: [] };
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  const open = vi.spyOn(store, "openSession").mockResolvedValue(true);
+  const rendered = render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(screen.getByRole("heading", { name: "No Runs yet" })).toBeTruthy();
+  await rendered.rerender({ product: populatedProduct });
+
+  const yard = screen.getByRole("complementary", { name: "Work Yard" });
+  await waitFor(() =>
+    expect(
+      within(yard).getByRole("heading", { name: run.quest.title }),
+    ).toBeTruthy(),
+  );
+  const selectedRun = within(yard).getByRole("button", {
+    name: new RegExp(run.quest.title),
+  });
+  expect(selectedRun.getAttribute("aria-current")).toBe("true");
+  let openButtons = within(yard).getAllByRole("button", {
+    name: "Open Session",
+  });
+  expect(openButtons).toHaveLength(1);
+  expect((openButtons[0] as HTMLButtonElement).disabled).toBe(false);
+  expect(
+    within(yard).queryByRole("button", { name: "Take Control" }),
+  ).toBeNull();
+
+  store.selectedRun.set({ ...run, revision: run.revision + 1 });
+  await waitFor(() => {
+    openButtons = within(yard).getAllByRole("button", {
+      name: "Open Session",
+    });
+    expect(openButtons).toHaveLength(1);
+    expect((openButtons[0] as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  await fireEvent.click(openButtons[0] as HTMLButtonElement);
+  expect(open).toHaveBeenCalledTimes(1);
+  expect(open).toHaveBeenCalledWith({
+    runId: run.id,
+    occurrenceId: step.occurrence_id,
+    attemptId: step.attempt?.id,
+    sessionId: step.session?.id,
+  });
+});
+
 test("pre-prompt execution exposes distinct confirmed authorization and cancellation commands", async () => {
   const { value, run, step, store, identity } = operatorSetup();
   const authorize = vi.spyOn(store, "authorizePrompt").mockResolvedValue(true);

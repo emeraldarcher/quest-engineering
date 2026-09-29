@@ -88,6 +88,7 @@ let cancellationKeep: HTMLButtonElement;
 let cancellationTrigger: HTMLButtonElement;
 let cancellationTarget: ExecutionAttemptIdentity | null = null;
 let handledSessionFocus: string | null = null;
+const watchForFirstRun = $selectedRunStore === null && product.runs.length === 0;
 
 $: run = $selectedRunStore;
 $: normalizedSearch = search.trim().toLocaleLowerCase();
@@ -199,6 +200,22 @@ onMount(async () => {
 async function selectRun(id: string) {
   if (id === run?.id) return;
   await store.selectRun(id);
+}
+
+function autoSelectFirstRun(
+  _node: HTMLElement,
+  initialRunId: string | undefined,
+) {
+  let requestedRunId: string | null = null;
+
+  function select(runId: string | undefined) {
+    if (!watchForFirstRun || !runId || runId === requestedRunId) return;
+    requestedRunId = runId;
+    void store.selectRun(runId);
+  }
+
+  select(initialRunId);
+  return { update: select };
 }
 
 function planHistoryFor(artifactId: string) {
@@ -919,7 +936,7 @@ function attemptOutput(attempt: RunAttempt): string {
           </details>
         </div>
       {:else}
-        <div class="empty-state run-empty"><span aria-hidden="true">◇</span><h2>No Runs yet</h2><p>Launch a Quest from the Quest Board. Its execution, Delivery, Members, and artifacts will appear here.</p></div>
+        <div use:autoSelectFirstRun={product.runs[0]?.id} class="empty-state run-empty"><span aria-hidden="true">◇</span><h2>No Runs yet</h2><p>Launch a Quest from the Quest Board. Its execution, Delivery, Members, and artifacts will appear here.</p></div>
       {/if}
     </section>
   </div>
