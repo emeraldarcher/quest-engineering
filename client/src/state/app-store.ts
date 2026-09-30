@@ -20,6 +20,7 @@ import type { ClientFixture } from "../fixtures/fixtures";
 import {
   type AttentionTarget,
   initializeAttentionNotifications,
+  NotificationInitializationError,
   notifyHumanAttention,
 } from "../platform/attention-notification";
 import {
@@ -62,6 +63,12 @@ export interface ExecutionCommandState {
   error: ApiError | null;
 }
 
+export type ProductBootstrapState =
+  | "loading"
+  | "needs_product_onboarding"
+  | "ready"
+  | "failed";
+
 export interface ProductState {
   classes: ClassDefinition[];
   classCatalog: ClassDefinition[];
@@ -89,6 +96,14 @@ const emptyProduct: ProductState = {
   runs: [],
 };
 
+export function productBootstrapStateFor(
+  status: StarterCrewStatus,
+): ProductBootstrapState {
+  return ["empty", "recoverable_partial", "conflict"].includes(status.state)
+    ? "needs_product_onboarding"
+    : "ready";
+}
+
 export function createAppStore(
   api: ApiClient,
   socketUrl: string,
@@ -102,6 +117,11 @@ export function createAppStore(
       : null,
   );
   const loading = writable(true);
+  const bootstrapState = writable<ProductBootstrapState>(
+    fixture?.starterStatus
+      ? productBootstrapStateFor(fixture.starterStatus)
+      : "loading",
+  );
   const error = writable<ApiError | null>(null);
   const executionCommands = writable<ExecutionCommandState[]>([]);
   const localObservations = writable<Record<string, LocalObservationSession>>(
@@ -186,7 +206,7 @@ export function createAppStore(
   if (!fixture) {
     void initializeAttentionNotifications((target) => {
       void openSession(target);
-    });
+    }).catch(reportError);
     activeRunTracker = new ActiveRunTracker({
       getRun: (runId) => api.getRun(runId),
       watchRun: (runId) => realtime.watchRun(runId),
@@ -250,7 +270,10 @@ export function createAppStore(
       return;
     }
     realtime.start();
-    if (!quiet) loading.set(true);
+    if (!quiet) {
+      loading.set(true);
+      bootstrapState.set("loading");
+    }
     error.set(null);
     try {
       const includeArchivedDefinitions = get(selectedBuilding) === "tavern";
@@ -292,9 +315,11 @@ export function createAppStore(
         runs,
       });
       starterStatus.set(loadedStarterStatus);
+      bootstrapState.set(productBootstrapStateFor(loadedStarterStatus));
       activeRunTracker?.updateSummaries(runs);
     } catch (cause) {
       serverReachable.set(false);
+      bootstrapState.set("failed");
       error.set(toApiError(cause));
     } finally {
       if (!quiet) loading.set(false);
@@ -340,6 +365,7 @@ export function createAppStore(
     try {
       const value = await api.getStarterCrewStatus();
       starterStatus.set(value);
+      bootstrapState.set(productBootstrapStateFor(value));
       return value;
     } catch (cause) {
       reportError(cause);
@@ -357,7 +383,10 @@ export function createAppStore(
       await loadProduct(true);
       return outcome.result ?? { status: "ready", recovered: true };
     }
-    if (outcome.status) starterStatus.set(outcome.status);
+    if (outcome.status) {
+      starterStatus.set(outcome.status);
+      bootstrapState.set(productBootstrapStateFor(outcome.status));
+    }
     const failure = toApiError(outcome.cause);
     error.set(
       outcome.status
@@ -1008,6 +1037,7 @@ export function createAppStore(
     attentionNotifications,
     sessionFocus,
     loading,
+    bootstrapState,
     error,
     executionCommands,
     localObservations,
@@ -1067,11 +1097,20 @@ function persistSeenAttentionIds(values: Set<string>): void {
   }
 }
 function toApiError(cause: unknown): ApiError {
-  return cause instanceof ApiError
-    ? cause
-    : new ApiError(
-        "client_error",
-        "The client could not complete that request.",
-      );
+  if (cause instanceof ApiError) return cause;
+  if (cause instanceof NotificationInitializationError)
+    return new ApiError(
+      "attention_notification_initialization_failed",
+      cause.message,
+      [],
+      {
+        operation: cause.operation,
+        native_error: cause.nativeError,
+      },
+    );
+  return new ApiError(
+    "client_error",
+    "The client could not complete that request.",
+  );
 }
 export type AppStore = ReturnType<typeof createAppStore>;

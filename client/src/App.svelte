@@ -20,6 +20,7 @@ const {
   liveAttentions: liveAttentionsStore,
   attentionNotifications: attentionNotificationsStore,
   loading: loadingStore,
+  bootstrapState: bootstrapStateStore,
   error: errorStore,
   realtimeStatus: realtimeStatusStore,
   serverReachable: serverReachableStore,
@@ -68,13 +69,12 @@ const buildings: Array<{ id: BuildingId; label: string; hotkey: string }> = [
 $: product = $productStore;
 $: starterStatus = $starterStatusStore;
 $: showOnboarding = Boolean(
-  !$loadingStore &&
-    !$selectedBuildingStore &&
+  !$selectedBuildingStore &&
     !onboardingDismissed &&
     starterStatus &&
-    (starterCompletionVisible ||
-      onboardingScene ||
-      ["empty", "recoverable_partial", "conflict"].includes(starterStatus.state)),
+    ($bootstrapStateStore === "needs_product_onboarding" ||
+      starterCompletionVisible ||
+      onboardingScene),
 );
 $: activeCrew = $activeCrewStore;
 $: townStatus = {

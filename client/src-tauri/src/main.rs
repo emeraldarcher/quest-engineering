@@ -1370,9 +1370,24 @@ fn run_attachment_pid_lifecycle(
     }
 }
 
+#[tauri::command]
+fn notification_action_types_supported() -> bool {
+    // Plugin 2.3.3 exposes action-type registration on mobile only; ordinary
+    // desktop notifications remain supported without registering actions.
+    cfg!(any(target_os = "android", target_os = "ios"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_action_types_match_the_compiled_target() {
+        assert_eq!(
+            notification_action_types_supported(),
+            cfg!(any(target_os = "android", target_os = "ios"))
+        );
+    }
 
     #[cfg(unix)]
     fn write_test_executable(path: &Path, body: &str, mode: u32) {
@@ -1986,7 +2001,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             open_live_session,
-            close_live_session
+            close_live_session,
+            notification_action_types_supported
         ])
         .run(tauri::generate_context!())
         .expect("error while running Quest Engineering client");

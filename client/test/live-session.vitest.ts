@@ -143,6 +143,19 @@ test("closes only the exact native observation handle", async () => {
   });
 });
 
+test("live-session event registration failures retain the native operation", async () => {
+  tauri.listen.mockRejectedValueOnce("native event listener failed");
+
+  await expect(watchLocalLiveSessions(vi.fn())).rejects.toMatchObject({
+    code: "local_session_event_initialization_failed",
+    message: "Native live-session events could not be initialized.",
+    meta: {
+      operation: "plugin:event|listen",
+      native_error: "native event listener failed",
+    },
+  });
+});
+
 test("forwards authoritative manual and unexpected close events", async () => {
   const stop = vi.fn();
   let callback:

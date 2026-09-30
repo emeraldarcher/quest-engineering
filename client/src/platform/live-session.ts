@@ -100,7 +100,30 @@ export async function watchLocalLiveSessions(
   observer: (session: LocalObservationSession) => void,
 ): Promise<UnlistenFn> {
   if (!isTauri()) return () => undefined;
-  return listen<LocalObservationSession>(LOCAL_OBSERVATION_EVENT, (event) =>
-    observer(event.payload),
-  );
+  try {
+    return await listen<LocalObservationSession>(
+      LOCAL_OBSERVATION_EVENT,
+      (event) => observer(event.payload),
+    );
+  } catch (cause) {
+    throw new ApiError(
+      "local_session_event_initialization_failed",
+      "Native live-session events could not be initialized.",
+      [],
+      {
+        operation: "plugin:event|listen",
+        native_error: nativeErrorMessage(cause),
+      },
+    );
+  }
+}
+
+function nativeErrorMessage(cause: unknown): string {
+  if (typeof cause === "string") return cause;
+  if (cause instanceof Error) return cause.message;
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return String(cause);
+  }
 }
