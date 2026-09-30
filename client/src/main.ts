@@ -1,3 +1,5 @@
+// Pixi's supported static synchronizers keep the strict desktop CSP intact.
+import "pixi.js/unsafe-eval";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { ApiClient } from "./api/client";

@@ -19,6 +19,7 @@ import { NotificationInitializationError } from "../src/platform/attention-notif
 import {
   createAppStore,
   productBootstrapStateFor,
+  unexpectedClientRejection,
 } from "../src/state/app-store";
 
 beforeEach(() => {
@@ -39,6 +40,22 @@ test("the authoritative empty starter result is an explicit onboarding state", (
   expect(
     productBootstrapStateFor({ state: "manual_configuration", conflict: null }),
   ).toBe("ready");
+});
+
+test("global promise rejections retain their operation and native reason", () => {
+  expect(
+    unexpectedClientRejection(
+      "Command plugin:notification|register_action_types not found",
+    ),
+  ).toMatchObject({
+    code: "unhandled_client_rejection",
+    message: "An unexpected client operation failed.",
+    meta: {
+      operation: "window.unhandledrejection",
+      native_error:
+        "Command plugin:notification|register_action_types not found",
+    },
+  });
 });
 
 test("unexpected native notification failures become actionable store diagnostics", async () => {

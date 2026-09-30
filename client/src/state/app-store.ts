@@ -104,6 +104,18 @@ export function productBootstrapStateFor(
     : "ready";
 }
 
+export function unexpectedClientRejection(cause: unknown): ApiError {
+  return new ApiError(
+    "unhandled_client_rejection",
+    "An unexpected client operation failed.",
+    [],
+    {
+      operation: "window.unhandledrejection",
+      native_error: clientErrorMessage(cause),
+    },
+  );
+}
+
 export function createAppStore(
   api: ApiClient,
   socketUrl: string,
@@ -1096,6 +1108,16 @@ function persistSeenAttentionIds(values: Set<string>): void {
     // Storage can be unavailable in hardened webviews; in-memory dedupe remains.
   }
 }
+function clientErrorMessage(cause: unknown): string {
+  if (typeof cause === "string") return cause;
+  if (cause instanceof Error) return cause.message;
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return String(cause);
+  }
+}
+
 function toApiError(cause: unknown): ApiError {
   if (cause instanceof ApiError) return cause;
   if (cause instanceof NotificationInitializationError)
