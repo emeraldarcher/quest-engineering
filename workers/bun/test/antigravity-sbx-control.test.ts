@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
@@ -8,10 +7,12 @@ import type {
   EnvironmentLease,
 } from "../src/execution-environment/types.ts";
 import {
-  initialConversationArgs,
-  parseInitialConversationBinding,
-  parseInitialConversationRequest,
-} from "../src/harnesses/antigravity/initial-conversation.ts";
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  encodeAntigravityInteractivePrompt,
+  initialPromptSubmissionState,
+  transitionPromptSubmissionState,
+} from "../src/harnesses/antigravity/interactive-prompt.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -100,90 +101,84 @@ test("guest Stop bridge is bundled for Node and never resolves a host executable
   expect(stderr).toContain("QE_HARNESS_CONTROL_PATH");
 });
 
-test("native initial-conversation launch preserves frozen model and effort and passes the exact prompt once", () => {
-  const base = [
-    "--model",
-    "gemini-3.8-flash-high",
-    "--effort",
-    "high",
-    "--dangerously-skip-permissions",
-    "--log-file",
-    "/qe/control/antigravity.log",
-  ];
-  const prompt = "exact Product prompt\nwith literal newlines";
-  expect(
-    initialConversationArgs(
-      base,
-      prompt,
-      "/qe/control/antigravity-conversation.log",
-    ),
-  ).toEqual([
-    ...base.slice(0, -1),
-    "/qe/control/antigravity-conversation.log",
-    "--prompt-interactive",
-    prompt,
-  ]);
-  expect(() =>
-    initialConversationArgs(
-      ["--conversation", "stale", ...base],
-      prompt,
-      "/qe/control/antigravity-conversation.log",
-    ),
-  ).toThrow("fresh conversation-free argv");
-});
-
-test("initial-conversation request is identity fenced", () => {
-  const binding = {
-    actionId: "action-1",
-    attemptId: "attempt-1",
-    lineageId: "lineage-1",
-    resultNonce: "nonce-1",
-    environmentId: "environment-1",
-    incarnation: "incarnation-1",
-  };
-  const prompt = "exact prompt";
-  const request = JSON.stringify({
-    schemaVersion: 1,
-    kind: "antigravity_initial_conversation",
-    nonce: "request-1",
-    ...binding,
-    prompt,
-    promptHash: createHash("sha256").update(prompt).digest("hex"),
-    requestedAt: "2026-09-27T00:00:00.000Z",
-  });
-  expect(parseInitialConversationRequest(request, binding)).toMatchObject({
-    ...binding,
-    prompt,
-  });
-  expect(() =>
-    parseInitialConversationRequest(request, {
-      ...binding,
-      lineageId: "another-lineage",
-    }),
-  ).toThrow("lineageId is stale");
-
-  const launchBinding = parseInitialConversationBinding(
-    JSON.stringify({
-      lineageId: binding.lineageId,
-      environmentId: binding.environmentId,
-      incarnation: binding.incarnation,
-    }),
+test("interactive prompt encoding preserves literal multiline Unicode and shell metacharacters", () => {
+  const prompt = "first line\n第二行 $HOME `uname` && echo nope\nthird line";
+  const encoded = encodeAntigravityInteractivePrompt(prompt);
+  expect(encoded).toBe(
+    `${BRACKETED_PASTE_START}${prompt}${BRACKETED_PASTE_END}`,
   );
   expect(
-    parseInitialConversationRequest(
-      JSON.stringify({
-        ...JSON.parse(request),
-        actionId: "adopted-action",
-        attemptId: "adopted-attempt",
-        resultNonce: "adopted-result-nonce",
-      }),
-      launchBinding,
-    ),
-  ).toMatchObject({
-    actionId: "adopted-action",
-    attemptId: "adopted-attempt",
-    lineageId: binding.lineageId,
+    encoded.slice(BRACKETED_PASTE_START.length, -BRACKETED_PASTE_END.length),
+  ).toBe(prompt);
+  expect(() =>
+    encodeAntigravityInteractivePrompt("unsafe\u001b[201~tail"),
+  ).toThrow("terminal control bytes");
+  expect(() => encodeAntigravityInteractivePrompt("unsafe\u009btail")).toThrow(
+    "terminal control bytes",
+  );
+});
+
+test("interactive prompt submission state permits one staged text and one submit action", () => {
+  const binding = {
+    workerId: "worker-1",
+    questLaunchId: "launch-1",
+    runId: "run-1",
+    actionId: "action-1",
+    occurrenceId: "occurrence-1",
+    attemptId: "attempt-1",
+    physicalLineageId: "lineage-1",
+    environmentId: "environment-1",
+    environmentIncarnation: "incarnation-1",
+    herdrEndpointGeneration: 1,
+    herdrServerGeneration: "server-1",
+    herdrSession: "session-1",
+    herdrSessionIncarnation: "session-incarnation-1",
+    workspaceId: "workspace-1",
+    tabId: "tab-1",
+    paneId: "pane-1",
+    terminalId: "terminal-1",
+    agentName: "agent-1",
+    resultNonce: "nonce-1",
+  };
+  const initial = initialPromptSubmissionState(
+    binding,
+    "exact prompt",
+    "2026-10-01T00:00:00.000Z",
+  );
+  const stageRequested = transitionPromptSubmissionState(
+    initial,
+    "text_stage_requested",
+    "2026-10-01T00:00:01.000Z",
+  );
+  const staged = transitionPromptSubmissionState(
+    stageRequested,
+    "text_staged",
+    "2026-10-01T00:00:02.000Z",
+  );
+  const requested = transitionPromptSubmissionState(
+    staged,
+    "submit_requested",
+    "2026-10-01T00:00:03.000Z",
+  );
+  const sent = transitionPromptSubmissionState(
+    requested,
+    "submit_sent",
+    "2026-10-01T00:00:04.000Z",
+  );
+  expect(sent).toMatchObject({
+    phase: "submit_sent",
+    textStageRequestedAt: "2026-10-01T00:00:01.000Z",
+    textStagedAt: "2026-10-01T00:00:02.000Z",
+    submitRequestedAt: "2026-10-01T00:00:03.000Z",
+    submitSentAt: "2026-10-01T00:00:04.000Z",
   });
+  expect(() =>
+    transitionPromptSubmissionState(
+      sent,
+      "submit_sent",
+      "2026-10-01T00:00:04.000Z",
+    ),
+  ).toThrow("Invalid Antigravity prompt submission transition");
 });
 
 test("guest attestation launcher refuses every executable except pinned Antigravity", async () => {

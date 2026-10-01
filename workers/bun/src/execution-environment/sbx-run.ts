@@ -20,6 +20,10 @@ import {
 } from "../harnesses/antigravity/discovery.ts";
 import type { AntigravityCommandHookSpec } from "../harnesses/antigravity/hook-readiness.ts";
 import {
+  type AntigravityInitialInputReadiness,
+  inspectAntigravityInitialInputReadiness,
+} from "../harnesses/antigravity/initial-input-readiness.ts";
+import {
   controlDescriptorPath,
   type StructuredCompletionBoundary,
 } from "../harnesses/control/authority.ts";
@@ -169,23 +173,6 @@ export type ProviderEligibilityFailure = Extract<
   { state: "verified_unavailable" }
 >;
 
-export interface InitialAntigravityConversationDispatch {
-  operation: "prompt_interactive";
-  promptHash: string;
-  requestedAt: string;
-  acknowledgedAt: string;
-}
-
-export class InitialAntigravityConversationDispatchError extends Error {
-  constructor(
-    message: string,
-    readonly outcome: "failed" | "uncertain",
-  ) {
-    super(message);
-    this.name = "InitialAntigravityConversationDispatchError";
-  }
-}
-
 export interface PreparedSbxHarnessExecution {
   lease: EnvironmentLease;
   workspace: PrivateLineageWorkspace;
@@ -201,10 +188,6 @@ export interface PreparedSbxHarnessExecution {
   materializedArtifacts: Record<string, MaterializedArtifact>;
   /** Bind exact harness argv to the environment-owned host launcher. */
   launchDescriptor(args: readonly string[]): Promise<HostLaunchDescriptor>;
-  /** Atomically replace a conversation-free Antigravity TUI with its supported initial-prompt launch. */
-  dispatchInitialAntigravityPrompt(
-    prompt: string,
-  ): Promise<InitialAntigravityConversationDispatch>;
   syncControl(): Promise<void>;
   installAntigravityHook(spec: AntigravityCommandHookSpec): Promise<void>;
   removeAntigravityHook(name: string): Promise<void>;
@@ -216,8 +199,14 @@ export interface PreparedSbxHarnessExecution {
       lineageId: string;
       resultNonce: string;
     };
+    requireConversationFree: boolean;
     timeoutMs: number;
-  }): Promise<void>;
+  }): Promise<{
+    mcpChildReady: true;
+    stopHookReady: true;
+    initialInputReady: true;
+    initialInput: AntigravityInitialInputReadiness;
+  }>;
   activityCursor(): Promise<number>;
   observedActivityAfter(cursor: number): string | null;
   providerTurnCursor(): Promise<number>;
@@ -557,12 +546,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         : SBX_PI_EXECUTABLE;
     const guestLogPath =
       harnessKind === "antigravity"
-        ? posix.join(
-            controlRoot,
-            lineage.nativeSession || dispatch.promptIntentAt
-              ? "antigravity-conversation.log"
-              : "antigravity.log",
-          )
+        ? posix.join(controlRoot, "antigravity.log")
         : null;
     const hostLogPath =
       harnessKind === "antigravity"
@@ -705,19 +689,6 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
               "--log-file",
               guestLogPath as string,
             ]),
-            QE_ANTIGRAVITY_INITIAL_DISPATCH_REQUEST_PATH:
-              guestPaths.initialConversationRequest,
-            QE_ANTIGRAVITY_INITIAL_DISPATCH_ACK_PATH:
-              guestPaths.initialConversationAck,
-            QE_ANTIGRAVITY_INITIAL_DISPATCH_LOG_PATH:
-              guestPaths.initialConversationLog,
-            // The waiting launcher survives pre-prompt Attempt adoption, so its
-            // immutable fence is the physical environment rather than one Action.
-            QE_ANTIGRAVITY_INITIAL_DISPATCH_BINDING_JSON: JSON.stringify({
-              lineageId: lineage.lineageId,
-              environmentId: lease.ref.environmentId,
-              incarnation: lease.ref.incarnation,
-            }),
           }),
       QE_ARTIFACT_ROOT: posix.join(lease.paths.state, "execution-artifacts"),
       QE_SBX_ATTESTATION_JSON: JSON.stringify(attestation),
@@ -759,9 +730,6 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     });
     let launchPromise: Promise<HostLaunchDescriptor> | null = null;
     let launchArgvDigest: string | null = null;
-    let initialDispatchPromptHash: string | null = null;
-    let initialDispatchPromise: Promise<InitialAntigravityConversationDispatch> | null =
-      null;
     const prepared: PreparedSbxHarnessExecution = {
       lease,
       workspace,
@@ -845,31 +813,6 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
             return launch;
           });
         return launchPromise;
-      },
-      dispatchInitialAntigravityPrompt: (prompt) => {
-        if (harnessKind !== "antigravity")
-          throw new Error(
-            "Initial Antigravity conversation dispatch was requested for another harness.",
-          );
-        if (lineage.nativeSession)
-          throw new Error(
-            "Initial Antigravity conversation dispatch cannot replace a retained native conversation.",
-          );
-        const promptHash = digest(prompt);
-        if (
-          initialDispatchPromptHash &&
-          initialDispatchPromptHash !== promptHash
-        )
-          throw new Error(
-            "The physical lineage requested conflicting initial Antigravity prompts.",
-          );
-        initialDispatchPromptHash = promptHash;
-        initialDispatchPromise ??= this.dispatchInitialAntigravityPrompt(
-          context,
-          guestPaths,
-          prompt,
-        );
-        return initialDispatchPromise;
       },
       syncControl: () => this.syncControl(context),
       installAntigravityHook: (hook) =>
@@ -1007,157 +950,6 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     this.backend.close();
   }
 
-  private async dispatchInitialAntigravityPrompt(
-    context: RuntimeContext,
-    paths: ReturnType<typeof guestControlPaths>,
-    prompt: string,
-  ): Promise<InitialAntigravityConversationDispatch> {
-    if (
-      context.dispatch.action.execution.configuration.harness_kind !==
-      "antigravity"
-    )
-      throw new Error("Initial conversation dispatch requires Antigravity.");
-    if (!prompt || prompt.includes("\0"))
-      throw new Error("Initial Antigravity prompt must be non-empty text.");
-    const encodedPrompt = new TextEncoder().encode(prompt);
-    if (encodedPrompt.byteLength > MAX_MAILBOX_REQUEST_BYTES)
-      throw new Error("Initial Antigravity prompt exceeds the control bound.");
-    if (this.contexts.get(context.lineage.lineageId) !== context)
-      throw new Error(
-        "Initial Antigravity prompt targets a stale PhysicalLineage context.",
-      );
-    if (!context.relay)
-      throw new Error(
-        "Antigravity initial dispatch has no active control/log relay.",
-      );
-
-    const promptHash = digest(prompt);
-    const nonce = randomUUID();
-    const requestedAt = new Date().toISOString();
-    const binding = {
-      actionId: context.dispatch.action.action_id,
-      attemptId: context.dispatch.action.attempt_id,
-      lineageId: context.lineage.lineageId,
-      resultNonce: context.dispatch.resultNonce,
-      environmentId: context.lease.ref.environmentId,
-      incarnation: context.lease.ref.incarnation,
-    };
-    const request = {
-      schemaVersion: 1,
-      kind: "antigravity_initial_conversation",
-      nonce,
-      ...binding,
-      promptHash,
-      prompt,
-      requestedAt,
-    };
-    let acknowledgement: Record<string, unknown>;
-    try {
-      await context.lease.writeFile({
-        path: paths.initialConversationRequest,
-        data: new TextEncoder().encode(`${JSON.stringify(request)}\n`),
-        mode: 0o600,
-      });
-      // Observe the prompted process's independent log generation even when
-      // request delivery succeeded but acknowledgement transport is lost.
-      await context.relay.switchAntigravityLog(paths.initialConversationLog);
-
-      const deadline =
-        Date.now() + Math.min(this.config.resultTimeoutMs, 30_000);
-      let observed: Record<string, unknown> | null = null;
-      while (Date.now() < deadline) {
-        const result = await context.lease.exec({
-          executable: "/usr/bin/python3",
-          args: [
-            "-c",
-            "import pathlib,os; p=pathlib.Path(os.environ['QE_ACK']); print(p.read_text(),end='') if p.is_file() else None",
-          ],
-          environment: { QE_ACK: paths.initialConversationAck },
-          timeoutMs: 5_000,
-        });
-        if (result.exitCode !== 0)
-          throw new Error(
-            "Could not inspect the Antigravity initial-dispatch acknowledgement.",
-          );
-        if (result.stdout.trim()) {
-          try {
-            observed = JSON.parse(result.stdout) as Record<string, unknown>;
-          } catch {
-            throw new Error(
-              "Antigravity initial-dispatch acknowledgement is malformed.",
-            );
-          }
-          if (observed.nonce === nonce) break;
-        }
-        observed = null;
-        await Bun.sleep(50);
-      }
-      if (!observed)
-        throw new Error(
-          "Antigravity did not acknowledge the bounded initial-conversation dispatch.",
-        );
-      acknowledgement = observed;
-      const exactAcknowledgement =
-        acknowledgement.schemaVersion === 1 &&
-        acknowledgement.kind === "antigravity_initial_conversation_ack" &&
-        acknowledgement.promptHash === promptHash &&
-        Object.entries(binding).every(
-          ([key, value]) => acknowledgement[key] === value,
-        ) &&
-        typeof acknowledgement.acknowledgedAt === "string";
-      if (!exactAcknowledgement)
-        throw new Error(
-          "Antigravity initial-conversation dispatch acknowledgement did not match its exact authority.",
-        );
-      if (acknowledgement.status === "failed")
-        throw new InitialAntigravityConversationDispatchError(
-          typeof acknowledgement.message === "string"
-            ? `Antigravity initial-conversation dispatch failed: ${acknowledgement.message}`
-            : "Antigravity initial-conversation process failed to start.",
-          "failed",
-        );
-      if (acknowledgement.status !== "started")
-        throw new Error(
-          "Antigravity initial-conversation dispatch acknowledgement has an unknown status.",
-        );
-    } catch (error) {
-      if (error instanceof InitialAntigravityConversationDispatchError)
-        throw error;
-      throw new InitialAntigravityConversationDispatchError(
-        error instanceof Error
-          ? error.message
-          : "Antigravity initial-conversation dispatch outcome is unknown.",
-        "uncertain",
-      );
-    }
-
-    const value: InitialAntigravityConversationDispatch = {
-      operation: "prompt_interactive",
-      promptHash,
-      requestedAt,
-      acknowledgedAt: acknowledgement.acknowledgedAt as string,
-    };
-    // Native start acknowledgement is already authoritative; a host evidence
-    // mirror failure must not turn one submitted prompt into a retryable send.
-    await writeAtomic(
-      join(
-        dirname(context.lineage.resultControlPath),
-        "initial-conversation-dispatch.json",
-      ),
-      `${JSON.stringify(
-        {
-          version: 1,
-          kind: "antigravity_initial_conversation_dispatch",
-          ...binding,
-          ...value,
-        },
-        null,
-        2,
-      )}\n`,
-    ).catch(() => undefined);
-    return value;
-  }
-
   private async syncControl(context: RuntimeContext): Promise<void> {
     const paths = guestControlPaths(context.controlRoot);
     const hostDirectory = dirname(context.lineage.resultControlPath);
@@ -1291,9 +1083,15 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         lineageId: string;
         resultNonce: string;
       };
+      requireConversationFree: boolean;
       timeoutMs: number;
     },
-  ): Promise<void> {
+  ): Promise<{
+    mcpChildReady: true;
+    stopHookReady: true;
+    initialInputReady: true;
+    initialInput: AntigravityInitialInputReadiness;
+  }> {
     if (!context.guestLogPath || !context.hostLogPath)
       throw new Error("Antigravity readiness has no guest log binding.");
     const paths = guestControlPaths(context.controlRoot);
@@ -1314,9 +1112,18 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         "Antigravity's lineage-private Stop hook contract is not exact.",
       );
     const deadline = Date.now() + Math.min(input.timeoutMs, 30_000);
+    const model = context.dispatch.action.execution.configuration.model.model;
     let mcpReady = false;
     let hookReady = false;
-    while (Date.now() < deadline && (!mcpReady || !hookReady)) {
+    let initialInput: AntigravityInitialInputReadiness | null = null;
+    while (
+      Date.now() < deadline &&
+      (!mcpReady ||
+        !hookReady ||
+        !initialInput ||
+        initialInput.missingSignals.length > 0 ||
+        (input.requireConversationFree && initialInput.ready !== true))
+    ) {
       await context.relay?.refresh();
       const result = await context.lease.exec({
         executable: "/usr/bin/python3",
@@ -1339,15 +1146,32 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         const log = await readFile(context.hostLogPath, "utf8");
         hookReady =
           /loaded \d+ named hooks from \d+ hooks\.json file\(s\)/.test(log);
+        initialInput = inspectAntigravityInitialInputReadiness(log, model);
       } catch {
         hookReady = false;
+        initialInput = null;
       }
-      if (!mcpReady || !hookReady) await Bun.sleep(100);
+      if (
+        !mcpReady ||
+        !hookReady ||
+        !initialInput ||
+        initialInput.missingSignals.length > 0 ||
+        (input.requireConversationFree && initialInput.ready !== true)
+      )
+        await Bun.sleep(100);
     }
     if (!mcpReady)
       throw new Error("Antigravity's guest QE MCP child is not alive.");
     if (!hookReady)
       throw new Error("Antigravity did not discover the guest Stop hook.");
+    if (
+      !initialInput ||
+      initialInput.missingSignals.length > 0 ||
+      (input.requireConversationFree && initialInput.ready !== true)
+    )
+      throw new Error(
+        `Antigravity's existing TUI is not ready for interactive input: ${initialInput?.missingSignals.join(", ") || initialInput?.conversationState || "native readiness evidence unavailable"}.`,
+      );
     const descriptor = controlDescriptorPath(context.lineage);
     const status = await new HarnessControlClient(
       descriptor,
@@ -1388,6 +1212,12 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       throw new Error(
         "Antigravity Stop hook did not reach current QE authority.",
       );
+    return {
+      mcpChildReady: true,
+      stopHookReady: true,
+      initialInputReady: true,
+      initialInput,
+    };
   }
 
   private async bundledAntigravityControl(): Promise<{
@@ -1711,7 +1541,7 @@ export class SbxControlMailboxRelay {
     private readonly onProviderEvidence: (
       evidence: ProviderAvailabilityEvidence,
     ) => Promise<void> = async () => undefined,
-    private guestLogPath: string | null = null,
+    private readonly guestLogPath: string | null = null,
     private readonly hostLogPath: string | null = null,
   ) {}
 
@@ -1755,18 +1585,6 @@ export class SbxControlMailboxRelay {
 
   async refresh(): Promise<void> {
     const operation = this.pollTail.then(() => this.poll());
-    this.pollTail = operation.catch(() => undefined);
-    await operation;
-  }
-
-  async switchAntigravityLog(path: string): Promise<void> {
-    if (!path.startsWith("/"))
-      throw new Error("Antigravity relay log path must be absolute.");
-    const operation = this.pollTail.then(() => {
-      this.guestLogPath = path;
-      this.guestLogOffset = 0;
-      this.guestLogMirrored = false;
-    });
     this.pollTail = operation.catch(() => undefined);
     await operation;
   }
@@ -2050,12 +1868,6 @@ function guestControlPaths(root: string) {
     runtimeState: posix.join(root, "runtime-state.json"),
     mcpStartup: posix.join(root, "mcp-startup.jsonl"),
     mailbox: posix.join(root, "mailbox"),
-    initialConversationRequest: posix.join(
-      root,
-      "initial-conversation-request.json",
-    ),
-    initialConversationAck: posix.join(root, "initial-conversation-ack.json"),
-    initialConversationLog: posix.join(root, "antigravity-conversation.log"),
   };
 }
 

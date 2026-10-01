@@ -3,11 +3,13 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
-import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import {
-  InitialAntigravityConversationDispatchError,
-  type PreparedSbxPiExecution,
-  type SbxRunExecutionManager,
+  type DispatchRecord,
+  DispatchRegistry,
+} from "../src/dispatch/registry.ts";
+import type {
+  PreparedSbxPiExecution,
+  SbxRunExecutionManager,
 } from "../src/execution-environment/sbx-run.ts";
 import type { HostLaunchDescriptor } from "../src/execution-environment/types.ts";
 import {
@@ -36,12 +38,16 @@ import type {
   HarnessEvent,
 } from "../src/harnesses/types.ts";
 import { HerdrApiError } from "../src/session-host/herdr/client.ts";
+import { paneProcessIdentityDigest } from "../src/session-host/pane-process-identity.ts";
 import type {
   HostedAgent,
   HostedAgentStatus,
   HostedExecutionRef,
   HostedPane,
+  HostedPaneProcessInfo,
   HostedSnapshot,
+  InteractivePromptAuthority,
+  InteractivePromptInput,
   SessionBackendReadiness,
   TerminalAttachmentDescriptor,
   TerminalSessionBackend,
@@ -139,7 +145,7 @@ async function fixture(
       args[0] === "--version"
         ? `${ANTIGRAVITY_TESTED_VERSION}\n`
         : args[0] === "--help"
-          ? "--conversation --effort --log-file --model --prompt-interactive\n"
+          ? "--conversation --effort --log-file --model\n"
           : args[0] === "models"
             ? (selection.modelsOutput ??
               "gemini-test-high\tGemini Test (High)\n")
@@ -157,7 +163,15 @@ async function fixture(
     ) => {
       const controlRoot = dirname(preparedLineage.resultControlPath);
       const prepared = {
-        lease: { paths: { state: join(root, "guest-state") } },
+        lease: {
+          ref: {
+            workerId: "worker-test",
+            runId: execute.run_id,
+            environmentId: "environment-1",
+            incarnation: "environment-incarnation-1",
+          },
+          paths: { state: join(root, "guest-state") },
+        },
         workspace: {},
         harnessKind: "antigravity",
         guestExecutable: "/opt/qe/antigravity/agy",
@@ -174,7 +188,18 @@ async function fixture(
           installedHooks.push(spec);
         },
         removeAntigravityHook: async () => undefined,
-        proveAntigravityReadiness: async () => undefined,
+        proveAntigravityReadiness: async () => {
+          if (!host.initialInputReady)
+            throw new Error("synthetic TUI input manager is not ready");
+          return {
+            mcpChildReady: true as const,
+            stopHookReady: true as const,
+            initialInputReady: true as const,
+            initialInput: readyInitialInputEvidence(
+              execute.execution.configuration.model.model,
+            ),
+          };
+        },
         syncControl: async () => undefined,
         launchDescriptor: async (args: readonly string[]) => ({
           executable: "/usr/local/bin/sbx",
@@ -192,28 +217,6 @@ async function fixture(
             },
           },
         }),
-        dispatchInitialAntigravityPrompt: async (prompt: string) => {
-          host.initialPromptCalls += 1;
-          host.initialPrompts.push(prompt);
-          host.agent.status = "working";
-          if (host.autoNativeAcceptance) {
-            host.establishConversation(INITIAL_CONVERSATION_ID);
-            await host.appendNativeAcceptance(INITIAL_CONVERSATION_ID);
-          }
-          await host.onPrompt?.();
-          if (host.initialDispatchOutcome === "uncertain")
-            throw new InitialAntigravityConversationDispatchError(
-              "acknowledgement transport was lost",
-              "uncertain",
-            );
-          const timestamp = new Date().toISOString();
-          return {
-            operation: "prompt_interactive" as const,
-            promptHash: createHash("sha256").update(prompt).digest("hex"),
-            requestedAt: timestamp,
-            acknowledgedAt: timestamp,
-          };
-        },
         startRelay: () => undefined,
         awaitAttestation: async () => undefined,
         stopRelay: async () => undefined,
@@ -496,7 +499,10 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
     expect(value.host.startRequests).toHaveLength(1);
-    expect(Object.keys(value.host.agent.tokens ?? {})).toHaveLength(14);
+    expect(Object.keys(value.host.agent.tokens ?? {})).toHaveLength(16);
+    expect(value.host.agent.tokens?.qe_environment_hash).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
     expect(value.host.agent.tokens?.qe_agent_name).toBe(
       execution.ref.agentName,
     );
@@ -604,21 +610,23 @@ test("inference authorization keeps the prepared MCP child across descriptor rot
         change_set: { status: "authorized" },
       });
     };
+    const authorized = authorizePrompt(value);
     expect(
       await value.harness.sendInputAndCollect(
-        value.dispatch,
+        authorized,
         execution,
         () => undefined,
       ),
     ).toEqual({ change_set: { status: "authorized" } });
-    expect(value.host.initialPromptCalls).toBe(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
     expect(value.host.promptCalls).toBe(0);
   } finally {
     await value.close();
   }
 });
 
-test("fresh lineage selects native initial-conversation dispatch and captures its identity", async () => {
+test("fresh lineage submits through the existing TUI and captures its native identity", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
@@ -636,8 +644,8 @@ test("fresh lineage selects native initial-conversation dispatch and captures it
     );
     expect(readiness).toMatchObject({
       conversationState: "none",
-      initialConversationDispatchReady: true,
-      initialConversationDispatchMechanism: "native_prompt_interactive",
+      initialInputReady: true,
+      initialInputTransport: "herdr_pane_bracketed_paste",
       mcpChildReady: true,
       stopHookReady: true,
     });
@@ -648,20 +656,25 @@ test("fresh lineage selects native initial-conversation dispatch and captures it
       ).completeStep({ change_set: { status: "initial" } });
     };
     const events: HarnessEvent[] = [];
+    const authorized = authorizePrompt(value);
     const outputs = await value.harness.sendInputAndCollect(
-      value.dispatch,
+      authorized,
       execution,
       (event) => events.push(event),
     );
     expect(outputs).toEqual({ change_set: { status: "initial" } });
-    expect(value.host.initialPromptCalls).toBe(1);
+    expect(value.host.startRequests).toHaveLength(1);
+    expect(Object.keys(value.host.agent.tokens ?? {})).toHaveLength(16);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
     expect(value.host.promptCalls).toBe(0);
     expect(
       events.find((event) => event.type === "prompt_baseline")?.evidence.cursor,
-    ).toBe(0);
-    expect(value.host.initialPrompts).toEqual([
-      antigravityPromptFor(value.dispatch),
-    ]);
+    ).toBeGreaterThan(0);
+    const staged = value.host.stagedPromptInputs[0]?.text;
+    expect(staged).toContain(antigravityPromptFor(value.dispatch));
+    expect(staged?.startsWith("\u001b[200~")).toBe(true);
+    expect(staged?.endsWith("\u001b[201~")).toBe(true);
     expect(
       events.find((event) => event.type === "prompt_accepted")?.inspection.agent
         ?.nativeSession,
@@ -676,13 +689,16 @@ test("fresh lineage selects native initial-conversation dispatch and captures it
   }
 });
 
-test("uncertain initial-launch acknowledgement reconciles native acceptance without resubmission", async () => {
+test("uncertain submit acknowledgement reconciles native acceptance without resubmission", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
     await value.harness.ready(value.dispatch, execution);
     await value.authority.bind(value.dispatch, value.lineage);
-    value.host.initialDispatchOutcome = "uncertain";
+    value.host.submitError = new HerdrApiError(
+      "timeout",
+      "synthetic submit acknowledgement loss",
+    );
     value.host.onPrompt = async () => {
       await new HarnessControlClient(
         controlDescriptorPath(value.lineage),
@@ -690,12 +706,13 @@ test("uncertain initial-launch acknowledgement reconciles native acceptance with
     };
     expect(
       await value.harness.sendInputAndCollect(
-        value.dispatch,
+        authorizePrompt(value),
         execution,
         () => undefined,
       ),
     ).toEqual({ change_set: { status: "reconciled" } });
-    expect(value.host.initialPromptCalls).toBe(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
     expect(value.host.promptCalls).toBe(0);
   } finally {
     await value.close();
@@ -727,20 +744,20 @@ test("retained conversation selects exact continuation prompt transport", async 
     };
     expect(
       await value.harness.sendInputAndCollect(
-        value.dispatch,
+        authorizePrompt(value),
         execution,
         () => undefined,
       ),
     ).toEqual({ change_set: { status: "continued" } });
-    expect(value.host.initialPromptCalls).toBe(0);
-    expect(value.host.promptCalls).toBe(1);
-    expect(value.host.prompts).toEqual([antigravityPromptFor(value.dispatch)]);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.promptCalls).toBe(0);
   } finally {
     await value.close();
   }
 });
 
-test("initial conversation creation failure records no native acceptance or provider cycle", async () => {
+test("interactive first-message rejection records no native acceptance or provider cycle", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
@@ -750,8 +767,10 @@ test("initial conversation creation failure records no native acceptance or prov
       value.host.appendNativeRejection("no active conversation");
     const events: HarnessEvent[] = [];
     await expect(
-      value.harness.sendInputAndCollect(value.dispatch, execution, (event) =>
-        events.push(event),
+      value.harness.sendInputAndCollect(
+        authorizePrompt(value),
+        execution,
+        (event) => events.push(event),
       ),
     ).rejects.toMatchObject({
       code: "antigravity_initial_dispatch_failed",
@@ -765,7 +784,7 @@ test("initial conversation creation failure records no native acceptance or prov
   }
 });
 
-test("post-intent recovery keeps native initial-dispatch rejection explicit", async () => {
+test("post-intent recovery keeps native interactive rejection explicit", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
@@ -838,9 +857,173 @@ test("cancellation before first message leaves fresh readiness conversation-free
     const execution = await value.harness.start(value.dispatch, value.lineage);
     await value.harness.ready(value.dispatch, execution);
     await value.harness.close(execution.lineage);
-    expect(value.host.initialPromptCalls).toBe(0);
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
     expect(value.host.promptCalls).toBe(0);
     expect(value.host.agent.nativeSession).toBeUndefined();
+  } finally {
+    await value.close();
+  }
+});
+
+test("preauthorization interactive prompt input is structurally rejected", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    await expect(
+      value.harness.sendInputAndCollect(
+        value.dispatch,
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_not_authorized" });
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("input readiness is independent from a live TUI and fails before authorization", async () => {
+  const value = await fixture();
+  try {
+    value.host.initialInputReady = false;
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await expect(
+      value.harness.ready(value.dispatch, execution),
+    ).rejects.toThrow("input manager is not ready");
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("stale pane, process, and endpoint generation fail before literal input", async () => {
+  const stalePane = await fixture();
+  try {
+    const execution = await stalePane.harness.start(
+      stalePane.dispatch,
+      stalePane.lineage,
+    );
+    await stalePane.harness.ready(stalePane.dispatch, execution);
+    await expect(
+      stalePane.harness.sendInputAndCollect(
+        authorizePrompt(stalePane),
+        { ...execution, ref: { ...execution.ref, paneId: "stale-pane" } },
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_input_fence_failed" });
+    expect(stalePane.host.stagedPromptCalls).toBe(0);
+  } finally {
+    await stalePane.close();
+  }
+
+  const staleGeneration = await fixture();
+  try {
+    const execution = await staleGeneration.harness.start(
+      staleGeneration.dispatch,
+      staleGeneration.lineage,
+    );
+    await staleGeneration.harness.ready(staleGeneration.dispatch, execution);
+    staleGeneration.host.backendReadiness = {
+      ...staleGeneration.host.backendReadiness,
+      provenance: {
+        ...staleGeneration.host.backendReadiness.provenance,
+        endpointGeneration: 2,
+      },
+    };
+    await expect(
+      staleGeneration.harness.sendInputAndCollect(
+        authorizePrompt(staleGeneration),
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_input_fence_failed" });
+    expect(staleGeneration.host.stagedPromptCalls).toBe(0);
+    expect(staleGeneration.host.submitPromptCalls).toBe(0);
+  } finally {
+    await staleGeneration.close();
+  }
+
+  const staleProcess = await fixture();
+  try {
+    const execution = await staleProcess.harness.start(
+      staleProcess.dispatch,
+      staleProcess.lineage,
+    );
+    await staleProcess.harness.ready(staleProcess.dispatch, execution);
+    staleProcess.host.foregroundProcessGroupId = 5252;
+    await expect(
+      staleProcess.harness.sendInputAndCollect(
+        authorizePrompt(staleProcess),
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_input_fence_failed" });
+    expect(staleProcess.host.stagedPromptCalls).toBe(0);
+    expect(staleProcess.host.submitPromptCalls).toBe(0);
+  } finally {
+    await staleProcess.close();
+  }
+});
+
+test("process replacement after text staging prevents the separate Enter action", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    value.host.onStage = () => {
+      value.host.foregroundProcessGroupId = 5252;
+    };
+    await expect(
+      value.harness.sendInputAndCollect(
+        authorizePrompt(value),
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "agent_prompt_uncertain" });
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("duplicate prompt submit is rejected and the same TUI process remains", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    const processBefore = await value.host.inspectPaneProcess(
+      execution.ref.paneId,
+    );
+    value.host.onPrompt = async () => {
+      await new HarnessControlClient(
+        controlDescriptorPath(value.lineage),
+      ).completeStep({ change_set: { status: "once" } });
+    };
+    const authorized = authorizePrompt(value);
+    expect(
+      await value.harness.sendInputAndCollect(
+        authorized,
+        execution,
+        () => undefined,
+      ),
+    ).toEqual({ change_set: { status: "once" } });
+    await expect(
+      value.harness.sendInputAndCollect(authorized, execution, () => undefined),
+    ).rejects.toMatchObject({ code: "antigravity_duplicate_prompt_rejected" });
+    const processAfter = await value.host.inspectPaneProcess(
+      execution.ref.paneId,
+    );
+    expect(value.host.startRequests).toHaveLength(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(processAfter.foregroundProcessGroupId).toBe(
+      processBefore.foregroundProcessGroupId,
+    );
   } finally {
     await value.close();
   }
@@ -1043,7 +1226,7 @@ test("semantic MCP completion is authoritative even while Herdr still projects w
     };
     const events: HarnessEvent[] = [];
     const outputs = await value.harness.sendInputAndCollect(
-      value.dispatch,
+      authorizePrompt(value),
       execution,
       (event) => events.push(event),
     );
@@ -1084,7 +1267,7 @@ test("accepted native prompt waits for structured completion without resubmissio
     };
     const events: HarnessEvent[] = [];
     const outputs = await value.harness.sendInputAndCollect(
-      value.dispatch,
+      authorizePrompt(value),
       execution,
       (event) => events.push(event),
     );
@@ -1099,7 +1282,8 @@ test("accepted native prompt waits for structured completion without resubmissio
       ]),
     );
     expect(events.some((event) => event.type === "stalled")).toBe(false);
-    expect(value.host.initialPromptCalls).toBe(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
     expect(value.host.promptCalls).toBe(0);
     expect(value.host.promptOptions).toBeUndefined();
   } finally {
@@ -1132,11 +1316,15 @@ test("missing result becomes a bounded harness_contract_violation", async () => 
     };
     await expect(
       value.harness.sendInputAndCollect(
-        value.dispatch,
+        authorizePrompt(value),
         execution,
         () => undefined,
       ),
     ).rejects.toMatchObject({ code: "harness_contract_violation" });
+    expect(value.host.startRequests).toHaveLength(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.foregroundProcessGroupId).toBe(4242);
   } finally {
     await value.close();
   }
@@ -1377,6 +1565,40 @@ test("fresh retained-work recovery tells Antigravity to preserve the diff and co
   }
 });
 
+function authorizePrompt(value: {
+  registry: DispatchRegistry;
+  dispatch: DispatchRecord;
+}): DispatchRecord {
+  value.registry.authorizePrompt(value.dispatch.action.action_id);
+  value.registry.markPromptIntent(value.dispatch.action.action_id);
+  return value.registry.get(value.dispatch.action.action_id);
+}
+
+function readyInitialInputEvidence(model: string) {
+  return {
+    kind: "antigravity_initial_input_readiness" as const,
+    version: 1 as const,
+    ready: true,
+    conversationState: "none" as const,
+    model,
+    signals: {
+      cli_input_loop: 1,
+      empty_conversation_render: 2,
+      authentication: 3,
+      cli_startup: 4,
+      code_assist: 5,
+      model_catalog: 6,
+      model_resolution: 7,
+      post_login_experiments: 8,
+      post_login_code_assist: 9,
+      post_login_model_resolution: 10,
+      post_model_experiments: 11,
+      customization_reload: 12,
+    },
+    missingSignals: [],
+  };
+}
+
 function antigravityDiscoveryRunner(version: string, omittedHelpFlag?: string) {
   return async (args: string[]) => ({
     exitCode: 0,
@@ -1384,13 +1606,7 @@ function antigravityDiscoveryRunner(version: string, omittedHelpFlag?: string) {
       args[0] === "--version"
         ? `${version}\n`
         : args[0] === "--help"
-          ? [
-              "--conversation",
-              "--effort",
-              "--log-file",
-              "--model",
-              "--prompt-interactive",
-            ]
+          ? ["--conversation", "--effort", "--log-file", "--model"]
               .filter((flag) => flag !== omittedHelpFlag)
               .join(" ")
           : "gemini-test-high\tGemini Test (High)\n",
@@ -1415,15 +1631,21 @@ class FakeAntigravityHost implements TerminalSessionBackend {
   readonly panes: HostedPane[];
   agent: HostedAgent;
   onPrompt: (() => Promise<void>) | null = null;
+  onStage: (() => Promise<void> | void) | null = null;
   promptOptions:
     | { until?: HostedAgentStatus[]; timeoutMs?: number }
     | undefined;
   promptCalls = 0;
   prompts: string[] = [];
-  initialPromptCalls = 0;
-  initialPrompts: string[] = [];
+  stagedPromptCalls = 0;
+  stagedPromptInputs: InteractivePromptInput[] = [];
+  submitPromptCalls = 0;
+  submittedAuthorities: InteractivePromptAuthority[] = [];
   autoNativeAcceptance = true;
-  initialDispatchOutcome: "uncertain" | null = null;
+  initialInputReady = true;
+  stageError: Error | null = null;
+  submitError: Error | null = null;
+  foregroundProcessGroupId = 4242;
   private logPath: string | null = null;
   removeAgentOnSnapshot = false;
   inspectError: Error | null = null;
@@ -1542,11 +1764,77 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     this.promptCalls += 1;
     this.prompts.push(_text);
     this.promptOptions = _options;
+    return this.agent;
+  }
+  async inspectPaneProcess(paneId: string): Promise<HostedPaneProcessInfo> {
+    return {
+      paneId,
+      shellPid: 100,
+      foregroundProcessGroupId: this.foregroundProcessGroupId,
+      tty: "/dev/ttys001",
+      foregroundProcesses: [
+        {
+          pid: 101,
+          name: "agy",
+          argv: ["/opt/qe/antigravity/agy"],
+          cwd: this.cwd,
+        },
+      ],
+    };
+  }
+  async stageInteractivePrompt(input: InteractivePromptInput): Promise<void> {
+    if (
+      input.authority.herdrEndpointGeneration !==
+        this.backendReadiness.provenance.endpointGeneration ||
+      input.authority.herdrServerGeneration !==
+        this.backendReadiness.provenance.serverGeneration
+    )
+      throw new HerdrApiError(
+        "input_authority_stale",
+        "synthetic endpoint generation mismatch",
+      );
+    const process = await this.inspectPaneProcess(input.authority.paneId);
+    if (
+      input.authority.paneShellPid !== process.shellPid ||
+      input.authority.paneForegroundProcessGroupId !==
+        process.foregroundProcessGroupId ||
+      input.authority.paneProcessIdentityDigest !==
+        paneProcessIdentityDigest(process)
+    )
+      throw new HerdrApiError(
+        "input_authority_mismatch",
+        "synthetic pane process identity mismatch",
+      );
+    this.stagedPromptCalls += 1;
+    this.stagedPromptInputs.push(input);
+    if (this.stageError) throw this.stageError;
+    await this.onStage?.();
+  }
+  async submitInteractivePrompt(
+    authority: InteractivePromptAuthority,
+  ): Promise<void> {
+    const process = await this.inspectPaneProcess(authority.paneId);
+    if (
+      authority.paneShellPid !== process.shellPid ||
+      authority.paneForegroundProcessGroupId !==
+        process.foregroundProcessGroupId ||
+      authority.paneProcessIdentityDigest !== paneProcessIdentityDigest(process)
+    )
+      throw new HerdrApiError(
+        "input_authority_mismatch",
+        "synthetic pane process identity mismatch",
+      );
+    this.submitPromptCalls += 1;
+    this.submittedAuthorities.push(authority);
     this.agent.status = "working";
     if (this.agent.nativeSession)
       await this.appendNativeAcceptance(this.agent.nativeSession.value);
+    else if (this.autoNativeAcceptance) {
+      this.establishConversation(INITIAL_CONVERSATION_ID);
+      await this.appendNativeAcceptance(INITIAL_CONVERSATION_ID);
+    }
     await this.onPrompt?.();
-    return this.agent;
+    if (this.submitError) throw this.submitError;
   }
   establishConversation(id: string): void {
     this.agent.nativeSession = {
@@ -1606,6 +1894,8 @@ class FakeAntigravityHost implements TerminalSessionBackend {
       workspaceId: "workspace-1",
       tabId: "tab-1",
       interactiveReady: true,
+      launchPending: false,
+      nativeMaterialized: true,
       tokens: {},
     };
   }
@@ -1617,7 +1907,7 @@ function readyBackend(harnessKind: string): SessionBackendReadiness {
     harnessKind,
     status: "ready",
     ready: true,
-    capabilities: [],
+    capabilities: ["terminal.literal_input", "terminal.submit_input"],
     missingCapabilities: [],
     diagnostics: [],
     provenance: {
@@ -1626,6 +1916,7 @@ function readyBackend(harnessKind: string): SessionBackendReadiness {
       testedProtocol: 22,
       endpointGeneration: 1,
       serverGeneration: "test-generation",
+      sessionIncarnation: "test-session-incarnation",
     },
   };
 }

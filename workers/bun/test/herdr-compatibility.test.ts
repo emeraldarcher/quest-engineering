@@ -24,6 +24,8 @@ const OPERATIONS = [
   "tab.rename",
   "pane.report_metadata",
   "pane.process_info",
+  "pane.send_text",
+  "pane.send_keys",
   "agent.start",
   "agent.prompt",
   "agent.get",
@@ -46,6 +48,8 @@ const PARAMETERS: Record<string, string[]> = {
     "tokens",
   ],
   "pane.process_info": ["pane_id"],
+  "pane.send_text": ["pane_id", "text"],
+  "pane.send_keys": ["pane_id", "keys"],
   "agent.start": ["pane_id", "name", "kind", "args", "command", "timeout_ms"],
   "agent.prompt": ["target", "text", "wait"],
   "agent.get": ["target"],
@@ -140,21 +144,24 @@ test("protocol 999 with an incompatible operation contract names the semantic ca
   );
 });
 
-test("protocol 999 missing a shared prompt capability fails both harnesses", () => {
-  const value = evidence(999, {
+test("agent prompt remains Pi-only while pane literal input is Antigravity-only", () => {
+  const noAgentPrompt = evidence(999, {
     operations: OPERATIONS.filter((operation) => operation !== "agent.prompt"),
   });
-  for (const harness of ["pi", "antigravity"]) {
-    const readiness = evaluateHerdrCompatibility(harness, value);
-    expect(readiness.ready).toBe(false);
-    expect(readiness.missingCapabilities).toContain("agent.prompt");
-    expect(readiness.diagnostics).toContainEqual(
-      expect.objectContaining({
-        capability: "agent.prompt",
-        message: expect.stringContaining("agent.prompt"),
-      }),
-    );
-  }
+  expect(evaluateHerdrCompatibility("pi", noAgentPrompt).ready).toBe(false);
+  expect(evaluateHerdrCompatibility("antigravity", noAgentPrompt).ready).toBe(
+    true,
+  );
+
+  const noPaneText = evidence(999, {
+    operations: OPERATIONS.filter(
+      (operation) => operation !== "pane.send_text",
+    ),
+  });
+  const antigravity = evaluateHerdrCompatibility("antigravity", noPaneText);
+  expect(antigravity.ready).toBe(false);
+  expect(antigravity.missingCapabilities).toContain("terminal.literal_input");
+  expect(evaluateHerdrCompatibility("pi", noPaneText).ready).toBe(true);
 });
 
 test("protocol 999 missing required response metadata fails the affected capability", () => {

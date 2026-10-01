@@ -110,9 +110,9 @@ export async function observePiNativeActivity(input: {
 }
 
 /**
- * Antigravity's own --log-file records the native conversation handoff. The
- * first post-baseline successful user-message send belongs to the exclusively
- * owned QE TUI and proves native activity without scraping terminal output.
+ * Antigravity's own native log records the conversation handoff. The first
+ * post-baseline successful user-message send belongs to the exclusively owned
+ * QE TUI and proves native acceptance without scraping terminal output.
  */
 export async function observeAntigravityPromptDispatch(input: {
   logPath: string;
@@ -230,7 +230,7 @@ export function uncertainPrompt(error: unknown): HerdrApiError {
   return new HerdrApiError(
     "agent_prompt_uncertain",
     `Prompt submission outcome is uncertain; exact native evidence did not resolve the transport failure: ${error instanceof Error ? error.message : String(error)}`,
-    "agent.prompt",
+    "terminal.authorized_prompt_input",
   );
 }
 

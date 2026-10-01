@@ -40,6 +40,23 @@ export interface HostedPane {
   cwd?: string;
   foregroundCwd?: string;
 }
+export interface HostedPaneProcess {
+  pid: number;
+  name: string;
+  argv0?: string;
+  argv?: string[];
+  cmdline?: string;
+  cwd?: string;
+}
+
+export interface HostedPaneProcessInfo {
+  paneId: string;
+  shellPid?: number;
+  foregroundProcessGroupId?: number;
+  tty?: string;
+  foregroundProcesses: HostedPaneProcess[];
+}
+
 export interface HostedSnapshot {
   workspaces: Array<{
     workspaceId: string;
@@ -59,6 +76,46 @@ export interface HostedExecutionRef {
   terminalId?: string;
   agentName: string;
   nativeSession?: NativeSessionRef;
+}
+
+/**
+ * Complete Product and physical-runtime authority required before Herdr may
+ * write an automated prompt into a managed pane. Product authorization and
+ * prompt intent are mandatory; this is deliberately not a generic text-input
+ * capability and is separate from human Take Control.
+ */
+export interface InteractivePromptAuthority {
+  workerId: string;
+  questLaunchId: string;
+  runId: string;
+  actionId: string;
+  occurrenceId: string;
+  attemptId: string;
+  physicalLineageId: string;
+  environmentId: string;
+  environmentIncarnation: string;
+  herdrEndpointGeneration: number;
+  herdrServerGeneration: string;
+  sessionName: string;
+  sessionIncarnation: string;
+  workspaceId: string;
+  tabId: string;
+  paneId: string;
+  terminalId: string;
+  agentName: string;
+  paneShellPid: number;
+  paneForegroundProcessGroupId: number;
+  paneProcessIdentityDigest: string;
+  ownershipToken: string;
+  resultNonce: string;
+  promptAuthorizedAt: string;
+  promptIntentAt: string;
+}
+
+export interface InteractivePromptInput {
+  authority: InteractivePromptAuthority;
+  /** Terminal-protocol bytes. Prompt content itself must remain literal. */
+  text: string;
 }
 
 export type SessionBackendReadinessStatus =
@@ -166,6 +223,16 @@ export interface TerminalSessionBackend {
   ): Promise<HostedAgent>;
   /** Inspect the backend's current authoritative terminal-agent state. */
   inspectAgentState(target: string): Promise<HostedAgent>;
+  inspectPaneProcess?(paneId: string): Promise<HostedPaneProcessInfo>;
+  /**
+   * Stage literal automated prompt input after validating full Product,
+   * environment, endpoint, session, pane, and authorization authority.
+   */
+  stageInteractivePrompt?(input: InteractivePromptInput): Promise<void>;
+  /** Send the one native Enter action for already-staged authorized input. */
+  submitInteractivePrompt?(
+    authority: InteractivePromptAuthority,
+  ): Promise<void>;
   /** Close exactly one owned pane, terminating its child process without terminal input. */
   closePane(paneId: string): Promise<void>;
   sendKeys(target: string, keys: string[]): Promise<void>;

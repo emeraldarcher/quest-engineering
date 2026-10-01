@@ -1,6 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { expect, test } from "bun:test";
 import {
   type ProviderEligibilityFailure,
   SbxControlMailboxRelay,
@@ -8,13 +6,6 @@ import {
 import type { EnvironmentLease } from "../src/execution-environment/types.ts";
 import { classifyProviderEligibilityFailure } from "../src/harnesses/pi/sbx-herdr-state-extension.ts";
 import type { TerminalSessionBackend } from "../src/session-host/types.ts";
-
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
-  );
-});
 
 const attestation = {
   schemaVersion: 1,
@@ -138,61 +129,6 @@ test("a restarted relay adopts retained guest idle without reviving stale workin
 
   expect(reported).not.toContain("working");
   expect(reported.at(-1)).toBe("idle");
-});
-
-test("initial conversation log generation replaces the preauthorization mirror from cursor zero", async () => {
-  const parent = join(process.cwd(), ".pi", "tmp");
-  await mkdir(parent, { recursive: true });
-  const root = await mkdtemp(join(parent, "antigravity-log-switch-"));
-  roots.push(root);
-  const hostLog = join(root, "antigravity.log");
-  const logs = new Map([
-    ["/qe/control/antigravity.log", "preauthorization log is much larger\n"],
-    [
-      "/qe/control/antigravity-conversation.log",
-      "Sending user message to conversation 11111111-1111-4111-8111-111111111111 (items=1, media=0)\n",
-    ],
-  ]);
-  const lease = {
-    exec: async (command: { environment?: Record<string, string> }) => {
-      const path = command.environment?.QE_LOG as string;
-      const offset = Number(command.environment?.QE_LOG_OFFSET ?? 0);
-      const log = logs.get(path) ?? "";
-      const start = log.length >= offset ? offset : 0;
-      const chunk = log.slice(start);
-      return {
-        exitCode: 0,
-        stdout: `${JSON.stringify({
-          requests: [],
-          logChunk: Buffer.from(chunk).toString("base64"),
-          logOffset: start + chunk.length,
-          logReset: start === 0,
-        })}\n`,
-        stderr: "",
-      };
-    },
-  } as unknown as EnvironmentLease;
-  const relay = new SbxControlMailboxRelay(
-    lease,
-    "/qe/control",
-    { resultControlPath: join(root, "result-control.json") } as never,
-    {} as TerminalSessionBackend,
-    "w1:p1",
-    attestation,
-    () => undefined,
-    () => undefined,
-    async () => undefined,
-    "/qe/control/antigravity.log",
-    hostLog,
-  );
-
-  await relay.refresh();
-  expect(await readFile(hostLog, "utf8")).toContain("preauthorization");
-  await relay.switchAntigravityLog("/qe/control/antigravity-conversation.log");
-  await relay.refresh();
-  expect(await readFile(hostLog, "utf8")).toBe(
-    "Sending user message to conversation 11111111-1111-4111-8111-111111111111 (items=1, media=0)\n",
-  );
 });
 
 test("relay retains a redacted account-scoped provider eligibility failure", async () => {

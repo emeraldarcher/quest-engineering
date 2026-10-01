@@ -23,7 +23,13 @@ import {
   readOwnershipRecord,
 } from "../src/session-host/herdr/ownership.ts";
 import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
-import type { HostedSnapshot } from "../src/session-host/types.ts";
+import { paneProcessIdentityDigest } from "../src/session-host/pane-process-identity.ts";
+import type {
+  HostedAgent,
+  HostedPaneProcessInfo,
+  HostedSnapshot,
+  InteractivePromptAuthority,
+} from "../src/session-host/types.ts";
 import { QuestEngineeringWorker } from "../src/worker.ts";
 
 const roots: string[] = [];
@@ -91,6 +97,111 @@ test("readiness is side-effect free, then zero-session ensure creates infrastruc
     qe_worker_id: "worker-a",
     qe_session_incarnation: first.sessionIncarnation,
   });
+});
+
+test("authorized pane input revalidates endpoint, agent, and process before each write", async () => {
+  const fixture = await setup("worker-input");
+  const identity = await fixture.provider.ensureInfrastructure();
+  const readiness = await fixture.provider.readiness("antigravity");
+  const hash = (value: string) =>
+    createHash("sha256").update(value).digest("hex");
+  const authority: InteractivePromptAuthority = {
+    workerId: "worker-input",
+    questLaunchId: "launch-1",
+    runId: "run-1",
+    actionId: "action-1",
+    occurrenceId: "occurrence-1",
+    attemptId: "attempt-1",
+    physicalLineageId: "lineage-1",
+    environmentId: "environment-1",
+    environmentIncarnation: "environment-incarnation-1",
+    herdrEndpointGeneration: readiness.provenance.endpointGeneration as number,
+    herdrServerGeneration: readiness.provenance.serverGeneration as string,
+    sessionName: fixture.sessionName,
+    sessionIncarnation: identity.sessionIncarnation,
+    workspaceId: "w1",
+    tabId: "w1:t1",
+    paneId: "w1:p1",
+    terminalId: "terminal-1",
+    agentName: "agy-managed",
+    paneShellPid: fixture.runtime.paneProcess.shellPid as number,
+    paneForegroundProcessGroupId: fixture.runtime.paneProcess
+      .foregroundProcessGroupId as number,
+    paneProcessIdentityDigest: paneProcessIdentityDigest(
+      fixture.runtime.paneProcess,
+    ),
+    ownershipToken: "ownership-1",
+    resultNonce: "result-1",
+    promptAuthorizedAt: "2026-09-15T00:00:01.000Z",
+    promptIntentAt: "2026-09-15T00:00:02.000Z",
+  };
+  fixture.runtime.interactiveAgent = {
+    name: authority.agentName,
+    agent: "agy",
+    status: "idle",
+    paneId: authority.paneId,
+    terminalId: authority.terminalId,
+    workspaceId: authority.workspaceId,
+    tabId: authority.tabId,
+    interactiveReady: true,
+    nativeMaterialized: true,
+    tokens: {
+      qe_owner: "quest-engineering-worker/v1",
+      qe_worker_id: authority.workerId,
+      qe_launch_id: authority.questLaunchId,
+      qe_run_id: authority.runId,
+      qe_lineage_id: authority.physicalLineageId,
+      qe_harness_kind: "antigravity",
+      qe_agent_name: authority.agentName,
+      qe_ownership_token: authority.ownershipToken,
+      qe_session_incarnation: authority.sessionIncarnation,
+      qe_environment_hash: hash(
+        `${authority.environmentId}\0${authority.environmentIncarnation}`,
+      ),
+      qe_active_state: "active",
+      qe_active_action_id: authority.actionId,
+      qe_action_hash: hash(authority.actionId),
+      qe_occurrence_hash: hash(authority.occurrenceId),
+      qe_attempt_hash: hash(authority.attemptId),
+      qe_result_nonce: authority.resultNonce,
+    },
+  };
+  const host = new HerdrTerminalBackend(fixture.provider, "antigravity");
+  await host.stageInteractivePrompt({ authority, text: "literal\ntext" });
+  expect(fixture.runtime.paneTexts).toEqual(["literal\ntext"]);
+  expect(fixture.runtime.paneKeys).toEqual([]);
+
+  fixture.runtime.paneProcess.foregroundProcessGroupId = 9090;
+  await expect(host.submitInteractivePrompt(authority)).rejects.toMatchObject({
+    code: "input_authority_mismatch",
+  });
+  expect(fixture.runtime.paneKeys).toEqual([]);
+
+  fixture.runtime.paneProcess.foregroundProcessGroupId =
+    authority.paneForegroundProcessGroupId;
+  await host.submitInteractivePrompt(authority);
+  expect(fixture.runtime.paneKeys).toEqual([["enter"]]);
+
+  for (const staleAuthority of [
+    { ...authority, herdrEndpointGeneration: 999 },
+    { ...authority, herdrServerGeneration: "stale-server-generation" },
+  ]) {
+    await expect(
+      host.stageInteractivePrompt({
+        authority: staleAuthority,
+        text: "forbidden",
+      }),
+    ).rejects.toMatchObject({ code: "input_authority_stale" });
+  }
+  const currentAgent = fixture.runtime.interactiveAgent as HostedAgent;
+  fixture.runtime.interactiveAgent = {
+    ...currentAgent,
+    tokens: { ...currentAgent.tokens, qe_environment_hash: "stale" },
+  };
+  await expect(
+    host.stageInteractivePrompt({ authority, text: "forbidden" }),
+  ).rejects.toMatchObject({ code: "input_authority_mismatch" });
+  expect(fixture.runtime.paneTexts).toEqual(["literal\ntext"]);
 });
 
 test("long valid Worker IDs use collision-resistant bounded live ownership metadata", async () => {
@@ -539,6 +650,18 @@ class FakeHerdrRuntime {
   exists = false;
   workspaceExists = false;
   workspaceTokens: Record<string, string> = {};
+  interactiveAgent: HostedAgent | null = null;
+  paneProcess: HostedPaneProcessInfo = {
+    paneId: "w1:p1",
+    shellPid: 100,
+    foregroundProcessGroupId: 101,
+    tty: "/dev/ttys001",
+    foregroundProcesses: [
+      { pid: 101, name: "agy", argv: ["/opt/qe/antigravity/agy"] },
+    ],
+  };
+  paneTexts: string[] = [];
+  paneKeys: string[][] = [];
   readonly sessionDirectory: string;
   readonly socketPath: string;
   private generation = 0;
@@ -634,7 +757,7 @@ class FakeHerdrRuntime {
             },
           ]
         : [],
-      agents: [],
+      agents: this.interactiveAgent ? [{ ...this.interactiveAgent }] : [],
     };
   }
 
@@ -716,6 +839,31 @@ class FakeHerdrClient extends HerdrSocketClient {
   override async createWorkspace() {
     return this.runtime.createInfrastructureWorkspace();
   }
+  override async getAgent(target: string): Promise<HostedAgent> {
+    if (
+      !this.runtime.interactiveAgent ||
+      this.runtime.interactiveAgent.paneId !== target
+    )
+      throw new HerdrApiError("agent_not_found", "synthetic agent missing");
+    return { ...this.runtime.interactiveAgent };
+  }
+  override async getPaneProcess(
+    paneId: string,
+  ): Promise<HostedPaneProcessInfo> {
+    return {
+      ...this.runtime.paneProcess,
+      paneId,
+      foregroundProcesses: this.runtime.paneProcess.foregroundProcesses.map(
+        (process) => ({ ...process }),
+      ),
+    };
+  }
+  override async sendPaneText(_paneId: string, text: string): Promise<void> {
+    this.runtime.paneTexts.push(text);
+  }
+  override async sendPaneKeys(_paneId: string, keys: string[]): Promise<void> {
+    this.runtime.paneKeys.push([...keys]);
+  }
   override async integrations(): Promise<HerdrIntegrationEvidence[]> {
     return [
       { target: "pi", available: true, state: "current" },
@@ -748,6 +896,8 @@ const OPERATIONS: Record<string, string[]> = {
     "tokens",
   ],
   "pane.process_info": ["pane_id"],
+  "pane.send_text": ["pane_id", "text"],
+  "pane.send_keys": ["pane_id", "keys"],
   "agent.start": ["pane_id", "name", "kind", "args", "command", "timeout_ms"],
   "agent.prompt": ["target", "text", "wait"],
   "agent.get": ["target"],

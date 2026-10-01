@@ -7,8 +7,6 @@ export const ANTIGRAVITY_MODEL_PROVIDER = "antigravity";
 const REQUIRED_HELP_CAPABILITIES = {
   "native.conversation_resume": "--conversation",
   "native.effort_selection": "--effort",
-  "native.interactive_launch": "--prompt-interactive",
-  "native.initial_conversation_prompt": "--prompt-interactive",
   "native.log_evidence": "--log-file",
   "native.model_selection": "--model",
 } as const;

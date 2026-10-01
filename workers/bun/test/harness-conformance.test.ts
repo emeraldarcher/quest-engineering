@@ -42,7 +42,7 @@ harnessConformance(
           args[0] === "--version"
             ? "1.2.2\n"
             : args[0] === "--help"
-              ? "--conversation --effort --log-file --model --prompt-interactive\n"
+              ? "--conversation --effort --log-file --model\n"
               : args[0] === "models"
                 ? "gemini-test-high\tGemini Test (High)\n"
                 : `qe stdio enabled ${process.execPath} ${resolve(import.meta.dir, "..", "src", "harnesses", "control", "mcp-server.ts")}\n`,
