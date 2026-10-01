@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { SbxClientError } from "../src/execution-environment/sbx-client.ts";
 import {
   DEFAULT_SBX_VERSION_POLICY,
   inspectSbxReadiness,
@@ -15,6 +16,52 @@ test("SBX readiness accepts policy API availability and required host safeguards
     ready: true,
   });
   expect(readiness.diagnostics).toEqual([]);
+});
+
+test("SBX readiness classifies malformed version output as incompatible", async () => {
+  const client = new FakeSbxClient();
+  client.version = async () => {
+    throw new SbxClientError(
+      "malformed_backend_response",
+      "synthetic malformed version response",
+      ["version", "--json"],
+    );
+  };
+  const readiness = await inspectSbxReadiness(client);
+  expect(readiness).toMatchObject({ status: "incompatible", ready: false });
+  expect(readiness.diagnostics).toContainEqual(
+    expect.objectContaining({ code: "backend_incompatible" }),
+  );
+});
+
+test("SBX readiness classifies version transport failures as unavailable", async () => {
+  const client = new FakeSbxClient();
+  client.version = async () => {
+    throw new SbxClientError("operation_timeout", "synthetic version timeout", [
+      "version",
+      "--json",
+    ]);
+  };
+  const readiness = await inspectSbxReadiness(client);
+  expect(readiness).toMatchObject({ status: "unavailable", ready: false });
+  expect(readiness.diagnostics).toContainEqual(
+    expect.objectContaining({ code: "operation_timeout" }),
+  );
+});
+
+test("SBX readiness preserves nonzero operation failure classification", async () => {
+  const client = new FakeSbxClient();
+  client.version = async () => {
+    throw new SbxClientError("operation_failed", "synthetic nonzero exit", [
+      "version",
+      "--json",
+    ]);
+  };
+  const readiness = await inspectSbxReadiness(client);
+  expect(readiness).toMatchObject({ status: "unavailable", ready: false });
+  expect(readiness.diagnostics).toContainEqual(
+    expect.objectContaining({ code: "operation_failed" }),
+  );
 });
 
 test("SBX readiness reports a stopped daemon as unavailable", async () => {

@@ -27,7 +27,7 @@ export async function inspectSbxReadiness(
   try {
     native = await client.version();
   } catch (error) {
-    return unavailable("backend_unavailable", message(error));
+    return preVersionFailure(error);
   }
 
   const provenance = {
@@ -168,29 +168,26 @@ export async function inspectSbxReadiness(
       provenance,
     };
   } catch (error) {
-    const code =
-      error instanceof SbxClientError &&
-      error.code === "malformed_backend_response"
-        ? "backend_incompatible"
-        : "backend_unavailable";
+    const failure = classifyReadinessError(error);
     return {
       backendKind: "sbx",
-      status: code === "backend_incompatible" ? "incompatible" : "unavailable",
+      status: failure.status,
       ready: false,
       capabilities: [],
-      diagnostics: [{ code, message: message(error) }],
+      diagnostics: [{ code: failure.code, message: message(error) }],
       provenance,
     };
   }
 }
 
-function unavailable(code: string, detail: string): EnvironmentReadiness {
+function preVersionFailure(error: unknown): EnvironmentReadiness {
+  const failure = classifyReadinessError(error);
   return {
     backendKind: "sbx",
-    status: "unavailable",
+    status: failure.status,
     ready: false,
     capabilities: [],
-    diagnostics: [{ code, message: detail }],
+    diagnostics: [{ code: failure.code, message: message(error) }],
     provenance: {
       contractVersion: 1,
       implementationVersion: "sbx-environment-backend-v1",
@@ -198,6 +195,25 @@ function unavailable(code: string, detail: string): EnvironmentReadiness {
       testedNativeApiVersion: SBX_TESTED_API_VERSION,
     },
   };
+}
+
+function classifyReadinessError(error: unknown): {
+  status: "incompatible" | "unavailable";
+  code: string;
+} {
+  if (!(error instanceof SbxClientError))
+    return { status: "unavailable", code: "backend_unavailable" };
+  switch (error.code) {
+    case "backend_incompatible":
+    case "malformed_backend_response":
+      return { status: "incompatible", code: "backend_incompatible" };
+    case "operation_timeout":
+      return { status: "unavailable", code: "operation_timeout" };
+    case "operation_failed":
+      return { status: "unavailable", code: "operation_failed" };
+    case "backend_unavailable":
+      return { status: "unavailable", code: "backend_unavailable" };
+  }
 }
 
 function incompatible(

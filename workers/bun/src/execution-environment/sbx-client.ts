@@ -498,12 +498,133 @@ function environmentArgs(
     .flatMap(([key, value]) => ["--env", `${key}=${value}`]);
 }
 
+interface ExtractedJsonDocument {
+  value: unknown;
+  start: number;
+  end: number;
+}
+
 function parseJson(value: string, args: readonly string[]): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    throw malformed("response was not valid JSON", args);
+    // SBX's periodic update check can print its diagnosed update notice to
+    // stdout even when --json is active. Accept that one explicit notice class
+    // and terminal SGR presentation around one complete JSON document only.
+    const documents = extractJsonDocuments(value);
+    if (documents.length !== 1)
+      throw malformed(
+        "response did not contain exactly one valid JSON document",
+        args,
+      );
+    const document = documents[0] as ExtractedJsonDocument;
+    if (
+      !isToleratedJsonFraming(value.slice(0, document.start)) ||
+      !isToleratedJsonFraming(value.slice(document.end))
+    )
+      throw malformed("response contained unsupported non-JSON framing", args);
+    return document.value;
   }
+}
+
+function extractJsonDocuments(value: string): ExtractedJsonDocument[] {
+  const documents: ExtractedJsonDocument[] = [];
+  for (let cursor = 0; cursor < value.length; ) {
+    const objectStart = value.indexOf("{", cursor);
+    const arrayStart = value.indexOf("[", cursor);
+    const start =
+      objectStart < 0
+        ? arrayStart
+        : arrayStart < 0
+          ? objectStart
+          : Math.min(objectStart, arrayStart);
+    if (start < 0) break;
+
+    const end = jsonDocumentEnd(value, start);
+    if (end === null) {
+      cursor = start + 1;
+      continue;
+    }
+    try {
+      documents.push({
+        value: JSON.parse(value.slice(start, end)),
+        start,
+        end,
+      });
+      cursor = end;
+    } catch {
+      cursor = start + 1;
+    }
+  }
+  return documents;
+}
+
+function isToleratedJsonFraming(value: string): boolean {
+  const normalized = normalizeTerminalSgr(value);
+  if (normalized === null) return false;
+  return normalized
+    .split(/\r\n|[\r\n]/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .every((line) =>
+      /^(?:warning:\s*)?update available:\s*v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\s+\(running\s+v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\)$/i.test(
+        line,
+      ),
+    );
+}
+
+function normalizeTerminalSgr(value: string): string | null {
+  let normalized = "";
+  for (let index = 0; index < value.length; ) {
+    const character = value[index] as string;
+    if (character !== "\u001b") {
+      const code = character.charCodeAt(0);
+      if (
+        (code < 0x20 &&
+          character !== "\t" &&
+          character !== "\r" &&
+          character !== "\n") ||
+        (code >= 0x7f && code <= 0x9f)
+      )
+        return null;
+      normalized += character;
+      index += 1;
+      continue;
+    }
+    if (value[index + 1] !== "[") return null;
+    index += 2;
+    while (index < value.length && /[0-9;:]/.test(value[index] as string))
+      index += 1;
+    if (value[index] !== "m") return null;
+    index += 1;
+  }
+  return normalized;
+}
+
+function jsonDocumentEnd(value: string, start: number): number | null {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index] as string;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{" || character === "[") stack.push(character);
+    else if (character === "}" || character === "]") {
+      const expected = character === "}" ? "{" : "[";
+      if (stack.pop() !== expected) return null;
+      if (stack.length === 0) return index + 1;
+    }
+  }
+  return null;
 }
 
 function object(value: unknown): Record<string, unknown> {
