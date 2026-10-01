@@ -2,6 +2,14 @@ import { loadConfig } from "./config.ts";
 import { QuestEngineeringWorker } from "./worker.ts";
 
 const config = loadConfig();
+console.log(
+  JSON.stringify({
+    event: "worker_process_start",
+    observedAt: new Date().toISOString(),
+    workerId: config.workerId,
+    dispatchAvailability: config.dispatchAvailability ?? "active",
+  }),
+);
 if (
   config.herdrBin &&
   config.herdrConfigHome &&

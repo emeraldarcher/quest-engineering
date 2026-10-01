@@ -231,9 +231,11 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
 
     case assignment.state do
       "ready" ->
+        ensure_legacy_test_bindings!(assignment.workspace_id)
         {:ready, assignment}
 
       "retained" ->
+        ensure_legacy_test_bindings!(assignment.workspace_id)
         {:ready, assignment}
 
       "provisioning" ->
@@ -259,7 +261,9 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
           on: worker.id == binding.worker_id,
           where:
             binding.workspace_id == ^assignment.workspace_id and binding.status == "available" and
-              worker.status == "connected",
+              binding.last_seen_generation == worker.connection_generation and
+              worker.status == "connected" and
+              worker.ready_generation == worker.connection_generation,
           order_by: [asc: worker.active_dispatches, asc: worker.id],
           lock: "FOR UPDATE",
           select: {worker, binding}
@@ -292,19 +296,27 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
   defp ensure_legacy_test_bindings!(workspace_id) do
     workspace = Repo.get!(ProductWorkspace, workspace_id)
 
-    Repo.all(from worker in Worker, where: worker.status == "connected")
+    Repo.all(
+      from worker in Worker,
+        where:
+          worker.status == "connected" and
+            worker.ready_generation == worker.connection_generation
+    )
     |> Enum.each(fn worker ->
       existing =
         Repo.get_by(WorkerWorkspaceBinding, worker_id: worker.id, workspace_id: workspace_id)
 
-      if is_nil(existing) do
-        legacy =
-          worker.capabilities
-          |> Map.get("executors", [])
-          |> Enum.flat_map(&Map.get(&1, "workspaces", []))
-          |> Enum.find(&(&1["ref"] in [workspace.key, workspace.name]))
+      legacy =
+        worker.capabilities
+        |> Map.get("executors", [])
+        |> Enum.flat_map(&Map.get(&1, "workspaces", []))
+        |> Enum.find(&(&1["ref"] in [workspace.key, workspace.name]))
 
-        if legacy do
+      cond do
+        is_nil(legacy) ->
+          :ok
+
+        is_nil(existing) ->
           attributes = %{
             binding_id: Ecto.UUID.generate(),
             worker_id: worker.id,
@@ -320,7 +332,20 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
           }
 
           Repo.insert!(WorkerWorkspaceBinding.changeset(attributes))
-        end
+
+        existing.authorized_root_key == "legacy-test" ->
+          existing
+          |> Changeset.change(
+            source_repository_root: legacy["root"],
+            max_access: legacy["max_access"],
+            status: "available",
+            last_seen_generation: worker.connection_generation,
+            last_seen_at: now()
+          )
+          |> Repo.update!()
+
+        true ->
+          :ok
       end
     end)
   end

@@ -5,6 +5,7 @@ defmodule QuestEngineering.Server.WorkerBindingReconciliationTest do
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.WorkerError
   alias QuestEngineering.Server.WorkerStore
+  alias QuestEngineering.ServerWeb.Endpoint
 
   test "Worker with no bindings registers and reconciles normally" do
     worker = register("worker-empty")
@@ -174,8 +175,71 @@ defmodule QuestEngineering.Server.WorkerBindingReconciliationTest do
     assert Repo.aggregate(WorkerWorkspaceBinding, :count) == 0
   end
 
-  defp register(id) do
-    assert {:ok, worker} = WorkerStore.register(id, capabilities(), Ecto.UUID.generate())
+  test "maintenance to active restart fences readiness until current reconciliation completes" do
+    workspace = workspace("active-ready")
+    binding = binding_fixture(workspace.id)
+    maintenance = register("worker-active-ready", "maintenance")
+
+    assert {:ok, [%{status: "accepted"}]} =
+             WorkerStore.reconcile_workspace_bindings(
+               maintenance.id,
+               maintenance.connection_generation,
+               [binding]
+             )
+
+    Endpoint.subscribe("product:all")
+
+    assert {:ok, maintenance_ready} =
+             WorkerStore.mark_ready(maintenance.id, maintenance.connection_generation)
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "product_changed"}
+    assert maintenance_ready.ready_generation == maintenance.connection_generation
+    maintenance_ready_at = maintenance_ready.ready_at
+
+    assert {:ok, maintenance_ready_again} =
+             WorkerStore.mark_ready(maintenance.id, maintenance.connection_generation)
+
+    assert maintenance_ready_again.ready_at == maintenance_ready_at
+    refute_receive %Phoenix.Socket.Broadcast{event: "product_changed"}, 50
+
+    active = register("worker-active-ready", "active")
+    assert active.connection_generation == maintenance.connection_generation + 1
+    assert is_nil(active.ready_generation)
+    assert is_nil(active.ready_at)
+    assert %{status: "unavailable"} = Repo.get!(WorkerWorkspaceBinding, binding["binding_id"])
+
+    assert {:error, %WorkerError{type: :stale_connection_generation}} =
+             WorkerStore.mark_ready(maintenance.id, maintenance.connection_generation)
+
+    assert {:ok, [%{status: "accepted"}]} =
+             WorkerStore.reconcile_workspace_bindings(
+               active.id,
+               active.connection_generation,
+               [binding]
+             )
+
+    assert {:ok, before_ready} = WorkerStore.fetch(active.id)
+    assert is_nil(before_ready.ready_generation)
+
+    assert {:ok, active_ready} =
+             WorkerStore.mark_ready(active.id, active.connection_generation)
+
+    assert active_ready.ready_generation == active.connection_generation
+
+    assert %{status: "available", last_seen_generation: generation} =
+             Repo.get!(WorkerWorkspaceBinding, binding["binding_id"])
+
+    assert generation == active.connection_generation
+  end
+
+  defp register(id, availability \\ "active") do
+    assert {:ok, worker} =
+             WorkerStore.register(
+               id,
+               Map.put(capabilities(), "dispatch_availability", availability),
+               Ecto.UUID.generate()
+             )
+
     worker
   end
 

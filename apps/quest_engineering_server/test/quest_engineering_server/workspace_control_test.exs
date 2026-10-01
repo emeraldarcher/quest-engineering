@@ -30,6 +30,7 @@ defmodule QuestEngineering.Server.WorkspaceControlTest do
       })
     )
 
+    assert {:ok, _ready} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     assert %{state: "available"} = WorkspaceControl.binding_state(workspace.id)
 
     assert {:ok, _worker} =
@@ -142,6 +143,7 @@ defmodule QuestEngineering.Server.WorkspaceControlTest do
 
   defp register_worker(id) do
     {:ok, worker} = WorkerStore.register(id, capabilities(), Ecto.UUID.generate())
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     worker
   end
 

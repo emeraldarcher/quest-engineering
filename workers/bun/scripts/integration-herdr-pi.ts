@@ -5,7 +5,11 @@ import { resolveHerdrLocalContext, type WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
-import type { ExecuteAction, JsonValue } from "../src/protocol/types.ts";
+import {
+  type ExecuteAction,
+  type JsonValue,
+  WORKER_PROTOCOL_VERSION,
+} from "../src/protocol/types.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
 import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
@@ -263,7 +267,7 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
       : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 9,
+    protocol_version: WORKER_PROTOCOL_VERSION,
     worker_id: config.workerId,
     execution: {
       identity: {

@@ -10,7 +10,10 @@ import {
   HarnessControlAuthority,
 } from "../../src/harnesses/control/authority.ts";
 import { HarnessControlServer } from "../../src/harnesses/control/server.ts";
-import type { ExecuteAction } from "../../src/protocol/types.ts";
+import {
+  type ExecuteAction,
+  WORKER_PROTOCOL_VERSION,
+} from "../../src/protocol/types.ts";
 
 export interface ProbeControl {
   authority: HarnessControlAuthority;
@@ -97,7 +100,7 @@ function probeAction(root: string): ExecuteAction {
   const bindingId = crypto.randomUUID();
   return {
     type: "execute_action",
-    protocol_version: 9,
+    protocol_version: WORKER_PROTOCOL_VERSION,
     worker_id: "manual-antigravity-probe",
     execution: {
       identity: {

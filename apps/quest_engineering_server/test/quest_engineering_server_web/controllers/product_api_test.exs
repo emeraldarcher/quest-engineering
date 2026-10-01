@@ -7,6 +7,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
   alias QuestEngineering.Server.Persistence.ProductTactic
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.WorkerStore
@@ -448,8 +449,12 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
       ]
     }
 
-    {:ok, _} = WorkerStore.register("options-one", capabilities, Ecto.UUID.generate())
-    {:ok, _} = WorkerStore.register("options-two", capabilities, Ecto.UUID.generate())
+    {:ok, first} = WorkerStore.register("options-one", capabilities, Ecto.UUID.generate())
+    {:ok, second} = WorkerStore.register("options-two", capabilities, Ecto.UUID.generate())
+    reconcile_binding!(first, workspace, "options-one")
+    reconcile_binding!(second, workspace, "options-two")
+    {:ok, _} = WorkerStore.mark_ready(first.id, first.connection_generation)
+    {:ok, _} = WorkerStore.mark_ready(second.id, second.connection_generation)
 
     response = get(build_conn(), "/api/v1/execution-options")
 
@@ -477,7 +482,8 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
                      "workspace_access" => ["none", "read_only", "read_write"]
                    }
                  ],
-                 "available" => true
+                 "available" => true,
+                 "active_ready_generations" => [1]
                }
              ]
            } = json_response(response, 200)
@@ -488,6 +494,81 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert encoded =~ "private-adapter"
     refute encoded =~ "/not-for-clients"
     refute encoded =~ "max_concurrency"
+  end
+
+  test "execution option availability is fenced by active-ready connection generation" do
+    {:ok, workspace} =
+      Products.create_workspace(%{
+        key: "api-active-ready",
+        name: "workspace:active-ready",
+        source_kind: :local_git
+      })
+
+    capabilities = %{
+      "os" => "test",
+      "arch" => "test",
+      "max_concurrency" => 1,
+      "dispatch_availability" => "active",
+      "tags" => [],
+      "executors" => [
+        %{
+          "harness_kind" => "private-adapter",
+          "models" => [
+            %{
+              "provider" => "fake",
+              "model" => "ready",
+              "display_name" => "Ready model",
+              "account_availability" => "verified_available",
+              "reasoning_capability" => %{"kind" => "enumerated", "values" => ["high"]}
+            }
+          ],
+          "supported_tool_policies" => ["exact"],
+          "tool_enforcement" => "exact",
+          "tool_profile" => %{"tools" => ["workspace.filesystem"]},
+          "workspaces" => [
+            %{
+              "ref" => "workspace:active-ready",
+              "root" => "/not-for-clients",
+              "max_access" => "read_write"
+            }
+          ]
+        }
+      ]
+    }
+
+    {:ok, first} =
+      WorkerStore.register("options-active-ready", capabilities, Ecto.UUID.generate())
+
+    reconcile_binding!(first, workspace, "active-ready")
+
+    assert %{"available" => false, "active_ready_generations" => []} =
+             execution_option("ready")
+
+    assert {:ok, _} = WorkerStore.mark_ready(first.id, first.connection_generation)
+
+    assert %{"available" => true, "active_ready_generations" => [1]} =
+             execution_option("ready")
+
+    {:ok, second} =
+      WorkerStore.register("options-active-ready", capabilities, Ecto.UUID.generate())
+
+    assert %{"available" => false, "active_ready_generations" => []} =
+             execution_option("ready")
+
+    assert {:error,
+            %QuestEngineering.Server.WorkerError{
+              type: :stale_connection_generation
+            }} = WorkerStore.mark_ready(first.id, first.connection_generation)
+
+    assert {:ok, _} = WorkerStore.mark_ready(second.id, second.connection_generation)
+
+    assert %{"available" => false, "active_ready_generations" => []} =
+             execution_option("ready")
+
+    reconcile_binding!(second, workspace, "active-ready")
+
+    assert %{"available" => true, "active_ready_generations" => [2]} =
+             execution_option("ready")
   end
 
   test "logical Workspace APIs expose no Worker filesystem roots" do
@@ -514,6 +595,38 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
     assert created["workspace"]["id"] == workspace_id
     refute Jason.encode!(json_response(response, 200)) =~ "/Users/"
+  end
+
+  defp reconcile_binding!(worker, workspace, suffix) do
+    existing =
+      Repo.get_by(WorkerWorkspaceBinding, worker_id: worker.id, workspace_id: workspace.id)
+
+    binding = %{
+      "binding_id" => if(existing, do: existing.binding_id, else: Ecto.UUID.generate()),
+      "workspace_id" => workspace.id,
+      "authorized_root_key" => suffix,
+      "source_repository_root" => "/not-for-clients/#{suffix}",
+      "source_fingerprint" => workspace.source_fingerprint,
+      "publication_remote_name" => nil,
+      "publication_repository_identity" => nil,
+      "max_access" => "read_write",
+      "allow_unconfined_shell" => false
+    }
+
+    assert {:ok, [%{status: "accepted"}]} =
+             WorkerStore.reconcile_workspace_bindings(
+               worker.id,
+               worker.connection_generation,
+               [binding]
+             )
+  end
+
+  defp execution_option(model) do
+    build_conn()
+    |> get("/api/v1/execution-options")
+    |> json_response(200)
+    |> Map.fetch!("execution_options")
+    |> Enum.find(&(&1["model"]["model"] == model))
   end
 
   defp preview_inline(body, status) do

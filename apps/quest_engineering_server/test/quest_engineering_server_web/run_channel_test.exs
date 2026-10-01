@@ -205,6 +205,7 @@ defmodule QuestEngineering.ServerWeb.RunChannelTest do
     }
 
     {:ok, worker} = WorkerStore.register("worker-channel", capabilities, Ecto.UUID.generate())
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     worker
   end
 end

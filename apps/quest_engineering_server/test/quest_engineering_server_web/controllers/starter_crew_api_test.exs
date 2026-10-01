@@ -135,9 +135,29 @@ defmodule QuestEngineering.ServerWeb.StarterCrewApiTest do
       ]
     }
 
-    {:ok, _worker} =
+    {:ok, worker} =
       WorkerStore.register("starter-api-worker", capabilities, Ecto.UUID.generate())
 
+    binding = %{
+      "binding_id" => Ecto.UUID.generate(),
+      "workspace_id" => workspace.id,
+      "authorized_root_key" => "starter-api-test",
+      "source_repository_root" => "/not-exposed",
+      "source_fingerprint" => workspace.source_fingerprint,
+      "publication_remote_name" => nil,
+      "publication_repository_identity" => nil,
+      "max_access" => "read_write",
+      "allow_unconfined_shell" => false
+    }
+
+    assert {:ok, [%{status: "accepted"}]} =
+             WorkerStore.reconcile_workspace_bindings(
+               worker.id,
+               worker.connection_generation,
+               [binding]
+             )
+
+    assert {:ok, _ready} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     workspace
   end
 end

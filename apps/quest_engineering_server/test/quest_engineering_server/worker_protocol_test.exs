@@ -18,11 +18,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
+  @protocol_version 10
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v9 logical Workspace bindings" do
+  test "accepts explicit protocol v10 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -86,6 +87,18 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
              WorkerProtocol.decode_hello(invalid)
+  end
+
+  test "decodes current-generation readiness publication" do
+    assert {:ok, %{type: :worker_ready, worker_id: @worker_id}} =
+             WorkerProtocol.decode_worker_message(
+               %{
+                 "type" => "worker_ready",
+                 "protocol_version" => @protocol_version,
+                 "worker_id" => @worker_id
+               },
+               @worker_id
+             )
   end
 
   test "reasoning capability distinguishes unsupported from unknown" do
@@ -159,7 +172,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes authoritative Delivery evidence messages" do
     payload = %{
       "type" => "run_delivery_inspected",
-      "protocol_version" => 9,
+      "protocol_version" => @protocol_version,
       "worker_id" => @worker_id,
       "delivery" => %{
         "delivery_id" => Ecto.UUID.generate(),
@@ -186,7 +199,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "accepts uncertain reconciliation only with structured failure" do
     payload = %{
       "type" => "dispatch_state",
-      "protocol_version" => 9,
+      "protocol_version" => @protocol_version,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -201,7 +214,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "normalizes classified failures and validates retained recovery requests" do
     failed = %{
       "type" => "step_failed",
-      "protocol_version" => 9,
+      "protocol_version" => @protocol_version,
       "worker_id" => @worker_id,
       "action_id" => "action",
       "occurrence_id" => "occurrence",
@@ -219,7 +232,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     recovery = %{
       "type" => "human_recovery_requested",
-      "protocol_version" => 9,
+      "protocol_version" => @protocol_version,
       "worker_id" => @worker_id,
       "recovery" => %{
         "request_id" => "request",
@@ -241,7 +254,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   test "decodes Product-safe harness session and structured attention state" do
     payload = %{
       "type" => "session_state",
-      "protocol_version" => 9,
+      "protocol_version" => @protocol_version,
       "worker_id" => @worker_id,
       "session" => %{
         "session_id" => "session-1",
@@ -386,7 +399,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert encoded == %{
              "type" => "cancel_dispatch",
-             "protocol_version" => 9,
+             "protocol_version" => @protocol_version,
              "worker_id" => "worker-1",
              "connection_generation" => 7,
              "action_id" => "action-1",
@@ -406,7 +419,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     encoded = WorkerProtocol.execute_action(@worker_id, execution())
     wire = encoded["execution"]
 
-    assert encoded["protocol_version"] == 9
+    assert encoded["protocol_version"] == @protocol_version
     assert wire["configuration"]["harness_kind"] == "fake"
     assert wire["configuration"]["model"] == %{"provider" => "fake", "model" => "test"}
 
@@ -514,7 +527,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   defp hello do
     %{
       "type" => "worker_hello",
-      "protocol_version" => 9,
+      "protocol_version" => @protocol_version,
       "worker_id" => @worker_id,
       "capabilities" => %{
         "os" => "test",

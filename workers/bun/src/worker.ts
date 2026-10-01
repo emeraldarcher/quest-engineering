@@ -230,6 +230,21 @@ export class QuestEngineeringWorker {
         `SBX execution reconciliation requires attention: ${reconciliation.join(" ")}`,
       );
     await this.refreshHarnessCapabilities();
+    console.log(
+      JSON.stringify({
+        event: "worker_capability_discovery_complete",
+        observedAt: new Date().toISOString(),
+        workerId: this.config.workerId,
+        dispatchAvailability:
+          this.capabilities.dispatch_availability ?? "active",
+        executors: this.capabilities.executors.map((executor) => ({
+          harness: executor.harness_kind,
+          modelCount: executor.models.length,
+          profileId: executor.execution_environment?.profile.id ?? null,
+          profileDigest: executor.execution_environment?.profile.digest ?? null,
+        })),
+      }),
+    );
   }
 
   async run(): Promise<void> {
@@ -454,51 +469,7 @@ export class QuestEngineeringWorker {
       return;
     }
     if (message.type === "reconcile_run_worktrees") {
-      const requested = Array.isArray(message.worktrees)
-        ? message.worktrees
-        : [];
-      for (const item of requested) {
-        if (!item || typeof item !== "object") continue;
-        const id = (item as Record<string, unknown>).worktree_id;
-        if (typeof id !== "string") continue;
-        const request = item as Record<string, unknown>;
-        const record = this.worktrees.get(id);
-        if (record) {
-          const desired = String(request.desired_state ?? "");
-          if (desired === "retained") {
-            this.assertRunIdle(String(request.run_id ?? ""));
-            const retained = await this.worktrees.retain(id);
-            await this.reportWorktreeState("run_worktree_retained", retained);
-          } else if (desired === "cleanup_requested" || desired === "removed") {
-            this.assertRunIdle(String(request.run_id ?? ""));
-            const removed = await this.worktrees.cleanup(id);
-            if (removed.state === "removed")
-              await this.reportWorktreeState("run_worktree_removed", removed);
-            else await this.reportWorktree(removed);
-          } else {
-            const observed =
-              record.state === "ready" || record.state === "retained"
-                ? await this.worktrees.verify(id)
-                : record;
-            await this.reportWorktree(observed);
-          }
-        } else {
-          await this.channel.sendProtocol({
-            type: "run_worktree_attention",
-            protocol_version: WORKER_PROTOCOL_VERSION,
-            worker_id: this.config.workerId,
-            worktree_id: id,
-            run_id: String(request.run_id ?? ""),
-            workspace_binding_id: String(request.workspace_binding_id ?? ""),
-            identity_hash: String(request.identity_hash ?? ""),
-            failure: {
-              code: "run_worktree_missing",
-              message:
-                "The durable Worker mapping for the assigned Run worktree is missing.",
-            },
-          });
-        }
-      }
+      await this.reconcileRunWorktrees(message.worktrees);
       return;
     }
     if (message.type === "resolve_uncertain_dispatch") {
@@ -623,6 +594,52 @@ export class QuestEngineeringWorker {
     }
   }
 
+  private async reconcileRunWorktrees(worktrees: unknown): Promise<void> {
+    const requested = Array.isArray(worktrees) ? worktrees : [];
+    for (const item of requested) {
+      if (!item || typeof item !== "object") continue;
+      const id = (item as Record<string, unknown>).worktree_id;
+      if (typeof id !== "string") continue;
+      const request = item as Record<string, unknown>;
+      const record = this.worktrees.get(id);
+      if (record) {
+        const desired = String(request.desired_state ?? "");
+        if (desired === "retained") {
+          this.assertRunIdle(String(request.run_id ?? ""));
+          const retained = await this.worktrees.retain(id);
+          await this.reportWorktreeState("run_worktree_retained", retained);
+        } else if (desired === "cleanup_requested" || desired === "removed") {
+          this.assertRunIdle(String(request.run_id ?? ""));
+          const removed = await this.worktrees.cleanup(id);
+          if (removed.state === "removed")
+            await this.reportWorktreeState("run_worktree_removed", removed);
+          else await this.reportWorktree(removed);
+        } else {
+          const observed =
+            record.state === "ready" || record.state === "retained"
+              ? await this.worktrees.verify(id)
+              : record;
+          await this.reportWorktree(observed);
+        }
+      } else {
+        await this.channel.sendProtocol({
+          type: "run_worktree_attention",
+          protocol_version: WORKER_PROTOCOL_VERSION,
+          worker_id: this.config.workerId,
+          worktree_id: id,
+          run_id: String(request.run_id ?? ""),
+          workspace_binding_id: String(request.workspace_binding_id ?? ""),
+          identity_hash: String(request.identity_hash ?? ""),
+          failure: {
+            code: "run_worktree_missing",
+            message:
+              "The durable Worker mapping for the assigned Run worktree is missing.",
+          },
+        });
+      }
+    }
+  }
+
   private onRegistered(
     response: Record<string, unknown>,
     generation: number,
@@ -642,15 +659,53 @@ export class QuestEngineeringWorker {
       this.capabilities,
       response.workspace_binding_reconciliation,
     );
+    await this.reconcileRunWorktrees(response.run_worktree_reconciliation);
     await this.reconcileControlPlane(generation);
     if (!this.channel.isCurrentGeneration(generation))
       throw new Error(
         "Worker registration generation changed during reconciliation.",
       );
 
-    this.readyGeneration = generation;
     if (this.reconciliationDirtyGeneration === generation)
       await this.reconcileControlPlane(generation);
+    if (!this.channel.isCurrentGeneration(generation))
+      throw new Error(
+        "Worker registration generation changed before readiness publication.",
+      );
+
+    this.readyGeneration = generation;
+    let readiness: Record<string, unknown>;
+    try {
+      readiness = await this.channel.sendProtocol({
+        type: "worker_ready",
+        protocol_version: WORKER_PROTOCOL_VERSION,
+        worker_id: this.config.workerId,
+      });
+    } catch (error) {
+      if (this.readyGeneration === generation) this.readyGeneration = null;
+      throw error;
+    }
+    if (
+      readiness.result !== "worker_ready" ||
+      readiness.connection_generation !== this.channel.currentServerGeneration()
+    ) {
+      if (this.readyGeneration === generation) this.readyGeneration = null;
+      throw new Error(
+        "Control plane did not acknowledge current-generation Worker readiness.",
+      );
+    }
+    console.log(
+      JSON.stringify({
+        event: "worker_active_ready",
+        observedAt: new Date().toISOString(),
+        workerId: this.config.workerId,
+        localConnectionGeneration: generation,
+        serverConnectionGeneration: readiness.connection_generation,
+        readyAt: readiness.ready_at,
+        dispatchAvailability:
+          this.capabilities.dispatch_availability ?? "active",
+      }),
+    );
     // Reconstruct discovery/readiness from source authority; it is not a raw
     // outbound replay and does not gate already-durable dispatch recovery.
     void this.trackProtocolOperation(this.reportWorkspaceSources()).catch(

@@ -43,7 +43,8 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
        WorkerProtocol.welcome(
          hello.worker_id,
          binding_reconciliation,
-         worker.connection_generation
+         worker.connection_generation,
+         run_worktree_reconciliation(hello.worker_id)
        ), socket}
     else
       {:error, %WorkerProtocol.Error{} = error} -> {:error, WorkerProtocol.protocol_error(error)}
@@ -97,16 +98,6 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
   def handle_info(:request_reconciliation, socket) do
     worker_id = socket.assigns.worker_id
     push(socket, "protocol", WorkerProtocol.reconcile_request(worker_id))
-
-    push(
-      socket,
-      "protocol",
-      WorkerProtocol.reconcile_run_worktrees_request(
-        worker_id,
-        RunWorkspaceStore.assignments_for_worker(worker_id)
-      )
-    )
-
     {:noreply, socket}
   end
 
@@ -124,5 +115,12 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
     })
 
     {:stop, :normal, socket}
+  end
+
+  defp run_worktree_reconciliation(worker_id) do
+    worker_id
+    |> RunWorkspaceStore.assignments_for_worker()
+    |> then(&WorkerProtocol.reconcile_run_worktrees_request(worker_id, &1))
+    |> Map.fetch!("worktrees")
   end
 end

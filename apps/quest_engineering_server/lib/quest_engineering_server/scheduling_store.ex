@@ -359,13 +359,18 @@ defmodule QuestEngineering.Server.SchedulingStore do
 
     Repo.all(
       from worker in Worker,
-        where: worker.status == "connected",
+        where:
+          worker.status == "connected" and
+            worker.ready_generation == worker.connection_generation,
         order_by: [asc: worker.id],
         lock: "FOR UPDATE"
     )
     |> Enum.flat_map(fn worker ->
       case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
-        {:ok, resolution} when worker.id == assignment.worker_id ->
+        {:ok, resolution}
+        when worker.id == assignment.worker_id and not is_nil(binding) and
+               binding.worker_id == worker.id and binding.status == "available" and
+               binding.last_seen_generation == worker.connection_generation ->
           if shell_authorized?(resolution, binding), do: [{worker, resolution}], else: []
 
         _other ->

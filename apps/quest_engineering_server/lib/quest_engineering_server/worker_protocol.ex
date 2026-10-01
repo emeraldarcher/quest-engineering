@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 9
+  @version 10
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -93,7 +93,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 7
+  @spec version() :: 10
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -123,12 +123,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   def decode_worker_message(_payload, _worker_id), do: error(:malformed_message)
 
-  def welcome(worker_id, binding_reconciliation \\ [], connection_generation \\ nil) do
+  def welcome(
+        worker_id,
+        binding_reconciliation \\ [],
+        connection_generation \\ nil,
+        run_worktree_reconciliation \\ []
+      ) do
     %{
       "type" => "worker_welcome",
       "protocol_version" => @version,
       "worker_id" => worker_id,
-      "workspace_binding_reconciliation" => binding_reconciliation
+      "workspace_binding_reconciliation" => binding_reconciliation,
+      "run_worktree_reconciliation" => run_worktree_reconciliation
     }
     |> maybe_put("connection_generation", connection_generation)
   end
@@ -303,6 +309,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_message("worker_heartbeat", worker_id, _payload),
     do: {:ok, %Message{type: :heartbeat, worker_id: worker_id}}
+
+  defp decode_message("worker_ready", worker_id, _payload),
+    do: {:ok, %Message{type: :worker_ready, worker_id: worker_id}}
 
   defp decode_message("workspace_sources", worker_id, %{"candidates" => candidates})
        when is_list(candidates) do

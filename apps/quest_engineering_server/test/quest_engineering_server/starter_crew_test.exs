@@ -408,6 +408,27 @@ defmodule QuestEngineering.Server.StarterCrewTest do
     }
 
     {:ok, worker} = WorkerStore.register(worker_id, capabilities, Ecto.UUID.generate())
+
+    binding = %{
+      "binding_id" => Ecto.UUID.generate(),
+      "workspace_id" => workspace.id,
+      "authorized_root_key" => "starter-test",
+      "source_repository_root" => "/not-exposed/#{worker_id}",
+      "source_fingerprint" => workspace.source_fingerprint,
+      "publication_remote_name" => nil,
+      "publication_repository_identity" => nil,
+      "max_access" => "read_write",
+      "allow_unconfined_shell" => false
+    }
+
+    assert {:ok, [%{status: "accepted"}]} =
+             WorkerStore.reconcile_workspace_bindings(
+               worker.id,
+               worker.connection_generation,
+               [binding]
+             )
+
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     worker
   end
 

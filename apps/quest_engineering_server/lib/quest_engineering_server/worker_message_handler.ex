@@ -27,6 +27,21 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     result(WorkerStore.heartbeat(worker_id, generation))
   end
 
+  def handle(worker_id, generation, %{type: :worker_ready}) do
+    with {:ok, worker} <- WorkerStore.mark_ready(worker_id, generation) do
+      Scheduler.wake_all()
+
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "worker_ready",
+         "connection_generation" => worker.connection_generation,
+         "ready_at" => DateTime.to_iso8601(worker.ready_at)
+       }}
+    end
+  end
+
   def handle(worker_id, generation, %{type: :workspace_sources, candidates: candidates}) do
     with {:ok, _} <- WorkerStore.heartbeat(worker_id, generation),
          {:ok, _} <- WorkspaceControl.record_candidates(worker_id, candidates) do

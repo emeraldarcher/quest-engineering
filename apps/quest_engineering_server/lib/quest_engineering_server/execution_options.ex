@@ -22,7 +22,12 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       %{
         profile
         | available: Enum.any?(profiles, & &1.available),
-          account_availability: merged_account_availability(profiles)
+          account_availability: merged_account_availability(profiles),
+          active_ready_generations:
+            profiles
+            |> Enum.flat_map(& &1.active_ready_generations)
+            |> Enum.uniq()
+            |> Enum.sort()
       }
     end)
     |> Enum.sort_by(
@@ -32,12 +37,18 @@ defmodule QuestEngineering.Server.ExecutionOptions do
 
   defp profiles(%Worker{capabilities: %{"executors" => executors}, status: status} = worker)
        when is_list(executors) do
-    bindings = safe_bindings(worker)
+    {bindings, current_generation_binding?} = safe_bindings(worker)
 
     dispatch_active = Map.get(worker.capabilities, "dispatch_availability", "active") == "active"
 
+    active_ready =
+      status == "connected" and dispatch_active and current_generation_binding? and
+        worker.ready_generation == worker.connection_generation
+
+    readiness = if active_ready, do: [worker.connection_generation], else: []
+
     Enum.flat_map(executors, fn executor ->
-      profile(executor, bindings, status == "connected" and dispatch_active)
+      profile(executor, bindings, active_ready, readiness)
     end)
   end
 
@@ -52,7 +63,8 @@ defmodule QuestEngineering.Server.ExecutionOptions do
            "tool_profile" => %{"tools" => tools}
          } = executor,
          bindings,
-         available
+         available,
+         active_ready_generations
        )
        when is_binary(harness) and harness != "" and is_list(models) and is_list(tools) and
               is_list(supported_policies) and
@@ -72,7 +84,16 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       Enum.flat_map(models, fn model ->
         Enum.map(
           supported_policies,
-          &execution_option(&1, harness, model, tool_enforcement, tools, workspaces, available)
+          &execution_option(
+            &1,
+            harness,
+            model,
+            tool_enforcement,
+            tools,
+            workspaces,
+            available,
+            active_ready_generations
+          )
         )
       end)
     else
@@ -80,7 +101,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
     end
   end
 
-  defp profile(_executor, _bindings, _available), do: []
+  defp profile(_executor, _bindings, _available, _active_ready_generations), do: []
 
   defp execution_option(
          policy_kind,
@@ -89,7 +110,8 @@ defmodule QuestEngineering.Server.ExecutionOptions do
          tool_enforcement,
          tools,
          workspaces,
-         available
+         available,
+         active_ready_generations
        ) do
     %{
       harness: harness,
@@ -100,7 +122,8 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       current_tool_profile: %{tools: Enum.sort(tools)},
       workspaces: workspaces,
       account_availability: model.account_availability,
-      available: available and model.account_availability != "verified_unavailable"
+      available: available and model.account_availability != "verified_unavailable",
+      active_ready_generations: active_ready_generations
     }
   end
 
@@ -112,6 +135,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
           on: workspace.id == binding.workspace_id,
           where:
             binding.worker_id == ^worker.id and binding.status == "available" and
+              binding.last_seen_generation == ^worker.connection_generation and
               is_nil(workspace.archived_at),
           select: %{
             workspace_id: workspace.id,
@@ -120,7 +144,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
           }
       )
 
-    if explicit == [], do: legacy_bindings(worker), else: explicit
+    if explicit == [], do: {legacy_bindings(worker), false}, else: {explicit, true}
   end
 
   defp legacy_bindings(worker) do

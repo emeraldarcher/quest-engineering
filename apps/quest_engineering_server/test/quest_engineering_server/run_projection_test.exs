@@ -501,6 +501,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
     }
 
     {:ok, worker} = WorkerStore.register("worker-projection", capabilities, Ecto.UUID.generate())
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     worker
   end
 end

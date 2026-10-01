@@ -197,7 +197,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         options
         |> Keyword.get(:capabilities, default_capabilities())
         |> Map.put_new("workspace_bindings", []),
-      protocol_version: Keyword.get(options, :protocol_version, 9),
+      protocol_version: Keyword.get(options, :protocol_version, 10),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -205,6 +205,8 @@ defmodule QuestEngineering.Server.FakeWorker do
       monitor: nil,
       connected?: false,
       registered?: false,
+      ready?: false,
+      ready_ref: nil,
       known: %{},
       sessions: %{},
       worktrees: %{},
@@ -233,14 +235,24 @@ defmodule QuestEngineering.Server.FakeWorker do
   def handle_call(:connect, _from, state), do: {:reply, :ok, state}
 
   def handle_call(:disconnect, _from, %{connection: nil} = state),
-    do: {:reply, :ok, %{state | connected?: false, registered?: false}}
+    do: {:reply, :ok, %{state | connected?: false, registered?: false, ready?: false}}
 
   def handle_call(:disconnect, _from, state) do
     GenServer.stop(state.connection, :normal)
-    {:reply, :ok, %{state | connection: nil, monitor: nil, connected?: false, registered?: false}}
+
+    {:reply, :ok,
+     %{
+       state
+       | connection: nil,
+         monitor: nil,
+         connected?: false,
+         registered?: false,
+         ready?: false,
+         ready_ref: nil
+     }}
   end
 
-  def handle_call(:connected?, _from, state), do: {:reply, state.registered?, state}
+  def handle_call(:connected?, _from, state), do: {:reply, state.ready?, state}
   def handle_call(:registration_error, _from, state), do: {:reply, state.last_error, state}
   def handle_call(:known_dispatches, _from, state), do: {:reply, state.known, state}
 
@@ -364,11 +376,20 @@ defmodule QuestEngineering.Server.FakeWorker do
     do: {:noreply, handle_frame(frame, state)}
 
   def handle_info({:fake_worker_disconnected, pid, _reason}, %{connection: pid} = state),
-    do: {:noreply, %{state | connected?: false, registered?: false}}
+    do: {:noreply, %{state | connected?: false, registered?: false, ready?: false}}
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{monitor: ref} = state),
     do:
-      {:noreply, %{state | connection: nil, monitor: nil, connected?: false, registered?: false}}
+      {:noreply,
+       %{
+         state
+         | connection: nil,
+           monitor: nil,
+           connected?: false,
+           registered?: false,
+           ready?: false,
+           ready_ref: nil
+       }}
 
   def handle_info(_message, state), do: {:noreply, state}
 
@@ -397,7 +418,13 @@ defmodule QuestEngineering.Server.FakeWorker do
     do: %{state | registered?: true}
 
   defp handle_frame([_join_ref, "1", @topic, "phx_reply", %{"status" => "error"} = reply], state),
-    do: %{state | registered?: false, last_error: reply}
+    do: %{state | registered?: false, ready?: false, last_error: reply}
+
+  defp handle_frame(
+         [_join_ref, ref, @topic, "phx_reply", %{"status" => "ok"}],
+         %{ready_ref: ref} = state
+       ),
+       do: %{state | ready?: true, ready_ref: nil}
 
   defp handle_frame([_join_ref, _ref, @topic, "protocol", message], state),
     do: handle_protocol(message, state)
@@ -469,18 +496,38 @@ defmodule QuestEngineering.Server.FakeWorker do
     dispatches = state.known |> Map.values() |> Enum.map(&state_payload/1)
     sessions = Map.values(state.sessions)
 
-    send_protocol(state, %{
-      "type" => "reconcile_state",
+    reconciled =
+      send_protocol(state, %{
+        "type" => "reconcile_state",
+        "protocol_version" => state.protocol_version,
+        "worker_id" => state.worker_id,
+        "dispatches" => dispatches,
+        "sessions" => sessions
+      })
+
+    ready_ref = Integer.to_string(reconciled.ref + 1)
+
+    reconciled
+    |> send_protocol(%{
+      "type" => "worker_ready",
       "protocol_version" => state.protocol_version,
-      "worker_id" => state.worker_id,
-      "dispatches" => dispatches,
-      "sessions" => sessions
+      "worker_id" => state.worker_id
     })
+    |> Map.put(:ready_ref, ready_ref)
   end
 
   defp handle_protocol(%{"type" => "connection_superseded"}, state) do
     if state.connection, do: GenServer.stop(state.connection, :normal)
-    %{state | connection: nil, monitor: nil, connected?: false, registered?: false}
+
+    %{
+      state
+      | connection: nil,
+        monitor: nil,
+        connected?: false,
+        registered?: false,
+        ready?: false,
+        ready_ref: nil
+    }
   end
 
   defp handle_protocol(_message, state), do: state

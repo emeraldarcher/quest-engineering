@@ -36,6 +36,8 @@ defmodule QuestEngineering.Server.WorkerStore do
         status: "connected",
         connection_id: connection_id,
         connection_generation: generation,
+        ready_generation: nil,
+        ready_at: nil,
         connected_at: now,
         disconnected_at: nil,
         last_heartbeat_at: now
@@ -68,6 +70,35 @@ defmodule QuestEngineering.Server.WorkerStore do
     end
   end
 
+  @doc "Marks startup reconciliation complete for the exact current connection generation."
+  def mark_ready(worker_id, generation) do
+    now = now()
+
+    result =
+      with_current(worker_id, generation, fn worker ->
+        if worker.ready_generation == generation do
+          {worker, false}
+        else
+          ready =
+            worker
+            |> Changeset.change(
+              ready_generation: generation,
+              ready_at: now,
+              last_heartbeat_at: now
+            )
+            |> Repo.update!()
+
+          {ready, true}
+        end
+      end)
+
+    case result do
+      {:ok, {worker, true}} -> notify_availability_transition({:ok, worker})
+      {:ok, {worker, false}} -> {:ok, worker}
+      error -> error
+    end
+  end
+
   def heartbeat(worker_id, generation) do
     with_current(worker_id, generation, fn worker ->
       worker
@@ -90,7 +121,14 @@ defmodule QuestEngineering.Server.WorkerStore do
           :stale_connection
 
         worker ->
-          Repo.update!(Changeset.change(worker, status: "disconnected", disconnected_at: now()))
+          Repo.update!(
+            Changeset.change(worker,
+              status: "disconnected",
+              ready_generation: nil,
+              ready_at: nil,
+              disconnected_at: now()
+            )
+          )
       end
     end)
     |> notify_availability_transition()

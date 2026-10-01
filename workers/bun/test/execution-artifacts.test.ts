@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DispatchRecord } from "../src/dispatch/registry.ts";
+import { WORKER_PROTOCOL_VERSION } from "../src/protocol/types.ts";
 import {
   executionArtifactRoot,
   materializeExecutionArtifacts,
@@ -79,7 +80,7 @@ function dispatchWithPlan(
       context_requirement: { selector: "fresh", value: null },
       context_lineage_occurrence_id: null,
       worker_id: "worker-1",
-      protocol_version: 9,
+      protocol_version: WORKER_PROTOCOL_VERSION,
       type: "execute_action",
       execution: {
         identity: {

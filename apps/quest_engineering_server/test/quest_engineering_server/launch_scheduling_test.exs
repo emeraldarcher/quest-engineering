@@ -1160,7 +1160,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 9,
+                      "protocol_version" => 10,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -2772,6 +2772,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     }
 
     {:ok, worker} = WorkerStore.register(id, capabilities, Ecto.UUID.generate())
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     worker
   end
 
