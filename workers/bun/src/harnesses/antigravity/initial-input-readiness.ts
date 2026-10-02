@@ -15,15 +15,55 @@ export type AntigravityInitialInputSignal =
   | "post_model_experiments"
   | "customization_reload";
 
+export type AntigravityFreshConversationRequirement =
+  | "native_project_resolution"
+  | "native_project_cache_writable"
+  | "native_project_config"
+  | "native_project_config_writable"
+  | "native_conversation_store_writable"
+  | "native_workspace_resolution"
+  | "prompt_focus"
+  | "default_editor_mode"
+  | "enter_prompt_submit_binding";
+
+export interface AntigravityNativeFreshConversationState {
+  project: {
+    ready: boolean;
+    resolvedProjectId: string | null;
+    defaultProject: boolean;
+    cacheWritable: boolean;
+    configPresent: boolean;
+    configWritable: boolean;
+    conversationStoreWritable: boolean;
+    workspaceResolved: boolean;
+  };
+  prompt: {
+    focusReady: boolean;
+    editorMode: "default" | "vim" | "unknown";
+    enterBinding: "prompt.submit" | "vim.insert.submit" | "unknown";
+    customKeybindingsPresent: boolean;
+  };
+}
+
 export interface AntigravityInitialInputReadiness {
   kind: typeof ANTIGRAVITY_INITIAL_INPUT_READINESS_KIND;
-  version: 1;
+  version: 2;
+  /** The visible TUI/input loop has completed its ordered native startup. */
+  tuiInputReady: boolean;
+  /** A fresh first prompt can enter Antigravity's native new-conversation path. */
+  freshConversationReady: boolean;
   ready: boolean;
+  nativeConversationBootstrap:
+    | "not_ready"
+    | "ready_without_conversation"
+    | "active_or_ambiguous";
   conversationState: "none" | "active_or_ambiguous";
   model: string;
-  /** One-based native-log line number for every required ordered signal. */
+  /** One-based native-log line number for every required ordered TUI signal. */
   signals: Partial<Record<AntigravityInitialInputSignal, number>>;
   missingSignals: AntigravityInitialInputSignal[];
+  missingFreshConversationRequirements: AntigravityFreshConversationRequirement[];
+  nativeState: AntigravityNativeFreshConversationState;
 }
 
 const ORDER: AntigravityInitialInputSignal[] = [
@@ -42,13 +82,16 @@ const ORDER: AntigravityInitialInputSignal[] = [
 ];
 
 /**
- * Antigravity 1.2.7 emits these native signals as its authentication, account
- * metadata, model, experiment/customization and fresh input managers settle.
- * This is an ordered evidence parser, not a timing heuristic.
+ * Antigravity 1.2.7's visible input loop settles independently from its native
+ * project/conversation manager. Ordered log evidence proves TUI readiness;
+ * native project and prompt-mode evidence separately proves that the same fresh
+ * process can enter the first-conversation path without creating a conversation
+ * or contacting the provider during preauthorization.
  */
 export function inspectAntigravityInitialInputReadiness(
   log: string,
   model: string,
+  nativeState: AntigravityNativeFreshConversationState,
 ): AntigravityInitialInputReadiness {
   const lines = log.split("\n");
   const signals: Partial<Record<AntigravityInitialInputSignal, number>> = {};
@@ -145,15 +188,70 @@ export function inspectAntigravityInitialInputReadiness(
   const missingSignals = ORDER.filter(
     (signal) => signals[signal] === undefined,
   );
+  const missingFreshConversationRequirements: AntigravityFreshConversationRequirement[] =
+    [];
+  if (
+    !nativeState.project.ready ||
+    !nativeState.project.defaultProject ||
+    nativeState.project.resolvedProjectId !== "default-cli-project"
+  )
+    missingFreshConversationRequirements.push("native_project_resolution");
+  if (!nativeState.project.cacheWritable)
+    missingFreshConversationRequirements.push("native_project_cache_writable");
+  if (!nativeState.project.configPresent)
+    missingFreshConversationRequirements.push("native_project_config");
+  if (!nativeState.project.configWritable)
+    missingFreshConversationRequirements.push("native_project_config_writable");
+  if (!nativeState.project.conversationStoreWritable)
+    missingFreshConversationRequirements.push(
+      "native_conversation_store_writable",
+    );
+  if (!nativeState.project.workspaceResolved)
+    missingFreshConversationRequirements.push("native_workspace_resolution");
+  if (!nativeState.prompt.focusReady)
+    missingFreshConversationRequirements.push("prompt_focus");
+  if (nativeState.prompt.editorMode !== "default")
+    missingFreshConversationRequirements.push("default_editor_mode");
+  if (
+    nativeState.prompt.enterBinding !== "prompt.submit" ||
+    nativeState.prompt.customKeybindingsPresent
+  )
+    missingFreshConversationRequirements.push("enter_prompt_submit_binding");
+
+  const tuiInputReady = missingSignals.length === 0;
+  const freshConversationReady =
+    tuiInputReady &&
+    !conversationObserved &&
+    missingFreshConversationRequirements.length === 0;
   return {
     kind: ANTIGRAVITY_INITIAL_INPUT_READINESS_KIND,
-    version: 1,
-    ready: missingSignals.length === 0 && !conversationObserved,
+    version: 2,
+    tuiInputReady,
+    freshConversationReady,
+    ready: freshConversationReady,
+    nativeConversationBootstrap: conversationObserved
+      ? "active_or_ambiguous"
+      : freshConversationReady
+        ? "ready_without_conversation"
+        : "not_ready",
     conversationState: conversationObserved ? "active_or_ambiguous" : "none",
     model,
     signals,
     missingSignals,
+    missingFreshConversationRequirements,
+    nativeState,
   };
+}
+
+export function isAntigravityInputReadyForMode(
+  readiness: AntigravityInitialInputReadiness,
+  requireConversationFree: boolean,
+): boolean {
+  return (
+    readiness.tuiInputReady &&
+    readiness.missingFreshConversationRequirements.length === 0 &&
+    (!requireConversationFree || readiness.freshConversationReady)
+  );
 }
 
 function findExactModelResolution(

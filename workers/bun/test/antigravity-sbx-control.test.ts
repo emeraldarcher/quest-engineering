@@ -45,18 +45,24 @@ test("Run-private Antigravity HOME owns runtime directories and trusts only its 
     QE_HOME: "/qe/state/antigravity-lineages/lineage-a/home",
     QE_WORKSPACE: "/qe/workspaces/lineage-a",
   });
-  expect(observed?.args.join("\n")).toContain("home/'.cache'");
-  expect(observed?.args.join("\n")).toContain("home/'.tmp'");
-  expect(observed?.args.join("\n")).toContain(
+  const script = observed?.args.join("\n") ?? "";
+  expect(script).toContain("home/'.cache'");
+  expect(script).toContain("home/'.tmp'");
+  expect(script).toContain("home/'.gemini/config/projects'");
+  expect(script).toContain("home/'.gemini/antigravity'");
+  expect(script).toContain("home/'.gemini/antigravity-cli/cache'");
+  expect(script).toContain(
     "home/'.gemini/antigravity-cli/cache/onboarding.json'",
   );
-  expect(observed?.args.join("\n")).toContain(
+  expect(script).toContain(
     "value['trustedWorkspaces']=[os.environ['QE_WORKSPACE']]",
   );
-  expect(observed?.args.join("\n")).not.toContain("trusted.append");
-  expect(observed?.args.join("\n")).toContain(
-    "p.mkdir(parents=True,exist_ok=True)",
+  expect(script).not.toContain("trusted.append");
+  expect(script).toContain("p.mkdir(parents=True,exist_ok=True)");
+  expect(script.indexOf("for p in directories:")).toBeLessThan(
+    script.indexOf("for source,target in sources:"),
   );
+  expect(script).not.toContain("target.parent.mkdir");
 });
 
 test("guest Stop bridge is bundled for Node and never resolves a host executable", async () => {

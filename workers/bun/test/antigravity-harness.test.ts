@@ -1151,6 +1151,16 @@ test("prepared pre-prompt Antigravity adoption requires exact idle conversation-
       "pre-inference-readiness.json",
     );
     const readiness = await Bun.file(readinessPath).text();
+    const legacy = JSON.parse(readiness) as {
+      version: number;
+      nativeInputReadiness: { version: number };
+    };
+    legacy.version = 3;
+    legacy.nativeInputReadiness.version = 1;
+    await Bun.write(readinessPath, `${JSON.stringify(legacy)}\n`);
+    await expect(
+      value.harness.provePreparedProcessAdoption(source, target, retained),
+    ).rejects.toMatchObject({ code: "prepared_process_adoption_rejected" });
     await Bun.write(readinessPath, "{}\n");
     await expect(
       value.harness.provePreparedProcessAdoption(source, target, retained),
@@ -1634,8 +1644,11 @@ function authorizePrompt(value: {
 function readyInitialInputEvidence(model: string) {
   return {
     kind: "antigravity_initial_input_readiness" as const,
-    version: 1 as const,
+    version: 2 as const,
+    tuiInputReady: true,
+    freshConversationReady: true,
     ready: true,
+    nativeConversationBootstrap: "ready_without_conversation" as const,
     conversationState: "none" as const,
     model,
     signals: {
@@ -1653,6 +1666,25 @@ function readyInitialInputEvidence(model: string) {
       customization_reload: 12,
     },
     missingSignals: [],
+    missingFreshConversationRequirements: [],
+    nativeState: {
+      project: {
+        ready: true,
+        resolvedProjectId: "default-cli-project",
+        defaultProject: true,
+        cacheWritable: true,
+        configPresent: true,
+        configWritable: true,
+        conversationStoreWritable: true,
+        workspaceResolved: true,
+      },
+      prompt: {
+        focusReady: true,
+        editorMode: "default" as const,
+        enterBinding: "prompt.submit" as const,
+        customKeybindingsPresent: false,
+      },
+    },
   };
 }
 

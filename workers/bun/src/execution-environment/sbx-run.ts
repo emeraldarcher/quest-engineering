@@ -21,7 +21,9 @@ import {
 import type { AntigravityCommandHookSpec } from "../harnesses/antigravity/hook-readiness.ts";
 import {
   type AntigravityInitialInputReadiness,
+  type AntigravityNativeFreshConversationState,
   inspectAntigravityInitialInputReadiness,
+  isAntigravityInputReadyForMode,
 } from "../harnesses/antigravity/initial-input-readiness.ts";
 import {
   controlDescriptorPath,
@@ -1013,7 +1015,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       executable: "/usr/bin/python3",
       args: [
         "-c",
-        "import json,os,pathlib,shutil; home=pathlib.Path(os.environ['QE_HOME']); sources=[('/home/agent/.gemini/config/mcp_config.json',home/'.gemini/config/mcp_config.json'),('/home/agent/.gemini/antigravity-cli/antigravity-oauth-token',home/'.gemini/antigravity-cli/antigravity-oauth-token'),('/home/agent/.gemini/antigravity-cli/qe-auth-generation',home/'.gemini/antigravity-cli/qe-auth-generation'),('/home/agent/.gemini/antigravity-cli/qe-account-scope',home/'.gemini/antigravity-cli/qe-account-scope'),('/home/agent/.gemini/antigravity-cli/cache/onboarding.json',home/'.gemini/antigravity-cli/cache/onboarding.json')];\nfor source,target in sources:\n target.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(source,target); os.chown(target,1000,1000); os.chmod(target,0o600)\nfor p in [home,home/'.cache',home/'.tmp',home/'.gemini',home/'.gemini/config',home/'.gemini/antigravity-cli']:\n p.mkdir(parents=True,exist_ok=True); os.chown(p,1000,1000); os.chmod(p,0o700)\nsettings=home/'.gemini/antigravity-cli/settings.json'\ntry: value=json.loads(settings.read_text())\nexcept FileNotFoundError: value={}\nvalue['trustedWorkspaces']=[os.environ['QE_WORKSPACE']]\ntemporary=settings.with_name(settings.name+'.qe-new'); temporary.write_text(json.dumps(value,separators=(',',':'))+'\\n'); os.chown(temporary,1000,1000); os.chmod(temporary,0o600); temporary.replace(settings)",
+        "import json,os,pathlib,shutil; home=pathlib.Path(os.environ['QE_HOME']); directories=[home,home/'.cache',home/'.tmp',home/'.gemini',home/'.gemini/config',home/'.gemini/config/projects',home/'.gemini/antigravity',home/'.gemini/antigravity-cli',home/'.gemini/antigravity-cli/cache'];\nfor p in directories:\n p.mkdir(parents=True,exist_ok=True); os.chown(p,1000,1000); os.chmod(p,0o700)\nsources=[('/home/agent/.gemini/config/mcp_config.json',home/'.gemini/config/mcp_config.json'),('/home/agent/.gemini/antigravity-cli/antigravity-oauth-token',home/'.gemini/antigravity-cli/antigravity-oauth-token'),('/home/agent/.gemini/antigravity-cli/qe-auth-generation',home/'.gemini/antigravity-cli/qe-auth-generation'),('/home/agent/.gemini/antigravity-cli/qe-account-scope',home/'.gemini/antigravity-cli/qe-account-scope'),('/home/agent/.gemini/antigravity-cli/cache/onboarding.json',home/'.gemini/antigravity-cli/cache/onboarding.json')];\nfor source,target in sources:\n shutil.copyfile(source,target); os.chown(target,1000,1000); os.chmod(target,0o600)\nsettings=home/'.gemini/antigravity-cli/settings.json'\ntry: value=json.loads(settings.read_text())\nexcept FileNotFoundError: value={}\nvalue['trustedWorkspaces']=[os.environ['QE_WORKSPACE']]\ntemporary=settings.with_name(settings.name+'.qe-new'); temporary.write_text(json.dumps(value,separators=(',',':'))+'\\n'); os.chown(temporary,1000,1000); os.chmod(temporary,0o600); temporary.replace(settings)",
       ],
       environment: { QE_HOME: guestHome, QE_WORKSPACE: guestWorkspace },
       timeoutMs: 30_000,
@@ -1121,8 +1123,10 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       (!mcpReady ||
         !hookReady ||
         !initialInput ||
-        initialInput.missingSignals.length > 0 ||
-        (input.requireConversationFree && initialInput.ready !== true))
+        !isAntigravityInputReadyForMode(
+          initialInput,
+          input.requireConversationFree,
+        ))
     ) {
       await context.relay?.refresh();
       const result = await context.lease.exec({
@@ -1143,10 +1147,35 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         mcpReady = false;
       }
       try {
-        const log = await readFile(context.hostLogPath, "utf8");
+        const [log, nativeState] = await Promise.all([
+          readFile(context.hostLogPath, "utf8"),
+          this.inspectAntigravityFreshConversationState(context),
+        ]);
         hookReady =
           /loaded \d+ named hooks from \d+ hooks\.json file\(s\)/.test(log);
-        initialInput = inspectAntigravityInitialInputReadiness(log, model);
+        const projectResolutionFailed = /failed to resolve project:/i.test(log);
+        const workspaceResolved = log.includes(
+          `workspaceDirs=[${context.workspace.paths.workspace}]`,
+        );
+        initialInput = inspectAntigravityInitialInputReadiness(log, model, {
+          ...nativeState,
+          project: {
+            ...nativeState.project,
+            ready:
+              nativeState.project.ready &&
+              !projectResolutionFailed &&
+              workspaceResolved,
+            workspaceResolved,
+          },
+          prompt: {
+            ...nativeState.prompt,
+            focusReady:
+              nativeState.prompt.focusReady &&
+              /Full redraw completed .* for conversation\s+\(epoch 0, items \d+\)/.test(
+                log,
+              ),
+          },
+        });
       } catch {
         hookReady = false;
         initialInput = null;
@@ -1155,8 +1184,10 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         !mcpReady ||
         !hookReady ||
         !initialInput ||
-        initialInput.missingSignals.length > 0 ||
-        (input.requireConversationFree && initialInput.ready !== true)
+        !isAntigravityInputReadyForMode(
+          initialInput,
+          input.requireConversationFree,
+        )
       )
         await Bun.sleep(100);
     }
@@ -1166,11 +1197,20 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       throw new Error("Antigravity did not discover the guest Stop hook.");
     if (
       !initialInput ||
-      initialInput.missingSignals.length > 0 ||
-      (input.requireConversationFree && initialInput.ready !== true)
+      !isAntigravityInputReadyForMode(
+        initialInput,
+        input.requireConversationFree,
+      )
     )
       throw new Error(
-        `Antigravity's existing TUI is not ready for interactive input: ${initialInput?.missingSignals.join(", ") || initialInput?.conversationState || "native readiness evidence unavailable"}.`,
+        `Antigravity's existing TUI is not ready for ${input.requireConversationFree ? "a fresh conversation" : "the retained conversation"}: ${
+          [
+            ...(initialInput?.missingSignals ?? []),
+            ...(initialInput?.missingFreshConversationRequirements ?? []),
+          ].join(", ") ||
+          initialInput?.conversationState ||
+          "native readiness evidence unavailable"
+        }.`,
       );
     const descriptor = controlDescriptorPath(context.lineage);
     const status = await new HarnessControlClient(
@@ -1218,6 +1258,47 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       initialInputReady: true,
       initialInput,
     };
+  }
+
+  private async inspectAntigravityFreshConversationState(
+    context: RuntimeContext,
+  ): Promise<AntigravityNativeFreshConversationState> {
+    const result = await context.lease.exec({
+      executable: "/usr/bin/python3",
+      args: [
+        "-c",
+        "import json,os,pathlib,re,stat; home=pathlib.Path(os.environ['QE_HOME']); cache=home/'.gemini/antigravity-cli/cache'; marker=cache/'default_project_id.txt'; project_id=None\ntry: project_id=marker.read_text().strip() or None\nexcept Exception: pass\ncache_writable=False\ntry:\n s=cache.stat(); cache_writable=s.st_uid==1000 and bool(stat.S_IMODE(s.st_mode)&stat.S_IWUSR)\nexcept Exception: pass\nprojects=home/'.gemini/config/projects'; conversation_store=home/'.gemini/antigravity'; project_config=(projects/f'{project_id}.json') if isinstance(project_id,str) and re.fullmatch(r'[A-Za-z0-9._-]+',project_id) else None\nconfig_present=bool(project_config and project_config.is_file())\ndef owned_writable(path):\n try:\n  s=path.stat(); return s.st_uid==1000 and bool(stat.S_IMODE(s.st_mode)&stat.S_IWUSR)\n except Exception: return False\nconfig_writable=owned_writable(projects) and bool(project_config and owned_writable(project_config)); conversation_store_writable=owned_writable(conversation_store)\ncustom=any(p.is_file() for p in [home/'.gemini/antigravity-cli/keybindings.json',home/'.gemini/keybindings.json',home/'.gemini/config/keybindings.json'])\ndef load(path):\n try:\n  value=json.loads(path.read_text()); return value if isinstance(value,dict) else {}\n except Exception: return {}\ndef walk(value):\n if isinstance(value,dict):\n  for key,item in value.items():\n   yield str(key).lower(),item\n   yield from walk(item)\n elif isinstance(value,list):\n  for item in value: yield from walk(item)\nmode='default'\nfor key,value in walk({'settings':load(home/'.gemini/antigravity-cli/settings.json'),'config':load(home/'.gemini/config/config.json')}):\n if key in ['editormode','editor_mode','vimmode','vim_mode','vim_insert_first']:\n  mode='vim' if value is True or str(value).lower()=='vim' else ('default' if value is False or str(value).lower() in ['default','standard'] else 'unknown')\nenter='prompt.submit' if mode=='default' and not custom else ('vim.insert.submit' if mode=='vim' and not custom else 'unknown')\nready=project_id=='default-cli-project' and cache_writable and config_present and config_writable and conversation_store_writable\nprint(json.dumps({'project':{'ready':ready,'resolvedProjectId':project_id,'defaultProject':project_id=='default-cli-project','cacheWritable':cache_writable,'configPresent':config_present,'configWritable':config_writable,'conversationStoreWritable':conversation_store_writable,'workspaceResolved':False},'prompt':{'focusReady':mode=='default' and not custom,'editorMode':mode,'enterBinding':enter,'customKeybindingsPresent':custom}},separators=(',',':')))",
+      ],
+      environment: { QE_HOME: context.guestHome },
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0)
+      throw new Error("Antigravity native project readiness probe failed.");
+    const value = JSON.parse(
+      result.stdout,
+    ) as AntigravityNativeFreshConversationState;
+    if (
+      !value ||
+      typeof value.project?.ready !== "boolean" ||
+      typeof value.project?.defaultProject !== "boolean" ||
+      typeof value.project?.cacheWritable !== "boolean" ||
+      typeof value.project?.configPresent !== "boolean" ||
+      typeof value.project?.configWritable !== "boolean" ||
+      typeof value.project?.conversationStoreWritable !== "boolean" ||
+      typeof value.project?.workspaceResolved !== "boolean" ||
+      (value.project?.resolvedProjectId !== null &&
+        typeof value.project?.resolvedProjectId !== "string") ||
+      typeof value.prompt?.focusReady !== "boolean" ||
+      !["default", "vim", "unknown"].includes(value.prompt?.editorMode) ||
+      !["prompt.submit", "vim.insert.submit", "unknown"].includes(
+        value.prompt?.enterBinding,
+      ) ||
+      typeof value.prompt?.customKeybindingsPresent !== "boolean"
+    )
+      throw new Error(
+        "Antigravity native project readiness evidence is invalid.",
+      );
+    return value;
   }
 
   private async bundledAntigravityControl(): Promise<{

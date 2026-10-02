@@ -435,7 +435,7 @@ export class AntigravityHarness implements AgentHarness {
       join(dirname(nativeLogPath(lineage)), "pre-inference-readiness.json"),
       `${JSON.stringify(
         {
-          version: 3,
+          version: 4,
           kind: "antigravity_pre_inference_readiness",
           actionId: dispatch.action.action_id,
           attemptId: dispatch.action.attempt_id,
@@ -524,6 +524,8 @@ export class AntigravityHarness implements AgentHarness {
     const expectedArgs = this.args(target, lineage);
     if (
       readiness.kind !== "antigravity_pre_inference_readiness" ||
+      readiness.version !== 4 ||
+      !isCurrentFreshConversationReadiness(readiness.nativeInputReadiness) ||
       readiness.actionId !== source.action.action_id ||
       readiness.attemptId !== source.action.attempt_id ||
       readiness.workspaceRoot !== cwd ||
@@ -2033,6 +2035,44 @@ async function readPreparedProcessReadiness(
       "The retained Antigravity pre-inference readiness proof is unavailable.",
     );
   }
+}
+function isCurrentFreshConversationReadiness(value: unknown): boolean {
+  if (!readinessRecord(value)) return false;
+  const readiness = value;
+  const nativeState = readiness.nativeState;
+  if (!readinessRecord(nativeState)) return false;
+  const project = nativeState.project;
+  const prompt = nativeState.prompt;
+  return (
+    readiness.kind === "antigravity_initial_input_readiness" &&
+    readiness.version === 2 &&
+    readiness.ready === true &&
+    readiness.tuiInputReady === true &&
+    readiness.freshConversationReady === true &&
+    readiness.nativeConversationBootstrap === "ready_without_conversation" &&
+    readiness.conversationState === "none" &&
+    Array.isArray(readiness.missingSignals) &&
+    readiness.missingSignals.length === 0 &&
+    Array.isArray(readiness.missingFreshConversationRequirements) &&
+    readiness.missingFreshConversationRequirements.length === 0 &&
+    readinessRecord(project) &&
+    project.ready === true &&
+    project.resolvedProjectId === "default-cli-project" &&
+    project.defaultProject === true &&
+    project.cacheWritable === true &&
+    project.configPresent === true &&
+    project.configWritable === true &&
+    project.conversationStoreWritable === true &&
+    project.workspaceResolved === true &&
+    readinessRecord(prompt) &&
+    prompt.focusReady === true &&
+    prompt.editorMode === "default" &&
+    prompt.enterBinding === "prompt.submit" &&
+    prompt.customKeybindingsPresent === false
+  );
+}
+function readinessRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function rejectPreparedProcessAdoption(message: string): never {
   throw new OperationalExecutionError(
