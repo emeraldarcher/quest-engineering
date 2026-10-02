@@ -24,6 +24,10 @@ import {
 } from "../src/session-host/herdr/ownership.ts";
 import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
 import { paneProcessIdentityDigest } from "../src/session-host/pane-process-identity.ts";
+import {
+  environmentIdentityDigest,
+  validatePromptInputFence,
+} from "../src/session-host/prompt-input-fence.ts";
 import type {
   HostedAgent,
   HostedPaneProcessInfo,
@@ -124,6 +128,7 @@ test("authorized pane input revalidates endpoint, agent, and process before each
     paneId: "w1:p1",
     terminalId: "terminal-1",
     agentName: "agy-managed",
+    agentIntegrationKind: "agy",
     paneShellPid: fixture.runtime.paneProcess.shellPid as number,
     paneForegroundProcessGroupId: fixture.runtime.paneProcess
       .foregroundProcessGroupId as number,
@@ -167,9 +172,242 @@ test("authorized pane input revalidates endpoint, agent, and process before each
     },
   };
   const host = new HerdrTerminalBackend(fixture.provider, "antigravity");
+  const attachmentBefore = JSON.stringify({
+    agent: fixture.runtime.interactiveAgent,
+    process: fixture.runtime.paneProcess,
+  });
+  expect(
+    host.attachment({
+      sessionName: authority.sessionName,
+      sessionIncarnation: authority.sessionIncarnation,
+      workspaceId: authority.workspaceId,
+      tabId: authority.tabId,
+      paneId: authority.paneId,
+      terminalId: authority.terminalId,
+      agentName: authority.agentName,
+    }),
+  ).toMatchObject({
+    paneId: authority.paneId,
+    terminalId: authority.terminalId,
+    supportsObservation: true,
+  });
+  expect(
+    JSON.stringify({
+      agent: fixture.runtime.interactiveAgent,
+      process: fixture.runtime.paneProcess,
+    }),
+  ).toBe(attachmentBefore);
+
   await host.stageInteractivePrompt({ authority, text: "literal\ntext" });
   expect(fixture.runtime.paneTexts).toEqual(["literal\ntext"]);
   expect(fixture.runtime.paneKeys).toEqual([]);
+
+  // Herdr 0.9 may omit its presentation-only name from a projection.
+  // Deterministic lookup plus immutable QE tokens still prove that name while
+  // native kind and current interactive readiness remain mandatory.
+  const projected = fixture.runtime.interactiveAgent as HostedAgent;
+  const { name: _reportedName, ...projectionWithoutOptionalName } = projected;
+  fixture.runtime.interactiveAgent = projectionWithoutOptionalName;
+  const observation = {
+    sessionName: fixture.sessionName,
+    sessionIncarnation: identity.sessionIncarnation,
+    readiness,
+    agentLookupTarget: authority.agentName,
+    agent: fixture.runtime.interactiveAgent as HostedAgent,
+    process: fixture.runtime.paneProcess,
+  };
+  expect(validatePromptInputFence(authority, observation).ok).toBe(true);
+  await host.stageInteractivePrompt({ authority, text: "second literal" });
+  expect(fixture.runtime.paneTexts).toEqual([
+    "literal\ntext",
+    "second literal",
+  ]);
+
+  const currentAgent = fixture.runtime.interactiveAgent as HostedAgent;
+  const substitute = (
+    changed: Partial<{
+      authority: InteractivePromptAuthority;
+      agent: HostedAgent;
+      process: HostedPaneProcessInfo;
+      readiness: typeof readiness;
+    }>,
+  ) =>
+    validatePromptInputFence(changed.authority ?? authority, {
+      ...observation,
+      agent: changed.agent ?? currentAgent,
+      process: changed.process ?? fixture.runtime.paneProcess,
+      readiness: changed.readiness ?? readiness,
+    });
+  const longActionId = `action-${"a".repeat(100)}`;
+  const boundedActionToken = Buffer.from(longActionId, "utf8")
+    .subarray(0, 80)
+    .toString("utf8");
+  const longActionAgent = {
+    ...currentAgent,
+    tokens: {
+      ...(currentAgent.tokens ?? {}),
+      qe_active_action_id: boundedActionToken,
+      qe_action_hash: hash(longActionId),
+    },
+  };
+  expect(
+    substitute({
+      authority: { ...authority, actionId: longActionId },
+      agent: longActionAgent,
+    }).ok,
+    "Herdr's bounded action token remains authoritative with the full digest",
+  ).toBe(true);
+  expect(
+    substitute({
+      authority: { ...authority, actionId: longActionId },
+      agent: {
+        ...longActionAgent,
+        tokens: {
+          ...longActionAgent.tokens,
+          qe_active_action_id: boundedActionToken.slice(0, -1),
+        },
+      },
+    }).mismatchFields,
+  ).toContain("active_action_id");
+  expect(
+    substitute({
+      authority: { ...authority, actionId: longActionId },
+      agent: {
+        ...longActionAgent,
+        tokens: {
+          ...longActionAgent.tokens,
+          qe_action_hash: hash(`${longActionId}-replacement`),
+        },
+      },
+    }).mismatchFields,
+  ).toContain("action_identity_digest");
+
+  const substitutions = [
+    {
+      name: "endpoint generation",
+      expected: "herdr_endpoint_generation",
+      result: substitute({
+        authority: { ...authority, herdrEndpointGeneration: 2 },
+      }),
+    },
+    {
+      name: "server generation",
+      expected: "herdr_server_generation",
+      result: substitute({
+        authority: { ...authority, herdrServerGeneration: "replacement" },
+      }),
+    },
+    {
+      name: "native agent kind",
+      expected: "agent_integration_kind",
+      result: substitute({ agent: { ...currentAgent, agent: "pi" } }),
+    },
+    {
+      name: "conflicting reported name",
+      expected: "agent_reported_name_if_present",
+      result: substitute({ agent: { ...currentAgent, name: "foreign" } }),
+    },
+    {
+      name: "dynamic working state",
+      expected: "agent_status_idle",
+      result: substitute({ agent: { ...currentAgent, status: "working" } }),
+    },
+    {
+      name: "explicit interactive unready state",
+      expected: "agent_interactive_ready",
+      result: substitute({
+        agent: { ...currentAgent, interactiveReady: false },
+      }),
+    },
+    {
+      name: "workspace replacement",
+      expected: "workspace_id",
+      result: substitute({
+        agent: { ...currentAgent, workspaceId: "replacement" },
+      }),
+    },
+    {
+      name: "environment incarnation",
+      expected: "environment_identity_digest",
+      result: substitute({
+        authority: {
+          ...authority,
+          environmentIncarnation: "replacement-incarnation",
+        },
+      }),
+    },
+    {
+      name: "ownership rotation",
+      expected: "ownership_token",
+      result: substitute({
+        authority: { ...authority, ownershipToken: "replacement" },
+      }),
+    },
+    {
+      name: "result nonce rotation",
+      expected: "result_nonce",
+      result: substitute({
+        authority: { ...authority, resultNonce: "replacement" },
+      }),
+    },
+    {
+      name: "foreground command replacement",
+      expected: "pane_process_identity_digest",
+      result: substitute({
+        process: {
+          ...fixture.runtime.paneProcess,
+          foregroundProcesses:
+            fixture.runtime.paneProcess.foregroundProcesses.map((process) => ({
+              ...process,
+              argv: ["/opt/qe/antigravity/replacement"],
+            })),
+        },
+      }),
+    },
+  ];
+  for (const item of substitutions) {
+    expect(item.result.ok, item.name).toBe(false);
+    expect(item.result.mismatchFields, item.name).toContain(item.expected);
+    expect(Object.keys(item.result.checks[0] ?? {}).sort()).toEqual([
+      "classification",
+      "currentPresent",
+      "currentProvenance",
+      "equal",
+      "expectedPresent",
+      "expectedProvenance",
+      "field",
+    ]);
+  }
+  const crossKindReport = substitute({
+    agent: {
+      ...currentAgent,
+      agent: "pi",
+      interactiveReady: false,
+    },
+  });
+  expect(crossKindReport.mismatchFields).toEqual([
+    "agent_integration_kind",
+    "agent_interactive_ready",
+  ]);
+  expect(
+    crossKindReport.checks.find(
+      (check) => check.field === "agent_reported_name_if_present",
+    ),
+  ).toMatchObject({
+    classification: "immutable_physical_identity",
+    expectedPresent: true,
+    currentPresent: false,
+    equal: true,
+  });
+  const diagnosticSentinel = "must-not-appear-in-fence-diagnostics";
+  const secretSafeResult = substitute({
+    authority: { ...authority, ownershipToken: diagnosticSentinel },
+  });
+  expect(secretSafeResult.mismatchFields).toContain("ownership_token");
+  expect(JSON.stringify(secretSafeResult)).not.toContain(diagnosticSentinel);
+  expect(environmentIdentityDigest("ab", "c")).not.toBe(
+    environmentIdentityDigest("a", "bc"),
+  );
 
   fixture.runtime.paneProcess.foregroundProcessGroupId = 9090;
   await expect(host.submitInteractivePrompt(authority)).rejects.toMatchObject({
@@ -193,15 +431,21 @@ test("authorized pane input revalidates endpoint, agent, and process before each
       }),
     ).rejects.toMatchObject({ code: "input_authority_stale" });
   }
-  const currentAgent = fixture.runtime.interactiveAgent as HostedAgent;
   fixture.runtime.interactiveAgent = {
     ...currentAgent,
     tokens: { ...currentAgent.tokens, qe_environment_hash: "stale" },
   };
   await expect(
     host.stageInteractivePrompt({ authority, text: "forbidden" }),
-  ).rejects.toMatchObject({ code: "input_authority_mismatch" });
-  expect(fixture.runtime.paneTexts).toEqual(["literal\ntext"]);
+  ).rejects.toMatchObject({
+    code: "input_authority_mismatch",
+    mismatchFields: ["environment_identity_digest"],
+    sideEffect: "none",
+  });
+  expect(fixture.runtime.paneTexts).toEqual([
+    "literal\ntext",
+    "second literal",
+  ]);
 });
 
 test("long valid Worker IDs use collision-resistant bounded live ownership metadata", async () => {
@@ -842,7 +1086,11 @@ class FakeHerdrClient extends HerdrSocketClient {
   override async getAgent(target: string): Promise<HostedAgent> {
     if (
       !this.runtime.interactiveAgent ||
-      this.runtime.interactiveAgent.paneId !== target
+      ![
+        this.runtime.interactiveAgent.paneId,
+        this.runtime.interactiveAgent.name,
+        this.runtime.interactiveAgent.tokens?.qe_agent_name,
+      ].includes(target)
     )
       throw new HerdrApiError("agent_not_found", "synthetic agent missing");
     return { ...this.runtime.interactiveAgent };

@@ -11,6 +11,7 @@ import {
 } from "./client.ts";
 import {
   evaluateHerdrCompatibility,
+  HERDR_METADATA_TOKEN_VALUE_BYTES,
   HERDR_MIN_ENDPOINT_GENERATION,
   type HerdrCompatibilityEvidence,
   incompatibleHerdrReadiness,
@@ -31,7 +32,6 @@ import {
 } from "./ownership.ts";
 
 const SESSION_NAME = /^[A-Za-z0-9._-]{1,64}$/;
-const HERDR_METADATA_TOKEN_VALUE_BYTES = 80;
 const SERVER_START_RECONCILIATION_MS = [
   10, 20, 40, 80, 160, 320, 640, 1_280, 2_560, 5_000, 5_000,
 ] as const;

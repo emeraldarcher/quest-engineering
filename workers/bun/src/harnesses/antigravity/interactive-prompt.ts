@@ -11,6 +11,7 @@ export type InteractivePromptSubmissionPhase =
   | "not_submitted"
   | "text_stage_requested"
   | "text_staged"
+  | "text_stage_rejected"
   | "text_stage_uncertain"
   | "submit_requested"
   | "submit_sent"
@@ -50,12 +51,15 @@ export interface InteractivePromptSubmissionState
   updatedAt: string;
   textStageRequestedAt?: string;
   textStagedAt?: string;
+  textStageRejectedAt?: string;
   submitRequestedAt?: string;
   submitSentAt?: string;
   nativeAcceptedAt?: string;
   conversationIdentityObservedAt?: string;
   nativeConversationId?: string;
   detail?: string;
+  /** Secret-safe validator field names; compared values are never persisted. */
+  fenceMismatchFields?: string[];
 }
 
 /**
@@ -106,15 +110,24 @@ export function transitionPromptSubmissionState(
   state: InteractivePromptSubmissionState,
   phase: Exclude<InteractivePromptSubmissionPhase, "not_submitted">,
   observedAt: string,
-  options: { nativeConversationId?: string; detail?: string } = {},
+  options: {
+    nativeConversationId?: string;
+    detail?: string;
+    fenceMismatchFields?: readonly string[];
+  } = {},
 ): InteractivePromptSubmissionState {
   const allowed: Record<
     InteractivePromptSubmissionPhase,
     InteractivePromptSubmissionPhase[]
   > = {
     not_submitted: ["text_stage_requested"],
-    text_stage_requested: ["text_staged", "text_stage_uncertain"],
+    text_stage_requested: [
+      "text_staged",
+      "text_stage_rejected",
+      "text_stage_uncertain",
+    ],
     text_staged: ["text_stage_uncertain", "submit_requested"],
+    text_stage_rejected: [],
     text_stage_uncertain: [],
     submit_requested: ["submit_sent", "submit_uncertain"],
     submit_sent: ["submit_uncertain", "native_accepted"],
@@ -134,6 +147,9 @@ export function transitionPromptSubmissionState(
       ? { textStageRequestedAt: observedAt }
       : {}),
     ...(phase === "text_staged" ? { textStagedAt: observedAt } : {}),
+    ...(phase === "text_stage_rejected"
+      ? { textStageRejectedAt: observedAt }
+      : {}),
     ...(phase === "submit_requested" ? { submitRequestedAt: observedAt } : {}),
     ...(phase === "submit_sent" ? { submitSentAt: observedAt } : {}),
     ...(phase === "native_accepted" ? { nativeAcceptedAt: observedAt } : {}),
@@ -144,6 +160,9 @@ export function transitionPromptSubmissionState(
       ? { nativeConversationId: options.nativeConversationId }
       : {}),
     ...(options.detail ? { detail: options.detail.slice(0, 500) } : {}),
+    ...(options.fenceMismatchFields && options.fenceMismatchFields.length > 0
+      ? { fenceMismatchFields: [...options.fenceMismatchFields] }
+      : {}),
   };
 }
 
@@ -180,6 +199,7 @@ function validState(value: unknown): value is InteractivePromptSubmissionState {
     "not_submitted",
     "text_stage_requested",
     "text_staged",
+    "text_stage_rejected",
     "text_stage_uncertain",
     "submit_requested",
     "submit_sent",
@@ -220,6 +240,11 @@ function validState(value: unknown): value is InteractivePromptSubmissionState {
     Number.isSafeInteger(state.herdrEndpointGeneration) &&
     typeof state.phase === "string" &&
     phases.includes(state.phase as InteractivePromptSubmissionPhase) &&
+    (state.fenceMismatchFields === undefined ||
+      (Array.isArray(state.fenceMismatchFields) &&
+        state.fenceMismatchFields.every(
+          (field) => typeof field === "string" && field.length > 0,
+        ))) &&
     typeof state.updatedAt === "string" &&
     state.updatedAt.length > 0
   );

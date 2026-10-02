@@ -1,5 +1,8 @@
-import { createHash } from "node:crypto";
-import { paneProcessIdentityDigest } from "../pane-process-identity.ts";
+import {
+  type PromptInputFenceResult,
+  validatePromptInputAuthority,
+  validatePromptInputFence,
+} from "../prompt-input-fence.ts";
 import type {
   HostedAgent,
   HostedAgentStatus,
@@ -127,6 +130,8 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
 
   async reportAgentState(input: {
     paneId: string;
+    agent: "pi" | "agy";
+    source: "quest-engineering:sbx-pi" | "quest-engineering:sbx-antigravity";
     state: "idle" | "working" | "blocked";
     sequence: number;
     nativeSession?: import("../types.ts").NativeSessionRef;
@@ -201,7 +206,12 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
   }
 
   async stageInteractivePrompt(input: InteractivePromptInput): Promise<void> {
-    const client = await this.client();
+    const client = await this.client().catch(() => {
+      throw observationError(
+        "herdr_connection",
+        "Automated pane input cannot establish its current Herdr connection.",
+      );
+    });
     try {
       await this.assertInteractivePromptAuthority(client, input.authority);
       await client.sendPaneText(input.authority.paneId, input.text);
@@ -265,128 +275,88 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
     client: HerdrControlClient,
     authority: InteractivePromptAuthority,
   ): Promise<void> {
-    const requiredStrings: Array<keyof InteractivePromptAuthority> = [
-      "workerId",
-      "questLaunchId",
-      "runId",
-      "actionId",
-      "occurrenceId",
-      "attemptId",
-      "physicalLineageId",
-      "environmentId",
-      "environmentIncarnation",
-      "herdrServerGeneration",
-      "sessionName",
-      "sessionIncarnation",
-      "workspaceId",
-      "tabId",
-      "paneId",
-      "terminalId",
-      "agentName",
-      "paneProcessIdentityDigest",
-      "ownershipToken",
-      "resultNonce",
-      "promptAuthorizedAt",
-      "promptIntentAt",
-    ];
-    if (
-      requiredStrings.some(
-        (key) =>
-          typeof authority[key] !== "string" ||
-          (authority[key] as string).length === 0,
-      ) ||
-      !Number.isSafeInteger(authority.herdrEndpointGeneration) ||
-      authority.herdrEndpointGeneration < 1 ||
-      !Number.isSafeInteger(authority.paneShellPid) ||
-      authority.paneShellPid < 1 ||
-      !Number.isSafeInteger(authority.paneForegroundProcessGroupId) ||
-      authority.paneForegroundProcessGroupId < 1 ||
-      !Number.isFinite(Date.parse(authority.promptAuthorizedAt)) ||
-      !Number.isFinite(Date.parse(authority.promptIntentAt)) ||
-      Date.parse(authority.promptIntentAt) <
-        Date.parse(authority.promptAuthorizedAt)
-    )
-      throw new HerdrApiError(
+    const authorityResult = validatePromptInputAuthority(authority);
+    if (!authorityResult.ok)
+      throw fenceError(
         "input_authority_invalid",
         "Automated pane input lacks complete Product authorization authority.",
-        "terminal.authorized_prompt_input",
+        authorityResult,
       );
-    if (
-      authority.sessionName !== this.sessionName ||
-      authority.sessionIncarnation !== this.sessionIncarnation()
-    )
+    const sessionIncarnation = this.sessionIncarnation();
+    const staleSessionFields = [
+      ...(authority.sessionName === this.sessionName
+        ? []
+        : ["herdr_session_name"]),
+      ...(authority.sessionIncarnation === sessionIncarnation
+        ? []
+        : ["herdr_session_incarnation"]),
+    ];
+    if (staleSessionFields.length > 0)
       throw new HerdrApiError(
         "input_authority_stale",
-        "Automated pane input targets a stale Herdr session incarnation.",
+        `Automated pane input targets a stale Herdr session incarnation (mismatch fields: ${staleSessionFields.join(", ")}).`,
         "terminal.authorized_prompt_input",
+        { mismatchFields: staleSessionFields, sideEffect: "none" },
       );
-    const readiness = await this.provider.readiness(this.harnessKind);
-    if (
-      !readiness.ready ||
-      readiness.provenance.endpointGeneration !==
-        authority.herdrEndpointGeneration ||
-      readiness.provenance.serverGeneration !==
-        authority.herdrServerGeneration ||
-      readiness.provenance.sessionIncarnation !== authority.sessionIncarnation
-    )
+    const readiness = await this.provider
+      .readiness(this.harnessKind)
+      .catch(() => {
+        throw observationError(
+          "herdr_readiness_observation",
+          "Automated pane input cannot observe current Herdr readiness.",
+        );
+      });
+    const staleFields = [
+      ...(readiness.ready ? [] : ["herdr_backend_ready"]),
+      ...(readiness.provenance.endpointGeneration ===
+      authority.herdrEndpointGeneration
+        ? []
+        : ["herdr_endpoint_generation"]),
+      ...(readiness.provenance.serverGeneration ===
+      authority.herdrServerGeneration
+        ? []
+        : ["herdr_server_generation"]),
+      ...(readiness.provenance.sessionIncarnation ===
+      authority.sessionIncarnation
+        ? []
+        : ["herdr_readiness_session_incarnation"]),
+    ];
+    if (staleFields.length > 0)
       throw new HerdrApiError(
         "input_authority_stale",
-        "Automated pane input targets another Herdr endpoint generation.",
+        `Automated pane input targets another Herdr endpoint authority (mismatch fields: ${staleFields.join(", ")}).`,
         "terminal.authorized_prompt_input",
+        { mismatchFields: staleFields, sideEffect: "none" },
       );
-    const agent = await client.getAgent(authority.paneId);
-    const tokens = agent.tokens ?? {};
-    const expectedTokens: Record<string, string> = {
-      qe_owner: "quest-engineering-worker/v1",
-      qe_worker_id: authority.workerId,
-      qe_launch_id: authority.questLaunchId,
-      qe_run_id: authority.runId,
-      qe_lineage_id: authority.physicalLineageId,
-      qe_harness_kind: "antigravity",
-      qe_agent_name: authority.agentName,
-      qe_ownership_token: authority.ownershipToken,
-      qe_session_incarnation: authority.sessionIncarnation,
-      qe_environment_hash: identityHash(
-        `${authority.environmentId}\0${authority.environmentIncarnation}`,
-      ),
-      qe_active_state: "active",
-      qe_active_action_id: authority.actionId,
-      qe_action_hash: identityHash(authority.actionId),
-      qe_occurrence_hash: identityHash(authority.occurrenceId),
-      qe_attempt_hash: identityHash(authority.attemptId),
-      qe_result_nonce: authority.resultNonce,
-    };
-    if (
-      agent.agent !== "agy" ||
-      agent.name !== authority.agentName ||
-      agent.status !== "idle" ||
-      agent.interactiveReady !== true ||
-      agent.launchPending === true ||
-      agent.nativeMaterialized !== true ||
-      agent.workspaceId !== authority.workspaceId ||
-      agent.tabId !== authority.tabId ||
-      agent.paneId !== authority.paneId ||
-      agent.terminalId !== authority.terminalId ||
-      Object.entries(expectedTokens).some(
-        ([key, value]) => tokens[key] !== value,
-      )
-    )
-      throw new HerdrApiError(
+
+    // Name-targeted lookup proves the deterministic managed-agent binding even
+    // when Herdr 0.9 omits its optional presentation name from the projection.
+    const agentLookupTarget = authority.agentName;
+    const agent = await client.getAgent(agentLookupTarget).catch(() => {
+      throw observationError(
+        "managed_agent_lookup_target",
+        "Automated pane input cannot resolve the exact managed Antigravity agent.",
+      );
+    });
+    const process = await client.getPaneProcess(authority.paneId).catch(() => {
+      throw observationError(
+        "pane_process_observation",
+        "Automated pane input cannot inspect the exact managed Antigravity process.",
+      );
+    });
+    const fence = validatePromptInputFence(authority, {
+      sessionName: this.sessionName,
+      sessionIncarnation,
+      readiness,
+      agentLookupTarget,
+      agent,
+      process,
+    });
+    if (!fence.ok)
+      throw fenceError(
         "input_authority_mismatch",
         "Automated pane input does not match the exact managed Antigravity execution.",
-        "terminal.authorized_prompt_input",
-      );
-    const process = await client.getPaneProcess(authority.paneId);
-    if (
-      process.shellPid !== authority.paneShellPid ||
-      process.foregroundProcessGroupId !==
-        authority.paneForegroundProcessGroupId ||
-      paneProcessIdentityDigest(process) !== authority.paneProcessIdentityDigest
-    )
-      throw new HerdrApiError(
-        "input_authority_mismatch",
-        "Automated pane input does not match the preauthorized Antigravity process identity.",
-        "terminal.authorized_prompt_input",
+        fence,
       );
   }
 
@@ -397,6 +367,24 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
   }
 }
 
-function identityHash(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+function observationError(field: string, message: string): HerdrApiError {
+  return new HerdrApiError(
+    "input_authority_mismatch",
+    `${message} Mismatch fields: ${field}.`,
+    "terminal.authorized_prompt_input",
+    { mismatchFields: [field], sideEffect: "none" },
+  );
+}
+
+function fenceError(
+  code: string,
+  message: string,
+  result: PromptInputFenceResult,
+): HerdrApiError {
+  return new HerdrApiError(
+    code,
+    `${message} Mismatch fields: ${result.mismatchFields.join(", ")}.`,
+    "terminal.authorized_prompt_input",
+    { mismatchFields: result.mismatchFields, sideEffect: "none" },
+  );
 }

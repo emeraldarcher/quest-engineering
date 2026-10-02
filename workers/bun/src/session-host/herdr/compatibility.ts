@@ -17,6 +17,9 @@ export const HERDR_TESTED_PROTOCOL = 22;
  */
 export const HERDR_MIN_ENDPOINT_GENERATION = 1;
 
+/** Herdr's managed-agent metadata protocol bounds every token value to 80 bytes. */
+export const HERDR_METADATA_TOKEN_VALUE_BYTES = 80;
+
 const SHARED_REQUIREMENTS = [
   ["backend.health", ["ping"]],
   ["session.inventory", ["session.snapshot"]],

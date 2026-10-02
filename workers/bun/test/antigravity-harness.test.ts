@@ -1,6 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import {
@@ -969,6 +976,56 @@ test("stale pane, process, and endpoint generation fail before literal input", a
   }
 });
 
+test("authorization transition records a deterministic pre-write fence rejection", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    value.host.stageAuthorityError = new HerdrApiError(
+      "input_authority_mismatch",
+      "Synthetic secret-safe prompt-input fence rejection.",
+      "terminal.authorized_prompt_input",
+      {
+        mismatchFields: ["result_nonce"],
+        sideEffect: "none",
+      },
+    );
+
+    const error = await value.harness
+      .sendInputAndCollect(authorizePrompt(value), execution, () => undefined)
+      .catch((caught) => caught);
+    expect(error).toMatchObject({
+      code: "antigravity_prompt_input_fence_failed",
+      evidence: {
+        provider_cycles: 0,
+        input_fence_mismatch_fields: ["result_nonce"],
+        input_side_effect: "none",
+      },
+    });
+    const submission = JSON.parse(
+      await readFile(
+        join(
+          dirname(execution.lineage.resultControlPath),
+          "interactive-prompt-submission.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(submission).toMatchObject({
+      phase: "text_stage_rejected",
+      fenceMismatchFields: ["result_nonce"],
+    });
+    expect(submission.textStageRequestedAt).toBeString();
+    expect(submission.textStageRejectedAt).toBeString();
+    expect(submission.textStagedAt).toBeUndefined();
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
+    expect(value.host.promptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
 test("process replacement after text staging prevents the separate Enter action", async () => {
   const value = await fixture();
   try {
@@ -1643,6 +1700,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
   submittedAuthorities: InteractivePromptAuthority[] = [];
   autoNativeAcceptance = true;
   initialInputReady = true;
+  stageAuthorityError: HerdrApiError | null = null;
   stageError: Error | null = null;
   submitError: Error | null = null;
   foregroundProcessGroupId = 4242;
@@ -1783,6 +1841,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     };
   }
   async stageInteractivePrompt(input: InteractivePromptInput): Promise<void> {
+    if (this.stageAuthorityError) throw this.stageAuthorityError;
     if (
       input.authority.herdrEndpointGeneration !==
         this.backendReadiness.provenance.endpointGeneration ||

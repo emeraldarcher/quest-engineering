@@ -11,13 +11,26 @@ import type {
 } from "../types.ts";
 import type { HerdrIntegrationEvidence } from "./compatibility.ts";
 
+export interface HerdrSafeErrorDiagnostics {
+  /** Safe field names only; compared values are deliberately omitted. */
+  mismatchFields?: readonly string[];
+  /** The rejection happened before the requested transport side effect. */
+  sideEffect?: "none" | "unknown";
+}
+
 export class HerdrApiError extends Error {
+  readonly mismatchFields: readonly string[];
+  readonly sideEffect: "none" | "unknown";
+
   constructor(
     readonly code: string,
     message: string,
     readonly capability?: string,
+    diagnostics: HerdrSafeErrorDiagnostics = {},
   ) {
     super(message);
+    this.mismatchFields = [...(diagnostics.mismatchFields ?? [])];
+    this.sideEffect = diagnostics.sideEffect ?? "unknown";
   }
 }
 
@@ -69,6 +82,8 @@ export interface HerdrControlClient {
   }): Promise<void>;
   reportAgentState(input: {
     paneId: string;
+    agent: "pi" | "agy";
+    source: "quest-engineering:sbx-pi" | "quest-engineering:sbx-antigravity";
     state: "idle" | "working" | "blocked";
     sequence: number;
     nativeSession?: NativeSessionRef;
@@ -305,6 +320,8 @@ export class HerdrSocketClient implements HerdrControlClient {
 
   async reportAgentState(input: {
     paneId: string;
+    agent: "pi" | "agy";
+    source: "quest-engineering:sbx-pi" | "quest-engineering:sbx-antigravity";
     state: "idle" | "working" | "blocked";
     sequence: number;
     nativeSession?: NativeSessionRef;
@@ -313,8 +330,8 @@ export class HerdrSocketClient implements HerdrControlClient {
     if (session)
       await this.request("pane.report_agent_session", {
         pane_id: input.paneId,
-        source: "quest-engineering:sbx-pi",
-        agent: "pi",
+        source: input.source,
+        agent: input.agent,
         seq: input.sequence * 2,
         ...(session.kind === "path"
           ? { agent_session_path: session.value }
@@ -322,8 +339,8 @@ export class HerdrSocketClient implements HerdrControlClient {
       });
     await this.request("pane.report_agent", {
       pane_id: input.paneId,
-      source: "quest-engineering:sbx-pi",
-      agent: "pi",
+      source: input.source,
+      agent: input.agent,
       state: input.state,
       seq: input.sequence * 2 + 1,
       ...(session?.kind === "path"

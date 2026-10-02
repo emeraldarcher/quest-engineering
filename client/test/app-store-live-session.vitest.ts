@@ -89,6 +89,7 @@ function setup(canObserve: boolean, canTakeover: boolean) {
   const api = {
     getSessionAttachment: vi.fn(async () => descriptor),
     recordSessionOpened: vi.fn(async () => session.id),
+    authorizeExecutionPrompt: vi.fn(),
     cancelExecutionAttempt: vi.fn(),
   };
   const store = createAppStore(
@@ -252,6 +253,7 @@ test("normal observer detach is local, idempotent, and never cancels or takes ov
   expect(nativeOpen).toHaveBeenCalledTimes(1);
   expect(nativeClose).toHaveBeenCalledTimes(2);
   expect(nativeClose).toHaveBeenNthCalledWith(1, localObservation);
+  expect(api.authorizeExecutionPrompt).not.toHaveBeenCalled();
   expect(api.cancelExecutionAttempt).not.toHaveBeenCalled();
   expect(nativeOpen.mock.calls.some((call) => call[1] === "takeover")).toBe(
     false,

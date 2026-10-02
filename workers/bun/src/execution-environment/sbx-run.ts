@@ -1806,6 +1806,12 @@ export class SbxControlMailboxRelay {
     const native = record(value.nativeSession)
       ? value.nativeSession
       : undefined;
+    const reportedAgent =
+      this.lineage.harnessKind === "antigravity" ? "agy" : "pi";
+    const reportedSource =
+      reportedAgent === "agy"
+        ? "quest-engineering:sbx-antigravity"
+        : "quest-engineering:sbx-pi";
     let nativeSession: NativeSessionRef | undefined;
     if (
       native &&
@@ -1813,13 +1819,15 @@ export class SbxControlMailboxRelay {
       typeof native.value === "string"
     )
       nativeSession = {
-        source: "pi",
-        agent: "pi",
+        source: reportedAgent === "agy" ? "antigravity" : "pi",
+        agent: reportedAgent,
         kind: native.kind,
         value: native.value,
       };
     await this.host.reportAgentState?.({
       paneId: this.paneId,
+      agent: reportedAgent,
+      source: reportedSource,
       state: state as "idle" | "working" | "blocked",
       sequence,
       ...(nativeSession ? { nativeSession } : {}),

@@ -20,9 +20,9 @@ const attestation = {
   homePath: "/home/agent",
 };
 
-test("relay drains the final guest idle state before retained-session teardown", async () => {
+test("relay drains Antigravity idle with its native managed-agent identity", async () => {
   let runtime = state(1, "working", 1);
-  const reported: string[] = [];
+  const reported: Array<{ state: string; agent: string; source: string }> = [];
   const lease = {
     exec: async () => ({
       exitCode: 0,
@@ -31,14 +31,21 @@ test("relay drains the final guest idle state before retained-session teardown",
     }),
   } as unknown as EnvironmentLease;
   const host = {
-    reportAgentState: async (value: { state: string }) => {
-      reported.push(value.state);
+    reportAgentState: async (value: {
+      state: string;
+      agent: string;
+      source: string;
+    }) => {
+      reported.push(value);
     },
   } as unknown as TerminalSessionBackend;
   const relay = new SbxControlMailboxRelay(
     lease,
     "/qe/control/lineages/test",
-    { resultControlPath: "/repo/.pi/tmp/result-control.json" } as never,
+    {
+      resultControlPath: "/repo/.pi/tmp/result-control.json",
+      harnessKind: "antigravity",
+    } as never,
     host,
     "w1:p1",
     attestation,
@@ -47,11 +54,15 @@ test("relay drains the final guest idle state before retained-session teardown",
   );
 
   relay.start();
-  await waitFor(() => reported.includes("working"));
+  await waitFor(() => reported.some((value) => value.state === "working"));
   runtime = state(2, "idle", 1);
   await relay.stop();
 
-  expect(reported.at(-1)).toBe("idle");
+  expect(reported.at(-1)).toMatchObject({
+    state: "idle",
+    agent: "agy",
+    source: "quest-engineering:sbx-antigravity",
+  });
 });
 
 test("relay remains live beyond semantic completion until delayed native idle", async () => {

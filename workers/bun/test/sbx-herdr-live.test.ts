@@ -316,6 +316,8 @@ test.skipIf(!enabled)(
       const probeSequence = Number.MAX_SAFE_INTEGER - 1;
       await host.reportAgentState({
         paneId: prepared.ref.paneId,
+        agent: "pi",
+        source: "quest-engineering:sbx-pi",
         state: "working",
         sequence: probeSequence,
       });
@@ -325,6 +327,8 @@ test.skipIf(!enabled)(
       });
       await host.reportAgentState({
         paneId: prepared.ref.paneId,
+        agent: "pi",
+        source: "quest-engineering:sbx-pi",
         state: "idle",
         sequence: probeSequence + 1,
       });

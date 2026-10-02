@@ -78,24 +78,11 @@ export interface HostedExecutionRef {
   nativeSession?: NativeSessionRef;
 }
 
-/**
- * Complete Product and physical-runtime authority required before Herdr may
- * write an automated prompt into a managed pane. Product authorization and
- * prompt intent are mandatory; this is deliberately not a generic text-input
- * capability and is separate from human Take Control.
- */
-export interface InteractivePromptAuthority {
-  workerId: string;
-  questLaunchId: string;
-  runId: string;
-  actionId: string;
-  occurrenceId: string;
-  attemptId: string;
+/** Immutable physical target retained independently from current authority. */
+export interface ManagedAgentPhysicalIdentity {
   physicalLineageId: string;
   environmentId: string;
   environmentIncarnation: string;
-  herdrEndpointGeneration: number;
-  herdrServerGeneration: string;
   sessionName: string;
   sessionIncarnation: string;
   workspaceId: string;
@@ -103,17 +90,38 @@ export interface InteractivePromptAuthority {
   paneId: string;
   terminalId: string;
   agentName: string;
+  agentIntegrationKind: "agy";
   paneShellPid: number;
   paneForegroundProcessGroupId: number;
+  /** Derived from the complete canonical foreground-process observation. */
   paneProcessIdentityDigest: string;
+}
+
+/**
+ * Current Product and generation-fenced authority for one physical target.
+ * Product authorization and prompt intent are mandatory; this is deliberately
+ * not a generic text-input capability and is separate from human Take Control.
+ */
+export interface PromptInputAuthority extends ManagedAgentPhysicalIdentity {
+  workerId: string;
+  questLaunchId: string;
+  runId: string;
+  actionId: string;
+  occurrenceId: string;
+  attemptId: string;
+  herdrEndpointGeneration: number;
+  herdrServerGeneration: string;
   ownershipToken: string;
   resultNonce: string;
   promptAuthorizedAt: string;
   promptIntentAt: string;
 }
 
+/** Backward-compatible transport name; authority semantics are explicit above. */
+export type InteractivePromptAuthority = PromptInputAuthority;
+
 export interface InteractivePromptInput {
-  authority: InteractivePromptAuthority;
+  authority: PromptInputAuthority;
   /** Terminal-protocol bytes. Prompt content itself must remain literal. */
   text: string;
 }
@@ -195,9 +203,11 @@ export interface TerminalSessionBackend {
     title: string;
     tokens: Record<string, string>;
   }): Promise<void>;
-  /** Report guest-native Pi lifecycle through the host-owned Herdr socket. */
+  /** Report guest-native lifecycle through the host-owned Herdr socket. */
   reportAgentState?(input: {
     paneId: string;
+    agent: "pi" | "agy";
+    source: "quest-engineering:sbx-pi" | "quest-engineering:sbx-antigravity";
     state: "idle" | "working" | "blocked";
     sequence: number;
     nativeSession?: NativeSessionRef;

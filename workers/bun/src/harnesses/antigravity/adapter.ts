@@ -1154,22 +1154,41 @@ export class AntigravityHarness implements AgentHarness {
       );
       await writePromptSubmissionState(readiness.submissionPath, submission);
     } catch (error) {
+      const authorityError = inputAuthorityError(error) ? error : null;
+      const knownNoSideEffectRejection = authorityError?.sideEffect === "none";
       submission = transitionPromptSubmissionState(
         submission,
-        "text_stage_uncertain",
+        knownNoSideEffectRejection
+          ? "text_stage_rejected"
+          : "text_stage_uncertain",
         this.now(),
-        { detail: error instanceof Error ? error.message : String(error) },
+        {
+          detail: error instanceof Error ? error.message : String(error),
+          ...(knownNoSideEffectRejection
+            ? { fenceMismatchFields: authorityError.mismatchFields }
+            : {}),
+        },
       );
       await writePromptSubmissionState(
         readiness.submissionPath,
         submission,
       ).catch(() => undefined);
-      if (inputAuthorityError(error))
+      if (authorityError)
         throw new OperationalExecutionError(
-          `Antigravity pane input failed its exact identity fence: ${error instanceof Error ? error.message : String(error)}`,
+          `Antigravity pane input failed its exact identity fence: ${authorityError.message}`,
           "operator_recovery_required",
           "antigravity_prompt_input_fence_failed",
-          { provider_cycles: 0 },
+          {
+            provider_cycles: 0,
+            ...(authorityError.mismatchFields.length > 0
+              ? {
+                  input_fence_mismatch_fields: [
+                    ...authorityError.mismatchFields,
+                  ],
+                }
+              : {}),
+            input_side_effect: authorityError.sideEffect,
+          },
         );
       throw uncertainPrompt(error);
     }
@@ -1864,6 +1883,7 @@ function interactivePromptAuthority(
     paneId: binding.paneId,
     terminalId: binding.terminalId,
     agentName: binding.agentName,
+    agentIntegrationKind: "agy",
     paneShellPid: process.shellPid as number,
     paneForegroundProcessGroupId: process.foregroundProcessGroupId as number,
     paneProcessIdentityDigest: processIdentityDigest,
@@ -1881,7 +1901,7 @@ function interactivePromptSubmissionPath(lineage: HarnessLineage): string {
   );
 }
 
-function inputAuthorityError(error: unknown): boolean {
+function inputAuthorityError(error: unknown): error is HerdrApiError {
   return (
     error instanceof HerdrApiError &&
     [
