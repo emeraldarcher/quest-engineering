@@ -4,6 +4,8 @@
 
 **Quest Engineering orchestrates subscription-bearing coding harnesses. It does not replace those harnesses as the model client.**
 
+Phase 5 accepted Pi and Antigravity as production harnesses inside the same per-Run mixed SBX architecture. Antigravity's live-TUI transport, fresh-conversation readiness, generation and managed-input fences, phase-aware structured completion, and asynchronous private-Git export are accepted; the separate SBX teardown and procedure/evidence-hygiene deviations remain recorded in [`phase-5-closure.md`](phase-5-closure.md).
+
 Pi, Antigravity, Claude Code, Codex, and future coding harnesses keep ownership of model access, account/subscription authentication, provider billing, native tools, and native interaction. Credentials stay in the Worker/harness environment. Product receives readiness and capability diagnostics, never raw credentials. Quest Engineering does not require provider API keys merely to orchestrate a native harness.
 
 ## Boundaries

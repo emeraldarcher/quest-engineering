@@ -4,6 +4,8 @@
 
 Antigravity is an `AgentHarness` in the same immutable Run environment as Pi. The selected profile is `qe-coding-execution-v1`; it composes lockfile-pinned Pi 0.85.1 and digest-pinned Antigravity 1.2.7. `qe-pi-execution-v2` remains unchanged for historical provenance. A harness change never means one VM per harness.
 
+Phase 5 Product semantics and phase-aware structured completion are accepted. The asynchronous private-Git export completed successfully while normal bridge status remained responsive, and Product terminalized only after Change Set binding. SBX stop convergence and post-completion evidence hygiene remain independent deviations; see [`phase-5-closure.md`](phase-5-closure.md).
+
 The production topology is:
 
 ```text
@@ -119,7 +121,7 @@ bun test test/sbx-antigravity-live.test.ts
 
 The gate performs host-native credential readiness, mixed-profile creation, capability/provenance verification, guest placeholder inspection, authenticated `models`, `mcp list`, stop-free restart, and cleanup. It submits no prompt and must print `prompts: 0` and `providerCycles: 0`.
 
-Before any larger Work Yard acceptance, run a maintenance Worker (`QE_WORKER_DISPATCH_AVAILABILITY=maintenance`) and execute the Product manifest preflight:
+Before any future Work Yard acceptance, run a maintenance Worker (`QE_WORKER_DISPATCH_AVAILABILITY=maintenance`) and execute the Product manifest preflight:
 
 ```sh
 QE_LOCAL_SESSION_ATTACH_ENABLED=true \
@@ -127,7 +129,7 @@ bun run workers/bun/scripts/phase5-antigravity-product-preflight.ts \
   workers/bun/.pi/tmp/phase5-antigravity-preflight/manifest.json
 ```
 
-It requires the exact model to be unavailable for dispatch because of maintenance mode and requires Open Session to resolve the exact idle Antigravity pane. Then stop that Worker and wait for authoritative `disconnected`. Only a human may subsequently authorize an active Worker and paid inference. This change does not perform that acceptance.
+It requires the exact model to be unavailable for dispatch because of maintenance mode and requires Open Session to resolve the exact idle Antigravity pane. Then stop that Worker and wait for authoritative `disconnected`. Only a human may subsequently authorize an active Worker and paid inference. Phase 5 followed this boundary and is now closed; its acceptance is not authorization to run another Attempt.
 
 ## 51-point implementation gate
 
@@ -181,4 +183,4 @@ It requires the exact model to be unavailable for dispatch because of maintenanc
 48. fresh recovery never host-launches;
 49. checkpoint/export ordering is unchanged;
 50. opt-in live gate reports zero prompts/provider cycles;
-51. paid mixed-harness Product acceptance remains human-gated and unstarted.
+51. one human-authorized paid Antigravity Product Attempt proved exactly-once live-TUI input, phase-aware semantic acknowledgement, asynchronous private-Git export, Change Set binding, independent final-tree validation, and Product terminal success without retry.
