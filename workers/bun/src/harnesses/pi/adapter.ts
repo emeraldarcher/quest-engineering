@@ -27,6 +27,7 @@ import {
   materializeExecutionArtifacts,
 } from "../../workspace/execution-artifacts.ts";
 import { controlDescriptorPath } from "../control/authority.ts";
+import { HarnessControlClient } from "../control/client.ts";
 import { HARNESS_CONTROL_PATH_ENV } from "../control/descriptor.ts";
 import { HumanAttentionCorrelator } from "../control/human-attention.ts";
 import {
@@ -43,6 +44,7 @@ import {
   promptActivityStallMs,
   promptEvidenceCursor,
   reconcileAmbiguousPrompt,
+  StructuredCompletionWaitPolicy,
   structuredResultExists,
   uncertainPrompt,
   waitingForActivitySince,
@@ -848,10 +850,19 @@ export class PiHarness implements AgentHarness {
     let providerTurnSettled = Boolean(dispatch.providerTurnSettledAt);
     let stalled = Boolean(dispatch.stalledAt && !nativeActivity);
     let previousInspection = "";
+    const completionWait = new StructuredCompletionWaitPolicy(
+      this.config.resultTimeoutMs,
+    );
+    if (nativeIdle || providerTurnSettled) completionWait.providerSettled();
+    const descriptorPath = controlDescriptorPath(lineage);
+    const completionClient = existsSync(descriptorPath)
+      ? new HarnessControlClient(descriptorPath)
+      : null;
     const collectResult = async () => {
       if (!(await structuredResultExists(dispatch.resultDirectory)))
         return null;
       const outputs = (await collectStepResult(dispatch)).envelope.outputs;
+      completionWait.exportCompleted();
       onEvent({
         type: "structured_result_received",
         observedAt: new Date().toISOString(),
@@ -907,10 +918,6 @@ export class PiHarness implements AgentHarness {
         ),
       });
     }
-    const acceptedTimestamp = Date.parse(acceptedAt);
-    const resultDeadline =
-      (Number.isFinite(acceptedTimestamp) ? acceptedTimestamp : Date.now()) +
-      this.config.resultTimeoutMs;
     while (true) {
       if (this.stopped)
         throw new HerdrApiError(
@@ -919,6 +926,21 @@ export class PiHarness implements AgentHarness {
         );
       const completed = await collectResult();
       if (completed) return completed;
+      if (completionClient) {
+        const status = await completionClient.completionStatus();
+        if (status.completion?.phase === "failed")
+          throw new OperationalExecutionError(
+            `Quest Engineering accepted the structured Step result, but physical completion failed: ${status.completion.failure?.message ?? "unknown export failure"}`,
+            "operator_recovery_required",
+            "structured_completion_export_failed",
+            {
+              completion_failure_code:
+                status.completion.failure?.code ?? "invalid_bridge_response",
+            },
+          );
+        if (status.completion?.semanticAccepted)
+          completionWait.resultAccepted();
+      }
       const observation = await this.nativeActivity(
         target,
         current,
@@ -933,11 +955,17 @@ export class PiHarness implements AgentHarness {
       );
       if (!providerTurnSettled && providerSettledAt) {
         providerTurnSettled = true;
+        completionWait.providerSettled();
         onEvent({
           type: "provider_turn_settled",
           observedAt: providerSettledAt,
           inspection,
         });
+      }
+      if (current.status === "working") {
+        if (completionWait.phase() === "awaiting_structured_completion")
+          completionWait.continuationStarted();
+        else completionWait.providerActive();
       }
       const structuredActivity =
         readAttentionControl(lineage).structured.state === "requested";
@@ -957,6 +985,7 @@ export class PiHarness implements AgentHarness {
         previousInspection = inspectionFingerprint(running);
       } else if (nativeIdle && current.status === "working") {
         nativeIdle = false;
+        completionWait.continuationStarted();
         onEvent({
           type: "native_activity",
           observedAt: new Date().toISOString(),
@@ -972,6 +1001,7 @@ export class PiHarness implements AgentHarness {
             const providerFailure = await sbx?.providerEligibilityFailure();
             if (providerFailure) throw providerIneligible(providerFailure);
             nativeIdle = true;
+            completionWait.providerSettled();
             onEvent({
               type: "native_idle",
               observedAt: new Date().toISOString(),
@@ -1019,11 +1049,12 @@ export class PiHarness implements AgentHarness {
           }
         }
       }
-      if (Date.now() >= resultDeadline) {
+      if (completionWait.expired()) {
         const racingResult = await drainResult(250);
         if (racingResult) return racingResult;
+        completionWait.terminal();
         throw new OperationalExecutionError(
-          "The bounded QE structured-result recovery deadline expired before a valid result arrived.",
+          "The bounded QE structured-result recovery deadline expired after the authorized native turn settled.",
           "operator_recovery_required",
           "structured_result_timeout",
         );

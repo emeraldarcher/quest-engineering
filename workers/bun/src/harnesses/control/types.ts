@@ -71,6 +71,21 @@ export interface CompletionFailure {
   message: string;
 }
 
+export type StructuredCompletionPhase =
+  | "awaiting_result"
+  | "exporting"
+  | "completed"
+  | "failed";
+
+export interface StructuredCompletionState {
+  phase: StructuredCompletionPhase;
+  semanticAccepted: boolean;
+  acceptedAt?: string;
+  exportStartedAt?: string;
+  exportCompletedAt?: string;
+  failure?: CompletionFailure;
+}
+
 export type NativeStopDecision =
   | { decision: "allow" }
   | {
@@ -100,6 +115,8 @@ export interface HarnessControlResult {
   accepted: true;
   duplicate?: boolean;
   completed?: boolean;
+  semanticAccepted?: boolean;
+  completion?: StructuredCompletionState;
   contractViolation?: string;
   attention?: HumanAttention;
   intervention?: HumanInterventionLifecycle | null;

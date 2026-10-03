@@ -55,6 +55,18 @@ async function createFixture(
   return { root, registry, authority, server };
 }
 
+async function waitForCompletionPhase(
+  client: HarnessControlClient,
+  phase: "completed" | "failed" | "exporting",
+) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const status = await client.completionStatus();
+    if (status.completion?.phase === phase) return status;
+    await Bun.sleep(5);
+  }
+  throw new Error(`completion did not reach ${phase}`);
+}
+
 async function bind(
   fixture: Awaited<ReturnType<typeof createFixture>>,
   input = action(),
@@ -78,8 +90,11 @@ test("one generic bridge validates and records a structured Step result", async 
     await client.completeStep({ change_set: { files: 2 } }, "result-1"),
   ).toMatchObject({
     accepted: true,
-    completed: true,
+    completed: false,
+    semanticAccepted: true,
+    completion: { phase: "exporting" },
   });
+  await waitForCompletionPhase(client, "completed");
   expect((await collectStepResult(dispatch)).envelope.outputs).toEqual({
     change_set: { files: 2 },
   });
@@ -145,8 +160,9 @@ test("same request is idempotent while a new completion request is rejected", as
     await client.completeStep({ change_set: true }, "same-request"),
   ).toMatchObject({
     duplicate: true,
-    completed: true,
+    semanticAccepted: true,
   });
+  await waitForCompletionPhase(client, "completed");
   await expect(
     client.completeStep({ change_set: true }, "replay"),
   ).rejects.toMatchObject({
@@ -187,8 +203,10 @@ test("new Attempt binding invalidates the old context on a retained lineage", as
     code: "unknown_control_context",
   });
   expect(await second.client.completeStep({ change_set: true })).toMatchObject({
-    completed: true,
+    semanticAccepted: true,
+    completion: { phase: "exporting" },
   });
+  await waitForCompletionPhase(second.client, "completed");
 });
 
 test("concurrent lineages are isolated and cannot use guessed or cross-generation credentials", async () => {
@@ -211,6 +229,10 @@ test("concurrent lineages are isolated and cannot use guessed or cross-generatio
   );
   await first.client.completeStep({ change_set: "a" });
   await second.client.completeStep({ change_set: "b" });
+  await Promise.all([
+    waitForCompletionPhase(first.client, "completed"),
+    waitForCompletionPhase(second.client, "completed"),
+  ]);
   expect((await collectStepResult(first.dispatch)).envelope.outputs).toEqual({
     change_set: "a",
   });
@@ -268,8 +290,10 @@ test("semantic completion rejection is correctable and does not consume omission
   await expect(
     client.completeStep({ change_set: true }),
   ).resolves.toMatchObject({
-    completed: true,
+    semanticAccepted: true,
+    completion: { phase: "exporting" },
   });
+  await waitForCompletionPhase(client, "completed");
 });
 
 test("reported completion infrastructure failure preserves work without consuming omission enforcement", async () => {
@@ -344,53 +368,214 @@ test("response loss after durable acceptance reconciles the accepted result", as
     await new HarnessControlClient(
       controlDescriptorPath(bound.lineage),
     ).completeStep({ change_set: { accepted: true } }, "lost-ack"),
-  ).toMatchObject({ accepted: true, completed: true, duplicate: true });
+  ).toMatchObject({ accepted: true, semanticAccepted: true, duplicate: true });
   expect(requests).toBe(2);
+  await waitForCompletionPhase(bound.client, "completed");
   expect((await collectStepResult(bound.dispatch)).envelope.outputs).toEqual({
     change_set: { accepted: true },
   });
 });
 
-test("physical export failure leaves completion pending and a corrected retry succeeds once", async () => {
-  let failExport = true;
+test("result submission acknowledges before delayed export and keeps Stop/status responsive", async () => {
+  let startExport!: () => void;
+  const exportStarted = new Promise<void>((resolve) => {
+    startExport = resolve;
+  });
+  let releaseExport!: () => void;
+  const exportGate = new Promise<void>((resolve) => {
+    releaseExport = resolve;
+  });
+  const value = await createFixture(2, {
+    async verifyAndPrepare({ outputs, assertCurrent }) {
+      startExport();
+      await exportGate;
+      return { outputs, commit: () => assertCurrent() };
+    },
+  });
+  const bound = await bind(value);
+
+  expect(
+    await bound.client.completeStep({ change_set: { delayed: true } }),
+  ).toMatchObject({
+    semanticAccepted: true,
+    completed: false,
+    completion: { phase: "exporting" },
+  });
+  await exportStarted;
+  expect(await bound.client.completionStatus()).toMatchObject({
+    completed: false,
+    semanticAccepted: true,
+    completion: { phase: "exporting" },
+  });
+  expect(
+    (await bound.client.nativeStop("model_stop", true)).nativeStop,
+  ).toEqual({ decision: "allow" });
+
+  releaseExport();
+  await waitForCompletionPhase(bound.client, "completed");
+  expect((await collectStepResult(bound.dispatch)).envelope.outputs).toEqual({
+    change_set: { delayed: true },
+  });
+});
+
+test("terminal cancellation fences a delayed export from authoritative delivery", async () => {
+  let startExport!: () => void;
+  const exportStarted = new Promise<void>((resolve) => {
+    startExport = resolve;
+  });
+  let releaseExport!: () => void;
+  const exportGate = new Promise<void>((resolve) => {
+    releaseExport = resolve;
+  });
+  let finishExport!: () => void;
+  const exportFinished = new Promise<void>((resolve) => {
+    finishExport = resolve;
+  });
+  let productExportBound = false;
+  const value = await createFixture(2, {
+    async verifyAndPrepare({ outputs, assertCurrent }) {
+      startExport();
+      try {
+        await exportGate;
+        return {
+          outputs,
+          commit: () => {
+            assertCurrent();
+            productExportBound = true;
+          },
+        };
+      } finally {
+        finishExport();
+      }
+    },
+  });
+  const bound = await bind(value);
+  await bound.client.completeStep({ change_set: { delayed: true } });
+  await exportStarted;
+
+  value.registry.cancel(bound.dispatch.action.action_id, {
+    reason: "execution_cancelled",
+    code: "execution_cancelled",
+    cancellation_request_id: "cancel-delayed-export",
+  });
+  releaseExport();
+  await exportFinished;
+  await Bun.sleep(0);
+
+  expect(productExportBound).toBe(false);
+  await expect(collectStepResult(bound.dispatch)).rejects.toThrow(
+    "without a structured",
+  );
+  await expect(bound.client.completionStatus()).rejects.toMatchObject({
+    code: "stale_control_context",
+  });
+});
+
+test("new authority generation fences an old delayed export", async () => {
+  let startExport!: () => void;
+  const exportStarted = new Promise<void>((resolve) => {
+    startExport = resolve;
+  });
+  let releaseExport!: () => void;
+  const exportGate = new Promise<void>((resolve) => {
+    releaseExport = resolve;
+  });
+  let finishExport!: () => void;
+  const exportFinished = new Promise<void>((resolve) => {
+    finishExport = resolve;
+  });
+  let oldExportBound = false;
+  const value = await createFixture(2, {
+    async verifyAndPrepare({ dispatch, outputs, assertCurrent }) {
+      if (dispatch.action.action_id !== "action-1")
+        return { outputs, commit: () => assertCurrent() };
+      startExport();
+      try {
+        await exportGate;
+        return {
+          outputs,
+          commit: () => {
+            assertCurrent();
+            oldExportBound = true;
+          },
+        };
+      } finally {
+        finishExport();
+      }
+    },
+  });
+  const first = await bind(value);
+  await first.client.completeStep({ change_set: { generation: 1 } });
+  await exportStarted;
+
+  value.registry.fail(first.dispatch.action.action_id, { reason: "replaced" });
+  const nextAction = action({
+    action_id: "action-2",
+    attempt_id: "attempt-2",
+    occurrence_id: "occurrence-1",
+    operational_recovery: {
+      epoch_number: 1,
+      attempt_in_epoch: 1,
+      attempt_allowance: 1,
+      authorization_kind: "human",
+      continuation_mode: "retained",
+      retained_lineage_id: first.lineage.lineageId,
+      source_attempt_id: "attempt-1",
+      request_id: "request-generation-2",
+    },
+  });
+  nextAction.execution.context.logical_lineage_id =
+    first.lineage.logicalLineageId;
+  const second = await bind(value, nextAction);
+  releaseExport();
+  await exportFinished;
+  await Bun.sleep(0);
+
+  expect(oldExportBound).toBe(false);
+  await expect(collectStepResult(first.dispatch)).rejects.toThrow(
+    "without a structured",
+  );
+  await second.client.completeStep({ change_set: { generation: 2 } });
+  await waitForCompletionPhase(second.client, "completed");
+  expect((await collectStepResult(second.dispatch)).envelope.outputs).toEqual({
+    change_set: { generation: 2 },
+  });
+});
+
+test("physical export failure is terminal after semantic acceptance", async () => {
   let exports = 0;
   const value = await createFixture(2, {
-    async verifyAndBind({ outputs }) {
+    async verifyAndPrepare() {
       exports += 1;
-      if (failExport) throw new Error("synthetic private-Git export failure");
-      return {
-        ...outputs,
-        change_set: {
-          ...(outputs.change_set as Record<string, unknown>),
-          physical: { export_id: "export-1", checkpoint_id: "checkpoint-1" },
-        },
-      } as never;
+      throw new Error("synthetic private-Git export failure");
     },
   });
   const bound = await bind(value);
 
   await expect(
     bound.client.completeStep({ change_set: { files: ["src/greeting.js"] } }),
-  ).rejects.toMatchObject({
-    kind: "infrastructure",
-    code: "invalid_bridge_response",
+  ).resolves.toMatchObject({
+    semanticAccepted: true,
+    completion: { phase: "exporting" },
   });
-  expect((await bound.client.completionStatus()).completed).toBe(false);
+  expect(await waitForCompletionPhase(bound.client, "failed")).toMatchObject({
+    completed: false,
+    semanticAccepted: true,
+    completion: {
+      phase: "failed",
+      failure: {
+        kind: "infrastructure",
+        code: "invalid_bridge_response",
+      },
+    },
+  });
   await expect(collectStepResult(bound.dispatch)).rejects.toThrow(
     "without a structured",
   );
-
-  failExport = false;
   await expect(
     bound.client.completeStep({ change_set: { files: ["src/greeting.js"] } }),
-  ).resolves.toMatchObject({ completed: true });
-  expect(exports).toBe(2);
-  expect((await collectStepResult(bound.dispatch)).envelope.outputs).toEqual({
-    change_set: {
-      files: ["src/greeting.js"],
-      physical: { export_id: "export-1", checkpoint_id: "checkpoint-1" },
-    },
-  });
+  ).rejects.toMatchObject({ code: "replayed_request" });
+  expect(exports).toBe(1);
 });
 
 test("ambiguous response loss reconciles status without replaying completion", async () => {
@@ -503,6 +688,9 @@ test("attention and native Stop enforcement share the same bound authority", asy
     (await client.nativeStop("model_stop", true)).nativeStop,
   ).toMatchObject({ decision: "contract_violation", enforcementAttempt: 3 });
   await client.completeStep({ change_set: true });
+  expect(await client.completionStatus()).toMatchObject({
+    semanticAccepted: true,
+  });
   expect((await client.nativeStop("model_stop", true)).nativeStop).toEqual({
     decision: "allow",
   });
@@ -615,6 +803,52 @@ test("Stop preserves work when completion infrastructure is unavailable", async 
     decision: "continue",
     reason: expect.stringContaining("infrastructure"),
   });
+});
+
+test("control-generation death terminalizes an accepted in-flight export", async () => {
+  let startExport!: () => void;
+  const exportStarted = new Promise<void>((resolve) => {
+    startExport = resolve;
+  });
+  const exportNeverFinishes = new Promise<void>(() => undefined);
+  const value = await createFixture(2, {
+    async verifyAndPrepare({ outputs, assertCurrent }) {
+      startExport();
+      await exportNeverFinishes;
+      return { outputs, commit: () => assertCurrent() };
+    },
+  });
+  const bound = await bind(value);
+  await bound.client.completeStep({ change_set: { interrupted: true } });
+  await exportStarted;
+  await value.server.stop();
+
+  const restartedAuthority = new HarnessControlAuthority(value.registry);
+  const restartedServer = new HarnessControlServer(restartedAuthority);
+  await restartedServer.start();
+  cleanups.push(() => restartedServer.stop());
+  await restartedAuthority.bind(
+    value.registry.get(bound.dispatch.action.action_id),
+    value.registry.getLineage(bound.lineage.lineageId),
+  );
+  const restarted = new HarnessControlClient(
+    controlDescriptorPath(bound.lineage),
+  );
+
+  expect(await restarted.completionStatus()).toMatchObject({
+    completed: false,
+    semanticAccepted: true,
+    completion: {
+      phase: "failed",
+      failure: {
+        kind: "infrastructure",
+        code: "bridge_unavailable",
+      },
+    },
+  });
+  await expect(collectStepResult(bound.dispatch)).rejects.toThrow(
+    "without a structured",
+  );
 });
 
 test("bridge restart rejects the old controller generation and rebinds active work", async () => {

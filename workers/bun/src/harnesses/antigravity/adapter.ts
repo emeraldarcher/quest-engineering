@@ -1449,6 +1449,16 @@ export class AntigravityHarness implements AgentHarness {
       const status = await new HarnessControlClient(
         controlDescriptorPath(lineage),
       ).completionStatus();
+      if (status.completion?.phase === "failed")
+        throw new OperationalExecutionError(
+          `Quest Engineering accepted the structured Step result, but physical completion failed: ${status.completion.failure?.message ?? "unknown export failure"}`,
+          "operator_recovery_required",
+          "structured_completion_export_failed",
+          {
+            completion_failure_code:
+              status.completion.failure?.code ?? "invalid_bridge_response",
+          },
+        );
       if (status.contractViolation)
         throw new HerdrApiError(
           "harness_contract_violation",

@@ -19,6 +19,7 @@ import {
   controlDescriptorPath,
   HarnessControlAuthority,
 } from "../src/harnesses/control/authority.ts";
+import { HarnessControlClient } from "../src/harnesses/control/client.ts";
 import { HARNESS_CONTROL_PATH_ENV } from "../src/harnesses/control/descriptor.ts";
 import { collectStepResult } from "../src/harnesses/control/result-envelope.ts";
 import { HarnessControlServer } from "../src/harnesses/control/server.ts";
@@ -98,6 +99,12 @@ test.serial(
       noTools: "builtin",
     });
     await session.session.prompt("Return the deterministic result.");
+    const client = new HarnessControlClient(controlDescriptorPath(lineage));
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await client.completionStatus()).completed) break;
+      await Bun.sleep(5);
+    }
+    expect((await client.completionStatus()).completed).toBe(true);
     expect((await collectStepResult(dispatch)).envelope.outputs).toEqual({
       change_set: { files: ["src/a.ts"] },
     });

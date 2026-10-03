@@ -64,8 +64,8 @@ export class HarnessControlClient {
       if (completionInfrastructureCode(known.code)) {
         try {
           const status = await this.completionStatus();
-          if (status.completed)
-            return { accepted: true, completed: true, duplicate: true };
+          if (status.completed || status.semanticAccepted)
+            return { ...status, duplicate: true };
         } catch {
           // The original typed infrastructure failure remains authoritative.
         }

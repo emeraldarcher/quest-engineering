@@ -882,11 +882,15 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     return prepared;
   }
 
-  async verifyAndBind(input: {
+  async verifyAndPrepare(input: {
     dispatch: DispatchRecord;
     lineageId: string;
     outputs: Record<string, JsonValue>;
-  }): Promise<Record<string, JsonValue>> {
+    assertCurrent: () => void;
+  }): Promise<{
+    outputs: Record<string, JsonValue>;
+    commit: () => void;
+  }> {
     const context = this.contexts.get(input.lineageId);
     if (
       !context ||
@@ -896,9 +900,10 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       throw new Error(
         "No exact active SBX/private-Git completion context exists.",
       );
+    input.assertCurrent();
     const outputs = structuredClone(input.outputs);
     if (!input.dispatch.completionRequirement.physicalExportRequired)
-      return outputs;
+      return { outputs, commit: () => input.assertCurrent() };
     const durable = this.store.get(input.lineageId);
     const changeExport =
       durable?.changeExport ??
@@ -910,13 +915,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           baseCommit: this.requiredBase(context.dispatch),
         },
       }));
+    input.assertCurrent();
     await this.importVerifiedExport(context.dispatch, changeExport);
-    if (!durable?.changeExport)
-      this.store.bindExport(
-        input.lineageId,
-        input.dispatch.action.action_id,
-        changeExport,
-      );
+    input.assertCurrent();
     for (const declaration of input.dispatch.completionRequirement.outputs) {
       if (declaration.kind !== "change_set") continue;
       const current = outputs[declaration.name];
@@ -929,7 +930,18 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         physical: physicalExportValue(changeExport),
       };
     }
-    return outputs;
+    return {
+      outputs,
+      commit: () => {
+        input.assertCurrent();
+        if (!durable?.changeExport)
+          this.store.bindExport(
+            input.lineageId,
+            input.dispatch.action.action_id,
+            changeExport,
+          );
+      },
+    };
   }
 
   failureCode(lineageId: string): string | null {

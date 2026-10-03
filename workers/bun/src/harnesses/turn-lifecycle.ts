@@ -29,6 +29,87 @@ export function promptActivityStallMs(config: WorkerConfig): number {
   return config.promptActivityStallMs ?? 30_000;
 }
 
+export type StructuredCompletionWaitPhase =
+  | "provider_active"
+  | "awaiting_structured_completion"
+  | "continuation_active"
+  | "exporting"
+  | "completed"
+  | "terminal";
+
+/**
+ * Generic phase clock for required structured completion.
+ *
+ * Provider/native work has no wall-clock completion deadline. The bounded
+ * grace starts only after authoritative native settlement, is suspended by an
+ * approved corrective continuation, and is permanently closed once semantic
+ * completion enters physical export.
+ */
+export class StructuredCompletionWaitPolicy {
+  private phaseValue: StructuredCompletionWaitPhase = "provider_active";
+  private deadline: number | null = null;
+
+  constructor(
+    private readonly graceMs: number,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  phase(): StructuredCompletionWaitPhase {
+    return this.phaseValue;
+  }
+
+  providerActive(): void {
+    if (["exporting", "completed", "terminal"].includes(this.phaseValue))
+      return;
+    this.phaseValue = "provider_active";
+    this.deadline = null;
+  }
+
+  providerSettled(): void {
+    if (["exporting", "completed", "terminal"].includes(this.phaseValue))
+      return;
+    if (
+      this.phaseValue !== "awaiting_structured_completion" ||
+      this.deadline === null
+    ) {
+      this.phaseValue = "awaiting_structured_completion";
+      this.deadline = this.now() + Math.max(1, this.graceMs);
+    }
+  }
+
+  continuationStarted(): void {
+    if (["exporting", "completed", "terminal"].includes(this.phaseValue))
+      return;
+    this.phaseValue = "continuation_active";
+    this.deadline = null;
+  }
+
+  resultAccepted(): void {
+    if (this.phaseValue === "terminal") return;
+    this.phaseValue = "exporting";
+    this.deadline = null;
+  }
+
+  exportCompleted(): void {
+    if (this.phaseValue === "terminal") return;
+    this.phaseValue = "completed";
+    this.deadline = null;
+  }
+
+  terminal(): void {
+    this.phaseValue = "terminal";
+    this.deadline = null;
+  }
+
+  expired(): boolean {
+    return (
+      this.phaseValue === "awaiting_structured_completion" &&
+      this.deadline !== null &&
+      this.now() >= this.deadline
+    );
+  }
+}
+
 export async function promptEvidenceCursor(
   kind: PromptEvidenceCursor["kind"],
   path: string,

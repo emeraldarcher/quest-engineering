@@ -67,7 +67,8 @@ export function createQeHarnessBridgeMcpServer(
         const result = await client.completeStep(outputs);
         const response = {
           accepted: true as const,
-          completed: result.completed === true,
+          completed:
+            result.completed === true || result.semanticAccepted === true,
         };
         return {
           content: [{ type: "text" as const, text: JSON.stringify(response) }],
