@@ -132,7 +132,16 @@ export function executionEnvironmentConformance(
       paths: lease.paths,
     });
 
-    await backend.stop(lease.ref);
+    expect(await backend.stop(lease.ref)).toMatchObject({
+      ref: lease.ref,
+      state: "stopped",
+      observation: "stopped",
+    });
+    expect(await backend.reconcileStop(lease.ref)).toMatchObject({
+      ref: lease.ref,
+      state: "stopped",
+      observation: "stopped",
+    });
     expect(await backend.inspect(lease.ref)).toMatchObject({
       state: "stopped",
       usable: false,

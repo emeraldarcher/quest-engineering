@@ -2,7 +2,7 @@
 
 ## Phase 5 acceptance status
 
-The Run-owned mixed-SBX architecture, Antigravity 1.2.7 fresh-conversation bootstrap, generation-fenced readiness, managed-agent input fencing, exactly-once live-TUI prompt transport, phase-aware semantic completion, and asynchronous private-Git export are accepted. Product semantic success is independent of the still-open SBX stop-convergence issue and the post-completion evidence-hygiene deviation. See [`phase-5-closure.md`](phase-5-closure.md); the closure authorizes no additional runtime acceptance.
+The Run-owned mixed-SBX architecture, Antigravity 1.2.7 fresh-conversation bootstrap, generation-fenced readiness, managed-agent input fencing, exactly-once live-TUI prompt transport, phase-aware semantic completion, and asynchronous private-Git export are accepted. Product semantic success remains independent of the historical SBX stop-convergence and post-completion evidence-hygiene deviations. New stop cycles use the correction in [`sbx-stop-convergence-report.md`](sbx-stop-convergence-report.md) without rewriting [`phase-5-closure.md`](phase-5-closure.md); the closure authorizes no additional runtime acceptance.
 
 ## Authority boundaries
 

@@ -13,6 +13,8 @@ import type {
   EnvironmentPathMap,
   EnvironmentRef,
   EnvironmentSpec,
+  EnvironmentStopResult,
+  EnvironmentStopStatus,
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
 } from "./types.ts";
@@ -30,6 +32,7 @@ export interface TrackedEnvironmentBinding {
   paths: EnvironmentPathMap;
   capabilities: readonly EnvironmentCapability[];
   paneEnvironment: Readonly<Record<string, string>>;
+  stopStatus?: EnvironmentStopStatus;
 }
 
 export interface MaterializedEnvironment {
@@ -63,6 +66,7 @@ export abstract class TrackedExecutionEnvironmentBackend
       if (current && current.state !== "removed") {
         this.assertSpec(current, snapshot, "ensure");
         current.state = "running";
+        delete current.stopStatus;
         return this.lease(current);
       }
 
@@ -119,12 +123,13 @@ export abstract class TrackedExecutionEnvironmentBackend
       specDigest: binding.specDigest,
       paths: copyPaths(binding.paths),
       capabilities: copyCapabilities(binding.capabilities),
+      ...(binding.stopStatus ? { stop: { ...binding.stopStatus } } : {}),
     };
   }
 
-  async stop(ref: EnvironmentRef): Promise<void> {
+  async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
     await this.beforeOperation("stop");
-    await this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+    return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
       const binding = this.resolve(ref, "stop");
       if (binding.state === "removed")
         throw new EnvironmentBackendError(
@@ -133,7 +138,28 @@ export abstract class TrackedExecutionEnvironmentBackend
           "stop",
         );
       binding.state = "stopped";
+      binding.stopStatus = {
+        state: "stopped",
+        intent: "recorded",
+        invocation: "acknowledged",
+        observation: "stopped",
+      };
+      return { ref: copyRef(binding.ref), ...binding.stopStatus };
     });
+  }
+
+  async reconcileStop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
+    await this.beforeOperation("reconcile_stop");
+    const binding = this.resolve(ref, "reconcile_stop");
+    const status =
+      binding.stopStatus ??
+      ({
+        state: binding.state === "stopped" ? "stopped" : "running",
+        intent: "not_recorded",
+        invocation: "not_invoked",
+        observation: binding.state === "stopped" ? "stopped" : "running",
+      } satisfies EnvironmentStopStatus);
+    return { ref: copyRef(binding.ref), ...status };
   }
 
   async remove(ref: EnvironmentRef): Promise<void> {

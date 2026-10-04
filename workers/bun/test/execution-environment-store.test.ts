@@ -31,7 +31,7 @@ test("environment store bootstraps a clean versioned SQLite schema", async () =>
         "SELECT version FROM execution_environment_schema_migrations ORDER BY version",
       )
       .all(),
-  ).toEqual([{ version: 1 }]);
+  ).toEqual([{ version: 1 }, { version: 2 }]);
   const columns = db
     .query("PRAGMA table_info(execution_environments)")
     .all() as Array<{ name: string }>;
@@ -59,6 +59,52 @@ test("environment migration preserves unrelated representative Worker data", asy
     { id: "history-1", value: "preserve-me" },
   );
   migrated.close();
+});
+
+test("stop events are append-only and invocation claim is exactly once", async () => {
+  const root = await tempRoot();
+  let milliseconds = Date.parse("2026-01-01T00:00:00.000Z");
+  const store = new ExecutionEnvironmentStore(root, undefined, () => {
+    const value = new Date(milliseconds);
+    milliseconds += 1;
+    return value;
+  });
+  store.claimCreation(intent("record-stop", "incarnation-stop"));
+  const begun = store.beginStop("record-stop", "stop-1");
+  expect(begun.created).toBe(true);
+  expect(store.beginStop("record-stop", "stop-2")).toMatchObject({
+    created: false,
+    attempt: { stopId: "stop-1" },
+  });
+  expect(store.claimStopInvocation("record-stop", "stop-1").claimed).toBe(true);
+  expect(store.claimStopInvocation("record-stop", "stop-1").claimed).toBe(
+    false,
+  );
+  store.appendStopEvent("record-stop", "stop-1", "stop_invocation_ambiguous", {
+    errorCode: "operation_timeout",
+  });
+  store.appendStopEvent("record-stop", "stop-1", "stop_reconcile_started");
+  expect(store.latestStopAttempt("record-stop")).toMatchObject({
+    stopId: "stop-1",
+    invocation: "ambiguous",
+    confirmed: false,
+    reopened: false,
+  });
+  expect(store.stopEvents("record-stop").map((event) => event.type)).toEqual([
+    "stop_intent_recorded",
+    "stop_invocation_started",
+    "stop_invocation_ambiguous",
+    "stop_reconcile_started",
+  ]);
+  expect(
+    store.stopEvents("record-stop").map((event) => event.occurredAt),
+  ).toEqual([
+    "2026-01-01T00:00:00.003Z",
+    "2026-01-01T00:00:00.004Z",
+    "2026-01-01T00:00:00.005Z",
+    "2026-01-01T00:00:00.006Z",
+  ]);
+  store.close();
 });
 
 test("retirement preserves incarnation history and permits one new current record", async () => {

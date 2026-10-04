@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { WorkerConfig } from "../src/config.ts";
+import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import { SbxRunExecutionStore } from "../src/execution-environment/sbx-run-store.ts";
 import type { EnvironmentRef } from "../src/execution-environment/types.ts";
 import type {
@@ -13,6 +15,104 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
+});
+
+test("teardown health never rewrites completed Product export but active loss needs attention", async () => {
+  const parent = join(process.cwd(), ".pi", "tmp");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "sbx-run-stop-semantics-"));
+  roots.push(root);
+  const store = new SbxRunExecutionStore(root);
+  const ref = (environmentId: string, runId: string) =>
+    ({
+      backendKind: "sbx",
+      environmentId,
+      incarnation: `incarnation-${environmentId}`,
+      workerId: "worker-stop-semantics",
+      runId,
+      profile: { id: "qe-coding-execution-v1", digest: "profile" },
+    }) as EnvironmentRef;
+  const workspace = (lineageId: string) =>
+    ({
+      physicalLineageId: lineageId,
+      repositoryId: `repository-${lineageId}`,
+    }) as PrivateLineageWorkspace;
+  store.ready({
+    lineageId: "completed-lineage",
+    actionId: "completed-action",
+    runId: "completed-run",
+    environmentRef: ref("completed-environment", "completed-run"),
+    workspace: workspace("completed-lineage"),
+    extensionSetDigest: "extensions",
+  });
+  store.bindExport("completed-lineage", "completed-action", {
+    exportId: "verified-export",
+    checkpointId: "verified-checkpoint",
+    bundlePath: join(root, "verified.bundle"),
+    manifest: { resultTree: "verified-result-tree" },
+  } as PrivateGitChangeExport);
+  store.ready({
+    lineageId: "active-lineage",
+    actionId: "active-action",
+    runId: "active-run",
+    environmentRef: ref("active-environment", "active-run"),
+    workspace: workspace("active-lineage"),
+    extensionSetDigest: "extensions",
+  });
+  const stopStatus = {
+    state: "uncertain",
+    intent: "recorded",
+    invocation: "ambiguous",
+    observation: "unavailable",
+    stopId: "stop-cycle",
+  } as const;
+  const backend = {
+    inspect: async (environmentRef: EnvironmentRef) => ({
+      ref: environmentRef,
+      state: "degraded",
+      usable: false,
+      stop: stopStatus,
+    }),
+    reconcileStop: async (environmentRef: EnvironmentRef) => ({
+      ref: environmentRef,
+      ...stopStatus,
+    }),
+    close: () => undefined,
+  };
+  const manager = new SbxRunExecutionManager(
+    {
+      workerId: "worker-stop-semantics",
+      dataRoot: root,
+      enabledHarnesses: ["pi", "antigravity"],
+    } as unknown as WorkerConfig,
+    {} as never,
+    {
+      backend: backend as never,
+      privateGit: { close: () => undefined } as never,
+      store,
+    },
+  );
+  try {
+    expect(await manager.reconcileDurableOwnership()).toEqual([
+      "completed-lineage: environment_stop_uncertain_unavailable",
+      "active-lineage: environment_stop_uncertain_unavailable",
+    ]);
+    expect(store.get("completed-lineage")).toMatchObject({
+      state: "ready",
+      failureCode: null,
+      changeExport: {
+        exportId: "verified-export",
+        manifest: { resultTree: "verified-result-tree" },
+      },
+    });
+    expect(store.get("active-lineage")).toMatchObject({
+      state: "attention_required",
+      failureCode: "environment_stop_uncertain_unavailable",
+      changeExport: null,
+    });
+  } finally {
+    await manager.close();
+  }
 });
 
 test("SBX Run execution store preserves host tree continuity while rotating Action export", async () => {

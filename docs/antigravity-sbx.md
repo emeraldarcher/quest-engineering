@@ -4,7 +4,7 @@
 
 Antigravity is an `AgentHarness` in the same immutable Run environment as Pi. The selected profile is `qe-coding-execution-v1`; it composes lockfile-pinned Pi 0.85.1 and digest-pinned Antigravity 1.2.7. `qe-pi-execution-v2` remains unchanged for historical provenance. A harness change never means one VM per harness.
 
-Phase 5 Product semantics and phase-aware structured completion are accepted. The asynchronous private-Git export completed successfully while normal bridge status remained responsive, and Product terminalized only after Change Set binding. SBX stop convergence and post-completion evidence hygiene remain independent deviations; see [`phase-5-closure.md`](phase-5-closure.md).
+Phase 5 Product semantics and phase-aware structured completion are accepted. The asynchronous private-Git export completed successfully while normal bridge status remained responsive, and Product terminalized only after Change Set binding. The historical SBX stop and post-completion evidence-hygiene deviations remain independent of that Product verdict; new stop cycles use the correction in [`sbx-stop-convergence-report.md`](sbx-stop-convergence-report.md), without rewriting [`phase-5-closure.md`](phase-5-closure.md).
 
 The production topology is:
 

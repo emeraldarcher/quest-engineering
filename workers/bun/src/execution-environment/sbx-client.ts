@@ -69,6 +69,11 @@ export interface SbxRequestOptions {
   timeoutMs?: number;
 }
 
+export interface SbxStopOptions extends SbxRequestOptions {
+  /** Called durably immediately before the CLI subprocess may be spawned. */
+  onInvocation?: () => void | Promise<void>;
+}
+
 export interface SbxClient {
   readonly executable: string;
   version(): Promise<SbxNativeVersion>;
@@ -95,7 +100,7 @@ export interface SbxClient {
     guestPath: string,
     hostPath: string,
   ): Promise<void>;
-  stop(sandboxName: string, options?: SbxRequestOptions): Promise<void>;
+  stop(sandboxName: string, options?: SbxStopOptions): Promise<void>;
   remove(sandboxName: string): Promise<void>;
   launcherArgs(
     sandboxName: string,
@@ -374,10 +379,7 @@ export class CliSbxClient implements SbxClient {
     });
   }
 
-  async stop(
-    sandboxName: string,
-    options: SbxRequestOptions = {},
-  ): Promise<void> {
+  async stop(sandboxName: string, options: SbxStopOptions = {}): Promise<void> {
     await this.invoke(["stop", sandboxName], options);
   }
 
@@ -399,8 +401,10 @@ export class CliSbxClient implements SbxClient {
     options: {
       environment?: Readonly<Record<string, string>>;
       timeoutMs?: number;
+      onInvocation?: () => void | Promise<void>;
     } = {},
   ): Promise<SbxSubprocessResult> {
+    await options.onInvocation?.();
     const result = await this.runner({
       args,
       ...(options.environment ? { environment: options.environment } : {}),

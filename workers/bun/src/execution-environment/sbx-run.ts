@@ -426,19 +426,32 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   async reconcileDurableOwnership(): Promise<string[]> {
     const diagnostics: string[] = [];
     for (const record of this.store.list()) {
-      if (record.changeExport) continue;
       try {
         const inspection = await this.backend.inspect(record.environmentRef);
+        if (inspection.stop && inspection.stop.state !== "stopped") {
+          const stop = await this.backend.reconcileStop(record.environmentRef);
+          if (stop.state !== "stopped") {
+            const code = `environment_stop_${stop.state}_${stop.observation}`;
+            // A verified Product export remains semantically complete. Cleanup
+            // health is reported separately and never rewrites that verdict.
+            if (!record.changeExport)
+              this.store.attention(record.lineageId, code);
+            diagnostics.push(`${record.lineageId}: ${code}`);
+            continue;
+          }
+        }
+        if (record.changeExport) continue;
         if (inspection.state !== "running" || !inspection.usable) {
           const code = `environment_${inspection.state}_${inspection.usable ? "usable" : "unusable"}`;
           this.store.attention(record.lineageId, code);
           diagnostics.push(`${record.lineageId}: ${code}`);
         }
       } catch (error) {
-        this.store.attention(
-          record.lineageId,
-          "environment_reconciliation_failed",
-        );
+        if (!record.changeExport)
+          this.store.attention(
+            record.lineageId,
+            "environment_reconciliation_failed",
+          );
         diagnostics.push(
           `${record.lineageId}: ${error instanceof Error ? error.message : String(error)}`,
         );
