@@ -33,6 +33,9 @@ import {
 } from "./sbx-verifier.ts";
 import {
   type DurableEnvironmentRecord,
+  type DurableStopAttempt,
+  type DurableStopEvent,
+  type DurableStopEventType,
   ExecutionEnvironmentStore,
 } from "./store.ts";
 import { environmentSpecDigest } from "./tracked-backend.ts";
@@ -48,6 +51,8 @@ import type {
   EnvironmentReadiness,
   EnvironmentRef,
   EnvironmentSpec,
+  EnvironmentStopResult,
+  EnvironmentStopStatus,
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
 } from "./types.ts";
@@ -79,10 +84,17 @@ export interface SbxExecutionEnvironmentBackendOptions {
   ownerWaitAttempts?: number;
   /** Bound for the one native `sbx stop` request. */
   stopRequestTimeoutMs?: number;
-  /** Aggregate bound for authoritative inventory reconciliation after stop. */
-  stopReconciliationTimeoutMs?: number;
-  /** Bound for each native inventory request made by stop. */
+  /** Bound for each native read-only inventory request made during teardown. */
   stopInspectionTimeoutMs?: number;
+  /** Resume bounded read-only stop observation after the initiating caller returns. */
+  backgroundStopReconciliation?: boolean;
+  backgroundStopCadenceMs?: number;
+  backgroundStopDeadlineMs?: number;
+  /** Deterministic scheduler seams; production uses wall clock and unref timers. */
+  backgroundStopNow?: () => number;
+  backgroundStopWait?: (milliseconds: number) => Promise<void>;
+  /** Structured lifecycle sink; defaults to the Worker's JSON event stream. */
+  onStopEvent?: (event: DurableStopEvent) => void;
 }
 
 /** Durable Run-owned Docker Sandboxes lifecycle. Not wired to dispatch through Phase 3. */
@@ -107,8 +119,21 @@ export class SbxExecutionEnvironmentBackend
   private readonly reconciliationAttempts: number;
   private readonly ownerWaitAttempts: number;
   private readonly stopRequestTimeoutMs: number;
-  private readonly stopReconciliationTimeoutMs: number;
   private readonly stopInspectionTimeoutMs: number;
+  private readonly backgroundStopReconciliation: boolean;
+  private readonly backgroundStopCadenceMs: number;
+  private readonly backgroundStopDeadlineMs: number;
+  private readonly backgroundStopNow: () => number;
+  private readonly backgroundStopWait:
+    | ((milliseconds: number) => Promise<void>)
+    | undefined;
+  private readonly onStopEvent: (event: DurableStopEvent) => void;
+  private readonly activeStopReconciliations = new Set<string>();
+  private readonly stopWaiters = new Map<
+    ReturnType<typeof setTimeout>,
+    () => void
+  >();
+  private closed = false;
 
   constructor(private readonly options: SbxExecutionEnvironmentBackendOptions) {
     this.client = options.client ?? new CliSbxClient();
@@ -147,14 +172,35 @@ export class SbxExecutionEnvironmentBackend
       options.stopRequestTimeoutMs ?? 30_000,
       "stopRequestTimeoutMs",
     );
-    this.stopReconciliationTimeoutMs = positiveMilliseconds(
-      options.stopReconciliationTimeoutMs ?? 30_000,
-      "stopReconciliationTimeoutMs",
-    );
     this.stopInspectionTimeoutMs = positiveMilliseconds(
       options.stopInspectionTimeoutMs ?? 5_000,
       "stopInspectionTimeoutMs",
     );
+    this.backgroundStopReconciliation =
+      options.backgroundStopReconciliation ?? true;
+    this.backgroundStopCadenceMs = positiveMilliseconds(
+      options.backgroundStopCadenceMs ?? 1_000,
+      "backgroundStopCadenceMs",
+    );
+    this.backgroundStopDeadlineMs = positiveMilliseconds(
+      options.backgroundStopDeadlineMs ?? 120_000,
+      "backgroundStopDeadlineMs",
+    );
+    this.backgroundStopNow = options.backgroundStopNow ?? Date.now;
+    this.backgroundStopWait = options.backgroundStopWait;
+    this.onStopEvent =
+      options.onStopEvent ??
+      ((event) =>
+        console.log(
+          JSON.stringify({
+            event: event.type,
+            observedAt: event.occurredAt,
+            recordId: event.recordId,
+            stopId: event.stopId,
+            ...event.details,
+          }),
+        ));
+    queueMicrotask(() => this.resumeDurableStopReconciliation());
   }
 
   readiness(): Promise<EnvironmentReadiness> {
@@ -201,6 +247,7 @@ export class SbxExecutionEnvironmentBackend
       const record = this.requireCurrentRef(ref, "recover");
       const digest = environmentSpecDigest(spec);
       this.assertRecordSpec(record, spec, digest, "recover");
+      this.assertStopRecoverable(record, "recover");
       const readiness = await this.requireReadiness("recover");
       const native = await this.requireNativeVersion("recover");
       assertReadinessProvenance(readiness, native, "recover");
@@ -221,6 +268,7 @@ export class SbxExecutionEnvironmentBackend
         native,
         "running",
       );
+      this.reopenStopAfterRecovery(persisted);
       return this.lease(persisted);
     });
   }
@@ -333,37 +381,91 @@ export class SbxExecutionEnvironmentBackend
     }
   }
 
-  async stop(ref: EnvironmentRef): Promise<void> {
-    await this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+  async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
+    return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
       const record = this.requireCurrentRef(ref, "stop");
+      const existing = this.store.latestStopAttempt(record.recordId);
+      if (existing && !existing.reopened)
+        return this.reconcileStopRecord(record, existing);
+
       const initial = await this.observeSandboxForStop(record);
-      if (initial.kind !== "exact")
-        throw this.persistStopObservation(record, initial, undefined);
-      if (initial.sandbox.status === "stopped") {
-        this.store.markState(record.recordId, "stopped");
-        return;
-      }
-      if (initial.sandbox.status !== "running")
-        throw this.persistStopObservation(record, initial, undefined);
+      if (initial.kind === "mismatch")
+        throw identityMismatch(initial.message, "stop");
+      if (initial.kind !== "exact" || initial.sandbox.status !== "running")
+        return this.projectStopObservation(record, null, initial);
+
+      const begun = this.store.beginStop(record.recordId, randomUUID());
+      this.emitStopEvent(begun.event);
+      if (!begun.created)
+        return this.reconcileStopRecord(record, begun.attempt);
 
       let requestError: unknown = null;
       try {
         await this.client.stop(record.displayName, {
           timeoutMs: this.stopRequestTimeoutMs,
+          onInvocation: async () => {
+            const fence = await this.observeSandboxForStop(record);
+            if (fence.kind === "mismatch")
+              throw identityMismatch(fence.message, "stop");
+            if (fence.kind === "missing")
+              throw new EnvironmentBackendError(
+                "environment_not_found",
+                "SBX environment disappeared before the stop invocation boundary.",
+                "stop",
+              );
+            if (fence.kind === "unavailable")
+              throw normalize(fence.error, "stop");
+            if (fence.sandbox.status !== "running")
+              throw new EnvironmentBackendError(
+                "environment_not_usable",
+                `SBX environment became ${fence.sandbox.status} before the stop invocation boundary.`,
+                "stop",
+              );
+            const claimed = this.store.claimStopInvocation(
+              record.recordId,
+              begun.attempt.stopId,
+            );
+            if (!claimed.claimed)
+              throw new Error(
+                "SBX destructive stop invocation was already claimed.",
+              );
+            this.emitStopEvent(claimed.event);
+          },
         });
+        this.recordStopEvent(
+          record,
+          begun.attempt.stopId,
+          "stop_invocation_acknowledged",
+        );
       } catch (error) {
         requestError = error;
+        const current = this.store.latestStopAttempt(record.recordId);
+        this.recordStopEvent(
+          record,
+          begun.attempt.stopId,
+          current?.invocation === "not_invoked"
+            ? "stop_invocation_not_started"
+            : "stop_invocation_ambiguous",
+          { errorCode: normalize(error, "stop").code },
+        );
       }
+      return this.reconcileStopRecord(
+        record,
+        this.store.latestStopAttempt(record.recordId) as DurableStopAttempt,
+        requestError,
+      );
+    });
+  }
 
-      const reconciled = await this.reconcileStoppedSandbox(record);
-      if (
-        reconciled.kind === "exact" &&
-        reconciled.sandbox.status === "stopped"
-      ) {
-        this.store.markState(record.recordId, "stopped");
-        return;
+  async reconcileStop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
+    return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+      const record = this.requireCurrentRef(ref, "reconcile_stop");
+      const attempt = this.store.latestStopAttempt(record.recordId);
+      if (!attempt || attempt.reopened) {
+        const observation = await this.observeSandboxForStop(record);
+        return this.projectStopObservation(record, null, observation);
       }
-      throw this.persistStopObservation(record, reconciled, requestError);
+      return this.reconcileStopRecord(record, attempt);
     });
   }
 
@@ -385,6 +487,13 @@ export class SbxExecutionEnvironmentBackend
         );
       }
       const record = this.requireCurrentRef(ref, "remove");
+      const stop = this.store.latestStopAttempt(record.recordId);
+      if (stop && !stop.reopened && !stop.confirmed)
+        throw new EnvironmentBackendError(
+          "environment_not_usable",
+          "Environment stop is unresolved; removal would discard reconciliation identity.",
+          "remove",
+        );
       let sandboxes: SbxSandboxSummary[];
       try {
         sandboxes = await this.client.list();
@@ -439,6 +548,12 @@ export class SbxExecutionEnvironmentBackend
   }
 
   close(): void {
+    this.closed = true;
+    for (const [timer, resolve] of this.stopWaiters) {
+      clearTimeout(timer);
+      resolve();
+    }
+    this.stopWaiters.clear();
     this.store.close();
   }
 
@@ -449,6 +564,7 @@ export class SbxExecutionEnvironmentBackend
   ): Promise<EnvironmentLease> {
     let record = initial;
     if (record.environmentId) {
+      this.assertStopRecoverable(record, "ensure");
       const sandbox = await this.requireExactSandbox(record, "ensure");
       const running = await this.startIfStopped(record, sandbox, "ensure");
       let verified: SbxVerifiedEnvironment;
@@ -461,6 +577,7 @@ export class SbxExecutionEnvironmentBackend
         throw normalize(error, "ensure");
       }
       record = this.persistVerification(record, verified, native, "running");
+      this.reopenStopAfterRecovery(record);
       return this.lease(record);
     }
 
@@ -836,6 +953,13 @@ export class SbxExecutionEnvironmentBackend
   ): Promise<DurableEnvironmentRecord> {
     const ref = refFor(leased);
     const current = this.requireCurrentRef(ref, operation);
+    const stop = this.store.latestStopAttempt(current.recordId);
+    if (stop && !stop.reopened)
+      throw new EnvironmentBackendError(
+        "environment_not_usable",
+        `Environment teardown is ${durableStopStatus(stop).state}; execution is fenced until explicit recovery after stopped confirmation.`,
+        operation,
+      );
     if (current.state !== "running")
       throw new EnvironmentBackendError(
         "environment_not_usable",
@@ -861,6 +985,25 @@ export class SbxExecutionEnvironmentBackend
       );
     }
     return current;
+  }
+
+  private assertStopRecoverable(
+    record: DurableEnvironmentRecord,
+    operation: Extract<EnvironmentBackendOperation, "ensure" | "recover">,
+  ): void {
+    const stop = this.store.latestStopAttempt(record.recordId);
+    if (stop && !stop.reopened && !stop.confirmed)
+      throw new EnvironmentBackendError(
+        "environment_not_usable",
+        "Environment stop invocation is unresolved; reconcile it read-only before any restart.",
+        operation,
+      );
+  }
+
+  private reopenStopAfterRecovery(record: DurableEnvironmentRecord): void {
+    this.emitStopEvent(
+      this.store.reopenStopCycle(record.recordId) ?? undefined,
+    );
   }
 
   private async startIfStopped(
@@ -1179,13 +1322,15 @@ export class SbxExecutionEnvironmentBackend
     state: EnvironmentInspection["state"],
     native: SbxNativeVersion | null,
   ): EnvironmentInspection {
+    const stop = this.store.latestStopAttempt(record.recordId);
     return {
       ref: refFor(record),
       state,
-      usable,
+      usable: usable && (!stop || stop.reopened),
       specDigest: record.specDigest,
       paths: { ...SBX_GUEST_PATHS },
       capabilities: record.capabilities.map((item) => ({ ...item })),
+      ...(stop && !stop.reopened ? { stop: durableStopStatus(stop) } : {}),
       specMatches: state !== "incompatible",
       profileMatches:
         record.profileId === this.profile.id &&
@@ -1259,54 +1404,72 @@ export class SbxExecutionEnvironmentBackend
     }
   }
 
-  private async reconcileStoppedSandbox(
+  private async reconcileStopRecord(
     record: DurableEnvironmentRecord,
-  ): Promise<StopObservation> {
-    const deadline = Date.now() + this.stopReconciliationTimeoutMs;
-    let latest: StopObservation = {
-      kind: "unavailable",
-      error: new Error("SBX stop reconciliation did not inspect inventory."),
-    };
-    do {
-      const remainingMs = Math.max(1, deadline - Date.now());
-      latest = await this.observeSandboxForStop(
+    attempt: DurableStopAttempt,
+    requestError?: unknown,
+  ): Promise<EnvironmentStopResult> {
+    let current = this.store.latestStopAttempt(record.recordId) ?? attempt;
+    if (current.invocation === "started") {
+      this.recordStopEvent(
         record,
-        Math.min(this.stopInspectionTimeoutMs, remainingMs),
+        current.stopId,
+        "stop_invocation_ambiguous",
+        { errorCode: "operation_failed" },
       );
-      if (
-        latest.kind === "missing" ||
-        latest.kind === "mismatch" ||
-        (latest.kind === "exact" && latest.sandbox.status === "stopped")
-      )
-        return latest;
-      const sleepMs = Math.min(
-        this.reconciliationPollMs,
-        Math.max(0, deadline - Date.now()),
-      );
-      if (sleepMs > 0) await Bun.sleep(sleepMs);
-    } while (Date.now() < deadline);
-    return latest;
+      current = this.store.latestStopAttempt(
+        record.recordId,
+      ) as DurableStopAttempt;
+    }
+    this.recordStopEvent(record, current.stopId, "stop_reconcile_started");
+    const observation = await this.observeSandboxForStop(record);
+    if (this.closed)
+      return {
+        ref: refFor(record),
+        ...durableStopStatus(current),
+      };
+    const result = this.projectStopObservation(
+      record,
+      this.store.latestStopAttempt(record.recordId),
+      observation,
+      requestError,
+    );
+    this.scheduleStopReconciliation(record, result);
+    return result;
   }
 
-  private persistStopObservation(
+  private projectStopObservation(
     record: DurableEnvironmentRecord,
+    attempt: DurableStopAttempt | null,
     observation: StopObservation,
-    requestError: unknown | null | undefined,
-  ): EnvironmentBackendError {
-    const attempted = requestError !== undefined;
+    requestError?: unknown,
+  ): EnvironmentStopResult {
+    const invocation = stopInvocation(attempt);
+    const errorCode = stopErrorCode(attempt, requestError);
+    const base = {
+      ref: refFor(record),
+      intent: attempt ? "recorded" : "not_recorded",
+      invocation,
+      ...(attempt ? { stopId: attempt.stopId } : {}),
+      ...(errorCode ? { errorCode } : {}),
+    } as const;
+
     if (observation.kind === "missing") {
-      const message = attempted
-        ? "Durable ownership exists but the SBX environment is missing after stop reconciliation."
-        : "SBX stop was not requested because the durably owned environment is missing.";
+      const message =
+        "Authoritative SBX inventory proves the exact environment is absent; it cannot still be running, but retained state is unavailable.";
       this.store.markState(record.recordId, "missing", [
         { code: "environment_not_found", message },
       ]);
-      return new EnvironmentBackendError(
-        "environment_not_found",
-        message,
-        "stop",
-      );
+      if (attempt && !hasStopEvent(attempt, "stop_environment_absent"))
+        this.recordStopEvent(
+          record,
+          attempt.stopId,
+          "stop_environment_absent",
+          { observation: "absent" },
+        );
+      return { ...base, state: "stopped", observation: "absent" };
     }
+
     if (observation.kind === "mismatch") {
       this.store.markState(record.recordId, "incompatible", [
         {
@@ -1314,61 +1477,178 @@ export class SbxExecutionEnvironmentBackend
           message: observation.message,
         },
       ]);
-      return identityMismatch(observation.message, "stop");
+      if (attempt)
+        this.recordStopEvent(record, attempt.stopId, "stop_identity_mismatch", {
+          observation: "identity_mismatch",
+        });
+      return {
+        ...base,
+        state: "uncertain",
+        observation: "identity_mismatch",
+        errorCode: "environment_identity_mismatch",
+      };
     }
 
-    const requestFailure =
-      requestError === null || requestError === undefined
-        ? null
-        : normalize(requestError, "stop");
-    if (observation.kind === "exact") {
-      if (observation.sandbox.status === "stopped") {
-        this.store.markState(record.recordId, "stopped");
-        return unhealthy(
-          "SBX stop reconciliation reached an unexpected terminal path.",
-          "stop",
-        );
-      }
-      if (observation.sandbox.status === "running") {
-        const message = attempted
-          ? requestFailure
-            ? `SBX stop request failed; authoritative inventory still reports running. Retained environment state was preserved. ${requestFailure.message}`
-            : "SBX stop request returned, but authoritative inventory still reports running. Retained environment state was preserved."
-          : "Cannot stop an SBX environment before authoritative inventory reports running or stopped.";
-        this.store.markState(record.recordId, "running", [
-          { code: "sbx_stop_reconciled_running", message },
-        ]);
-        return new EnvironmentBackendError(
-          requestFailure?.code ?? "environment_unhealthy",
-          message,
-          "stop",
-        );
-      }
-      const message = attempted
-        ? `SBX stop final state is uncertain: authoritative inventory reports ${observation.sandbox.status}. Retained environment state was preserved.`
-        : `Cannot stop SBX environment in state ${observation.sandbox.status}.`;
+    if (observation.kind === "unavailable") {
+      const failure = normalize(observation.error, "reconcile_stop");
+      const message =
+        "Authoritative SBX inventory is unavailable; this is not evidence that the destructive stop failed.";
       this.store.markState(record.recordId, "degraded", [
-        { code: "sbx_stop_state_uncertain", message },
+        { code: "stop_observation_unavailable", message },
       ]);
-      return new EnvironmentBackendError(
-        requestFailure?.code ?? "environment_unhealthy",
-        message,
-        "stop",
-      );
+      if (attempt)
+        this.recordStopEvent(
+          record,
+          attempt.stopId,
+          "stop_observation_unavailable",
+          { observation: "unavailable" },
+        );
+      return {
+        ...base,
+        state:
+          invocation === "acknowledged"
+            ? "stopping"
+            : invocation === "not_invoked"
+              ? "uncertain"
+              : "uncertain",
+        observation: "unavailable",
+        errorCode: errorCode ?? failure.code,
+      };
     }
 
-    const inventoryFailure = normalize(observation.error, "stop");
-    const message = attempted
-      ? `SBX stop final state is uncertain because authoritative inventory was unavailable. Retained environment state was preserved. ${inventoryFailure.message}`
-      : `SBX stop was not requested because authoritative inventory was unavailable. ${inventoryFailure.message}`;
+    if (observation.sandbox.status === "stopped") {
+      this.store.markState(record.recordId, "stopped");
+      if (attempt && !hasStopEvent(attempt, "stop_confirmed"))
+        this.recordStopEvent(record, attempt.stopId, "stop_confirmed", {
+          observation: "stopped",
+        });
+      return { ...base, state: "stopped", observation: "stopped" };
+    }
+
+    if (observation.sandbox.status === "running") {
+      const message = attempt
+        ? "The exact environment is still running after the stop boundary; reconciliation remains read-only and no second stop was issued."
+        : "The exact environment is running and no stop intent is recorded.";
+      this.store.markState(record.recordId, "running", [
+        { code: "stop_still_in_progress", message },
+      ]);
+      if (attempt)
+        this.recordStopEvent(record, attempt.stopId, "stop_still_in_progress", {
+          observation: "running",
+        });
+      return {
+        ...base,
+        state:
+          invocation === "acknowledged"
+            ? "stopping"
+            : invocation === "ambiguous"
+              ? "uncertain"
+              : "running",
+        observation: "running",
+      };
+    }
+
+    const message = `SBX inventory reports transitional lifecycle state ${observation.sandbox.status}.`;
     this.store.markState(record.recordId, "degraded", [
-      { code: "sbx_stop_state_uncertain", message },
+      { code: "stop_still_in_progress", message },
     ]);
-    return new EnvironmentBackendError(
-      requestFailure?.code ?? inventoryFailure.code,
-      message,
-      "stop",
+    if (attempt)
+      this.recordStopEvent(record, attempt.stopId, "stop_still_in_progress", {
+        observation: "stopping",
+      });
+    return {
+      ...base,
+      state: invocation === "acknowledged" ? "stopping" : "uncertain",
+      observation: "stopping",
+    };
+  }
+
+  private resumeDurableStopReconciliation(): void {
+    if (this.closed || !this.backgroundStopReconciliation) return;
+    for (const record of this.store.list()) {
+      const attempt = this.store.latestStopAttempt(record.recordId);
+      if (!attempt || attempt.confirmed || attempt.reopened) continue;
+      this.scheduleStopReconciliation(record, {
+        ref: refFor(record),
+        ...durableStopStatus(attempt),
+      });
+    }
+  }
+
+  private scheduleStopReconciliation(
+    record: DurableEnvironmentRecord,
+    result: EnvironmentStopResult,
+  ): void {
+    if (
+      !this.backgroundStopReconciliation ||
+      this.closed ||
+      result.state === "stopped" ||
+      result.invocation === "not_invoked" ||
+      this.activeStopReconciliations.has(record.recordId)
+    )
+      return;
+    this.activeStopReconciliations.add(record.recordId);
+    const deadline = this.backgroundStopNow() + this.backgroundStopDeadlineMs;
+    void (async () => {
+      let current = result;
+      try {
+        while (
+          !this.closed &&
+          current.state !== "stopped" &&
+          this.backgroundStopNow() < deadline
+        ) {
+          await this.waitForStopCadence();
+          if (this.closed) break;
+          try {
+            current = await this.reconcileStop(refFor(record));
+          } catch (error) {
+            console.error(
+              JSON.stringify({
+                event: "stop_reconcile_failed",
+                recordId: record.recordId,
+                error: errorMessage(error),
+              }),
+            );
+            break;
+          }
+        }
+      } finally {
+        this.activeStopReconciliations.delete(record.recordId);
+      }
+    })();
+  }
+
+  private waitForStopCadence(): Promise<void> {
+    if (this.backgroundStopWait)
+      return this.backgroundStopWait(this.backgroundStopCadenceMs);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.stopWaiters.delete(timer);
+        resolve();
+      }, this.backgroundStopCadenceMs);
+      timer.unref();
+      this.stopWaiters.set(timer, resolve);
+    });
+  }
+
+  private recordStopEvent(
+    record: DurableEnvironmentRecord,
+    stopId: string,
+    type: DurableStopEventType,
+    details: Readonly<Record<string, unknown>> = {},
+  ): DurableStopEvent {
+    const event = this.store.appendStopEvent(
+      record.recordId,
+      stopId,
+      type,
+      details,
     );
+    this.emitStopEvent(event);
+    return event;
+  }
+
+  private emitStopEvent(event: DurableStopEvent | undefined): void {
+    if (event) this.onStopEvent(event);
   }
 
   private async pollSandbox(
@@ -1654,6 +1934,79 @@ function parseTransferProof(value: string): {
     regular: proof.regular,
     size: proof.size,
     sha256: proof.sha256,
+  };
+}
+
+function stopInvocation(
+  attempt: DurableStopAttempt | null,
+): EnvironmentStopStatus["invocation"] {
+  if (!attempt || attempt.invocation === "not_invoked") return "not_invoked";
+  return attempt.invocation === "acknowledged" ? "acknowledged" : "ambiguous";
+}
+
+function hasStopEvent(
+  attempt: DurableStopAttempt,
+  type: DurableStopEventType,
+): boolean {
+  return attempt.events.some((event) => event.type === type);
+}
+
+function stopErrorCode(
+  attempt: DurableStopAttempt | null,
+  error?: unknown,
+): EnvironmentStopStatus["errorCode"] {
+  if (error !== undefined && error !== null)
+    return normalize(error, "stop").code;
+  const value = [...(attempt?.events ?? [])]
+    .reverse()
+    .map((event) => event.details.errorCode)
+    .find((item) => typeof item === "string");
+  return value as EnvironmentStopStatus["errorCode"];
+}
+
+function durableStopStatus(attempt: DurableStopAttempt): EnvironmentStopStatus {
+  const invocation = stopInvocation(attempt);
+  const latestObservation = [...attempt.events]
+    .reverse()
+    .find((event) =>
+      [
+        "stop_confirmed",
+        "stop_environment_absent",
+        "stop_identity_mismatch",
+        "stop_observation_unavailable",
+        "stop_still_in_progress",
+      ].includes(event.type),
+    );
+  const observation =
+    latestObservation?.type === "stop_confirmed"
+      ? "stopped"
+      : latestObservation?.type === "stop_environment_absent"
+        ? "absent"
+        : latestObservation?.type === "stop_identity_mismatch"
+          ? "identity_mismatch"
+          : latestObservation?.type === "stop_observation_unavailable"
+            ? "unavailable"
+            : latestObservation?.details.observation === "stopping"
+              ? "stopping"
+              : "running";
+  const state =
+    observation === "stopped" || observation === "absent"
+      ? "stopped"
+      : invocation === "acknowledged"
+        ? "stopping"
+        : invocation === "ambiguous"
+          ? "uncertain"
+          : observation === "running"
+            ? "running"
+            : "uncertain";
+  const errorCode = stopErrorCode(attempt);
+  return {
+    state,
+    intent: "recorded",
+    invocation,
+    observation,
+    stopId: attempt.stopId,
+    ...(errorCode ? { errorCode } : {}),
   };
 }
 

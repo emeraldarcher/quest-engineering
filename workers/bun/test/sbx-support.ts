@@ -11,6 +11,7 @@ import type {
   SbxRequestOptions,
   SbxSandboxSummary,
   SbxSetting,
+  SbxStopOptions,
 } from "../src/execution-environment/sbx-client.ts";
 import { SbxClientError } from "../src/execution-environment/sbx-client.ts";
 import {
@@ -259,11 +260,13 @@ export class FakeSbxClient implements SbxClient {
     await writeFile(hostPath, data);
   }
 
-  async stop(
-    sandboxName: string,
-    _options: SbxRequestOptions = {},
-  ): Promise<void> {
-    const sandbox = this.state.sandboxes.get(sandboxName);
+  async stop(sandboxName: string, options: SbxStopOptions = {}): Promise<void> {
+    await options.onInvocation?.();
+    const sandbox =
+      this.state.sandboxes.get(sandboxName) ??
+      [...this.state.sandboxes.values()].find(
+        (candidate) => candidate.id === sandboxName,
+      );
     if (!sandbox)
       throw new SbxClientError("operation_failed", "sandbox not found", [
         "stop",

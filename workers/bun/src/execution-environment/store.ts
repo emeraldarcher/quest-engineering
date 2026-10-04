@@ -37,6 +37,38 @@ export interface DurableEnvironmentRecord {
   retiredAt: string | null;
 }
 
+export type DurableStopEventType =
+  | "stop_intent_recorded"
+  | "stop_invocation_started"
+  | "stop_invocation_acknowledged"
+  | "stop_invocation_ambiguous"
+  | "stop_invocation_not_started"
+  | "stop_reconcile_started"
+  | "stop_still_in_progress"
+  | "stop_observation_unavailable"
+  | "stop_confirmed"
+  | "stop_identity_mismatch"
+  | "stop_environment_absent"
+  | "stop_cycle_reopened";
+
+export interface DurableStopEvent {
+  eventId: number;
+  recordId: string;
+  stopId: string;
+  type: DurableStopEventType;
+  details: Readonly<Record<string, unknown>>;
+  occurredAt: string;
+}
+
+export interface DurableStopAttempt {
+  recordId: string;
+  stopId: string;
+  events: readonly DurableStopEvent[];
+  invocation: "not_invoked" | "started" | "acknowledged" | "ambiguous";
+  confirmed: boolean;
+  reopened: boolean;
+}
+
 export interface EnvironmentCreationIntent {
   recordId: string;
   backendKind: string;
@@ -52,6 +84,15 @@ export interface EnvironmentCreationIntent {
   nativeVersion: string;
   nativeRevision: string;
   nativeApiVersion: string;
+}
+
+interface StopEventRow {
+  event_id: number;
+  record_id: string;
+  stop_id: string;
+  event_type: DurableStopEventType;
+  details_json: string;
+  occurred_at: string;
 }
 
 interface EnvironmentRow {
@@ -88,6 +129,7 @@ export class ExecutionEnvironmentStore {
   constructor(
     dataRoot: string,
     databasePath = join(dataRoot, "execution-environments.sqlite"),
+    private readonly clock: () => Date = () => new Date(),
   ) {
     mkdirSync(dirname(databasePath), { recursive: true });
     this.databasePath = databasePath;
@@ -114,7 +156,7 @@ export class ExecutionEnvironmentStore {
           intent.runId,
         );
         if (existing) return { created: false, record: existing };
-        const timestamp = now();
+        const timestamp = this.now();
         this.db
           .query(
             `INSERT INTO execution_environments
@@ -201,7 +243,12 @@ export class ExecutionEnvironmentStore {
           .query(
             "UPDATE execution_environments SET creation_token=?,creator_pid=?,updated_at=? WHERE record_id=? AND state='creating' AND retired_at IS NULL",
           )
-          .run(input.creationToken, input.creatorPid, now(), input.recordId);
+          .run(
+            input.creationToken,
+            input.creatorPid,
+            this.now(),
+            input.recordId,
+          );
         return (
           this.required(input.recordId).creationToken === input.creationToken
         );
@@ -228,7 +275,7 @@ export class ExecutionEnvironmentStore {
       throw new Error(
         `Environment record ${input.recordId} is already bound to another physical identity.`,
       );
-    const timestamp = now();
+    const timestamp = this.now();
     this.db
       .query(
         `UPDATE execution_environments SET environment_id=?,native_agent=?,marker_digest=?,state=?,capabilities_json=?,diagnostics_json=?,last_verified_at=?,updated_at=?
@@ -258,7 +305,7 @@ export class ExecutionEnvironmentStore {
     nativeRevision: string;
     nativeApiVersion: string;
   }): DurableEnvironmentRecord {
-    const timestamp = now();
+    const timestamp = this.now();
     this.db
       .query(
         `UPDATE execution_environments SET state=?,marker_digest=?,capabilities_json=?,diagnostics_json=?,native_version=?,native_revision=?,native_api_version=?,last_verified_at=?,updated_at=?
@@ -288,18 +335,170 @@ export class ExecutionEnvironmentStore {
       .query(
         "UPDATE execution_environments SET state=?,diagnostics_json=?,updated_at=? WHERE record_id=? AND retired_at IS NULL",
       )
-      .run(state, JSON.stringify(diagnostics), now(), recordId);
+      .run(state, JSON.stringify(diagnostics), this.now(), recordId);
     return this.required(recordId);
   }
 
   retire(recordId: string): DurableEnvironmentRecord {
-    const timestamp = now();
+    const timestamp = this.now();
     this.db
       .query(
         "UPDATE execution_environments SET state='removed',retired_at=COALESCE(retired_at,?),updated_at=? WHERE record_id=?",
       )
       .run(timestamp, timestamp, recordId);
     return this.required(recordId);
+  }
+
+  beginStop(
+    recordId: string,
+    stopId: string,
+  ): {
+    created: boolean;
+    attempt: DurableStopAttempt;
+    event?: DurableStopEvent;
+  } {
+    return this.db
+      .transaction(() => {
+        this.required(recordId);
+        const existing = this.latestStopAttempt(recordId);
+        if (existing && !existing.reopened)
+          return { created: false, attempt: existing };
+        const event = this.insertStopEvent(
+          recordId,
+          stopId,
+          "stop_intent_recorded",
+          {},
+        );
+        return {
+          created: true,
+          attempt: this.requiredStopAttempt(recordId, stopId),
+          event,
+        };
+      })
+      .immediate();
+  }
+
+  claimStopInvocation(
+    recordId: string,
+    stopId: string,
+  ): {
+    claimed: boolean;
+    event?: DurableStopEvent;
+  } {
+    return this.db
+      .transaction(() => {
+        const attempt = this.requiredStopAttempt(recordId, stopId);
+        if (attempt.invocation !== "not_invoked") return { claimed: false };
+        return {
+          claimed: true,
+          event: this.insertStopEvent(
+            recordId,
+            stopId,
+            "stop_invocation_started",
+            {},
+          ),
+        };
+      })
+      .immediate();
+  }
+
+  appendStopEvent(
+    recordId: string,
+    stopId: string,
+    type: DurableStopEventType,
+    details: Readonly<Record<string, unknown>> = {},
+  ): DurableStopEvent {
+    this.requiredStopAttempt(recordId, stopId);
+    return this.insertStopEvent(recordId, stopId, type, details);
+  }
+
+  stopEvents(recordId: string): DurableStopEvent[] {
+    return (
+      this.db
+        .query(
+          "SELECT * FROM execution_environment_stop_events WHERE record_id=? ORDER BY event_id",
+        )
+        .all(recordId) as StopEventRow[]
+    ).map(mapStopEvent);
+  }
+
+  latestStopAttempt(recordId: string): DurableStopAttempt | null {
+    const latest = this.db
+      .query(
+        "SELECT stop_id FROM execution_environment_stop_events WHERE record_id=? ORDER BY event_id DESC LIMIT 1",
+      )
+      .get(recordId) as { stop_id: string } | null;
+    return latest ? this.requiredStopAttempt(recordId, latest.stop_id) : null;
+  }
+
+  reopenStopCycle(recordId: string): DurableStopEvent | null {
+    return this.db
+      .transaction(() => {
+        const attempt = this.latestStopAttempt(recordId);
+        if (!attempt || attempt.reopened || !attempt.confirmed) return null;
+        return this.insertStopEvent(
+          recordId,
+          attempt.stopId,
+          "stop_cycle_reopened",
+          {},
+        );
+      })
+      .immediate();
+  }
+
+  private requiredStopAttempt(
+    recordId: string,
+    stopId: string,
+  ): DurableStopAttempt {
+    const events = (
+      this.db
+        .query(
+          "SELECT * FROM execution_environment_stop_events WHERE record_id=? AND stop_id=? ORDER BY event_id",
+        )
+        .all(recordId, stopId) as StopEventRow[]
+    ).map(mapStopEvent);
+    if (events.length === 0)
+      throw new Error(`Unknown environment stop attempt ${stopId}.`);
+    const types = new Set(events.map((event) => event.type));
+    const invocation = types.has("stop_invocation_acknowledged")
+      ? "acknowledged"
+      : types.has("stop_invocation_ambiguous")
+        ? "ambiguous"
+        : types.has("stop_invocation_started")
+          ? "started"
+          : "not_invoked";
+    return {
+      recordId,
+      stopId,
+      events,
+      invocation,
+      confirmed:
+        types.has("stop_confirmed") || types.has("stop_environment_absent"),
+      reopened: types.has("stop_cycle_reopened"),
+    };
+  }
+
+  private insertStopEvent(
+    recordId: string,
+    stopId: string,
+    type: DurableStopEventType,
+    details: Readonly<Record<string, unknown>>,
+  ): DurableStopEvent {
+    const result = this.db
+      .query(
+        "INSERT INTO execution_environment_stop_events(record_id,stop_id,event_type,details_json,occurred_at) VALUES (?,?,?,?,?) RETURNING event_id",
+      )
+      .get(recordId, stopId, type, JSON.stringify(details), this.now()) as {
+      event_id: number;
+    };
+    const row = this.db
+      .query("SELECT * FROM execution_environment_stop_events WHERE event_id=?")
+      .get(result.event_id) as StopEventRow;
+    return mapStopEvent(row);
+  }
+
+  private now(): string {
+    return this.clock().toISOString();
   }
 
   private required(recordId: string): DurableEnvironmentRecord {
@@ -370,10 +569,50 @@ export class ExecutionEnvironmentStore {
             .query(
               "INSERT INTO execution_environment_schema_migrations(version,applied_at) VALUES (1,?)",
             )
-            .run(now());
+            .run(this.now());
+        })
+        .immediate();
+    if (!applied.has(2))
+      this.db
+        .transaction(() => {
+          this.db.exec(`
+            CREATE TABLE execution_environment_stop_events (
+              event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              record_id TEXT NOT NULL REFERENCES execution_environments(record_id),
+              stop_id TEXT NOT NULL,
+              event_type TEXT NOT NULL CHECK(event_type IN (
+                'stop_intent_recorded','stop_invocation_started',
+                'stop_invocation_acknowledged','stop_invocation_ambiguous',
+                'stop_invocation_not_started','stop_reconcile_started',
+                'stop_still_in_progress','stop_observation_unavailable',
+                'stop_confirmed','stop_identity_mismatch',
+                'stop_environment_absent','stop_cycle_reopened'
+              )),
+              details_json TEXT NOT NULL DEFAULT '{}',
+              occurred_at TEXT NOT NULL
+            );
+            CREATE INDEX execution_environment_stop_record
+              ON execution_environment_stop_events(record_id,event_id);
+          `);
+          this.db
+            .query(
+              "INSERT INTO execution_environment_schema_migrations(version,applied_at) VALUES (2,?)",
+            )
+            .run(this.now());
         })
         .immediate();
   }
+}
+
+function mapStopEvent(row: StopEventRow): DurableStopEvent {
+  return {
+    eventId: row.event_id,
+    recordId: row.record_id,
+    stopId: row.stop_id,
+    type: row.event_type,
+    details: JSON.parse(row.details_json) as Record<string, unknown>,
+    occurredAt: row.occurred_at,
+  };
 }
 
 function mapRow(row: EnvironmentRow): DurableEnvironmentRecord {
@@ -405,8 +644,4 @@ function mapRow(row: EnvironmentRow): DurableEnvironmentRecord {
     lastVerifiedAt: row.last_verified_at,
     retiredAt: row.retired_at,
   };
-}
-
-function now(): string {
-  return new Date().toISOString();
 }

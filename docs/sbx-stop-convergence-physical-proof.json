@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-04T21:12:51.050Z",
+  "scope": "disposable shell environments; no harness, prompt, provider cycle, paid inference, shim signal, or daemon restart",
+  "native": {
+    "binary": "/opt/homebrew/bin/sbx",
+    "clientVersion": "v0.43.0",
+    "serverVersion": "v0.43.0",
+    "revision": "79805a6e3c6667520dc2da4f6bdeddae9b700969",
+    "apiVersion": "0.31.0"
+  },
+  "nativeBaseline": {
+    "samples": 5,
+    "allConverged": true,
+    "stopDurationsMs": [5375.163, 5364.754, 5370.506, 5384.976, 5529.418],
+    "convergenceFromInvocationMs": [5685.974, 5714.685, 5704.782, 5716.186, 5937.533],
+    "destructiveStopCallsPerEnvironment": [1, 1, 1, 1, 1],
+    "secondStopCallsPerEnvironment": [0, 0, 0, 0, 0],
+    "manualShimSignalsPerEnvironment": [0, 0, 0, 0, 0]
+  },
+  "changedQePath": {
+    "runId": "physical-stop-1791148333200",
+    "environmentId": "9703b338-0dc8-4b84-8dd8-9917506d7415",
+    "incarnation": "d2548016-72c3-490a-85ce-9389a28378d0",
+    "preStopState": "running",
+    "stopMethodCalls": 1,
+    "invocationClaims": 1,
+    "secondStopCalls": 0,
+    "manualSignals": 0,
+    "daemonRestarts": 0,
+    "paidInference": 0,
+    "stopMethodDurationMs": 6359,
+    "invocationClaimedAt": "2026-10-04T21:12:42.452Z",
+    "invocationAcknowledgedAt": "2026-10-04T21:12:47.849Z",
+    "invocationDurationMs": 5397,
+    "stoppedConfirmedAt": "2026-10-04T21:12:48.164Z",
+    "confirmationFromInvocationMs": 5712,
+    "result": {
+      "state": "stopped",
+      "intent": "recorded",
+      "invocation": "acknowledged",
+      "observation": "stopped"
+    },
+    "removeStartedAt": "2026-10-04T21:12:50.119Z",
+    "removedOnlyAfterStoppedConfirmation": true,
+    "outcome": "passed"
+  },
+  "localRawEvidence": [
+    ".pi/tmp/sbx-stop-convergence-investigation-20261004T205059Z/native-physical-results.json",
+    ".pi/tmp/sbx-stop-convergence-final-20261004T211206Z/qe-stop-proof.json"
+  ]
+}

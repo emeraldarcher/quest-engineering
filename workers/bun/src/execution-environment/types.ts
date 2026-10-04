@@ -4,6 +4,7 @@ export type EnvironmentBackendOperation =
   | "recover"
   | "inspect"
   | "stop"
+  | "reconcile_stop"
   | "remove"
   | "launcher"
   | "exec"
@@ -178,6 +179,42 @@ export type EnvironmentLifecycleState =
   | "incompatible"
   | "degraded";
 
+export type EnvironmentStopState =
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "uncertain";
+
+export type EnvironmentStopInvocationState =
+  | "not_invoked"
+  | "acknowledged"
+  | "ambiguous";
+
+export type EnvironmentStopObservationState =
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "unavailable"
+  | "identity_mismatch"
+  | "absent";
+
+/**
+ * Provider-neutral teardown projection. Invocation records what QE knows about
+ * the one destructive boundary; observation records only read-only evidence.
+ */
+export interface EnvironmentStopStatus {
+  state: EnvironmentStopState;
+  intent: "not_recorded" | "recorded";
+  invocation: EnvironmentStopInvocationState;
+  observation: EnvironmentStopObservationState;
+  stopId?: string;
+  errorCode?: EnvironmentBackendErrorCode;
+}
+
+export interface EnvironmentStopResult extends EnvironmentStopStatus {
+  ref: EnvironmentRef;
+}
+
 export interface EnvironmentInspection {
   ref: EnvironmentRef;
   state: EnvironmentLifecycleState;
@@ -185,6 +222,8 @@ export interface EnvironmentInspection {
   specDigest: string;
   paths: EnvironmentPathMap;
   capabilities: readonly EnvironmentCapability[];
+  /** Present after teardown intent exists; orthogonal to observed state. */
+  stop?: EnvironmentStopStatus;
   specMatches?: boolean;
   profileMatches?: boolean;
   diagnostics?: readonly EnvironmentReadinessDiagnostic[];
@@ -256,7 +295,10 @@ export interface ExecutionEnvironmentBackend {
     spec: EnvironmentSpec,
   ): Promise<EnvironmentLease>;
   inspect(ref: EnvironmentRef): Promise<EnvironmentInspection>;
-  stop(ref: EnvironmentRef): Promise<void>;
+  /** Record intent, invoke the destructive provider operation at most once, then read back once. */
+  stop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
+  /** Reconcile the exact incarnation using read-only provider operations only. */
+  reconcileStop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
   remove(ref: EnvironmentRef): Promise<void>;
 }
 

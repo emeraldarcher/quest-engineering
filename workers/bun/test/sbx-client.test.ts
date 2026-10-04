@@ -173,18 +173,26 @@ test("CLI client terminates timed-out commands and classifies the error", async 
   });
 });
 
-test("CLI client applies dedicated lifecycle timeouts to literal stop and inventory argv", async () => {
+test("CLI client durably announces invocation before literal stop and keeps inventory separate", async () => {
   const calls: Array<{ args: readonly string[]; timeoutMs: number }> = [];
+  const order: string[] = [];
   const client = new CliSbxClient("/fake/sbx", async (request) => {
+    order.push(`runner:${request.args[0]}`);
     calls.push({ args: [...request.args], timeoutMs: request.timeoutMs });
     return request.args[0] === "ls"
       ? { exitCode: 0, stdout: '{"sandboxes":[]}', stderr: "" }
       : { exitCode: 0, stdout: "", stderr: "" };
   });
 
-  await client.stop("qe-exact-sandbox", { timeoutMs: 1_234 });
+  await client.stop("qe-exact-sandbox", {
+    timeoutMs: 1_234,
+    onInvocation: () => {
+      order.push("invocation");
+    },
+  });
   await client.list({ timeoutMs: 567 });
 
+  expect(order).toEqual(["invocation", "runner:stop", "runner:ls"]);
   expect(calls).toEqual([
     { args: ["stop", "qe-exact-sandbox"], timeoutMs: 1_234 },
     { args: ["ls", "--json"], timeoutMs: 567 },

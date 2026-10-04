@@ -9,6 +9,7 @@ import {
   SbxClientError,
   type SbxRequestOptions,
   type SbxSandboxSummary,
+  type SbxStopOptions,
 } from "../src/execution-environment/sbx-client.ts";
 import {
   SBX_EXECUTION_PROFILE_V1,
@@ -375,106 +376,301 @@ test("an externally stopped sandbox cannot execute through an old running lease"
   );
 });
 
-test("stop reconciles a lost timeout response and remains idempotent", async () => {
+test("acknowledged stop with immediate stopped evidence is durable and idempotent", async () => {
   const root = await tempRoot();
   const state = fakeSbxState();
-  const client = new StopScenarioClient(state, "timeout_stopped");
-  const value = stopBackend(root, state, client);
-  const lease = await value.ensure(sbxSpec("run-stop-response-loss"));
+  const client = new StopScenarioClient(state, "ack_stopped");
+  const store = fakeClockStore(root);
+  const value = stopBackend(root, state, client, store);
+  const lease = await value.ensure(sbxSpec("run-stop-acknowledged"));
 
-  await value.stop(lease.ref);
-  await value.stop(lease.ref);
+  expect(await value.stop(lease.ref)).toMatchObject({
+    state: "stopped",
+    invocation: "acknowledged",
+    observation: "stopped",
+  });
+  expect(await value.stop(lease.ref)).toMatchObject({ state: "stopped" });
 
-  expect(client.stopCalls).toBe(1);
+  expect(client.invocationCalls).toBe(1);
   expect(client.stopTimeouts).toEqual([7]);
-  expect(client.listTimeouts.at(-1)).toBeLessThanOrEqual(3);
+  expect(store.stopEvents(currentRecordId(store))).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: "stop_intent_recorded" }),
+      expect.objectContaining({ type: "stop_invocation_started" }),
+      expect.objectContaining({ type: "stop_invocation_acknowledged" }),
+      expect.objectContaining({ type: "stop_confirmed" }),
+    ]),
+  );
   expect(await value.inspect(lease.ref)).toMatchObject({
     state: "stopped",
     usable: false,
+    stop: { state: "stopped", invocation: "acknowledged" },
   });
 });
 
-test("timed-out stop reports authoritative running state without an automatic retry", async () => {
+test("acknowledged stop with running readback is stopping and never replays", async () => {
   const root = await tempRoot();
   const state = fakeSbxState();
-  const client = new StopScenarioClient(state, "timeout_running");
-  const store = new ExecutionEnvironmentStore(root);
+  const client = new StopScenarioClient(state, "ack_running");
+  const store = fakeClockStore(root);
   const value = stopBackend(root, state, client, store);
-  const spec = sbxSpec("run-stop-still-running");
-  const lease = await value.ensure(spec);
-  const startedAt = Date.now();
+  const lease = await value.ensure(sbxSpec("run-stop-still-running"));
 
-  await expect(value.stop(lease.ref)).rejects.toMatchObject({
-    code: "operation_timeout",
-    operation: "stop",
-    message: expect.stringContaining("inventory still reports running"),
+  expect(await value.stop(lease.ref)).toMatchObject({
+    state: "stopping",
+    invocation: "acknowledged",
+    observation: "running",
   });
-
-  expect(Date.now() - startedAt).toBeLessThan(500);
-  expect(client.stopCalls).toBe(1);
-  expect(store.current("sbx", spec.workerId, spec.runId)).toMatchObject({
+  expect(await value.reconcileStop(lease.ref)).toMatchObject({
+    state: "stopping",
+    observation: "running",
+  });
+  expect(await value.stop(lease.ref)).toMatchObject({ state: "stopping" });
+  expect(client.invocationCalls).toBe(1);
+  await expect(lease.exec(sbxCommand("fenced"))).rejects.toMatchObject({
+    code: "environment_not_usable",
+  });
+  expect(
+    store.current("sbx", lease.ref.workerId, lease.ref.runId),
+  ).toMatchObject({
     state: "running",
-    diagnostics: [
-      expect.objectContaining({ code: "sbx_stop_reconciled_running" }),
-    ],
+    diagnostics: [expect.objectContaining({ code: "stop_still_in_progress" })],
   });
+});
+
+test("Worker-owned reconciliation continues after the teardown caller returns", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "ack_running");
+  const scheduler = controlledScheduler();
+  let confirm!: () => void;
+  const confirmed = new Promise<void>((resolve) => {
+    confirm = resolve;
+  });
+  const value = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client,
+    verifier: new FakeSbxVerifier(state),
+    stopRequestTimeoutMs: 7,
+    stopInspectionTimeoutMs: 3,
+    backgroundStopCadenceMs: 10,
+    backgroundStopDeadlineMs: 100,
+    backgroundStopNow: scheduler.now,
+    backgroundStopWait: scheduler.wait,
+    onStopEvent: (event) => {
+      if (event.type === "stop_confirmed") confirm();
+    },
+  });
+  backends.push(value);
+  const lease = await value.ensure(sbxSpec("run-stop-background"));
+
+  expect(await value.stop(lease.ref)).toMatchObject({ state: "stopping" });
+  exactSandbox(state).status = "stopped";
+  scheduler.advance();
+  await confirmed;
+
   expect(await value.inspect(lease.ref)).toMatchObject({
-    state: "running",
-    usable: true,
+    state: "stopped",
+    stop: { state: "stopped" },
   });
+  expect(client.invocationCalls).toBe(1);
 });
 
-test("timed-out stop persists uncertainty when final inventory is unavailable", async () => {
+test("inventory timeout after acknowledged stop is observation unavailable, not stop failure", async () => {
   const root = await tempRoot();
   const state = fakeSbxState();
-  const client = new StopScenarioClient(state, "timeout_inventory_unavailable");
-  const store = new ExecutionEnvironmentStore(root);
+  const client = new StopScenarioClient(state, "ack_inventory_unavailable");
+  const store = fakeClockStore(root);
   const value = stopBackend(root, state, client, store);
-  const spec = sbxSpec("run-stop-uncertain");
-  const lease = await value.ensure(spec);
+  const lease = await value.ensure(sbxSpec("run-stop-observation-unavailable"));
 
-  await expect(value.stop(lease.ref)).rejects.toMatchObject({
-    code: "operation_timeout",
-    operation: "stop",
-    message: expect.stringContaining("final state is uncertain"),
+  expect(await value.stop(lease.ref)).toMatchObject({
+    state: "stopping",
+    invocation: "acknowledged",
+    observation: "unavailable",
+    errorCode: "operation_timeout",
   });
-
-  expect(client.stopCalls).toBe(1);
-  expect(store.current("sbx", spec.workerId, spec.runId)).toMatchObject({
+  expect(client.invocationCalls).toBe(1);
+  expect(
+    store.current("sbx", lease.ref.workerId, lease.ref.runId),
+  ).toMatchObject({
     state: "degraded",
     diagnostics: [
-      expect.objectContaining({ code: "sbx_stop_state_uncertain" }),
+      expect.objectContaining({ code: "stop_observation_unavailable" }),
     ],
   });
+
+  client.inventoryUnavailable = false;
+  exactSandbox(state).status = "stopped";
+  expect(await value.reconcileStop(lease.ref)).toMatchObject({
+    state: "stopped",
+    invocation: "acknowledged",
+    observation: "stopped",
+  });
+  expect(client.invocationCalls).toBe(1);
 });
 
-test("a bounded failed stop can be reconciled and recovered after Worker restart", async () => {
+test("ambiguous invocation remains explicit and converges read-only", async () => {
   const root = await tempRoot();
   const state = fakeSbxState();
-  const client = new StopScenarioClient(state, "timeout_running");
-  const first = stopBackend(root, state, client);
+  const client = new StopScenarioClient(state, "ambiguous_running");
+  const store = fakeClockStore(root);
+  const value = stopBackend(root, state, client, store);
+  const lease = await value.ensure(sbxSpec("run-stop-ambiguous"));
+
+  expect(await value.stop(lease.ref)).toMatchObject({
+    state: "uncertain",
+    invocation: "ambiguous",
+    observation: "running",
+    errorCode: "operation_timeout",
+  });
+  expect(await value.stop(lease.ref)).toMatchObject({
+    state: "uncertain",
+  });
+  expect(client.invocationCalls).toBe(1);
+
+  exactSandbox(state).status = "stopped";
+  expect(await value.reconcileStop(lease.ref)).toMatchObject({
+    state: "stopped",
+    invocation: "ambiguous",
+    observation: "stopped",
+  });
+  expect(client.invocationCalls).toBe(1);
+});
+
+test("pre-invocation failure is durably known unsent", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "preinvoke_failed");
+  const store = fakeClockStore(root);
+  const value = stopBackend(root, state, client, store);
+  const lease = await value.ensure(sbxSpec("run-stop-unsent"));
+
+  expect(await value.stop(lease.ref)).toMatchObject({
+    state: "running",
+    intent: "recorded",
+    invocation: "not_invoked",
+    observation: "running",
+    errorCode: "operation_failed",
+  });
+  expect(client.invocationCalls).toBe(0);
+  expect(store.stopEvents(currentRecordId(store))).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: "stop_invocation_not_started" }),
+    ]),
+  );
+});
+
+test("Worker restart reconciles a pending stop without destructive replay", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "ack_running");
+  const store = fakeClockStore(root);
+  const first = stopBackend(root, state, client, store);
   const spec = sbxSpec("run-stop-restart-recovery");
   const lease = await first.ensure(spec);
-  await expect(first.stop(lease.ref)).rejects.toMatchObject({
-    code: "operation_timeout",
-  });
+  expect(await first.stop(lease.ref)).toMatchObject({ state: "stopping" });
   first.close();
   backends.splice(backends.indexOf(first), 1);
 
-  const sandbox = state.sandboxes.values().next().value as
-    | SbxSandboxSummary
-    | undefined;
-  if (!sandbox) throw new Error("expected fake sandbox");
-  sandbox.status = "stopped";
-  const restarted = backend(root, state);
+  exactSandbox(state).status = "stopped";
+  const restartedClient = new StopScenarioClient(state, "ack_stopped");
+  const restarted = stopBackend(
+    root,
+    state,
+    restartedClient,
+    new ExecutionEnvironmentStore(root),
+  );
+  expect(await restarted.reconcileStop(lease.ref)).toMatchObject({
+    state: "stopped",
+    invocation: "acknowledged",
+  });
+  expect(client.invocationCalls).toBe(1);
+  expect(restartedClient.invocationCalls).toBe(0);
   const recovered = await restarted.recover(lease.ref, spec);
-
   expect(recovered.ref).toEqual(lease.ref);
-  expect(state.createCalls).toBe(1);
-  expect(await restarted.inspect(lease.ref)).toMatchObject({
+  const recoveredInspection = await restarted.inspect(lease.ref);
+  expect(recoveredInspection).toMatchObject({
     state: "running",
     usable: true,
   });
+  expect(recoveredInspection.stop).toBeUndefined();
+});
+
+test("stale or replacement identity fails closed before stop invocation", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "ack_stopped");
+  const store = fakeClockStore(root);
+  const value = stopBackend(root, state, client, store);
+  const lease = await value.ensure(sbxSpec("run-stop-replacement"));
+  const sandbox = exactSandbox(state);
+  state.sandboxes.set(sandbox.name, {
+    ...sandbox,
+    id: "00000000-0000-4000-8000-000000000777",
+  });
+
+  await expect(value.stop(lease.ref)).rejects.toMatchObject({
+    code: "environment_identity_mismatch",
+  });
+  await expect(
+    value.stop({ ...lease.ref, incarnation: `${lease.ref.incarnation}-stale` }),
+  ).rejects.toMatchObject({ code: "stale_environment_ref" });
+  expect(client.invocationCalls).toBe(0);
+  expect(store.stopEvents(currentRecordId(store))).toEqual([]);
+  expect(exactSandbox(state).status).toBe("running");
+});
+
+test("a same-name replacement appearing at the invocation boundary is not touched", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "replacement_at_boundary");
+  const store = fakeClockStore(root);
+  const value = stopBackend(root, state, client, store);
+  const lease = await value.ensure(sbxSpec("run-stop-boundary-replacement"));
+
+  expect(await value.stop(lease.ref)).toMatchObject({
+    state: "uncertain",
+    invocation: "not_invoked",
+    observation: "identity_mismatch",
+    errorCode: "environment_identity_mismatch",
+  });
+  expect(client.invocationCalls).toBe(0);
+  expect(exactSandbox(state)).toMatchObject({
+    id: "00000000-0000-4000-8000-000000000888",
+    status: "running",
+  });
+  expect(
+    store.stopEvents(currentRecordId(store)).map((event) => event.type),
+  ).toEqual(
+    expect.arrayContaining([
+      "stop_intent_recorded",
+      "stop_invocation_not_started",
+      "stop_identity_mismatch",
+    ]),
+  );
+  expect(
+    store.stopEvents(currentRecordId(store)).map((event) => event.type),
+  ).not.toContain("stop_invocation_started");
+});
+
+test("authoritative absence converges teardown without claiming retained state", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "ack_running");
+  const store = fakeClockStore(root);
+  const value = stopBackend(root, state, client, store);
+  const lease = await value.ensure(sbxSpec("run-stop-disappeared"));
+  expect(await value.stop(lease.ref)).toMatchObject({ state: "stopping" });
+  state.sandboxes.clear();
+
+  expect(await value.reconcileStop(lease.ref)).toMatchObject({
+    state: "stopped",
+    observation: "absent",
+  });
+  expect((await value.inspect(lease.ref)).state).toBe("missing");
+  expect(client.invocationCalls).toBe(1);
 });
 
 test("generic lease exec returns nonzero status without changing semantics", async () => {
@@ -536,24 +732,31 @@ function stopBackend(
     reconciliationPollMs: 1,
     reconciliationAttempts: 100,
     stopRequestTimeoutMs: 7,
-    stopReconciliationTimeoutMs: 8,
     stopInspectionTimeoutMs: 3,
+    backgroundStopReconciliation: false,
+    onStopEvent: () => undefined,
   });
   backends.push(value);
   return value;
 }
 
+type StopScenario =
+  | "ack_stopped"
+  | "ack_running"
+  | "ack_inventory_unavailable"
+  | "ambiguous_running"
+  | "preinvoke_failed"
+  | "replacement_at_boundary";
+
 class StopScenarioClient extends FakeSbxClient {
-  stopCalls = 0;
+  invocationCalls = 0;
   readonly stopTimeouts: number[] = [];
   readonly listTimeouts: number[] = [];
+  inventoryUnavailable = false;
 
   constructor(
     state: ReturnType<typeof fakeSbxState>,
-    private readonly scenario:
-      | "timeout_stopped"
-      | "timeout_running"
-      | "timeout_inventory_unavailable",
+    private readonly scenario: StopScenario,
   ) {
     super(state);
   }
@@ -563,7 +766,7 @@ class StopScenarioClient extends FakeSbxClient {
   ): Promise<SbxSandboxSummary[]> {
     if (options.timeoutMs !== undefined)
       this.listTimeouts.push(options.timeoutMs);
-    if (this.stopCalls > 0 && this.scenario === "timeout_inventory_unavailable")
+    if (this.inventoryUnavailable)
       throw new SbxClientError(
         "operation_timeout",
         "synthetic inventory timeout",
@@ -574,19 +777,96 @@ class StopScenarioClient extends FakeSbxClient {
 
   override async stop(
     sandboxName: string,
-    options: SbxRequestOptions = {},
+    options: SbxStopOptions = {},
   ): Promise<void> {
-    this.stopCalls += 1;
     if (options.timeoutMs !== undefined)
       this.stopTimeouts.push(options.timeoutMs);
-    if (this.scenario === "timeout_stopped")
-      await super.stop(sandboxName, options);
-    throw new SbxClientError(
-      "operation_timeout",
-      "synthetic stop response timeout",
-      ["stop", sandboxName],
-    );
+    if (this.scenario === "preinvoke_failed")
+      throw new SbxClientError(
+        "operation_failed",
+        "synthetic pre-invocation failure",
+        ["stop", sandboxName],
+      );
+    if (this.scenario === "replacement_at_boundary") {
+      const sandbox = this.state.sandboxes.get(sandboxName);
+      if (!sandbox) throw new Error("expected fake sandbox");
+      this.state.sandboxes.set(sandboxName, {
+        ...sandbox,
+        id: "00000000-0000-4000-8000-000000000888",
+      });
+    }
+    await options.onInvocation?.();
+    this.invocationCalls += 1;
+    if (this.scenario === "ack_stopped") {
+      const sandbox = [...this.state.sandboxes.values()].find(
+        (candidate) =>
+          candidate.name === sandboxName || candidate.id === sandboxName,
+      );
+      if (!sandbox) throw new Error("expected fake sandbox");
+      sandbox.status = "stopped";
+      return;
+    }
+    if (this.scenario === "ack_inventory_unavailable") {
+      this.inventoryUnavailable = true;
+      return;
+    }
+    if (this.scenario === "ambiguous_running")
+      throw new SbxClientError(
+        "operation_timeout",
+        "synthetic stop response timeout",
+        ["stop", sandboxName],
+      );
   }
+}
+
+function fakeClockStore(root: string): ExecutionEnvironmentStore {
+  let milliseconds = Date.parse("2026-01-01T00:00:00.000Z");
+  return new ExecutionEnvironmentStore(root, undefined, () => {
+    const value = new Date(milliseconds);
+    milliseconds += 1;
+    return value;
+  });
+}
+
+function currentRecordId(store: ExecutionEnvironmentStore): string {
+  const record = store.list()[0];
+  if (!record) throw new Error("expected durable environment record");
+  return record.recordId;
+}
+
+function exactSandbox(
+  state: ReturnType<typeof fakeSbxState>,
+): SbxSandboxSummary {
+  const sandbox = state.sandboxes.values().next().value as
+    | SbxSandboxSummary
+    | undefined;
+  if (!sandbox) throw new Error("expected fake sandbox");
+  return sandbox;
+}
+
+function controlledScheduler(): {
+  now: () => number;
+  wait: (milliseconds: number) => Promise<void>;
+  advance: () => void;
+} {
+  let now = 0;
+  let pending: { milliseconds: number; resolve: () => void } | undefined;
+  return {
+    now: () => now,
+    wait: (milliseconds) =>
+      new Promise((resolve) => {
+        if (pending)
+          throw new Error("only one scheduled stop wait is expected");
+        pending = { milliseconds, resolve };
+      }),
+    advance: () => {
+      if (!pending) throw new Error("expected a scheduled stop wait");
+      const current = pending;
+      pending = undefined;
+      now += current.milliseconds;
+      current.resolve();
+    },
+  };
 }
 
 function rejectingBackend(
