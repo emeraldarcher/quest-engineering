@@ -23,7 +23,17 @@ import {
   readOwnershipRecord,
 } from "../src/session-host/herdr/ownership.ts";
 import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
-import type { HostedSnapshot } from "../src/session-host/types.ts";
+import { paneProcessIdentityDigest } from "../src/session-host/pane-process-identity.ts";
+import {
+  environmentIdentityDigest,
+  validatePromptInputFence,
+} from "../src/session-host/prompt-input-fence.ts";
+import type {
+  HostedAgent,
+  HostedPaneProcessInfo,
+  HostedSnapshot,
+  InteractivePromptAuthority,
+} from "../src/session-host/types.ts";
 import { QuestEngineeringWorker } from "../src/worker.ts";
 
 const roots: string[] = [];
@@ -91,6 +101,351 @@ test("readiness is side-effect free, then zero-session ensure creates infrastruc
     qe_worker_id: "worker-a",
     qe_session_incarnation: first.sessionIncarnation,
   });
+});
+
+test("authorized pane input revalidates endpoint, agent, and process before each write", async () => {
+  const fixture = await setup("worker-input");
+  const identity = await fixture.provider.ensureInfrastructure();
+  const readiness = await fixture.provider.readiness("antigravity");
+  const hash = (value: string) =>
+    createHash("sha256").update(value).digest("hex");
+  const authority: InteractivePromptAuthority = {
+    workerId: "worker-input",
+    questLaunchId: "launch-1",
+    runId: "run-1",
+    actionId: "action-1",
+    occurrenceId: "occurrence-1",
+    attemptId: "attempt-1",
+    physicalLineageId: "lineage-1",
+    environmentId: "environment-1",
+    environmentIncarnation: "environment-incarnation-1",
+    herdrEndpointGeneration: readiness.provenance.endpointGeneration as number,
+    herdrServerGeneration: readiness.provenance.serverGeneration as string,
+    sessionName: fixture.sessionName,
+    sessionIncarnation: identity.sessionIncarnation,
+    workspaceId: "w1",
+    tabId: "w1:t1",
+    paneId: "w1:p1",
+    terminalId: "terminal-1",
+    agentName: "agy-managed",
+    agentIntegrationKind: "agy",
+    paneShellPid: fixture.runtime.paneProcess.shellPid as number,
+    paneForegroundProcessGroupId: fixture.runtime.paneProcess
+      .foregroundProcessGroupId as number,
+    paneProcessIdentityDigest: paneProcessIdentityDigest(
+      fixture.runtime.paneProcess,
+    ),
+    ownershipToken: "ownership-1",
+    resultNonce: "result-1",
+    promptAuthorizedAt: "2026-09-15T00:00:01.000Z",
+    promptIntentAt: "2026-09-15T00:00:02.000Z",
+  };
+  fixture.runtime.interactiveAgent = {
+    name: authority.agentName,
+    agent: "agy",
+    status: "idle",
+    paneId: authority.paneId,
+    terminalId: authority.terminalId,
+    workspaceId: authority.workspaceId,
+    tabId: authority.tabId,
+    interactiveReady: true,
+    nativeMaterialized: true,
+    tokens: {
+      qe_owner: "quest-engineering-worker/v1",
+      qe_worker_id: authority.workerId,
+      qe_launch_id: authority.questLaunchId,
+      qe_run_id: authority.runId,
+      qe_lineage_id: authority.physicalLineageId,
+      qe_harness_kind: "antigravity",
+      qe_agent_name: authority.agentName,
+      qe_ownership_token: authority.ownershipToken,
+      qe_session_incarnation: authority.sessionIncarnation,
+      qe_environment_hash: hash(
+        `${authority.environmentId}\0${authority.environmentIncarnation}`,
+      ),
+      qe_active_state: "active",
+      qe_active_action_id: authority.actionId,
+      qe_action_hash: hash(authority.actionId),
+      qe_occurrence_hash: hash(authority.occurrenceId),
+      qe_attempt_hash: hash(authority.attemptId),
+      qe_result_nonce: authority.resultNonce,
+    },
+  };
+  const host = new HerdrTerminalBackend(fixture.provider, "antigravity");
+  const attachmentBefore = JSON.stringify({
+    agent: fixture.runtime.interactiveAgent,
+    process: fixture.runtime.paneProcess,
+  });
+  expect(
+    host.attachment({
+      sessionName: authority.sessionName,
+      sessionIncarnation: authority.sessionIncarnation,
+      workspaceId: authority.workspaceId,
+      tabId: authority.tabId,
+      paneId: authority.paneId,
+      terminalId: authority.terminalId,
+      agentName: authority.agentName,
+    }),
+  ).toMatchObject({
+    paneId: authority.paneId,
+    terminalId: authority.terminalId,
+    supportsObservation: true,
+  });
+  expect(
+    JSON.stringify({
+      agent: fixture.runtime.interactiveAgent,
+      process: fixture.runtime.paneProcess,
+    }),
+  ).toBe(attachmentBefore);
+
+  await host.stageInteractivePrompt({ authority, text: "literal\ntext" });
+  expect(fixture.runtime.paneTexts).toEqual(["literal\ntext"]);
+  expect(fixture.runtime.paneKeys).toEqual([]);
+
+  // Herdr 0.9 may omit its presentation-only name from a projection.
+  // Deterministic lookup plus immutable QE tokens still prove that name while
+  // native kind and current interactive readiness remain mandatory.
+  const projected = fixture.runtime.interactiveAgent as HostedAgent;
+  const { name: _reportedName, ...projectionWithoutOptionalName } = projected;
+  fixture.runtime.interactiveAgent = projectionWithoutOptionalName;
+  const observation = {
+    sessionName: fixture.sessionName,
+    sessionIncarnation: identity.sessionIncarnation,
+    readiness,
+    agentLookupTarget: authority.agentName,
+    agent: fixture.runtime.interactiveAgent as HostedAgent,
+    process: fixture.runtime.paneProcess,
+  };
+  expect(validatePromptInputFence(authority, observation).ok).toBe(true);
+  await host.stageInteractivePrompt({ authority, text: "second literal" });
+  expect(fixture.runtime.paneTexts).toEqual([
+    "literal\ntext",
+    "second literal",
+  ]);
+
+  const currentAgent = fixture.runtime.interactiveAgent as HostedAgent;
+  const substitute = (
+    changed: Partial<{
+      authority: InteractivePromptAuthority;
+      agent: HostedAgent;
+      process: HostedPaneProcessInfo;
+      readiness: typeof readiness;
+    }>,
+  ) =>
+    validatePromptInputFence(changed.authority ?? authority, {
+      ...observation,
+      agent: changed.agent ?? currentAgent,
+      process: changed.process ?? fixture.runtime.paneProcess,
+      readiness: changed.readiness ?? readiness,
+    });
+  const longActionId = `action-${"a".repeat(100)}`;
+  const boundedActionToken = Buffer.from(longActionId, "utf8")
+    .subarray(0, 80)
+    .toString("utf8");
+  const longActionAgent = {
+    ...currentAgent,
+    tokens: {
+      ...(currentAgent.tokens ?? {}),
+      qe_active_action_id: boundedActionToken,
+      qe_action_hash: hash(longActionId),
+    },
+  };
+  expect(
+    substitute({
+      authority: { ...authority, actionId: longActionId },
+      agent: longActionAgent,
+    }).ok,
+    "Herdr's bounded action token remains authoritative with the full digest",
+  ).toBe(true);
+  expect(
+    substitute({
+      authority: { ...authority, actionId: longActionId },
+      agent: {
+        ...longActionAgent,
+        tokens: {
+          ...longActionAgent.tokens,
+          qe_active_action_id: boundedActionToken.slice(0, -1),
+        },
+      },
+    }).mismatchFields,
+  ).toContain("active_action_id");
+  expect(
+    substitute({
+      authority: { ...authority, actionId: longActionId },
+      agent: {
+        ...longActionAgent,
+        tokens: {
+          ...longActionAgent.tokens,
+          qe_action_hash: hash(`${longActionId}-replacement`),
+        },
+      },
+    }).mismatchFields,
+  ).toContain("action_identity_digest");
+
+  const substitutions = [
+    {
+      name: "endpoint generation",
+      expected: "herdr_endpoint_generation",
+      result: substitute({
+        authority: { ...authority, herdrEndpointGeneration: 2 },
+      }),
+    },
+    {
+      name: "server generation",
+      expected: "herdr_server_generation",
+      result: substitute({
+        authority: { ...authority, herdrServerGeneration: "replacement" },
+      }),
+    },
+    {
+      name: "native agent kind",
+      expected: "agent_integration_kind",
+      result: substitute({ agent: { ...currentAgent, agent: "pi" } }),
+    },
+    {
+      name: "conflicting reported name",
+      expected: "agent_reported_name_if_present",
+      result: substitute({ agent: { ...currentAgent, name: "foreign" } }),
+    },
+    {
+      name: "dynamic working state",
+      expected: "agent_status_idle",
+      result: substitute({ agent: { ...currentAgent, status: "working" } }),
+    },
+    {
+      name: "explicit interactive unready state",
+      expected: "agent_interactive_ready",
+      result: substitute({
+        agent: { ...currentAgent, interactiveReady: false },
+      }),
+    },
+    {
+      name: "workspace replacement",
+      expected: "workspace_id",
+      result: substitute({
+        agent: { ...currentAgent, workspaceId: "replacement" },
+      }),
+    },
+    {
+      name: "environment incarnation",
+      expected: "environment_identity_digest",
+      result: substitute({
+        authority: {
+          ...authority,
+          environmentIncarnation: "replacement-incarnation",
+        },
+      }),
+    },
+    {
+      name: "ownership rotation",
+      expected: "ownership_token",
+      result: substitute({
+        authority: { ...authority, ownershipToken: "replacement" },
+      }),
+    },
+    {
+      name: "result nonce rotation",
+      expected: "result_nonce",
+      result: substitute({
+        authority: { ...authority, resultNonce: "replacement" },
+      }),
+    },
+    {
+      name: "foreground command replacement",
+      expected: "pane_process_identity_digest",
+      result: substitute({
+        process: {
+          ...fixture.runtime.paneProcess,
+          foregroundProcesses:
+            fixture.runtime.paneProcess.foregroundProcesses.map((process) => ({
+              ...process,
+              argv: ["/opt/qe/antigravity/replacement"],
+            })),
+        },
+      }),
+    },
+  ];
+  for (const item of substitutions) {
+    expect(item.result.ok, item.name).toBe(false);
+    expect(item.result.mismatchFields, item.name).toContain(item.expected);
+    expect(Object.keys(item.result.checks[0] ?? {}).sort()).toEqual([
+      "classification",
+      "currentPresent",
+      "currentProvenance",
+      "equal",
+      "expectedPresent",
+      "expectedProvenance",
+      "field",
+    ]);
+  }
+  const crossKindReport = substitute({
+    agent: {
+      ...currentAgent,
+      agent: "pi",
+      interactiveReady: false,
+    },
+  });
+  expect(crossKindReport.mismatchFields).toEqual([
+    "agent_integration_kind",
+    "agent_interactive_ready",
+  ]);
+  expect(
+    crossKindReport.checks.find(
+      (check) => check.field === "agent_reported_name_if_present",
+    ),
+  ).toMatchObject({
+    classification: "immutable_physical_identity",
+    expectedPresent: true,
+    currentPresent: false,
+    equal: true,
+  });
+  const diagnosticSentinel = "must-not-appear-in-fence-diagnostics";
+  const secretSafeResult = substitute({
+    authority: { ...authority, ownershipToken: diagnosticSentinel },
+  });
+  expect(secretSafeResult.mismatchFields).toContain("ownership_token");
+  expect(JSON.stringify(secretSafeResult)).not.toContain(diagnosticSentinel);
+  expect(environmentIdentityDigest("ab", "c")).not.toBe(
+    environmentIdentityDigest("a", "bc"),
+  );
+
+  fixture.runtime.paneProcess.foregroundProcessGroupId = 9090;
+  await expect(host.submitInteractivePrompt(authority)).rejects.toMatchObject({
+    code: "input_authority_mismatch",
+  });
+  expect(fixture.runtime.paneKeys).toEqual([]);
+
+  fixture.runtime.paneProcess.foregroundProcessGroupId =
+    authority.paneForegroundProcessGroupId;
+  await host.submitInteractivePrompt(authority);
+  expect(fixture.runtime.paneKeys).toEqual([["enter"]]);
+
+  for (const staleAuthority of [
+    { ...authority, herdrEndpointGeneration: 999 },
+    { ...authority, herdrServerGeneration: "stale-server-generation" },
+  ]) {
+    await expect(
+      host.stageInteractivePrompt({
+        authority: staleAuthority,
+        text: "forbidden",
+      }),
+    ).rejects.toMatchObject({ code: "input_authority_stale" });
+  }
+  fixture.runtime.interactiveAgent = {
+    ...currentAgent,
+    tokens: { ...currentAgent.tokens, qe_environment_hash: "stale" },
+  };
+  await expect(
+    host.stageInteractivePrompt({ authority, text: "forbidden" }),
+  ).rejects.toMatchObject({
+    code: "input_authority_mismatch",
+    mismatchFields: ["environment_identity_digest"],
+    sideEffect: "none",
+  });
+  expect(fixture.runtime.paneTexts).toEqual([
+    "literal\ntext",
+    "second literal",
+  ]);
 });
 
 test("long valid Worker IDs use collision-resistant bounded live ownership metadata", async () => {
@@ -395,7 +750,7 @@ test("configuration derives the default session and retains explicit overrides",
 });
 
 test("default session names are deterministic, bounded, normalized, and collision-resistant", () => {
-  const home = "/Users/kylec";
+  const home = "/Users/kylec/.config";
   const ids = [
     "worker-a",
     "phase4-paid-9311592d-24f4-4626-8817-78dbbef44779",
@@ -424,9 +779,10 @@ test("default session names are deterministic, bounded, normalized, and collisio
 
 test("derived names keep both native Herdr sockets below the Unix path contract", async () => {
   const home = "/Users/kylec";
+  const configHome = "/Users/kylec/.config";
   const failedWorkerId = "phase4-paid-9311592d-24f4-4626-8817-78dbbef44779";
-  const derived = defaultHerdrSessionName(failedWorkerId, home);
-  const paths = herdrDefaultSocketPaths(derived, home);
+  const derived = defaultHerdrSessionName(failedWorkerId, configHome);
+  const paths = herdrDefaultSocketPaths(derived, configHome);
   expect(Buffer.byteLength(paths.apiSocket)).toBeLessThanOrEqual(
     HERDR_UNIX_SOCKET_SAFE_PATH_BYTES,
   );
@@ -435,16 +791,17 @@ test("derived names keep both native Herdr sockets below the Unix path contract"
   );
 
   const failedName = "qe-worker-phase4-paid-9311592d-24f4-4626-8-88bd5a28f4";
-  const failedPaths = herdrDefaultSocketPaths(failedName, home);
+  const failedPaths = herdrDefaultSocketPaths(failedName, configHome);
   expect(Buffer.byteLength(failedPaths.apiSocket)).toBe(100);
   expect(Buffer.byteLength(failedPaths.clientSocket)).toBe(107);
-  expect(() => assertHerdrDefaultSocketPathSafe(failedName, home)).toThrow(
-    "107 bytes",
-  );
+  expect(() =>
+    assertHerdrDefaultSocketPathSafe(failedName, configHome),
+  ).toThrow("107 bytes");
 
   const root = await fixtureRoot();
   const baseEnvironment: NodeJS.ProcessEnv = {
     HOME: home,
+    XDG_CONFIG_HOME: configHome,
     QE_CONTROL_PLANE_URL: "ws://127.0.0.1/worker/websocket",
     QE_WORKER_ID: failedWorkerId,
     QE_WORKER_TOKEN: "unused",
@@ -468,7 +825,7 @@ test("derived names keep both native Herdr sockets below the Unix path contract"
     QE_WORKTREE_ROOT: join(longDataRoot, "worktrees"),
   });
   expect(configuration.herdrSession).toBe(derived);
-  assertHerdrDefaultSocketPathSafe(configuration.herdrSession, home);
+  assertHerdrDefaultSocketPathSafe(configuration.herdrSession, configHome);
 });
 
 async function fixtureRoot(): Promise<string> {
@@ -491,6 +848,12 @@ async function setup(workerId: string) {
     new LocalHerdrConnectionProvider(sessionName, {
       workerId: id,
       dataRoot: root,
+      herdrContext: {
+        executable: process.execPath,
+        configHome: root,
+        configPath: join(root, "config.toml"),
+        id: `sha256:${"2".repeat(64)}`,
+      },
       runCommand: (args) => runtime.run(args),
       createClient: (_socket, onUnavailable) =>
         new FakeHerdrClient(runtime, onUnavailable),
@@ -531,6 +894,18 @@ class FakeHerdrRuntime {
   exists = false;
   workspaceExists = false;
   workspaceTokens: Record<string, string> = {};
+  interactiveAgent: HostedAgent | null = null;
+  paneProcess: HostedPaneProcessInfo = {
+    paneId: "w1:p1",
+    shellPid: 100,
+    foregroundProcessGroupId: 101,
+    tty: "/dev/ttys001",
+    foregroundProcesses: [
+      { pid: 101, name: "agy", argv: ["/opt/qe/antigravity/agy"] },
+    ],
+  };
+  paneTexts: string[] = [];
+  paneKeys: string[][] = [];
   readonly sessionDirectory: string;
   readonly socketPath: string;
   private generation = 0;
@@ -626,7 +1001,7 @@ class FakeHerdrRuntime {
             },
           ]
         : [],
-      agents: [],
+      agents: this.interactiveAgent ? [{ ...this.interactiveAgent }] : [],
     };
   }
 
@@ -708,6 +1083,35 @@ class FakeHerdrClient extends HerdrSocketClient {
   override async createWorkspace() {
     return this.runtime.createInfrastructureWorkspace();
   }
+  override async getAgent(target: string): Promise<HostedAgent> {
+    if (
+      !this.runtime.interactiveAgent ||
+      ![
+        this.runtime.interactiveAgent.paneId,
+        this.runtime.interactiveAgent.name,
+        this.runtime.interactiveAgent.tokens?.qe_agent_name,
+      ].includes(target)
+    )
+      throw new HerdrApiError("agent_not_found", "synthetic agent missing");
+    return { ...this.runtime.interactiveAgent };
+  }
+  override async getPaneProcess(
+    paneId: string,
+  ): Promise<HostedPaneProcessInfo> {
+    return {
+      ...this.runtime.paneProcess,
+      paneId,
+      foregroundProcesses: this.runtime.paneProcess.foregroundProcesses.map(
+        (process) => ({ ...process }),
+      ),
+    };
+  }
+  override async sendPaneText(_paneId: string, text: string): Promise<void> {
+    this.runtime.paneTexts.push(text);
+  }
+  override async sendPaneKeys(_paneId: string, keys: string[]): Promise<void> {
+    this.runtime.paneKeys.push([...keys]);
+  }
   override async integrations(): Promise<HerdrIntegrationEvidence[]> {
     return [
       { target: "pi", available: true, state: "current" },
@@ -740,6 +1144,8 @@ const OPERATIONS: Record<string, string[]> = {
     "tokens",
   ],
   "pane.process_info": ["pane_id"],
+  "pane.send_text": ["pane_id", "text"],
+  "pane.send_keys": ["pane_id", "keys"],
   "agent.start": ["pane_id", "name", "kind", "args", "command", "timeout_ms"],
   "agent.prompt": ["target", "text", "wait"],
   "agent.get": ["target"],

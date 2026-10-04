@@ -113,6 +113,48 @@ test("generic MCP shim exposes semantic outputs without trusted identity argumen
   });
 });
 
+test("Node executes the bundled guest MCP entrypoint and lists QE tools", async () => {
+  const value = await fixture();
+  const bound = await bind(value, action());
+  const build = await Bun.build({
+    entrypoints: [mcpEntrypoint],
+    target: "node",
+    format: "esm",
+    splitting: false,
+  });
+  expect(build.success).toBe(true);
+  const output = build.outputs[0];
+  if (!output) throw new Error("MCP guest bundle produced no output.");
+  const bundle = join(value.root, "mcp-server.mjs");
+  await writeFile(bundle, new Uint8Array(await output.arrayBuffer()), {
+    mode: 0o500,
+  });
+  const node = Bun.which("node");
+  if (!node) throw new Error("Node is unavailable for guest MCP bundle test.");
+  const evidence = join(value.root, "bundled-node-startup.jsonl");
+  const transport = new StdioClientTransport({
+    command: node,
+    args: [bundle],
+    env: {
+      ...stringEnvironment(process.env),
+      [HARNESS_CONTROL_PATH_ENV]: bound.descriptor,
+      [QE_MCP_STARTUP_EVIDENCE_ENV]: evidence,
+    },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "qe-node-bundle-test", version: "1.0.0" });
+  await client.connect(transport);
+  cleanups.push(() => client.close());
+  expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+    QE_COMPLETE_STEP_TOOL,
+  ]);
+  expect(JSON.parse((await Bun.file(evidence).text()).trim())).toMatchObject({
+    descriptorPathHash: descriptorHash(bound.descriptor),
+    bridgeAcceptedContext: true,
+    completed: false,
+  });
+});
+
 test("same static MCP command isolates concurrent session A and B environments", async () => {
   const value = await fixture();
   const first = await bind(

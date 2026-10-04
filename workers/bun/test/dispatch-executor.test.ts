@@ -1031,6 +1031,14 @@ test("post-prompt backend loss recovers the exact lineage without resubmission",
   });
   expect(harness.promptSubmissions).toBe(1);
   expect(harness.recoveries).toBe(1);
+  expect(
+    registry.getLineage(dispatch.lineageId as string).nativeSession,
+  ).toEqual({
+    source: "antigravity",
+    agent: "agy",
+    kind: "id",
+    value: "55555555-5555-4555-8555-555555555555",
+  });
   expect(sessionStates).toEqual(
     expect.arrayContaining(["unavailable", "recovering"]),
   );
@@ -1431,7 +1439,8 @@ class InspectingProvider implements AgentHarness {
       mode: "local_native_terminal" as const,
       backendKind: "fake",
       terminalSessionId: "fake",
-      terminalTargetId: lineage.lineageId,
+      localContextId: `sha256:${"0".repeat(64)}`,
+      paneId: lineage.lineageId,
       supportsObservation: false,
       supportsTakeover: false,
     };
@@ -1649,7 +1658,16 @@ class PostPromptUnavailableHarness extends InspectingProvider {
       );
     return {
       found: true,
-      agent: { ...prepared(lineage).agent, status: "working" as const },
+      agent: {
+        ...prepared(lineage).agent,
+        status: "working" as const,
+        nativeSession: {
+          source: "antigravity" as const,
+          agent: "agy",
+          kind: "id" as const,
+          value: "55555555-5555-4555-8555-555555555555",
+        },
+      },
       detail: "Recovered exact test lineage.",
     };
   }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 3 added independently testable Worker infrastructure for private Git materialization, physical-lineage worktrees, deterministic workspace fingerprints, checkpoints, export, restore, and isolated host-fixture import. Phase 4 wires that infrastructure into production Pi dispatch and Run delivery materialization; Antigravity, server protocol, and UI semantics remain unchanged.
+Phase 3 added independently testable Worker infrastructure for private Git materialization, physical-lineage worktrees, deterministic workspace fingerprints, checkpoints, export, restore, and isolated host-fixture import. Phase 4 wired Pi; Phase 5 routes Antigravity through the same physical-lineage workspace and Run delivery materialization. Phase 5 accepted asynchronous private-Git export and Product Change Set binding after semantic acknowledgement; see [`phase-5-closure.md`](phase-5-closure.md). No harness receives a host `.git` mount.
 
 The implementation is `workers/bun/src/workspace/private-git.ts` with durable state in `private-git-store.ts`. It is a workspace layer above `EnvironmentLease`, not an execution-environment backend capability. An SBX machine can exist without a repository and a Run can materialize more than one repository in future, so no gratuitous `private_git` capability was added to the environment contract.
 
@@ -160,7 +160,7 @@ A full verified bundle contains those refs and all required objects. The canonic
 
 The Worker stores immutable bundle and manifest bytes in a content-addressed directory under `private-git-artifacts/` and stores identity/state in `private-git.sqlite`. A repeated checkpoint of unchanged state reuses the exact durable export.
 
-`checkpoint` requires a `ChangeSetPhysicalContract` containing the exact repository/base and can require exact declared changed paths. The Worker computes actual state; a declaration mismatch fails. Future `qe_complete_step` integration must complete only after this boundary returns a validated export and must place the returned export/result-tree identity in the semantic Change Set artifact. Phase 3 deliberately does not wire that production path.
+`checkpoint` requires a `ChangeSetPhysicalContract` containing the exact repository/base and can require exact declared changed paths. The Worker computes actual state; a declaration mismatch fails. The generic `qe_complete_step` authority now validates and durably acknowledges one semantic submission before starting this physical boundary. Product remains nonterminal during asynchronous checkpoint/export; only a final current Action/Attempt/lineage/generation fence may bind the validated export/result-tree identity into the semantic Change Set and publish the result. Phase 3 did not wire that production path; Phase 5 accepted it.
 
 ## Restore and recovery
 

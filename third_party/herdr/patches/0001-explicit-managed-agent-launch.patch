@@ -1,0 +1,1074 @@
+From 75bfefe8546df7ec0313d65a700eb3d0f6bee115 Mon Sep 17 00:00:00 2001
+From: Kyle Cornelison <cornelison.kylejohn@gmail.com>
+Date: Mon, 21 Sep 2026 12:18:56 -0700
+Subject: [PATCH] Add explicit managed agent launch
+
+---
+ docs/next/api/herdr-api.schema.json           |  48 +++
+ docs/next/website/src/content/docs/agents.mdx |   4 +
+ .../website/src/content/docs/socket-api.mdx   |   6 +
+ src/api/schema/agents.rs                      |  17 +
+ src/api/schema/server.rs                      |   3 +
+ src/api/schema/tests.rs                       |  28 ++
+ src/api/server.rs                             |   2 +
+ src/app/agents.rs                             | 289 +++++++++++++++--
+ src/app/api.rs                                |   7 +-
+ src/app/api/agents.rs                         |   8 +-
+ src/app/mod.rs                                |   8 +
+ src/cli/agent.rs                              |   1 +
+ src/cli/status.rs                             |   1 +
+ src/update.rs                                 |   3 +
+ tests/api_ping.rs                             | 296 +++++++++++++++++-
+ 15 files changed, 699 insertions(+), 22 deletions(-)
+
+diff --git a/docs/next/api/herdr-api.schema.json b/docs/next/api/herdr-api.schema.json
+index b3990e96..865264a8 100644
+--- a/docs/next/api/herdr-api.schema.json
++++ b/docs/next/api/herdr-api.schema.json
+@@ -1332,6 +1332,38 @@
+           ],
+           "type": "object"
+         },
++        "AgentStartCommand": {
++          "properties": {
++            "args": {
++              "items": {
++                "type": "string"
++              },
++              "type": "array"
++            },
++            "cwd": {
++              "description": "Absolute working directory. The pane's current directory is used when omitted.",
++              "type": [
++                "string",
++                "null"
++              ]
++            },
++            "env": {
++              "additionalProperties": {
++                "type": "string"
++              },
++              "description": "Additions and overrides applied on top of the pane process environment.",
++              "type": "object"
++            },
++            "executable": {
++              "description": "Absolute executable path. Explicit launches never resolve this through PATH.",
++              "type": "string"
++            }
++          },
++          "required": [
++            "executable"
++          ],
++          "type": "object"
++        },
+         "AgentStartParams": {
+           "properties": {
+             "args": {
+@@ -1340,6 +1372,17 @@
+               },
+               "type": "array"
+             },
++            "command": {
++              "anyOf": [
++                {
++                  "$ref": "#/schemas/request/$defs/AgentStartCommand"
++                },
++                {
++                  "type": "null"
++                }
++              ],
++              "description": "Optional exact process transport. `kind` remains the managed-agent identity."
++            },
+             "kind": {
+               "type": "string"
+             },
+@@ -10525,6 +10568,11 @@
+         },
+         "ServerCapabilities": {
+           "properties": {
++            "agent_explicit_launch": {
++              "default": false,
++              "description": "Whether `agent.start` accepts an explicit absolute process command.",
++              "type": "boolean"
++            },
+             "detached_server_daemon": {
+               "default": false,
+               "type": "boolean"
+diff --git a/docs/next/website/src/content/docs/agents.mdx b/docs/next/website/src/content/docs/agents.mdx
+index eecdb22d..1aa1d33b 100644
+--- a/docs/next/website/src/content/docs/agents.mdx
++++ b/docs/next/website/src/content/docs/agents.mdx
+@@ -51,6 +51,10 @@ Integrations marked `session` in the table above are intentionally not lifecycle
+ 
+ ## VMs and sandbox wrappers
+ 
++The socket API advertises `capabilities.agent_explicit_launch` when `agent.start` accepts an optional `command` object. This form keeps `kind` as the managed-agent identity while starting `command.executable` directly with its literal `args`, optional absolute `cwd`, and environment additions. The executable and cwd must be absolute. Herdr does not resolve the executable through `PATH` or invoke a shell. When `command` is omitted, `agent.start` retains its existing canonical-executable behavior. Clients must check the capability before sending the optional field because an older server may ignore an unknown field.
++
++Explicit launch replaces the available pane shell with the managed process while preserving the pane identity and PTY lifecycle. Herdr restores a shell after that process exits. It injects the expected managed kind as the process-scoped `HERDR_AGENT` hint, so wrappers, containers, and VM launchers retain normal detection, readiness, prompt, and input behavior. Herdr-owned pane and socket variables override caller-provided environment entries.
++
+ On Linux and macOS, a host-visible wrapper can hide the real agent process from Herdr. Set `HERDR_AGENT=<agent>` on the wrapper command to tell Herdr which existing agent screen manifest to use. For example, run `HERDR_AGENT=claude fence -- claude` on Linux or `HERDR_AGENT=claude nono run --profile claude-code -- claude` on macOS. The hint applies only to that foreground process. Herdr cannot see it if you set it only inside a VM or container. Avoid exporting it globally unless every inherited foreground process should be treated as that agent.
+ 
+ Some restricted Linux runtimes do not expose a terminal foreground process group. Start the Herdr server with `HERDR_PROCESS_DETECTION=child-groups` to opt into direct child-process-group inference when native detection is unavailable. Native detection remains preferred, and the default `native` mode never performs this inference. The opt-in mode is best effort: a newer background job can be mistaken for the foreground job. The variable is read by the server and requires a restart; set it in the remote server environment rather than on an attaching client.
+diff --git a/docs/next/website/src/content/docs/socket-api.mdx b/docs/next/website/src/content/docs/socket-api.mdx
+index 13a71abb..c8054bee 100644
+--- a/docs/next/website/src/content/docs/socket-api.mdx
++++ b/docs/next/website/src/content/docs/socket-api.mdx
+@@ -113,6 +113,12 @@ Raw socket method names use dot notation:
+ 
+ `agent.wait` is server-owned and event-driven. It pins the resolved pane occupant so a replacement cannot satisfy the wait. `agent.prompt` accepts an optional `wait` object with `until` and `timeout_ms`; this submits the prompt and starts the wait in one request, avoiding a race between separate calls. If the resolved agent is already `blocked`, `agent.prompt` returns `agent_blocked` without sending input or starting the wait.
+ 
++When `ping.capabilities.agent_explicit_launch` is true, `agent.start` accepts an optional `command` object with an absolute `executable`, literal `args`, optional absolute `cwd`, and environment additions in `env`. Herdr executes the argv directly in the pane PTY without a shell or `PATH` lookup while `kind` retains managed-agent detection and lifecycle semantics. Do not combine top-level legacy `args` with `command`. Older servers may ignore unknown fields, so clients must probe the capability before using this additive form.
++
++```json
++{"id":"req_start","method":"agent.start","params":{"pane_id":"w1:p1","name":"managed-pi","kind":"pi","command":{"executable":"/opt/qe/launcher","args":["--exact","literal value"],"cwd":"/workspace","env":{"QE_RUN":"run-1"}},"timeout_ms":30000}}
++```
++
+ `workspace.move_block` atomically moves the ordered `workspace_ids` before `before_workspace_id`; omit the anchor to move the block to the end. The ids must be unique and the anchor cannot be part of the block. The response contains the authoritative ordered workspace list.
+ 
+ `session.snapshot` returns a one-time bootstrap snapshot for clients that keep
+diff --git a/src/api/schema/agents.rs b/src/api/schema/agents.rs
+index ee496d5d..9ef4b464 100644
+--- a/src/api/schema/agents.rs
++++ b/src/api/schema/agents.rs
+@@ -163,6 +163,20 @@ pub enum AgentViewSortOrder {
+     Desc,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
++pub struct AgentStartCommand {
++    /// Absolute executable path. Explicit launches never resolve this through PATH.
++    pub executable: String,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub args: Vec<String>,
++    /// Absolute working directory. The pane's current directory is used when omitted.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub cwd: Option<String>,
++    /// Additions and overrides applied on top of the pane process environment.
++    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
++    pub env: HashMap<String, String>,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+ pub struct AgentStartParams {
+     pub name: String,
+@@ -170,6 +184,9 @@ pub struct AgentStartParams {
+     pub pane_id: String,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     pub args: Vec<String>,
++    /// Optional exact process transport. `kind` remains the managed-agent identity.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub command: Option<AgentStartCommand>,
+     /// Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub timeout_ms: Option<u64>,
+diff --git a/src/api/schema/server.rs b/src/api/schema/server.rs
+index b274bc95..fab5c520 100644
+--- a/src/api/schema/server.rs
++++ b/src/api/schema/server.rs
+@@ -27,4 +27,7 @@ pub struct ServerCapabilities {
+     /// Whether this server supports endpoint health probes.
+     #[serde(default)]
+     pub health_check: bool,
++    /// Whether `agent.start` accepts an explicit absolute process command.
++    #[serde(default)]
++    pub agent_explicit_launch: bool,
+ }
+diff --git a/src/api/schema/tests.rs b/src/api/schema/tests.rs
+index b566e8f6..68fcb296 100644
+--- a/src/api/schema/tests.rs
++++ b/src/api/schema/tests.rs
+@@ -99,6 +99,7 @@ fn agent_start_and_prompt_requests_round_trip() {
+             kind: "pi".into(),
+             pane_id: "w1:p2".into(),
+             args: vec!["--no-session".into()],
++            command: None,
+             timeout_ms: Some(30_000),
+         }),
+     };
+@@ -110,6 +111,32 @@ fn agent_start_and_prompt_requests_round_trip() {
+         start
+     );
+ 
++    let explicit = Request {
++        id: "explicit".into(),
++        method: Method::AgentStart(AgentStartParams {
++            name: "reviewer".into(),
++            kind: "pi".into(),
++            pane_id: "w1:p2".into(),
++            args: Vec::new(),
++            command: Some(AgentStartCommand {
++                executable: "/opt/agent-launcher".into(),
++                args: vec!["foo bar".into(), "$(literal)".into(), String::new()],
++                cwd: Some("/workspace".into()),
++                env: HashMap::from([("EXAMPLE".into(), "literal value".into())]),
++            }),
++            timeout_ms: Some(30_000),
++        }),
++    };
++    let explicit_json = serde_json::to_value(&explicit).unwrap();
++    assert_eq!(
++        explicit_json["params"]["command"]["executable"],
++        "/opt/agent-launcher"
++    );
++    assert_eq!(
++        serde_json::from_value::<Request>(explicit_json).unwrap(),
++        explicit
++    );
++
+     let prompt = Request {
+         id: "prompt".into(),
+         method: Method::AgentPrompt(AgentPromptParams {
+@@ -727,6 +754,7 @@ fn success_response_round_trips() {
+                 endpoint_protocol_generation: Some(1),
+                 surface_interest: true,
+                 health_check: true,
++                agent_explicit_launch: true,
+             }),
+         },
+     };
+diff --git a/src/api/server.rs b/src/api/server.rs
+index b8ef7c38..78e4a129 100644
+--- a/src/api/server.rs
++++ b/src/api/server.rs
+@@ -71,6 +71,7 @@ fn default_capabilities() -> Option<ServerCapabilities> {
+         endpoint_protocol_generation: Some(crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION),
+         surface_interest: true,
+         health_check: true,
++        agent_explicit_launch: true,
+     })
+ }
+ 
+@@ -1149,6 +1150,7 @@ mod tests {
+                 ),
+                 surface_interest: true,
+                 health_check: true,
++                agent_explicit_launch: true,
+             }),
+             None,
+             None,
+diff --git a/src/app/agents.rs b/src/app/agents.rs
+index 5033505d..60c52c67 100644
+--- a/src/app/agents.rs
++++ b/src/app/agents.rs
+@@ -3,7 +3,33 @@ use std::time::{Duration, Instant};
+ use bytes::Bytes;
+ 
+ use super::{terminal_targets::TerminalTargetError, App};
+-use crate::api::schema::AgentStartParams;
++use crate::api::schema::{AgentStartCommand, AgentStartParams};
++
++#[derive(Debug)]
++pub(crate) struct PendingExplicitAgentLaunch {
++    pub(crate) name: String,
++    pub(crate) kind: crate::detect::Agent,
++    pub(crate) argv: Vec<String>,
++    pub(crate) cwd: std::path::PathBuf,
++    pub(crate) env: Vec<(String, String)>,
++    pub(crate) rows: u16,
++    pub(crate) cols: u16,
++}
++
++#[derive(Debug)]
++pub(crate) enum ExplicitAgentLaunchState {
++    WaitingForShellExit(PendingExplicitAgentLaunch),
++    Running {
++        name: String,
++        kind: crate::detect::Agent,
++    },
++}
++
++#[derive(Debug)]
++pub(crate) struct ExplicitAgentLaunchFailure {
++    pub(crate) name: String,
++    pub(crate) message: String,
++}
+ 
+ const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
+ pub(crate) const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
+@@ -153,15 +179,19 @@ impl App {
+         let Some(kind) = crate::detect::parse_agent_label(&params.kind) else {
+             return Err(AgentStartError::UnsupportedKind(params.kind));
+         };
+-        if params
+-            .args
+-            .iter()
+-            .any(|arg| arg.chars().any(char::is_control))
++        if params.command.is_some() && !params.args.is_empty() {
++            return Err(AgentStartError::InvalidExplicitCommand(
++                "top-level args cannot be combined with an explicit command".into(),
++            ));
++        }
++        if params.command.is_none()
++            && params
++                .args
++                .iter()
++                .any(|arg| arg.chars().any(char::is_control))
+         {
+             return Err(AgentStartError::InvalidArgument);
+         }
+-        let persisted_agent_session =
+-            crate::agent_resume::persisted_session_from_launch_args(kind, &params.args);
+         let conflicts = self.agent_name_conflicts(&name, "");
+         if !conflicts.is_empty() {
+             return Err(AgentStartError::DuplicateName {
+@@ -172,6 +202,14 @@ impl App {
+         let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(&params.pane_id) else {
+             return Err(AgentStartError::TargetNotFound(params.pane_id));
+         };
++        if let Some(failure) = self.explicit_agent_launch_failures.remove(&pane_id) {
++            if failure.name == name {
++                return Err(AgentStartError::ExplicitLaunchFailed(failure.message));
++            }
++        }
++        if self.explicit_agent_launches.contains_key(&pane_id) {
++            return Err(AgentStartError::TargetBusy(params.pane_id));
++        }
+         let terminal_id = self
+             .state
+             .workspaces
+@@ -194,11 +232,23 @@ impl App {
+         let shell_name = available_shell_name(runtime)
+             .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
+ 
+-        let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
+-        argv.extend(params.args);
+-        let command = crate::platform::interactive_shell_command(&argv, &shell_name)
+-            .ok_or(AgentStartError::InvalidArgument)?;
+-        let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
++        let explicit = params
++            .command
++            .map(|command| validate_explicit_command(command, terminal, runtime, kind))
++            .transpose()?;
++        let persisted_agent_session = explicit
++            .is_none()
++            .then(|| crate::agent_resume::persisted_session_from_launch_args(kind, &params.args));
++        let (argv, legacy_submission) = if let Some(explicit) = &explicit {
++            (explicit.argv.clone(), None)
++        } else {
++            let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
++            argv.extend(params.args);
++            let command = crate::platform::interactive_shell_command(&argv, &shell_name)
++                .ok_or(AgentStartError::InvalidArgument)?;
++            let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
++            (argv, Some(bytes))
++        };
+         let timeout = Duration::from_millis(
+             params
+                 .timeout_ms
+@@ -215,12 +265,38 @@ impl App {
+             .get_mut(&terminal_id)
+             .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
+         terminal.begin_managed_agent(name.clone(), kind, now, AGENT_START_SETTLE_DELAY, timeout);
+-        if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
+-            terminal.clear_agent_name();
+-            return Err(AgentStartError::InputFailed(err.to_string()));
+-        }
+-        if let Some(session) = persisted_agent_session {
+-            terminal.set_managed_agent_launch_session(session);
++        if let Some(explicit) = explicit {
++            terminal.launch_argv = Some(explicit.argv.clone());
++            terminal.respawn_shell_on_exit = true;
++            self.explicit_agent_launches.insert(
++                pane_id,
++                ExplicitAgentLaunchState::WaitingForShellExit(PendingExplicitAgentLaunch {
++                    name,
++                    kind,
++                    argv: explicit.argv,
++                    cwd: explicit.cwd,
++                    env: explicit.env,
++                    rows: explicit.rows,
++                    cols: explicit.cols,
++                }),
++            );
++            let runtime = self
++                .terminal_runtimes
++                .remove(&terminal_id)
++                .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
++            runtime.shutdown();
++        } else if let Some(bytes) = legacy_submission {
++            let runtime = self
++                .terminal_runtimes
++                .get(&terminal_id)
++                .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
++            if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
++                terminal.clear_agent_name();
++                return Err(AgentStartError::InputFailed(err.to_string()));
++            }
++            if let Some(Some(session)) = persisted_agent_session {
++                terminal.set_managed_agent_launch_session(session);
++            }
+         }
+         self.state.mark_session_dirty();
+         self.schedule_session_save();
+@@ -248,6 +324,16 @@ impl App {
+                 code: "invalid_agent_argument".into(),
+                 message: "agent arguments cannot be encoded safely for the target shell".into(),
+             },
++            AgentStartError::InvalidExplicitCommand(message) => {
++                crate::api::schema::ErrorBody {
++                    code: "invalid_agent_command".into(),
++                    message,
++                }
++            }
++            AgentStartError::ExplicitLaunchFailed(message) => crate::api::schema::ErrorBody {
++                code: "agent_explicit_launch_failed".into(),
++                message,
++            },
+             AgentStartError::InvalidTimeout => crate::api::schema::ErrorBody {
+                 code: "invalid_agent_timeout".into(),
+                 message: INVALID_AGENT_TIMEOUT_MESSAGE.into(),
+@@ -413,6 +499,171 @@ impl App {
+             })
+             .collect()
+     }
++
++    pub(super) fn handle_explicit_agent_runtime_exit(
++        &mut self,
++        pane_id: crate::layout::PaneId,
++    ) -> bool {
++        let Some(state) = self.explicit_agent_launches.remove(&pane_id) else {
++            return false;
++        };
++        let ExplicitAgentLaunchState::WaitingForShellExit(pending) = state else {
++            let ExplicitAgentLaunchState::Running { name, .. } = state else {
++                unreachable!();
++            };
++            let launch_pending = self
++                .find_pane(pane_id)
++                .and_then(|(_, pane)| self.state.terminals.get(&pane.attached_terminal_id))
++                .is_some_and(|terminal| terminal.managed_agent_launch_pending());
++            if launch_pending {
++                self.explicit_agent_launch_failures.insert(
++                    pane_id,
++                    ExplicitAgentLaunchFailure {
++                        name,
++                        message:
++                            "explicit process exited before the expected managed agent became ready"
++                                .into(),
++                    },
++                );
++            }
++            return false;
++        };
++        let Some((ws_idx, pane)) = self.find_pane(pane_id) else {
++            return true;
++        };
++        let terminal_id = pane.attached_terminal_id.clone();
++        let Some(launch_env) = self.pane_launch_env(ws_idx, pane_id, pending.env) else {
++            self.record_explicit_launch_failure(
++                pane_id,
++                pending.name,
++                "pane launch identity became unavailable".into(),
++            );
++            return true;
++        };
++        let runtime = crate::terminal::TerminalRuntime::spawn_argv_command(
++            pane_id,
++            pending.rows,
++            pending.cols,
++            pending.cwd,
++            &pending.argv,
++            &launch_env,
++            crate::pane::AgentDetection::Enabled,
++            self.state.pane_scrollback_limit_bytes,
++            self.state.host_terminal_theme,
++            self.state.host_terminal_appearance,
++            self.event_tx.clone(),
++            self.render_notify.clone(),
++            self.render_dirty.clone(),
++        );
++        match runtime {
++            Ok(runtime) => {
++                self.terminal_runtimes.insert(terminal_id, runtime);
++                self.explicit_agent_launches.insert(
++                    pane_id,
++                    ExplicitAgentLaunchState::Running {
++                        name: pending.name,
++                        kind: pending.kind,
++                    },
++                );
++                self.state.mark_session_dirty();
++                self.schedule_session_save();
++            }
++            Err(err) => {
++                self.record_explicit_launch_failure(pane_id, pending.name, err.to_string());
++                let _ = self.respawn_shell_for_launch_pane(pane_id, true);
++            }
++        }
++        true
++    }
++
++    pub(super) fn explicit_agent_runtime_matches(
++        &self,
++        pane_id: crate::layout::PaneId,
++        expected: crate::detect::Agent,
++    ) -> bool {
++        matches!(
++            self.explicit_agent_launches.get(&pane_id),
++            Some(ExplicitAgentLaunchState::Running { kind, .. }) if *kind == expected
++        )
++    }
++
++    fn record_explicit_launch_failure(
++        &mut self,
++        pane_id: crate::layout::PaneId,
++        name: String,
++        message: String,
++    ) {
++        self.explicit_agent_launch_failures
++            .insert(pane_id, ExplicitAgentLaunchFailure { name, message });
++    }
++}
++
++struct ValidatedExplicitCommand {
++    argv: Vec<String>,
++    cwd: std::path::PathBuf,
++    env: Vec<(String, String)>,
++    rows: u16,
++    cols: u16,
++}
++
++fn validate_explicit_command(
++    command: AgentStartCommand,
++    terminal: &crate::terminal::TerminalState,
++    runtime: &crate::terminal::TerminalRuntime,
++    kind: crate::detect::Agent,
++) -> Result<ValidatedExplicitCommand, AgentStartError> {
++    let executable = std::path::Path::new(&command.executable);
++    if !executable.is_absolute() || command.executable.contains('\0') {
++        return Err(AgentStartError::InvalidExplicitCommand(
++            "explicit agent executable must be an absolute path without NUL bytes".into(),
++        ));
++    }
++    if command.args.iter().any(|arg| arg.contains('\0')) {
++        return Err(AgentStartError::InvalidExplicitCommand(
++            "explicit agent arguments cannot contain NUL bytes".into(),
++        ));
++    }
++    let cwd = match command.cwd {
++        Some(cwd) => {
++            let path = std::path::PathBuf::from(cwd);
++            if !path.is_absolute() {
++                return Err(AgentStartError::InvalidExplicitCommand(
++                    "explicit agent cwd must be an absolute path".into(),
++                ));
++            }
++            path
++        }
++        None => runtime
++            .foreground_cwd()
++            .or_else(|| runtime.cwd())
++            .unwrap_or_else(|| terminal.cwd.clone()),
++    };
++    let mut env = command.env.into_iter().collect::<Vec<_>>();
++    env.sort_by(|left, right| left.0.cmp(&right.0));
++    if env
++        .iter()
++        .any(|(key, value)| key.is_empty() || key.contains(['=', '\0']) || value.contains('\0'))
++    {
++        return Err(AgentStartError::InvalidExplicitCommand(
++            "explicit agent environment contains an invalid name or NUL byte".into(),
++        ));
++    }
++    env.retain(|(key, _)| key != "HERDR_AGENT");
++    env.push((
++        "HERDR_AGENT".into(),
++        crate::detect::interactive_agent_executable(kind).into(),
++    ));
++    let (rows, cols) = runtime.current_size();
++    let mut argv = Vec::with_capacity(command.args.len() + 1);
++    argv.push(command.executable);
++    argv.extend(command.args);
++    Ok(ValidatedExplicitCommand {
++        argv,
++        cwd,
++        env,
++        rows,
++        cols,
++    })
+ }
+ 
+ fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<String> {
+@@ -449,6 +700,8 @@ pub(super) enum AgentStartError {
+     InvalidName,
+     UnsupportedKind(String),
+     InvalidArgument,
++    InvalidExplicitCommand(String),
++    ExplicitLaunchFailed(String),
+     InvalidTimeout,
+     TargetNotFound(String),
+     TargetBusy(String),
+diff --git a/src/app/api.rs b/src/app/api.rs
+index 8470818e..453c69c9 100644
+--- a/src/app/api.rs
++++ b/src/app/api.rs
+@@ -168,6 +168,11 @@ impl App {
+ 
+         let mut worktree_restore_updates = Vec::new();
+         if let AppEvent::PaneDied { pane_id, .. } = &ev {
++            if self.handle_explicit_agent_runtime_exit(*pane_id) {
++                self.render_dirty.request_generic();
++                self.render_notify.notify_one();
++                return Vec::new();
++            }
+             if self
+                 .state
+                 .popup_pane
+@@ -535,7 +540,7 @@ impl App {
+         }
+     }
+ 
+-    fn respawn_shell_for_launch_pane(
++    pub(super) fn respawn_shell_for_launch_pane(
+         &mut self,
+         pane_id: crate::layout::PaneId,
+         focus_pane: bool,
+diff --git a/src/app/api/agents.rs b/src/app/api/agents.rs
+index cf3e5fa6..12c13e02 100644
+--- a/src/app/api/agents.rs
++++ b/src/app/api/agents.rs
+@@ -154,7 +154,9 @@ impl App {
+         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
+             return Err(agent_not_found(id, &params.target));
+         };
+-        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
++        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent)
++            && !self.explicit_agent_runtime_matches(resolved.pane_id, expected_agent)
++        {
+             return Err(encode_error(
+                 id,
+                 "agent_not_ready",
+@@ -340,7 +342,9 @@ impl App {
+         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
+             return agent_not_found(id, &params.target);
+         };
+-        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
++        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent)
++            && !self.explicit_agent_runtime_matches(resolved.pane_id, expected_agent)
++        {
+             return agent_not_ready(id, &params.target);
+         }
+         let encoded = match super::super::api_helpers::encode_api_keys(runtime, &params.keys) {
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index b327b5bb..efa148f4 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -128,6 +128,10 @@ pub struct App {
+     pub(crate) pending_api_worktree_remove_paths: HashMap<std::path::PathBuf, u64>,
+     pub(crate) pending_worktree_remove_runtime_exits: HashMap<crate::layout::PaneId, usize>,
+     pub(crate) pending_worktree_remove_runtime_restores: HashMap<crate::layout::PaneId, u64>,
++    pub(crate) explicit_agent_launches:
++        HashMap<crate::layout::PaneId, agents::ExplicitAgentLaunchState>,
++    pub(crate) explicit_agent_launch_failures:
++        HashMap<crate::layout::PaneId, agents::ExplicitAgentLaunchFailure>,
+     pub(crate) next_api_worktree_operation_id: u64,
+     pub(crate) next_auto_update_check: Option<Instant>,
+     pub(crate) next_agent_manifest_update_check: Option<Instant>,
+@@ -587,6 +591,8 @@ impl App {
+             pending_api_worktree_remove_paths: HashMap::new(),
+             pending_worktree_remove_runtime_exits: HashMap::new(),
+             pending_worktree_remove_runtime_restores: HashMap::new(),
++            explicit_agent_launches: HashMap::new(),
++            explicit_agent_launch_failures: HashMap::new(),
+             next_api_worktree_operation_id: 1,
+             next_auto_update_check: version_check_enabled
+                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
+@@ -2794,6 +2800,7 @@ mod tests {
+                 kind: "pi".into(),
+                 pane_id,
+                 args: Vec::new(),
++                command: None,
+                 timeout_ms: Some(1_000),
+             }),
+         });
+@@ -2836,6 +2843,7 @@ mod tests {
+                 kind: "codex".into(),
+                 pane_id: pane_id.clone(),
+                 args: vec!["resume".into(), "codex-session".into()],
++                command: None,
+                 timeout_ms: Some(4_000),
+             }),
+         };
+diff --git a/src/cli/agent.rs b/src/cli/agent.rs
+index 1af3e0d6..c4d76a9f 100644
+--- a/src/cli/agent.rs
++++ b/src/cli/agent.rs
+@@ -376,6 +376,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
+                 kind: kind.clone(),
+                 pane_id: pane_id.clone(),
+                 args: agent_args.clone(),
++                command: None,
+                 timeout_ms,
+             }),
+         })?;
+diff --git a/src/cli/status.rs b/src/cli/status.rs
+index c6dda462..fba8d2bc 100644
+--- a/src/cli/status.rs
++++ b/src/cli/status.rs
+@@ -416,6 +416,7 @@ mod tests {
+                 endpoint_protocol_generation: endpoint_generation,
+                 surface_interest: true,
+                 health_check: true,
++                agent_explicit_launch: true,
+             }),
+         }
+     }
+diff --git a/src/update.rs b/src/update.rs
+index f836fb80..87f5f001 100644
+--- a/src/update.rs
++++ b/src/update.rs
+@@ -2854,6 +2854,7 @@ mod tests {
+                 ),
+                 surface_interest: true,
+                 health_check: true,
++                agent_explicit_launch: false,
+             }),
+         };
+         let missing_baseline = crate::api::RuntimeStatus {
+@@ -2928,6 +2929,7 @@ mod tests {
+                     ),
+                     surface_interest: true,
+                     health_check: true,
++                    agent_explicit_launch: false,
+                 }),
+             },
+         };
+@@ -3186,6 +3188,7 @@ mod tests {
+                     ),
+                     surface_interest: true,
+                     health_check: true,
++                    agent_explicit_launch: false,
+                 }),
+             },
+         };
+diff --git a/tests/api_ping.rs b/tests/api_ping.rs
+index b86d0378..654e3e3e 100644
+--- a/tests/api_ping.rs
++++ b/tests/api_ping.rs
+@@ -21,7 +21,10 @@ fn unique_test_dir() -> PathBuf {
+         .duration_since(UNIX_EPOCH)
+         .map(|d| d.as_nanos())
+         .unwrap_or(0);
+-    PathBuf::from(format!("/tmp/hapi-{}-{nanos}", std::process::id()))
++    std::env::var_os("HERDR_TEST_TMPDIR")
++        .map(PathBuf::from)
++        .unwrap_or_else(std::env::temp_dir)
++        .join(format!("hapi-{}-{nanos}", std::process::id()))
+ }
+ 
+ struct SpawnedHerdr {
+@@ -142,6 +145,7 @@ fn spawn_herdr_with_options(
+ 
+     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+     cmd.arg("server");
++    cmd.cwd(std::env::current_dir().unwrap());
+     cmd.env("XDG_CONFIG_HOME", config_home);
+     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
+     cmd.env("HERDR_SOCKET_PATH", socket_path);
+@@ -307,6 +311,10 @@ fn ping_over_socket_returns_version() {
+     // Intentionally hardcoded so wire protocol bumps require updating this test.
+     // Changing this value means old clients/servers are no longer compatible.
+     assert_eq!(value["result"]["protocol"], 22);
++    assert_eq!(
++        value["result"]["capabilities"]["agent_explicit_launch"],
++        true
++    );
+ 
+     cleanup_spawned_herdr(child, base);
+ }
+@@ -1167,6 +1175,292 @@ fn agent_start_targets_existing_pane_over_socket() {
+     cleanup_spawned_herdr(child, base);
+ }
+ 
++#[test]
++fn agent_start_explicit_command_bypasses_path_and_preserves_literal_argv() {
++    use std::os::unix::fs::PermissionsExt;
++
++    let _lock = test_lock();
++    let base = unique_test_dir();
++    let config_home = base.join("config");
++    let runtime_dir = base.join("runtime");
++    let socket_path = runtime_dir.join("herdr.sock");
++    fs::create_dir_all(&base).unwrap();
++    let absolute_base = fs::canonicalize(&base).unwrap();
++    let bin = absolute_base.join("bin");
++    let explicit_cwd = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
++    let record = absolute_base.join("explicit-record");
++    let trap_record = absolute_base.join("path-trap-record");
++    fs::create_dir_all(&bin).unwrap();
++
++    let path_trap = bin.join("pi");
++    fs::write(
++        &path_trap,
++        format!(
++            "#!/bin/sh\nprintf invoked > '{}'\nexit 99\n",
++            trap_record.display()
++        ),
++    )
++    .unwrap();
++    fs::set_permissions(&path_trap, fs::Permissions::from_mode(0o755)).unwrap();
++
++    let explicit = absolute_base.join("explicit-agent");
++    fs::write(
++        &explicit,
++        format!(
++            "#!/bin/sh\n{{\nprintf 'cwd=<%s>\\n' \"$PWD\"\nprintf 'env=<%s>\\n' \"$EXPLICIT_ENV\"\nprintf 'managed-kind=<%s>\\n' \"$HERDR_AGENT\"\nprintf 'size=<%s>\\n' \"$(/bin/stty size)\"\ni=0\nfor arg in \"$@\"; do printf 'arg[%s]=<%s>\\n' \"$i\" \"$arg\"; i=$((i+1)); done\n}} > '{}'\n\"$HERDR_BIN_PATH\" pane report-agent \"$HERDR_PANE_ID\" --source test:explicit-agent --agent pi --state idle >/dev/null\nwhile IFS= read -r prompt; do\n  printf 'prompt=<%s>\\n' \"$prompt\" >> '{}'\n  \"$HERDR_BIN_PATH\" pane report-agent \"$HERDR_PANE_ID\" --source test:explicit-agent --agent pi --state working >/dev/null\n  \"$HERDR_BIN_PATH\" pane report-agent \"$HERDR_PANE_ID\" --source test:explicit-agent --agent pi --state idle >/dev/null\ndone\n",
++            record.display(),
++            record.display(),
++        ),
++    )
++    .unwrap();
++    fs::set_permissions(&explicit, fs::Permissions::from_mode(0o755)).unwrap();
++
++    let hostile_path = PathBuf::from(format!("{}:/usr/bin:/bin", bin.display()));
++    let child = spawn_herdr_with_path(
++        &config_home,
++        &runtime_dir,
++        &socket_path,
++        Some(&hostile_path),
++    );
++    wait_for_socket(&socket_path, Duration::from_secs(5));
++    let workspace = send_request(
++        &socket_path,
++        &serde_json::json!({
++            "id": "explicit_workspace",
++            "method": "workspace.create",
++            "params": { "cwd": base.display().to_string(), "focus": false }
++        })
++        .to_string(),
++    );
++    let pane_id = workspace["result"]["root_pane"]["pane_id"]
++        .as_str()
++        .unwrap()
++        .to_string();
++
++    let literal_args = serde_json::json!([
++        "foo bar",
++        "'single' and \"double\"",
++        "$(touch should-not-exist)",
++        "*.rs; echo not-a-command",
++        "snowman ☃",
++        ""
++    ]);
++    let deadline = Instant::now() + Duration::from_secs(5);
++    let started = loop {
++        let response = send_request(
++            &socket_path,
++            &serde_json::json!({
++                "id": "explicit_start",
++                "method": "agent.start",
++                "params": {
++                    "name": "managed-explicit",
++                    "kind": "pi",
++                    "pane_id": pane_id,
++                    "command": {
++                        "executable": explicit.display().to_string(),
++                        "args": literal_args,
++                        "cwd": explicit_cwd.display().to_string(),
++                        "env": {"EXPLICIT_ENV": "literal value"}
++                    },
++                    "timeout_ms": 8_000
++                }
++            })
++            .to_string(),
++        );
++        if response["error"]["code"] != "agent_pane_busy" {
++            break response;
++        }
++        assert!(Instant::now() < deadline, "pane shell did not become ready");
++        thread::sleep(Duration::from_millis(25));
++    };
++    assert_eq!(started["result"]["type"], "agent_started", "{started}");
++    assert_eq!(started["result"]["argv"][0], explicit.display().to_string());
++
++    let deadline = Instant::now() + Duration::from_secs(5);
++    let ready = loop {
++        let current = send_request(
++            &socket_path,
++            r#"{"id":"explicit_get","method":"agent.get","params":{"target":"managed-explicit"}}"#,
++        );
++        if current["result"]["agent"]["interactive_ready"] == true {
++            break current;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "explicit managed agent did not become ready: {current}"
++        );
++        thread::sleep(Duration::from_millis(25));
++    };
++    assert_eq!(ready["result"]["agent"]["agent"], "pi");
++    assert_ne!(ready["result"]["agent"]["launch_pending"], true);
++    assert!(!trap_record.exists(), "PATH-selected pi trap was invoked");
++    assert!(!explicit_cwd.join("should-not-exist").exists());
++
++    let recorded = fs::read_to_string(&record).unwrap();
++    assert!(recorded.contains(&format!("cwd=<{}>", explicit_cwd.display())));
++    assert!(recorded.contains("env=<literal value>"));
++    assert!(recorded.contains("managed-kind=<pi>"));
++    let size = recorded
++        .lines()
++        .find_map(|line| line.strip_prefix("size=<")?.strip_suffix('>'))
++        .expect("explicit agent should inherit a PTY size");
++    assert!(size
++        .split_ascii_whitespace()
++        .all(|value| value.parse::<u16>().is_ok_and(|value| value > 0)));
++    for expected in [
++        "arg[0]=<foo bar>",
++        "arg[1]=<'single' and \"double\">",
++        "arg[2]=<$(touch should-not-exist)>",
++        "arg[3]=<*.rs; echo not-a-command>",
++        "arg[4]=<snowman ☃>",
++        "arg[5]=<>",
++    ] {
++        assert!(
++            recorded.contains(expected),
++            "missing {expected:?} in {recorded:?}"
++        );
++    }
++
++    let prompted = send_request(
++        &socket_path,
++        r#"{"id":"explicit_prompt","method":"agent.prompt","params":{"target":"managed-explicit","text":"hello explicit"}}"#,
++    );
++    assert_eq!(prompted["result"]["type"], "agent_prompted", "{prompted}");
++    let deadline = Instant::now() + Duration::from_secs(2);
++    while !fs::read_to_string(&record)
++        .unwrap_or_default()
++        .contains("prompt=<hello explicit>")
++    {
++        assert!(
++            Instant::now() < deadline,
++            "prompt did not reach explicit managed agent"
++        );
++        thread::sleep(Duration::from_millis(25));
++    }
++
++    cleanup_spawned_herdr(child, base);
++}
++
++#[test]
++fn explicit_launch_failure_is_typed_and_restores_the_pane_shell() {
++    let _lock = test_lock();
++    let base = unique_test_dir();
++    let config_home = base.join("config");
++    let runtime_dir = base.join("runtime");
++    let socket_path = runtime_dir.join("herdr.sock");
++    fs::create_dir_all(&base).unwrap();
++    let absolute_base = fs::canonicalize(&base).unwrap();
++    let shell_marker = absolute_base.join("shell-restored");
++    let missing = absolute_base.join("missing-explicit-agent");
++
++    let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
++    wait_for_socket(&socket_path, Duration::from_secs(5));
++    let workspace = send_request(
++        &socket_path,
++        &serde_json::json!({
++            "id": "failed_explicit_workspace",
++            "method": "workspace.create",
++            "params": { "cwd": absolute_base.display().to_string(), "focus": false }
++        })
++        .to_string(),
++    );
++    let pane_id = workspace["result"]["root_pane"]["pane_id"]
++        .as_str()
++        .unwrap()
++        .to_string();
++
++    let started = send_request(
++        &socket_path,
++        &serde_json::json!({
++            "id": "failed_explicit_start",
++            "method": "agent.start",
++            "params": {
++                "name": "failed-explicit",
++                "kind": "pi",
++                "pane_id": pane_id,
++                "command": {
++                    "executable": missing.display().to_string(),
++                    "args": [],
++                    "cwd": absolute_base.display().to_string()
++                },
++                "timeout_ms": 8_000
++            }
++        })
++        .to_string(),
++    );
++    assert_eq!(started["result"]["type"], "agent_started", "{started}");
++
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        let failure = send_request(
++            &socket_path,
++            &serde_json::json!({
++                "id": "failed_explicit_reconcile",
++                "method": "agent.start",
++                "params": {
++                    "name": "failed-explicit",
++                    "kind": "pi",
++                    "pane_id": pane_id,
++                    "timeout_ms": 8_000
++                }
++            })
++            .to_string(),
++        );
++        if failure["error"]["code"] == "agent_explicit_launch_failed" {
++            assert!(!failure["error"]["message"].as_str().unwrap().is_empty());
++            break;
++        }
++        assert!(
++            failure["error"]["code"] == "agent_name_taken"
++                || failure["error"]["code"] == "agent_pane_busy",
++            "unexpected launch reconciliation: {failure}"
++        );
++        assert!(Instant::now() < deadline, "launch failure stayed ambiguous");
++        thread::sleep(Duration::from_millis(25));
++    }
++
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        let sent = send_request(
++            &socket_path,
++            &serde_json::json!({
++                "id": "failed_explicit_shell_text",
++                "method": "pane.send_text",
++                "params": {
++                    "pane_id": pane_id,
++                    "text": format!("/usr/bin/touch {}", shell_marker.display())
++                }
++            })
++            .to_string(),
++        );
++        if sent["result"]["type"] == "ok" {
++            let entered = send_request(
++                &socket_path,
++                &serde_json::json!({
++                    "id": "failed_explicit_shell_enter",
++                    "method": "pane.send_keys",
++                    "params": {"pane_id": pane_id, "keys": ["Enter"]}
++                })
++                .to_string(),
++            );
++            assert_eq!(entered["result"]["type"], "ok", "{entered}");
++            break;
++        }
++        assert!(Instant::now() < deadline, "pane shell was not restored");
++        thread::sleep(Duration::from_millis(25));
++    }
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while !shell_marker.exists() {
++        assert!(
++            Instant::now() < deadline,
++            "restored shell command did not run"
++        );
++        thread::sleep(Duration::from_millis(25));
++    }
++
++    cleanup_spawned_herdr(child, base);
++}
++
+ #[test]
+ fn agent_methods_round_trip_over_socket() {
+     let _lock = test_lock();
+-- 
+2.39.5 (Apple Git-154)
+

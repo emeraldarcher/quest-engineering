@@ -1,5 +1,6 @@
 import { join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
+import type { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import { AntigravityHarness } from "../src/harnesses/antigravity/adapter.ts";
 import { FakeHarness } from "../src/harnesses/fake/adapter.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
@@ -15,13 +16,33 @@ harnessConformance(
   "Antigravity",
   () =>
     new AntigravityHarness(readyHost("antigravity"), {} as WorkerConfig, {
+      executionManager: {
+        discoverAntigravity: async () => ({
+          installed: true,
+          authenticated: true,
+          compatible: true,
+          version: "1.2.7",
+          models: [
+            {
+              provider: "antigravity",
+              model: "gemini-test-high",
+              displayName: "Gemini Test (High)",
+              accountAvailability: "verified_available",
+              reasoningCapability: { kind: "enumerated", values: ["high"] },
+            },
+          ],
+          capabilities: ["native.mcp"],
+          missingCapabilities: [],
+          diagnostics: [],
+        }),
+      } as unknown as SbxRunExecutionManager,
       runNativeCommand: async (args) => ({
         exitCode: 0,
         stdout:
           args[0] === "--version"
             ? "1.2.2\n"
             : args[0] === "--help"
-              ? "--conversation --effort --log-file --model --prompt-interactive\n"
+              ? "--conversation --effort --log-file --model\n"
               : args[0] === "models"
                 ? "gemini-test-high\tGemini Test (High)\n"
                 : `qe stdio enabled ${process.execPath} ${resolve(import.meta.dir, "..", "src", "harnesses", "control", "mcp-server.ts")}\n`,

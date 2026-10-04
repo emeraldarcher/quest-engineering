@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
-import { SBX_PI_EXECUTION_PROFILE_V2 } from "../src/execution-environment/sbx-profile.ts";
+import { SBX_CODING_EXECUTION_PROFILE_V1 } from "../src/execution-environment/sbx-profile.ts";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import {
   ACCOUNT_AVAILABILITY_SCHEMA_VERSION,
@@ -96,6 +96,24 @@ test("evidence is invalidated by account, auth generation, profile generation, e
       await store.annotate(
         models,
         context,
+        new Date(observed.getTime() + ACCOUNT_AVAILABILITY_TTL_MS - 1),
+      )
+    )[1]?.accountAvailability,
+  ).toBe("verified_available");
+  expect(
+    (
+      await store.annotate(
+        models,
+        context,
+        new Date(observed.getTime() + ACCOUNT_AVAILABILITY_TTL_MS),
+      )
+    )[1]?.accountAvailability,
+  ).toBe("unknown");
+  expect(
+    (
+      await store.annotate(
+        models,
+        context,
         new Date(observed.getTime() + ACCOUNT_AVAILABILITY_TTL_MS + 1),
       )
     )[1]?.accountAvailability,
@@ -133,9 +151,11 @@ test("production SBX discovery publishes runtime models with evidence annotation
   const seedPath = join(root, "seed.json");
   const productionContext = {
     ...context,
-    profileId: SBX_PI_EXECUTION_PROFILE_V2.id,
-    profileDigest: SBX_PI_EXECUTION_PROFILE_V2.digest,
+    profileId: SBX_CODING_EXECUTION_PROFILE_V1.id,
+    profileDigest: SBX_CODING_EXECUTION_PROFILE_V1.digest,
   };
+  const now = new Date("2026-09-28T12:00:00.000Z");
+  const observed = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   await writeFile(
     seedPath,
     JSON.stringify({
@@ -146,14 +166,14 @@ test("production SBX discovery publishes runtime models with evidence annotation
           { provider: "openai-codex", model: "gpt-5.6-sol" },
           "verified_available",
           "preserved_execution_success",
-          new Date("2026-09-22T00:00:00.000Z"),
+          observed,
         ),
         newAccountAvailabilityEvidence(
           productionContext,
           { provider: "openai-codex", model: "gpt-5.3-codex-spark" },
           "verified_unavailable",
           "preserved_provider_rejection",
-          new Date("2026-09-22T00:00:00.000Z"),
+          observed,
         ),
       ],
     }),
@@ -175,7 +195,7 @@ test("production SBX discovery publishes runtime models with evidence annotation
             authority: "advisory",
             conclusive: false,
             status: 200,
-            observedAt: "2026-09-22T00:00:00.000Z",
+            observedAt: observed.toISOString(),
             modelCount: 0,
           },
           diagnostics: ["empty advisory metadata"],
@@ -199,6 +219,7 @@ test("production SBX discovery publishes runtime models with evidence annotation
   } as unknown as WorkerConfig;
   const manager = new SbxRunExecutionManager(config, {} as never, {
     backend: backend as never,
+    accountAvailabilityNow: () => now,
   });
   try {
     const catalog = await manager.discover();

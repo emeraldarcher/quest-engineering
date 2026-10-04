@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 9
+  @version 10
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -93,7 +93,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 7
+  @spec version() :: 10
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -123,12 +123,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   def decode_worker_message(_payload, _worker_id), do: error(:malformed_message)
 
-  def welcome(worker_id, binding_reconciliation \\ [], connection_generation \\ nil) do
+  def welcome(
+        worker_id,
+        binding_reconciliation \\ [],
+        connection_generation \\ nil,
+        run_worktree_reconciliation \\ []
+      ) do
     %{
       "type" => "worker_welcome",
       "protocol_version" => @version,
       "worker_id" => worker_id,
-      "workspace_binding_reconciliation" => binding_reconciliation
+      "workspace_binding_reconciliation" => binding_reconciliation,
+      "run_worktree_reconciliation" => run_worktree_reconciliation
     }
     |> maybe_put("connection_generation", connection_generation)
   end
@@ -303,6 +309,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_message("worker_heartbeat", worker_id, _payload),
     do: {:ok, %Message{type: :heartbeat, worker_id: worker_id}}
+
+  defp decode_message("worker_ready", worker_id, _payload),
+    do: {:ok, %Message{type: :worker_ready, worker_id: worker_id}}
 
   defp decode_message("workspace_sources", worker_id, %{"candidates" => candidates})
        when is_list(candidates) do
@@ -733,19 +742,23 @@ defmodule QuestEngineering.Server.WorkerProtocol do
            "attachment_mode" => "local_native_terminal",
            "backend_kind" => backend,
            "terminal_session_id" => session_id,
+           "local_context_id" => context_id,
            "terminal_target_id" => target_id,
            "supports_observation" => observation,
            "supports_takeover" => takeover
          } = terminal
        )
        when is_binary(backend) and backend != "" and is_binary(session_id) and session_id != "" and
-              is_binary(target_id) and target_id != "" and is_boolean(observation) and
+              is_binary(context_id) and byte_size(context_id) == 71 and
+              binary_part(context_id, 0, 7) == "sha256:" and is_binary(target_id) and
+              target_id != "" and is_boolean(observation) and
               is_boolean(takeover) do
     {:ok,
      %{
        "attachment_mode" => "local_native_terminal",
        "backend_kind" => backend,
        "terminal_session_id" => session_id,
+       "local_context_id" => context_id,
        "terminal_target_id" => target_id,
        "terminal_id" => terminal["terminal_id"],
        "supports_observation" => observation,
@@ -1248,18 +1261,25 @@ defmodule QuestEngineering.Server.WorkerProtocol do
               tool_enforcement in ["exact", "native_permissions"] do
     with :ok <- validate_models(models),
          :ok <- string_list(tools, "capabilities.executors.tool_profile.tools"),
+         {:ok, execution_environment} <-
+           validate_execution_environment(Map.get(executor, "execution_environment")),
          true <- Enum.uniq(supported_tool_policies) == supported_tool_policies,
          true <- Enum.all?(supported_tool_policies, &(&1 in ["exact", "native_permissions"])),
          true <- supported_tool_policies == [tool_enforcement] do
+      validated = %{
+        "harness_kind" => harness_kind,
+        "models" => Enum.uniq(models),
+        "supported_tool_policies" => supported_tool_policies,
+        "tool_enforcement" => tool_enforcement,
+        "tool_profile" => %{"tools" => Enum.uniq(tools)},
+        "workspaces" => Map.get(executor, "workspaces", [])
+      }
+
       {:ok,
-       %{
-         "harness_kind" => harness_kind,
-         "models" => Enum.uniq(models),
-         "supported_tool_policies" => supported_tool_policies,
-         "tool_enforcement" => tool_enforcement,
-         "tool_profile" => %{"tools" => Enum.uniq(tools)},
-         "workspaces" => Map.get(executor, "workspaces", [])
-       }}
+       if(execution_environment,
+         do: Map.put(validated, "execution_environment", execution_environment),
+         else: validated
+       )}
     else
       _invalid -> error(:invalid_capabilities, "capabilities.executors.tool_policy")
     end
@@ -1267,6 +1287,41 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp validate_executor(_executor),
     do: error(:invalid_capabilities, "capabilities.executors")
+
+  defp validate_execution_environment(nil), do: {:ok, nil}
+
+  defp validate_execution_environment(%{
+         "backend_kind" => backend_kind,
+         "profile" => %{"id" => profile_id, "digest" => profile_digest},
+         "capabilities" => capabilities
+       })
+       when is_list(capabilities) and capabilities != [] do
+    valid =
+      non_blank?(backend_kind) and non_blank?(profile_id) and non_blank?(profile_digest) and
+        Enum.all?(capabilities, &valid_environment_capability?/1) and
+        Enum.uniq_by(capabilities, &{&1["kind"], &1["mode"]}) == capabilities
+
+    if valid do
+      {:ok,
+       %{
+         "backend_kind" => backend_kind,
+         "profile" => %{"id" => profile_id, "digest" => profile_digest},
+         "capabilities" => capabilities
+       }}
+    else
+      error(:invalid_capabilities, "capabilities.executors.execution_environment")
+    end
+  end
+
+  defp validate_execution_environment(_other),
+    do: error(:invalid_capabilities, "capabilities.executors.execution_environment")
+
+  defp valid_environment_capability?(%{"kind" => kind, "mode" => mode} = capability) do
+    non_blank?(kind) and non_blank?(mode) and
+      (not Map.has_key?(capability, "detail") or non_blank?(capability["detail"]))
+  end
+
+  defp valid_environment_capability?(_other), do: false
 
   defp validate_models(models) do
     if Enum.all?(models, &valid_model?/1),

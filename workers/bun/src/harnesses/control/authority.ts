@@ -9,10 +9,12 @@ import type { JsonValue } from "../../protocol/types.ts";
 import type { HumanAttention, HumanInterventionLifecycle } from "../types.ts";
 import { writeControlDescriptor } from "./descriptor.ts";
 import {
+  prepareStepResultAtomic,
+  readStructuredCompletionState,
   STEP_RESULT_PROTOCOL_VERSION,
   type StepResultEnvelope,
   validateOutputs,
-  writeStepResultAtomic,
+  writeStructuredCompletionState,
 } from "./result-envelope.ts";
 import {
   type CompletionFailure,
@@ -22,6 +24,7 @@ import {
   type HarnessControlOperation,
   type HarnessControlResponse,
   type HarnessControlResult,
+  type StructuredCompletionState,
 } from "./types.ts";
 
 interface BoundControlContext {
@@ -32,6 +35,9 @@ interface BoundControlContext {
   enforcementAttempts: number;
   contractViolation: string | null;
   lastCompletionFailure: CompletionFailure | null;
+  completion: StructuredCompletionState;
+  completionOperation: Promise<void> | null;
+  invalidated: boolean;
   operationTail: Promise<void>;
 }
 
@@ -41,11 +47,15 @@ export interface HarnessControlEndpoint {
 }
 
 export interface StructuredCompletionBoundary {
-  verifyAndBind(input: {
+  verifyAndPrepare(input: {
     dispatch: DispatchRecord;
     lineageId: string;
     outputs: Record<string, JsonValue>;
-  }): Promise<Record<string, JsonValue>>;
+    assertCurrent: () => void;
+  }): Promise<{
+    outputs: Record<string, JsonValue>;
+    commit: () => void;
+  }>;
 }
 
 /**
@@ -84,7 +94,31 @@ export class HarnessControlAuthority {
         "Dispatch and harness lineage do not match.",
       );
     const previous = this.tokenByLineage.get(lineage.lineageId);
+    const previousContext = previous ? this.contexts.get(previous) : undefined;
+    if (previousContext) previousContext.invalidated = true;
     if (previous) this.contexts.delete(previous);
+    let completion = await readStructuredCompletionState(dispatch);
+    if (await hasStepResult(dispatch))
+      completion = {
+        ...(completion ?? {}),
+        phase: "completed",
+        semanticAccepted: true,
+        exportCompletedAt:
+          completion?.exportCompletedAt ?? new Date().toISOString(),
+      };
+    else if (
+      completion?.semanticAccepted &&
+      ["exporting", "completed"].includes(completion.phase)
+    ) {
+      const failure: CompletionFailure = {
+        kind: "infrastructure",
+        code: "bridge_unavailable",
+        message:
+          "The Worker control generation ended before physical completion became authoritative.",
+      };
+      completion = { ...completion, phase: "failed", failure };
+      await writeStructuredCompletionState(dispatch, completion);
+    }
     const contextToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
     const context: BoundControlContext = {
       contextToken,
@@ -94,6 +128,12 @@ export class HarnessControlAuthority {
       enforcementAttempts: 0,
       contractViolation: null,
       lastCompletionFailure: null,
+      completion: completion ?? {
+        phase: "awaiting_result",
+        semanticAccepted: false,
+      },
+      completionOperation: null,
+      invalidated: false,
       operationTail: Promise.resolve(),
     };
     this.contexts.set(contextToken, context);
@@ -110,6 +150,8 @@ export class HarnessControlAuthority {
 
   invalidate(lineageId: string): void {
     const token = this.tokenByLineage.get(lineageId);
+    const context = token ? this.contexts.get(token) : undefined;
+    if (context) context.invalidated = true;
     if (token) this.contexts.delete(token);
     this.tokenByLineage.delete(lineageId);
   }
@@ -177,6 +219,8 @@ export class HarnessControlAuthority {
     const dispatch = this.registry.get(context.dispatch.action.action_id);
     const lineage = this.registry.getLineage(context.lineageId);
     if (
+      context.invalidated ||
+      this.contexts.get(context.contextToken) !== context ||
       dispatch.resultNonce !== context.dispatch.resultNonce ||
       dispatch.lineageId !== context.lineageId ||
       !["accepted", "running"].includes(dispatch.state) ||
@@ -222,9 +266,20 @@ export class HarnessControlAuthority {
         return { accepted: true };
       case "completion_status": {
         const lineage = this.registry.getLineage(context.lineageId);
+        const completed = await hasStepResult(context.dispatch);
+        if (completed && context.completion.phase !== "completed")
+          context.completion = {
+            ...context.completion,
+            phase: "completed",
+            semanticAccepted: true,
+            exportCompletedAt:
+              context.completion.exportCompletedAt ?? new Date().toISOString(),
+          };
         return {
           accepted: true,
-          completed: await hasStepResult(context.dispatch),
+          completed,
+          semanticAccepted: context.completion.semanticAccepted,
+          completion: completionState(context),
           binding: {
             actionId: context.dispatch.action.action_id,
             attemptId: context.dispatch.action.attempt_id,
@@ -239,7 +294,7 @@ export class HarnessControlAuthority {
         };
       }
       case "native_stop":
-        return this.nativeStop(context);
+        return this.nativeStop(context, operation);
     }
   }
 
@@ -259,53 +314,133 @@ export class HarnessControlAuthority {
       };
       throw new HarnessControlError("invalid_step_result", message);
     }
-    context.lastCompletionFailure = null;
-    if (await hasStepResult(context.dispatch))
+    if (
+      context.completion.semanticAccepted ||
+      context.completion.phase !== "awaiting_result" ||
+      (await hasStepResult(context.dispatch))
+    )
       throw new HarnessControlError(
         "replayed_request",
-        "This Attempt already has a structured Step result.",
+        "This Attempt already accepted a structured Step result.",
       );
-    let boundOutputs = outputs;
-    if (this.completionBoundary) {
-      try {
-        boundOutputs = await this.completionBoundary.verifyAndBind({
-          dispatch: context.dispatch,
-          lineageId: context.lineageId,
-          outputs,
-        });
-        validateOutputs(context.dispatch.action.declared_outputs, boundOutputs);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        context.lastCompletionFailure = {
-          kind: "infrastructure",
-          code: "invalid_bridge_response",
-          message,
-        };
-        throw new HarnessControlError(
-          "invalid_bridge_response",
-          `Physical workspace export verification failed: ${message}`,
-        );
-      }
-    }
-    const action = context.dispatch.action;
-    const envelope: StepResultEnvelope = {
-      protocolVersion: STEP_RESULT_PROTOCOL_VERSION,
-      kind: "quest_engineering_step_result",
-      workerId: action.worker_id,
-      actionId: action.action_id,
-      runId: action.run_id,
-      occurrenceId: action.occurrence_id,
-      attemptId: action.attempt_id,
-      nonce: context.dispatch.resultNonce,
-      createdAt: new Date().toISOString(),
-      outputs: boundOutputs,
+
+    const acceptedAt = new Date().toISOString();
+    context.lastCompletionFailure = null;
+    context.completion = {
+      phase: "exporting",
+      semanticAccepted: true,
+      acceptedAt,
+      exportStartedAt: acceptedAt,
     };
-    await writeStepResultAtomic(
-      context.dispatch.resultDirectory,
+    try {
+      await writeStructuredCompletionState(
+        context.dispatch,
+        context.completion,
+      );
+    } catch (error) {
+      const failure = completionExportFailure(error);
+      context.lastCompletionFailure = failure;
+      context.completion = {
+        phase: "awaiting_result",
+        semanticAccepted: false,
+        failure,
+      };
+      throw new HarnessControlError(failure.code, failure.message);
+    }
+    try {
+      this.assertCurrent(context);
+    } catch (error) {
+      const failure = completionExportFailure(error);
+      context.lastCompletionFailure = failure;
+      context.completion = { ...context.completion, phase: "failed", failure };
+      await writeStructuredCompletionState(
+        context.dispatch,
+        context.completion,
+      ).catch(() => undefined);
+      throw error;
+    }
+    const operation = this.finishCompletion(
+      context,
+      structuredClone(outputs),
       requestId,
-      envelope,
-    );
-    return { accepted: true, completed: true };
+    ).finally(() => {
+      if (context.completionOperation === operation)
+        context.completionOperation = null;
+    });
+    context.completionOperation = operation;
+    void operation;
+    return {
+      accepted: true,
+      completed: false,
+      semanticAccepted: true,
+      completion: completionState(context),
+    };
+  }
+
+  private async finishCompletion(
+    context: BoundControlContext,
+    outputs: Record<string, JsonValue>,
+    requestId: string,
+  ): Promise<void> {
+    try {
+      const preparedCompletion = this.completionBoundary
+        ? await this.completionBoundary.verifyAndPrepare({
+            dispatch: context.dispatch,
+            lineageId: context.lineageId,
+            outputs,
+            assertCurrent: () => this.assertCurrent(context),
+          })
+        : { outputs, commit: () => undefined };
+      this.assertCurrent(context);
+      validateOutputs(
+        context.dispatch.action.declared_outputs,
+        preparedCompletion.outputs,
+      );
+      const action = context.dispatch.action;
+      const completedAt = new Date().toISOString();
+      const envelope: StepResultEnvelope = {
+        protocolVersion: STEP_RESULT_PROTOCOL_VERSION,
+        kind: "quest_engineering_step_result",
+        workerId: action.worker_id,
+        actionId: action.action_id,
+        runId: action.run_id,
+        occurrenceId: action.occurrence_id,
+        attemptId: action.attempt_id,
+        nonce: context.dispatch.resultNonce,
+        createdAt: completedAt,
+        outputs: preparedCompletion.outputs,
+      };
+      const preparedResult = await prepareStepResultAtomic(
+        context.dispatch.resultDirectory,
+        requestId,
+        envelope,
+      );
+      this.assertCurrent(context);
+      preparedCompletion.commit();
+      this.assertCurrent(context);
+      preparedResult.publish();
+      context.completion = {
+        ...context.completion,
+        phase: "completed",
+        exportCompletedAt: completedAt,
+      };
+      await writeStructuredCompletionState(
+        context.dispatch,
+        context.completion,
+      );
+    } catch (error) {
+      const failure = completionExportFailure(error);
+      context.lastCompletionFailure = failure;
+      context.completion = {
+        ...context.completion,
+        phase: "failed",
+        failure,
+      };
+      await writeStructuredCompletionState(
+        context.dispatch,
+        context.completion,
+      ).catch(() => undefined);
+    }
   }
 
   private async requestAttention(
@@ -423,11 +558,61 @@ export class HarnessControlAuthority {
 
   private async nativeStop(
     context: BoundControlContext,
+    operation: Extract<HarnessControlOperation, { type: "native_stop" }>,
   ): Promise<HarnessControlResult> {
+    const expectedModel = context.dispatch.action.execution.configuration.model;
+    if (
+      context.dispatch.action.execution.configuration.harness_kind ===
+        "antigravity" &&
+      operation.terminationReason !== "qe_zero_inference_readiness" &&
+      operation.observedModel &&
+      operation.observedModel !== expectedModel.model
+    ) {
+      const reason = `Antigravity stopped with model ${operation.observedModel}, but this PhysicalLineage is fenced to ${expectedModel.provider}/${expectedModel.model}. Continue only through a fresh compatible Attempt.`;
+      context.contractViolation = reason;
+      return {
+        accepted: true,
+        completed: false,
+        contractViolation: reason,
+        nativeStop: {
+          decision: "contract_violation",
+          enforcementAttempt: context.enforcementAttempts,
+          reason,
+        },
+      };
+    }
+    if (
+      context.dispatch.action.execution.configuration.harness_kind ===
+        "antigravity" &&
+      operation.terminationReason === "qe_zero_inference_readiness"
+    )
+      return {
+        accepted: true,
+        completed: false,
+        nativeStop: {
+          decision: "continue",
+          cause: "readiness_probe",
+          reason:
+            "Quest Engineering verified the Antigravity Stop-hook transport without authorizing a provider turn.",
+        },
+      };
     if (await hasStepResult(context.dispatch))
       return {
         accepted: true,
         completed: true,
+        semanticAccepted: true,
+        completion: completionState(context),
+        nativeStop: { decision: "allow" },
+      };
+    if (
+      context.completion.phase === "exporting" ||
+      context.completion.phase === "failed"
+    )
+      return {
+        accepted: true,
+        completed: false,
+        semanticAccepted: true,
+        completion: completionState(context),
         nativeStop: { decision: "allow" },
       };
     const lineage = this.registry.getLineage(context.lineageId);
@@ -498,4 +683,32 @@ async function hasStepResult(dispatch: DispatchRecord): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
+}
+
+function completionState(
+  context: BoundControlContext,
+): StructuredCompletionState {
+  return structuredClone(context.completion);
+}
+
+function completionExportFailure(error: unknown): CompletionFailure {
+  if (error instanceof HarnessControlError)
+    return {
+      kind: [
+        "bridge_generation_mismatch",
+        "unknown_control_context",
+        "stale_control_context",
+      ].includes(error.code)
+        ? "stale_context"
+        : "infrastructure",
+      code: error.code,
+      message: error.message,
+    };
+  return {
+    kind: "infrastructure",
+    code: "invalid_bridge_response",
+    message: `Physical workspace export verification failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  };
 }

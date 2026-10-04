@@ -10,7 +10,13 @@ import {
 } from "./sbx-pi-credential.ts";
 import type { SbxExecutionProfile, SbxResourcePolicy } from "./sbx-profile.ts";
 import {
+  SBX_ANTIGRAVITY_EXECUTABLE,
+  SBX_ANTIGRAVITY_LINUX_ARM64_BINARY_SHA256,
+  SBX_ANTIGRAVITY_RUNTIME_PROBE,
+  SBX_ANTIGRAVITY_VERSION,
   SBX_GUEST_PATHS,
+  SBX_MIXED_INSTALL_NETWORK_TARGETS,
+  SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_INSTALL_NETWORK_TARGET,
   SBX_PI_RESOURCE_PROBE,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
@@ -87,6 +93,100 @@ export function decodePiCapabilityContract(
       piPackage: text(provenance.piPackage, "piPackage"),
       node: text(provenance.node, "node"),
       git: text(provenance.git, "git"),
+    },
+  };
+}
+
+export interface AntigravityCapabilityContractV1 {
+  schemaVersion: 1;
+  compatible: true;
+  capabilities: {
+    executable: true;
+    interactiveTui: true;
+    exactModelSelection: true;
+    modelDiscovery: true;
+    reasoningDiscovery: true;
+    privateHome: true;
+    nativeConversationIdentity: true;
+    mcp: true;
+    stopHook: true;
+    structuredCompletion: true;
+    retainedSessionRecovery: true;
+    deterministicState: true;
+    autonomousGuestPermissions: true;
+    innerSandboxOptional: true;
+    externallyManagedCredential: true;
+    guestRefreshDisabled: true;
+  };
+  provenance: {
+    executable: string;
+    version: string;
+    artifactSha256: string;
+    platform: string;
+  };
+}
+
+export function decodeAntigravityCapabilityContractV1(
+  value: unknown,
+): AntigravityCapabilityContractV1 {
+  const contract = parseObject(value, "Antigravity capability contract");
+  const capabilities = parseObject(
+    contract.capabilities,
+    "Antigravity runtime capabilities",
+  );
+  const required = [
+    "executable",
+    "interactiveTui",
+    "exactModelSelection",
+    "modelDiscovery",
+    "reasoningDiscovery",
+    "privateHome",
+    "nativeConversationIdentity",
+    "mcp",
+    "stopHook",
+    "structuredCompletion",
+    "retainedSessionRecovery",
+    "deterministicState",
+    "autonomousGuestPermissions",
+    "innerSandboxOptional",
+    "externallyManagedCredential",
+    "guestRefreshDisabled",
+  ] as const;
+  if (
+    contract.schemaVersion !== 1 ||
+    contract.compatible !== true ||
+    !required.every((key) => capabilities[key] === true)
+  )
+    throw new EnvironmentBackendError(
+      "backend_incompatible",
+      "The in-sandbox Antigravity runtime lacks required execution capabilities.",
+      "ensure",
+    );
+  const provenance = parseObject(
+    contract.provenance,
+    "Antigravity runtime provenance",
+  );
+  const version = text(provenance.version, "antigravity.version");
+  if (!/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(version))
+    throw new EnvironmentBackendError(
+      "backend_incompatible",
+      "The in-sandbox Antigravity version provenance is malformed.",
+      "ensure",
+    );
+  return {
+    schemaVersion: 1,
+    compatible: true,
+    capabilities: Object.fromEntries(
+      required.map((key) => [key, true]),
+    ) as AntigravityCapabilityContractV1["capabilities"],
+    provenance: {
+      executable: text(provenance.executable, "antigravity.executable"),
+      version,
+      artifactSha256: text(
+        provenance.artifactSha256,
+        "antigravity.artifactSha256",
+      ),
+      platform: text(provenance.platform, "antigravity.platform"),
     },
   };
 }
@@ -313,10 +413,12 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     const profileCapabilities =
       this.profile.networkMode === "openai_subscription"
         ? await this.piCapabilities(sandbox.name)
-        : [
-            { kind: "network_policy", mode: "deny_all" },
-            { kind: "credentials", mode: "none" },
-          ];
+        : this.profile.networkMode === "mixed_subscriptions"
+          ? await this.mixedCapabilities(sandbox.name)
+          : [
+              { kind: "network_policy", mode: "deny_all" },
+              { kind: "credentials", mode: "none" },
+            ];
     return {
       markerDigest: digestMarker(expectedMarker),
       dockerDaemonId: docker.ID,
@@ -460,41 +562,50 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     const allows = activeNetwork
       .filter((rule) => rule.decision === "allow")
       .flatMap((rule) => [...rule.resources]);
-    const approvedAtCreation = new Set([
-      ...SBX_PI_RUNTIME_NETWORK_TARGETS,
-      SBX_PI_INSTALL_NETWORK_TARGET,
-    ]);
+    const mixed = this.profile.networkMode === "mixed_subscriptions";
+    const runtimeTargets = mixed
+      ? SBX_MIXED_RUNTIME_NETWORK_TARGETS
+      : SBX_PI_RUNTIME_NETWORK_TARGETS;
+    const installTargets = mixed
+      ? SBX_MIXED_INSTALL_NETWORK_TARGETS
+      : [SBX_PI_INSTALL_NETWORK_TARGET];
+    const approvedAtCreation = new Set([...runtimeTargets, ...installTargets]);
     if (
       allows.some((resource) => !approvedAtCreation.has(resource)) ||
-      SBX_PI_RUNTIME_NETWORK_TARGETS.some((target) => !allows.includes(target))
+      runtimeTargets.some((target) => !allows.includes(target))
     )
       throw unhealthy(
-        "Pi profile network grants are broader than the repository-owned OpenAI contract.",
+        "Subscription profile network grants are broader than the repository-owned runtime contract.",
       );
-    const installDenied = activeNetwork.some(
-      (rule) =>
-        rule.scope === `sandbox:${sandboxName}` &&
-        rule.decision === "deny" &&
-        rule.resources.includes(SBX_PI_INSTALL_NETWORK_TARGET),
-    );
-    if (!installDenied)
-      throw unhealthy(
-        "The package-registry bootstrap grant was not revoked for runtime.",
+    for (const target of installTargets) {
+      const installDenied = activeNetwork.some(
+        (rule) =>
+          rule.scope === `sandbox:${sandboxName}` &&
+          rule.decision === "deny" &&
+          rule.resources.includes(target),
       );
-    if (
-      !(await this.networkDenied(
-        sandboxName,
-        `https://${SBX_PI_INSTALL_NETWORK_TARGET}/`,
-      ))
-    )
-      throw unhealthy("The package registry remains reachable at runtime.");
+      if (!installDenied)
+        throw unhealthy(
+          `The ${target} bootstrap grant was not revoked for runtime.`,
+        );
+      if (!(await this.networkDenied(sandboxName, `https://${target}/`)))
+        throw unhealthy(`${target} remains reachable at runtime.`);
+    }
     if (
       !(await this.networkDenied(
         sandboxName,
         "https://auth.openai.com/oauth/token",
       ))
     )
-      throw unhealthy("The guest can reach the OAuth token endpoint.");
+      throw unhealthy("The guest can reach the OpenAI OAuth token endpoint.");
+    if (
+      mixed &&
+      !(await this.networkDenied(
+        sandboxName,
+        "https://oauth2.googleapis.com/token",
+      ))
+    )
+      throw unhealthy("The guest can reach the Google OAuth token endpoint.");
     const resource = await this.client.exec(sandboxName, {
       executable: "/usr/bin/node",
       args: [SBX_PI_RESOURCE_PROBE],
@@ -541,6 +652,58 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
         detail: `pi ${provenance.piPackage}; node ${provenance.node}`,
       },
       { kind: "control_channel", mode: "worker_file_mailbox_v1" },
+    ];
+  }
+
+  private async mixedCapabilities(
+    sandboxName: string,
+  ): Promise<EnvironmentCapability[]> {
+    const [pi, result, modelCatalog] = await Promise.all([
+      this.piCapabilities(sandboxName),
+      this.client.exec(sandboxName, {
+        executable: "/usr/bin/node",
+        args: [SBX_ANTIGRAVITY_RUNTIME_PROBE],
+        timeoutMs: 60_000,
+      }),
+      this.client.exec(sandboxName, {
+        executable: SBX_ANTIGRAVITY_EXECUTABLE,
+        args: ["models"],
+        environment: { HOME: SBX_GUEST_PATHS.home, BROWSER: "/bin/false" },
+        timeoutMs: 60_000,
+      }),
+    ]);
+    const contract = decodeAntigravityCapabilityContractV1(result.stdout);
+    const provenance = contract.provenance;
+    if (
+      modelCatalog.stdout
+        .split("\n")
+        .filter((line) => /^\S+\t[^\t]+$/.test(line.trim())).length === 0
+    )
+      throw unhealthy(
+        "The guest Antigravity credential did not resolve an authenticated model catalog.",
+      );
+    if (
+      provenance.version !== SBX_ANTIGRAVITY_VERSION ||
+      provenance.executable !== SBX_ANTIGRAVITY_EXECUTABLE ||
+      provenance.artifactSha256 !== SBX_ANTIGRAVITY_LINUX_ARM64_BINARY_SHA256 ||
+      provenance.platform !== "linux/arm64"
+    )
+      throw unhealthy(
+        "The immutable Antigravity artifact does not match profile provenance.",
+      );
+    return [
+      ...pi.filter(
+        (capability) =>
+          capability.kind !== "network_policy" &&
+          capability.kind !== "credentials",
+      ),
+      { kind: "network_policy", mode: "mixed_subscription_providers_only" },
+      { kind: "credentials", mode: "host_mixed_oauth_dynamic_proxies" },
+      {
+        kind: "harness_runtime",
+        mode: "antigravity_capability_contract_v1",
+        detail: `agy ${provenance.version}; ${provenance.platform}; sha256:${provenance.artifactSha256}`,
+      },
     ];
   }
 

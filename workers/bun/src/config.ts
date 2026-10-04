@@ -48,6 +48,12 @@ export interface WorkerConfig {
   herdrSession: string;
   /** Exact host executable used for every Herdr CLI/server launch. */
   herdrBin?: string;
+  /** Canonical Herdr 0.9 named-session/socket namespace (`XDG_CONFIG_HOME`). */
+  herdrConfigHome?: string;
+  /** Exact Herdr config file applied inside that namespace. */
+  herdrConfigPath?: string;
+  /** Non-authoritative digest used only to fence local Worker/desktop context equality. */
+  herdrLocalContextId?: string;
   allowedRoots: AuthorizedRoot[];
   workspaceBindings: WorkspaceBindingConfig[];
   retiredWorkspaceBindings?: WorkspaceBindingConfig[];
@@ -120,12 +126,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const dispatchAvailability = dispatchAvailabilityValue(
     env.QE_WORKER_DISPATCH_AVAILABILITY ?? "active",
   );
-  const herdrHome = env.HOME?.trim() || homedir();
-  const herdrSession = validateHerdrSessionName(
-    env.QE_HERDR_SESSION?.trim() ||
-      defaultHerdrSessionName(workerId, herdrHome),
-  );
-  assertHerdrDefaultSocketPathSafe(herdrSession, herdrHome);
   const heartbeatMs = positiveInteger(
     env.QE_HEARTBEAT_MS ?? "10000",
     "QE_HEARTBEAT_MS",
@@ -150,6 +150,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     throw new Error(
       "QE_HERDR_BIN is required and must name the exact absolute Herdr executable.",
     );
+  const herdrContext =
+    provider === "fake"
+      ? undefined
+      : resolveHerdrLocalContext(env, herdrBin as string);
+  const herdrNamingConfigHome =
+    herdrContext?.configHome ??
+    (env.XDG_CONFIG_HOME?.trim()
+      ? resolve(env.XDG_CONFIG_HOME)
+      : join(env.HOME?.trim() || homedir(), ".config"));
+  const herdrSession = validateHerdrSessionName(
+    env.QE_HERDR_SESSION?.trim() ||
+      defaultHerdrSessionName(workerId, herdrNamingConfigHome),
+  );
+  assertHerdrDefaultSocketPathSafe(herdrSession, herdrNamingConfigHome);
   const enabledHarnesses =
     provider === "fake"
       ? (["fake"] as const)
@@ -191,6 +205,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     dispatchAvailability,
     herdrSession,
     ...(herdrBin ? { herdrBin } : {}),
+    ...(herdrContext
+      ? {
+          herdrConfigHome: herdrContext.configHome,
+          herdrConfigPath: herdrContext.configPath,
+          herdrLocalContextId: herdrContext.id,
+        }
+      : {}),
     allowedRoots,
     workspaceBindings,
     retiredWorkspaceBindings,
@@ -231,9 +252,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
 export const HERDR_UNIX_SOCKET_SAFE_PATH_BYTES = 103;
 const HERDR_SESSION_PREFIX = "qe-worker-";
 const HERDR_SESSION_HASH_HEX_LENGTH = 10;
-const HERDR_DEFAULT_SESSION_ROOT = [".config", "herdr", "sessions"] as const;
+const HERDR_DEFAULT_SESSION_ROOT = ["herdr", "sessions"] as const;
 const HERDR_API_SOCKET = "herdr.sock";
 const HERDR_CLIENT_SOCKET = "herdr-client.sock";
+const HERDR_LOCAL_CONTEXT_VERSION = "qe-herdr-local-context-v1";
+
+export interface HerdrLocalContext {
+  executable: string;
+  configHome: string;
+  configPath: string;
+  id: string;
+}
 
 export interface HerdrDefaultSocketPaths {
   sessionDirectory: string;
@@ -243,10 +272,10 @@ export interface HerdrDefaultSocketPaths {
 
 export function herdrDefaultSocketPaths(
   sessionName: string,
-  homeDirectory: string = homedir(),
+  configHome: string = defaultHerdrConfigHome(),
 ): HerdrDefaultSocketPaths {
   const sessionDirectory = join(
-    homeDirectory,
+    configHome,
     ...HERDR_DEFAULT_SESSION_ROOT,
     sessionName,
   );
@@ -259,9 +288,9 @@ export function herdrDefaultSocketPaths(
 
 export function assertHerdrDefaultSocketPathSafe(
   sessionName: string,
-  homeDirectory: string = homedir(),
+  configHome: string = defaultHerdrConfigHome(),
 ): void {
-  const paths = herdrDefaultSocketPaths(sessionName, homeDirectory);
+  const paths = herdrDefaultSocketPaths(sessionName, configHome);
   for (const [kind, path] of [
     ["API", paths.apiSocket],
     ["client", paths.clientSocket],
@@ -269,14 +298,14 @@ export function assertHerdrDefaultSocketPathSafe(
     const bytes = Buffer.byteLength(path, "utf8");
     if (bytes > HERDR_UNIX_SOCKET_SAFE_PATH_BYTES)
       throw new Error(
-        `Herdr ${kind} socket path is ${bytes} bytes; the safe Unix-domain socket limit is ${HERDR_UNIX_SOCKET_SAFE_PATH_BYTES} bytes. Shorten the host HOME path or configured Herdr session name.`,
+        `Herdr ${kind} socket path is ${bytes} bytes; the safe Unix-domain socket limit is ${HERDR_UNIX_SOCKET_SAFE_PATH_BYTES} bytes. Shorten XDG_CONFIG_HOME or the configured Herdr session name.`,
       );
   }
 }
 
 export function defaultHerdrSessionName(
   workerId: string,
-  homeDirectory: string = homedir(),
+  configHome: string = defaultHerdrConfigHome(),
 ): string {
   const hash = createHash("sha256")
     .update(workerId)
@@ -286,7 +315,7 @@ export function defaultHerdrSessionName(
     `${HERDR_SESSION_PREFIX}-${hash}`,
     "utf8",
   );
-  const root = join(homeDirectory, ...HERDR_DEFAULT_SESSION_ROOT);
+  const root = join(configHome, ...HERDR_DEFAULT_SESSION_ROOT);
   const socketWithoutSession = join(root, HERDR_CLIENT_SOCKET);
   const sessionBudget =
     HERDR_UNIX_SOCKET_SAFE_PATH_BYTES -
@@ -295,7 +324,7 @@ export function defaultHerdrSessionName(
   const readableBudget = Math.min(32, sessionBudget - fixedBytes);
   if (readableBudget < 1)
     throw new Error(
-      "The host HOME path is too long for a collision-resistant default Herdr session socket.",
+      "XDG_CONFIG_HOME is too long for a collision-resistant default Herdr session socket.",
     );
   const readable =
     workerId
@@ -307,8 +336,50 @@ export function defaultHerdrSessionName(
   const sessionName = validateHerdrSessionName(
     `${HERDR_SESSION_PREFIX}${readable}-${hash}`,
   );
-  assertHerdrDefaultSocketPathSafe(sessionName, homeDirectory);
+  assertHerdrDefaultSocketPathSafe(sessionName, configHome);
   return sessionName;
+}
+
+export function resolveHerdrLocalContext(
+  env: NodeJS.ProcessEnv,
+  executable: string,
+): HerdrLocalContext {
+  const configHome = exactDirectory(
+    required(env, "XDG_CONFIG_HOME"),
+    "XDG_CONFIG_HOME",
+  );
+  const configPath = exactFile(
+    required(env, "HERDR_CONFIG_PATH"),
+    "HERDR_CONFIG_PATH",
+  );
+  return {
+    executable,
+    configHome,
+    configPath,
+    id: herdrLocalContextId(executable, configHome, configPath),
+  };
+}
+
+export function herdrLocalContextId(
+  executable: string,
+  configHome: string,
+  configPath: string,
+): string {
+  const digest = createHash("sha256")
+    .update(HERDR_LOCAL_CONTEXT_VERSION)
+    .update("\0")
+    .update(executable)
+    .update("\0")
+    .update(configHome)
+    .update("\0")
+    .update(configPath)
+    .digest("hex");
+  return `sha256:${digest}`;
+}
+
+function defaultHerdrConfigHome(): string {
+  const configured = process.env.XDG_CONFIG_HOME?.trim();
+  return configured ? resolve(configured) : join(homedir(), ".config");
 }
 
 function parseAllowedRoots(encoded: string | undefined): AuthorizedRoot[] {
@@ -535,4 +606,26 @@ function exactExecutable(value: string, key: string): string {
     throw new Error(`${key} must identify an existing executable file.`);
   }
   return path;
+}
+
+function exactDirectory(value: string, key: string): string {
+  if (!isAbsolute(value)) throw new Error(`${key} must be an absolute path.`);
+  try {
+    const path = realpathSync(value);
+    if (!statSync(path).isDirectory()) throw new Error("not a directory");
+    return path;
+  } catch {
+    throw new Error(`${key} must identify an existing directory.`);
+  }
+}
+
+function exactFile(value: string, key: string): string {
+  if (!isAbsolute(value)) throw new Error(`${key} must be an absolute path.`);
+  try {
+    const path = realpathSync(value);
+    if (!statSync(path).isFile()) throw new Error("not a file");
+    return path;
+  } catch {
+    throw new Error(`${key} must identify an existing file.`);
+  }
 }

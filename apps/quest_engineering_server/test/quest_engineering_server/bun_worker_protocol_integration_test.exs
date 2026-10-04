@@ -122,9 +122,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
           )
         end)
 
-        assert_eventually(fn ->
-          match?({:ok, %{status: "connected"}}, WorkerStore.fetch(worker_id))
-        end)
+        assert_eventually(fn -> worker_ready?(worker_id, 1) end)
 
         assert {:ok, launched} = LaunchQuest.launch(quest.id)
         assert [_action] = launched.actions
@@ -249,7 +247,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
                capabilities: %{"dispatch_availability" => "maintenance"}
              }},
             WorkerStore.fetch(worker_id)
-          )
+          ) and worker_ready?(worker_id, 1)
         end)
 
         {:os_pid, exact_worker_pid} = Port.info(port, :os_pid)
@@ -375,12 +373,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
           )
         end)
 
-        assert_eventually(fn ->
-          match?(
-            {:ok, %{status: "connected", connection_generation: 1}},
-            WorkerStore.fetch(worker_id)
-          )
-        end)
+        assert_eventually(fn -> worker_ready?(worker_id, 1) end)
 
         assert {:ok, launched} = LaunchQuest.launch(quest.id)
         [action] = launched.actions
@@ -399,11 +392,19 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         GenServer.stop(channel_pid, :normal)
 
         assert_eventually(fn ->
-          match?(
-            {:ok, %{status: "connected", connection_generation: generation}}
-            when generation >= 2,
-            WorkerStore.fetch(worker_id)
-          )
+          case WorkerStore.fetch(worker_id) do
+            {:ok,
+             %{
+               status: "connected",
+               connection_generation: generation,
+               ready_generation: generation
+             }}
+            when generation >= 2 ->
+              true
+
+            _other ->
+              false
+          end
         end)
 
         assert_eventually(fn ->
@@ -488,12 +489,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         first_pid = worker_process_pid(first_port)
         on_exit(fn -> stop_worker_process(first_port, worker_id, first_pid) end)
 
-        assert_eventually(fn ->
-          match?(
-            {:ok, %{status: "connected", connection_generation: 1}},
-            WorkerStore.fetch(worker_id)
-          )
-        end)
+        assert_eventually(fn -> worker_ready?(worker_id, 1) end)
 
         :ok = WorkspaceControl.request_discovery()
         assert_eventually(fn -> worker_candidate(worker_id) != nil end)
@@ -545,12 +541,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         second_pid = worker_process_pid(second_port)
         on_exit(fn -> stop_worker_process(second_port, worker_id, second_pid) end)
 
-        assert_eventually(fn ->
-          match?(
-            {:ok, %{status: "connected", connection_generation: 2}},
-            WorkerStore.fetch(worker_id)
-          )
-        end)
+        assert_eventually(fn -> worker_ready?(worker_id, 2) end)
 
         refute Repo.get(WorkerWorkspaceBinding, stale_binding_id)
         assert File.read!(sentinel) == "preserve me"
@@ -592,8 +583,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
           end
         end)
 
-        assert {:ok, %{status: "connected", connection_generation: 2}} =
-                 WorkerStore.fetch(worker_id)
+        assert worker_ready?(worker_id, 2)
 
         assert_eventually(fn ->
           persisted =
@@ -612,6 +602,18 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
           match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
         end)
     end
+  end
+
+  defp worker_ready?(worker_id, generation) do
+    match?(
+      {:ok,
+       %{
+         status: "connected",
+         connection_generation: ^generation,
+         ready_generation: ^generation
+       }},
+      WorkerStore.fetch(worker_id)
+    )
   end
 
   defp worker_candidate(worker_id) do

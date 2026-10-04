@@ -12,8 +12,102 @@ export interface NativeTurnActivity {
   nativeSession?: NativeSessionRef;
 }
 
+export type AntigravityPromptDispatchObservation =
+  | { state: "pending"; observedAt: null }
+  | {
+      state: "accepted";
+      observedAt: string;
+      nativeSession: NativeSessionRef;
+    }
+  | { state: "rejected"; observedAt: string; message: string };
+
+const ANTIGRAVITY_ACCEPTED_PROMPT =
+  /Sending user message to conversation ([0-9a-f]{8}-[0-9a-f-]{27,}) \(items=\d+, media=\d+\)/i;
+const ANTIGRAVITY_REJECTED_PROMPT = /SendUserMessage failed:\s*(.+)$/i;
+
 export function promptActivityStallMs(config: WorkerConfig): number {
   return config.promptActivityStallMs ?? 30_000;
+}
+
+export type StructuredCompletionWaitPhase =
+  | "provider_active"
+  | "awaiting_structured_completion"
+  | "continuation_active"
+  | "exporting"
+  | "completed"
+  | "terminal";
+
+/**
+ * Generic phase clock for required structured completion.
+ *
+ * Provider/native work has no wall-clock completion deadline. The bounded
+ * grace starts only after authoritative native settlement, is suspended by an
+ * approved corrective continuation, and is permanently closed once semantic
+ * completion enters physical export.
+ */
+export class StructuredCompletionWaitPolicy {
+  private phaseValue: StructuredCompletionWaitPhase = "provider_active";
+  private deadline: number | null = null;
+
+  constructor(
+    private readonly graceMs: number,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  phase(): StructuredCompletionWaitPhase {
+    return this.phaseValue;
+  }
+
+  providerActive(): void {
+    if (["exporting", "completed", "terminal"].includes(this.phaseValue))
+      return;
+    this.phaseValue = "provider_active";
+    this.deadline = null;
+  }
+
+  providerSettled(): void {
+    if (["exporting", "completed", "terminal"].includes(this.phaseValue))
+      return;
+    if (
+      this.phaseValue !== "awaiting_structured_completion" ||
+      this.deadline === null
+    ) {
+      this.phaseValue = "awaiting_structured_completion";
+      this.deadline = this.now() + Math.max(1, this.graceMs);
+    }
+  }
+
+  continuationStarted(): void {
+    if (["exporting", "completed", "terminal"].includes(this.phaseValue))
+      return;
+    this.phaseValue = "continuation_active";
+    this.deadline = null;
+  }
+
+  resultAccepted(): void {
+    if (this.phaseValue === "terminal") return;
+    this.phaseValue = "exporting";
+    this.deadline = null;
+  }
+
+  exportCompleted(): void {
+    if (this.phaseValue === "terminal") return;
+    this.phaseValue = "completed";
+    this.deadline = null;
+  }
+
+  terminal(): void {
+    this.phaseValue = "terminal";
+    this.deadline = null;
+  }
+
+  expired(): boolean {
+    return (
+      this.phaseValue === "awaiting_structured_completion" &&
+      this.deadline !== null &&
+      this.now() >= this.deadline
+    );
+  }
 }
 
 export async function promptEvidenceCursor(
@@ -97,33 +191,73 @@ export async function observePiNativeActivity(input: {
 }
 
 /**
- * Antigravity's own --log-file records the native conversation handoff. The
- * first post-baseline successful user-message send belongs to the exclusively
- * owned QE TUI and proves native activity without scraping terminal output.
+ * Antigravity's own native log records the conversation handoff. The first
+ * post-baseline successful user-message send belongs to the exclusively owned
+ * QE TUI and proves native acceptance without scraping terminal output.
  */
+export async function observeAntigravityPromptDispatch(input: {
+  logPath: string;
+  evidence: PromptEvidenceCursor;
+}): Promise<AntigravityPromptDispatchObservation> {
+  const lines = await appendedLines(input.logPath, input.evidence.cursor);
+  for (const line of lines) {
+    const acceptedMatch = line.match(ANTIGRAVITY_ACCEPTED_PROMPT);
+    if (acceptedMatch) {
+      const conversationId = acceptedMatch[1] as string;
+      return {
+        state: "accepted",
+        observedAt: new Date().toISOString(),
+        nativeSession: {
+          source: "antigravity",
+          agent: "agy",
+          kind: "id",
+          value: conversationId,
+        },
+      };
+    }
+    const rejectedMatch = line.match(ANTIGRAVITY_REJECTED_PROMPT);
+    if (rejectedMatch)
+      return {
+        state: "rejected",
+        observedAt: new Date().toISOString(),
+        message: (rejectedMatch[1] as string).trim(),
+      };
+  }
+  return { state: "pending", observedAt: null };
+}
+
+/** Recover the most recently accepted native conversation from owned logs. */
+export async function observeLatestAntigravityConversation(input: {
+  logPath: string;
+  cursor?: number;
+}): Promise<NativeSessionRef | null> {
+  const lines = await appendedLines(input.logPath, input.cursor ?? 0);
+  let nativeSession: NativeSessionRef | null = null;
+  for (const line of lines) {
+    const match = line.match(ANTIGRAVITY_ACCEPTED_PROMPT);
+    if (!match) continue;
+    nativeSession = {
+      source: "antigravity",
+      agent: "agy",
+      kind: "id",
+      value: match[1] as string,
+    };
+  }
+  return nativeSession;
+}
+
 export async function observeAntigravityNativeActivity(input: {
   logPath: string;
   evidence: PromptEvidenceCursor;
 }): Promise<NativeTurnActivity> {
-  const lines = await appendedLines(input.logPath, input.evidence.cursor);
-  const pattern =
-    /Sending user message to conversation ([0-9a-f]{8}-[0-9a-f-]{27,}) \(items=\d+, media=\d+\)/i;
-  for (const line of lines) {
-    const match = line.match(pattern);
-    if (!match) continue;
-    const conversationId = match[1] as string;
-    return {
-      working: true,
-      observedAt: new Date().toISOString(),
-      nativeSession: {
-        source: "antigravity",
-        agent: "agy",
-        kind: "id",
-        value: conversationId,
-      },
-    };
-  }
-  return { working: false, observedAt: null };
+  const observation = await observeAntigravityPromptDispatch(input);
+  return observation.state === "accepted"
+    ? {
+        working: true,
+        observedAt: observation.observedAt,
+        nativeSession: observation.nativeSession,
+      }
+    : { working: false, observedAt: null };
 }
 
 export async function structuredResultExists(
@@ -177,7 +311,7 @@ export function uncertainPrompt(error: unknown): HerdrApiError {
   return new HerdrApiError(
     "agent_prompt_uncertain",
     `Prompt submission outcome is uncertain; exact native evidence did not resolve the transport failure: ${error instanceof Error ? error.message : String(error)}`,
-    "agent.prompt",
+    "terminal.authorized_prompt_input",
   );
 }
 

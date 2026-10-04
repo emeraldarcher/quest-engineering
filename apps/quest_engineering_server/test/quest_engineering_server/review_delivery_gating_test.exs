@@ -359,6 +359,7 @@ defmodule QuestEngineering.Server.ReviewDeliveryGatingTest do
         Ecto.UUID.generate()
       )
 
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     worker
   end
 

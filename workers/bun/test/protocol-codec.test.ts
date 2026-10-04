@@ -4,14 +4,17 @@ import {
   decodeExecuteAction,
   ProtocolDecodeError,
 } from "../src/protocol/codec.ts";
-import type { CancelDispatch } from "../src/protocol/types.ts";
+import {
+  type CancelDispatch,
+  WORKER_PROTOCOL_VERSION,
+} from "../src/protocol/types.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v9 ResolvedExecution codec", () => {
+describe("Worker Protocol v10 ResolvedExecution codec", () => {
   test("decodes only an exact Worker-generation cancellation command", () => {
     const command = {
       type: "cancel_dispatch",
-      protocol_version: 9,
+      protocol_version: WORKER_PROTOCOL_VERSION,
       worker_id: "worker-test",
       connection_generation: 7,
       action_id: "action-1",

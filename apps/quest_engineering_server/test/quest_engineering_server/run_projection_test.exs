@@ -174,6 +174,9 @@ defmodule QuestEngineering.Server.RunProjectionTest do
 
     assert takeover_descriptor.takeover_allowed
 
+    assert takeover_descriptor.terminal["local_context_id"] ==
+             "sha256:" <> String.duplicate("a", 64)
+
     assert {:ok, observed_session} =
              ExecutionSessionStore.record_opened(
                takeover_descriptor.descriptor_token,
@@ -445,6 +448,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
         "attachment_mode" => "local_native_terminal",
         "backend_kind" => "herdr",
         "terminal_session_id" => "worker-test",
+        "local_context_id" => "sha256:" <> String.duplicate("a", 64),
         "terminal_target_id" => "qe-test",
         "supports_observation" => true,
         "supports_takeover" => true
@@ -497,6 +501,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
     }
 
     {:ok, worker} = WorkerStore.register("worker-projection", capabilities, Ecto.UUID.generate())
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
     worker
   end
 end

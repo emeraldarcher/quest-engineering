@@ -1,10 +1,15 @@
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { WorkerConfig } from "../src/config.ts";
+import { resolveHerdrLocalContext, type WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
-import type { ExecuteAction, JsonValue } from "../src/protocol/types.ts";
+import {
+  type ExecuteAction,
+  type JsonValue,
+  WORKER_PROTOCOL_VERSION,
+} from "../src/protocol/types.ts";
 import { LocalHerdrConnectionProvider } from "../src/session-host/herdr/connection.ts";
 import { HerdrTerminalBackend } from "../src/session-host/herdr/session-host.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
@@ -40,6 +45,12 @@ if (!configuredModel)
     "QE_PI_MODEL=provider/model is required for the real Pi integration.",
   );
 const model = splitModel(configuredModel);
+const configuredHerdr = process.env.QE_HERDR_BIN?.trim();
+if (!configuredHerdr) throw new Error("QE_HERDR_BIN is required.");
+const herdrContext = resolveHerdrLocalContext(
+  process.env,
+  realpathSync(configuredHerdr),
+);
 
 const config: WorkerConfig = {
   controlPlaneUrl: "ws://127.0.0.1/unused",
@@ -48,6 +59,10 @@ const config: WorkerConfig = {
   maxConcurrency: 1,
   tags: ["integration"],
   herdrSession: `qe-worker-${id}`,
+  herdrBin: herdrContext.executable,
+  herdrConfigHome: herdrContext.configHome,
+  herdrConfigPath: herdrContext.configPath,
+  herdrLocalContextId: herdrContext.id,
   allowedRoots: [
     {
       key: "integration",
@@ -103,7 +118,7 @@ const registry = new DispatchRegistry(
 );
 const connectionProvider = new LocalHerdrConnectionProvider(
   config.herdrSession,
-  { workerId: config.workerId, dataRoot: config.dataRoot },
+  { workerId: config.workerId, dataRoot: config.dataRoot, herdrContext },
 );
 await connectionProvider.ensureInfrastructure();
 const host = new HerdrTerminalBackend(connectionProvider, "pi");
@@ -252,7 +267,7 @@ function makeAction(overrides: Partial<ExecuteAction>): ExecuteAction {
       : `logical-${actionId}`;
   return {
     type: "execute_action",
-    protocol_version: 9,
+    protocol_version: WORKER_PROTOCOL_VERSION,
     worker_id: config.workerId,
     execution: {
       identity: {

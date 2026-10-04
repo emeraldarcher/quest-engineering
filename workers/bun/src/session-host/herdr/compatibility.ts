@@ -17,6 +17,9 @@ export const HERDR_TESTED_PROTOCOL = 22;
  */
 export const HERDR_MIN_ENDPOINT_GENERATION = 1;
 
+/** Herdr's managed-agent metadata protocol bounds every token value to 80 bytes. */
+export const HERDR_METADATA_TOKEN_VALUE_BYTES = 80;
+
 const SHARED_REQUIREMENTS = [
   ["backend.health", ["ping"]],
   ["session.inventory", ["session.snapshot"]],
@@ -25,7 +28,6 @@ const SHARED_REQUIREMENTS = [
   ["terminal.metadata", ["pane.report_metadata"]],
   ["terminal.shell_readiness", ["pane.process_info"]],
   ["agent.interactive_launch", ["agent.start"]],
-  ["agent.prompt", ["agent.prompt"]],
   ["agent.inspect", ["agent.get"]],
   ["agent.send_input", ["agent.send_keys"]],
   ["integration.discovery", ["integration.list"]],
@@ -35,8 +37,14 @@ const HARNESS_REQUIREMENTS: Record<
   string,
   ReadonlyArray<readonly [string, readonly string[]]>
 > = {
-  pi: [["agent.state_observation", ["agent.wait"]]],
-  antigravity: [],
+  pi: [
+    ["agent.prompt", ["agent.prompt"]],
+    ["agent.state_observation", ["agent.wait"]],
+  ],
+  antigravity: [
+    ["terminal.literal_input", ["pane.send_text"]],
+    ["terminal.submit_input", ["pane.send_keys"]],
+  ],
 };
 
 const REQUIRED_OPERATION_PARAMETERS: Record<string, readonly string[]> = {
@@ -52,6 +60,8 @@ const REQUIRED_OPERATION_PARAMETERS: Record<string, readonly string[]> = {
     "tokens",
   ],
   "pane.process_info": ["pane_id"],
+  "pane.send_text": ["pane_id", "text"],
+  "pane.send_keys": ["pane_id", "keys"],
   "agent.start": ["pane_id", "name", "kind", "args", "timeout_ms"],
   "agent.prompt": ["target", "text", "wait"],
   "agent.get": ["target"],
@@ -227,7 +237,7 @@ export function evaluateHerdrCompatibility(
     }
   }
 
-  if (harnessKind === "pi") {
+  if (harnessKind === "pi" || harnessKind === "antigravity") {
     const explicitLaunchSchema =
       schemaOperations.get("agent.start")?.has("command") === true;
     const explicitLaunchAdvertised = evidence.ping.agentExplicitLaunch === true;
@@ -245,7 +255,11 @@ export function evaluateHerdrCompatibility(
   }
 
   for (const [capability, shapes] of RESPONSE_SHAPE_REQUIREMENTS) {
-    if (capability === "agent.state_observation" && harnessKind !== "pi")
+    if (
+      (capability === "agent.state_observation" ||
+        capability === "agent.prompt") &&
+      harnessKind !== "pi"
+    )
       continue;
     const missingShapes = shapes.filter(
       (properties) => !supportsResponseShape(evidence.schema, properties),

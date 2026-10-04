@@ -33,13 +33,14 @@ function setup(
 }
 
 test("fresh Product state opens first-run onboarding", async () => {
-  setup("starter-empty");
+  const { store } = setup("starter-empty");
 
   expect(
     await screen.findByRole("heading", {
       name: "Welcome to Quest Engineering",
     }),
   ).toBeTruthy();
+  expect(get(store.bootstrapState)).toBe("needs_product_onboarding");
   expect(screen.getByRole("button", { name: "Add Project" })).toBeTruthy();
 });
 
@@ -100,10 +101,11 @@ test("customized starter Product with manual status stays out of onboarding afte
 });
 
 test("completed canonical starter state does not reopen onboarding on reload", async () => {
-  setup("starter-complete");
+  const { store } = setup("starter-complete");
   await screen.findByText("QUEST ENGINEERING");
   await tick();
 
+  expect(get(store.bootstrapState)).toBe("ready");
   expect(
     screen.queryByRole("heading", { name: "Welcome to Quest Engineering" }),
   ).toBeNull();

@@ -5,7 +5,6 @@ import {
   type ArtifactDetail,
   type ClassDefinition,
   type ExecutionOption,
-  type HarnessSessionProjection,
   type Loadout,
   type Quest,
   type RunProjection,
@@ -21,12 +20,16 @@ import type { ClientFixture } from "../fixtures/fixtures";
 import {
   type AttentionTarget,
   initializeAttentionNotifications,
+  NotificationInitializationError,
   notifyHumanAttention,
 } from "../platform/attention-notification";
 import {
   canOpenLocalLiveSession,
+  closeLocalLiveSession,
+  type LocalObservationSession,
   openLocalLiveSession,
   type SessionOpenMode,
+  watchLocalLiveSessions,
 } from "../platform/live-session";
 import { RealtimeClient, type RealtimeStatus } from "../realtime/client";
 import { projectActiveCrewActivities } from "../world/crew/active-crew";
@@ -48,6 +51,10 @@ export interface ExecutionAttemptIdentity {
   attemptId: string;
 }
 
+export interface LiveSessionActionTarget extends ExecutionAttemptIdentity {
+  sessionId: string;
+}
+
 export interface ExecutionCommandState {
   operation: "authorize" | "cancel";
   identity: ExecutionAttemptIdentity;
@@ -55,6 +62,12 @@ export interface ExecutionCommandState {
   status: "pending" | "error";
   error: ApiError | null;
 }
+
+export type ProductBootstrapState =
+  | "loading"
+  | "needs_product_onboarding"
+  | "ready"
+  | "failed";
 
 export interface ProductState {
   classes: ClassDefinition[];
@@ -83,6 +96,26 @@ const emptyProduct: ProductState = {
   runs: [],
 };
 
+export function productBootstrapStateFor(
+  status: StarterCrewStatus,
+): ProductBootstrapState {
+  return ["empty", "recoverable_partial", "conflict"].includes(status.state)
+    ? "needs_product_onboarding"
+    : "ready";
+}
+
+export function unexpectedClientRejection(cause: unknown): ApiError {
+  return new ApiError(
+    "unhandled_client_rejection",
+    "An unexpected client operation failed.",
+    [],
+    {
+      operation: "window.unhandledrejection",
+      native_error: clientErrorMessage(cause),
+    },
+  );
+}
+
 export function createAppStore(
   api: ApiClient,
   socketUrl: string,
@@ -96,8 +129,16 @@ export function createAppStore(
       : null,
   );
   const loading = writable(true);
+  const bootstrapState = writable<ProductBootstrapState>(
+    fixture?.starterStatus
+      ? productBootstrapStateFor(fixture.starterStatus)
+      : "loading",
+  );
   const error = writable<ApiError | null>(null);
   const executionCommands = writable<ExecutionCommandState[]>([]);
+  const localObservations = writable<Record<string, LocalObservationSession>>(
+    {},
+  );
   const realtimeStatus = writable<RealtimeStatus>(
     fixture?.realtimeStatus ?? "disconnected",
   );
@@ -130,6 +171,20 @@ export function createAppStore(
   let refetchNeeded = false;
   let productRefetching = false;
   let productRefetchNeeded = false;
+  let disposed = false;
+  let stopWatchingLocalSessions: (() => void) | null = null;
+  const pendingLocalObservationEvents = new Map<
+    string,
+    LocalObservationSession
+  >();
+  const localObservationOpenings = new Map<string, Promise<boolean>>();
+
+  void watchLocalLiveSessions(reconcileLocalObservation)
+    .then((stop) => {
+      if (disposed) stop();
+      else stopWatchingLocalSessions = stop;
+    })
+    .catch(reportError);
 
   const realtime = new RealtimeClient(socketUrl, {
     onStatus: (status) => {
@@ -162,8 +217,8 @@ export function createAppStore(
   });
   if (!fixture) {
     void initializeAttentionNotifications((target) => {
-      void focusAttention(target, true);
-    });
+      void openSession(target);
+    }).catch(reportError);
     activeRunTracker = new ActiveRunTracker({
       getRun: (runId) => api.getRun(runId),
       watchRun: (runId) => realtime.watchRun(runId),
@@ -227,7 +282,10 @@ export function createAppStore(
       return;
     }
     realtime.start();
-    if (!quiet) loading.set(true);
+    if (!quiet) {
+      loading.set(true);
+      bootstrapState.set("loading");
+    }
     error.set(null);
     try {
       const includeArchivedDefinitions = get(selectedBuilding) === "tavern";
@@ -269,9 +327,11 @@ export function createAppStore(
         runs,
       });
       starterStatus.set(loadedStarterStatus);
+      bootstrapState.set(productBootstrapStateFor(loadedStarterStatus));
       activeRunTracker?.updateSummaries(runs);
     } catch (cause) {
       serverReachable.set(false);
+      bootstrapState.set("failed");
       error.set(toApiError(cause));
     } finally {
       if (!quiet) loading.set(false);
@@ -317,6 +377,7 @@ export function createAppStore(
     try {
       const value = await api.getStarterCrewStatus();
       starterStatus.set(value);
+      bootstrapState.set(productBootstrapStateFor(value));
       return value;
     } catch (cause) {
       reportError(cause);
@@ -334,7 +395,10 @@ export function createAppStore(
       await loadProduct(true);
       return outcome.result ?? { status: "ready", recovered: true };
     }
-    if (outcome.status) starterStatus.set(outcome.status);
+    if (outcome.status) {
+      starterStatus.set(outcome.status);
+      bootstrapState.set(productBootstrapStateFor(outcome.status));
+    }
     const failure = toApiError(outcome.cause);
     error.set(
       outcome.status
@@ -444,12 +508,113 @@ export function createAppStore(
     return command(() => api.getArtifact(runId, artifactId));
   }
 
-  async function openLiveSession(
-    runId: string,
-    attemptId: string,
-    session: HarnessSessionProjection,
+  function liveSessionFor(target: LiveSessionActionTarget) {
+    const projection = get(selectedRun);
+    if (!projection || projection.id !== target.runId) return null;
+    const step = projection.steps.find(
+      (item) => item.occurrence_id === target.occurrenceId,
+    );
+    if (
+      step?.attempt?.id !== target.attemptId ||
+      step.session?.id !== target.sessionId
+    )
+      return null;
+    return step.session;
+  }
+
+  async function focusAttention(target: LiveSessionActionTarget) {
+    await selectRun(target.runId);
+    sessionFocus.set({
+      runId: target.runId,
+      occurrenceId: target.occurrenceId,
+      attemptId: target.attemptId,
+      sessionId: target.sessionId,
+    });
+    selectBuildingId("work-area");
+  }
+
+  function sameLocalObservation(
+    left: LocalObservationSession,
+    right: LocalObservationSession,
+  ): boolean {
+    return (
+      left.localSessionId === right.localSessionId &&
+      left.runId === right.runId &&
+      left.occurrenceId === right.occurrenceId &&
+      left.attemptId === right.attemptId &&
+      left.sessionId === right.sessionId &&
+      left.terminalSessionId === right.terminalSessionId &&
+      left.paneId === right.paneId &&
+      left.terminalId === right.terminalId &&
+      left.mode === right.mode
+    );
+  }
+
+  function reconcileLocalObservation(next: LocalObservationSession) {
+    if (next.mode !== "observe") return;
+    let matched = false;
+    localObservations.update((values) => {
+      const current = values[next.sessionId];
+      if (!current || !sameLocalObservation(current, next)) return values;
+      matched = true;
+      return { ...values, [next.sessionId]: next };
+    });
+    if (!matched) {
+      pendingLocalObservationEvents.set(next.localSessionId, next);
+      if (pendingLocalObservationEvents.size > 100) {
+        const oldest = pendingLocalObservationEvents.keys().next().value;
+        if (oldest) pendingLocalObservationEvents.delete(oldest);
+      }
+    }
+  }
+
+  function localObservationFor(target: LiveSessionActionTarget) {
+    const observation = get(localObservations)[target.sessionId];
+    return observation &&
+      observation.runId === target.runId &&
+      observation.occurrenceId === target.occurrenceId &&
+      observation.attemptId === target.attemptId &&
+      observation.sessionId === target.sessionId
+      ? observation
+      : null;
+  }
+
+  async function attachLiveSessionOnce(
+    target: LiveSessionActionTarget,
     mode: SessionOpenMode,
   ) {
+    const existing = localObservationFor(target);
+    if (
+      mode === "observe" &&
+      existing?.mode === "observe" &&
+      (existing.state === "attached" || existing.state === "detaching")
+    )
+      return true;
+    const session = liveSessionFor(target);
+    if (!session) {
+      reportError(
+        new ApiError(
+          "stale_execution_session",
+          "The live-session action no longer matches the current Attempt and session.",
+        ),
+      );
+      return false;
+    }
+    const authorized =
+      mode === "observe"
+        ? session.attachment.can_observe
+        : mode === "takeover"
+          ? session.attachment.can_takeover
+          : session.attachment.can_recover === true;
+    if (!session.attachment.available || !authorized) {
+      reportError(
+        new ApiError(
+          `session_${mode}_unavailable`,
+          `The current Product state does not authorize session ${mode}.`,
+        ),
+      );
+      return false;
+    }
     if (!canOpenLocalLiveSession()) {
       reportError(
         new ApiError(
@@ -460,39 +625,142 @@ export function createAppStore(
       return false;
     }
     const attachment = await command(() =>
-      api.getSessionAttachment(runId, attemptId, session.id),
+      api.getSessionAttachment(
+        target.runId,
+        target.attemptId,
+        target.sessionId,
+      ),
     );
     if (!attachment) return false;
-    const opened = await command(async () => {
-      await openLocalLiveSession(attachment, mode);
+    if (!liveSessionFor(target) || attachment.session_id !== target.sessionId) {
+      reportError(
+        new ApiError(
+          "stale_session_attachment",
+          "The attachment descriptor no longer matches the current Attempt and session.",
+        ),
+      );
+      return false;
+    }
+    if (
+      (mode === "takeover" && !attachment.takeover_allowed) ||
+      (mode === "recovery" && attachment.recovery_allowed !== true)
+    ) {
+      reportError(
+        new ApiError(
+          `session_${mode}_unavailable`,
+          `The attachment descriptor does not authorize session ${mode}.`,
+        ),
+      );
+      return false;
+    }
+    let localSession: LocalObservationSession | null = null;
+    try {
+      localSession = await openLocalLiveSession(attachment, mode, target);
       // Native Tauri validation and Terminal launch succeeded; descriptor
       // issuance alone is never recorded as a human attachment.
-      return api.recordSessionOpened(attachment.descriptor_token, mode);
-    });
-    return Boolean(opened);
+      await api.recordSessionOpened(attachment.descriptor_token, mode);
+      if (mode === "observe") {
+        const pending = pendingLocalObservationEvents.get(
+          localSession.localSessionId,
+        );
+        const reconciled =
+          pending && sameLocalObservation(localSession, pending)
+            ? pending
+            : localSession;
+        pendingLocalObservationEvents.delete(localSession.localSessionId);
+        localObservations.update((values) => ({
+          ...values,
+          [target.sessionId]: reconciled,
+        }));
+      }
+      error.set(null);
+      return true;
+    } catch (cause) {
+      if (localSession) {
+        try {
+          await closeLocalLiveSession(localSession);
+        } catch {
+          // The native lifecycle remains authoritative and emits its own state.
+        }
+        pendingLocalObservationEvents.delete(localSession.localSessionId);
+      }
+      reportError(cause);
+      return false;
+    }
   }
 
-  async function focusAttention(target: AttentionTarget, open = false) {
-    await selectRun(target.runId);
-    sessionFocus.set({
-      runId: target.runId,
-      occurrenceId: target.occurrenceId,
-      attemptId: target.attemptId,
-      sessionId: target.sessionId,
-    });
-    selectBuildingId("work-area");
-    if (!open) return;
-    const projection = get(selectedRun);
-    const step = projection?.steps.find(
-      (item) => item.occurrence_id === target.occurrenceId,
-    );
-    if (projection && step?.attempt?.id === target.attemptId && step.session)
-      await openLiveSession(
-        projection.id,
-        target.attemptId,
-        step.session,
-        "takeover",
+  function attachLiveSession(
+    target: LiveSessionActionTarget,
+    mode: SessionOpenMode,
+  ): Promise<boolean> {
+    if (mode !== "observe") return attachLiveSessionOnce(target, mode);
+    const key = JSON.stringify([
+      target.runId,
+      target.occurrenceId,
+      target.attemptId,
+      target.sessionId,
+    ]);
+    const pending = localObservationOpenings.get(key);
+    if (pending) return pending;
+    const opening = attachLiveSessionOnce(target, mode);
+    localObservationOpenings.set(key, opening);
+    const clearOpening = () => {
+      if (localObservationOpenings.get(key) === opening)
+        localObservationOpenings.delete(key);
+    };
+    void opening.then(clearOpening, clearOpening);
+    return opening;
+  }
+
+  async function detachSession(target: LiveSessionActionTarget) {
+    const observation = localObservationFor(target);
+    if (!observation || observation.mode !== "observe") {
+      reportError(
+        new ApiError(
+          "stale_local_observation",
+          "The local observation no longer matches this execution session.",
+        ),
       );
+      return false;
+    }
+    try {
+      const closed = await closeLocalLiveSession(observation);
+      localObservations.update((values) => {
+        const current = values[target.sessionId];
+        return current && sameLocalObservation(current, closed)
+          ? { ...values, [target.sessionId]: closed }
+          : values;
+      });
+      if (closed.state !== "detached") {
+        reportError(
+          new ApiError(
+            "local_observation_unavailable",
+            "The local observation closed unexpectedly.",
+          ),
+        );
+        return false;
+      }
+      error.set(null);
+      return true;
+    } catch (cause) {
+      reportError(cause);
+      return false;
+    }
+  }
+
+  async function openSession(target: LiveSessionActionTarget) {
+    await focusAttention(target);
+    return attachLiveSession(target, "observe");
+  }
+
+  async function takeControl(target: LiveSessionActionTarget) {
+    await focusAttention(target);
+    return attachLiveSession(target, "takeover");
+  }
+
+  async function recoverSession(target: LiveSessionActionTarget) {
+    await focusAttention(target);
+    return attachLiveSession(target, "recovery");
   }
 
   function dismissAttention(attentionId: string) {
@@ -761,6 +1029,9 @@ export function createAppStore(
     );
   }
   function dispose() {
+    disposed = true;
+    stopWatchingLocalSessions?.();
+    stopWatchingLocalSessions = null;
     if (!fixture) {
       activeRunTracker?.dispose();
       realtime.disconnect();
@@ -778,8 +1049,10 @@ export function createAppStore(
     attentionNotifications,
     sessionFocus,
     loading,
+    bootstrapState,
     error,
     executionCommands,
+    localObservations,
     realtimeStatus,
     serverReachable,
     bootstrapRunning,
@@ -793,7 +1066,10 @@ export function createAppStore(
     command,
     reportError,
     loadArtifact,
-    openLiveSession,
+    openSession,
+    detachSession,
+    takeControl,
+    recoverSession,
     focusAttention,
     dismissAttention,
     authorizePrompt,
@@ -832,12 +1108,31 @@ function persistSeenAttentionIds(values: Set<string>): void {
     // Storage can be unavailable in hardened webviews; in-memory dedupe remains.
   }
 }
+function clientErrorMessage(cause: unknown): string {
+  if (typeof cause === "string") return cause;
+  if (cause instanceof Error) return cause.message;
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return String(cause);
+  }
+}
+
 function toApiError(cause: unknown): ApiError {
-  return cause instanceof ApiError
-    ? cause
-    : new ApiError(
-        "client_error",
-        "The client could not complete that request.",
-      );
+  if (cause instanceof ApiError) return cause;
+  if (cause instanceof NotificationInitializationError)
+    return new ApiError(
+      "attention_notification_initialization_failed",
+      cause.message,
+      [],
+      {
+        operation: cause.operation,
+        native_error: cause.nativeError,
+      },
+    );
+  return new ApiError(
+    "client_error",
+    "The client could not complete that request.",
+  );
 }
 export type AppStore = ReturnType<typeof createAppStore>;

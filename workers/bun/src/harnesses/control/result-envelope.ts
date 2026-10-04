@@ -1,7 +1,9 @@
+import { renameSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExecuteAction, JsonValue } from "../../protocol/types.ts";
 import { isJsonValue } from "../../protocol/types.ts";
+import type { StructuredCompletionState } from "./types.ts";
 
 export const STEP_RESULT_PROTOCOL_VERSION = 1 as const;
 
@@ -25,6 +27,15 @@ export interface StepResultEnvelope {
   nonce: string;
   createdAt: string;
   outputs: Record<string, JsonValue>;
+}
+
+interface StructuredCompletionRecord {
+  protocolVersion: typeof STEP_RESULT_PROTOCOL_VERSION;
+  kind: "quest_engineering_structured_completion";
+  actionId: string;
+  attemptId: string;
+  nonce: string;
+  state: StructuredCompletionState;
 }
 
 export async function writeControlAtomic(
@@ -57,11 +68,84 @@ export async function readControl(path: string): Promise<ResultControl> {
   return value as unknown as ResultControl;
 }
 
+export async function writeStructuredCompletionState(
+  dispatch: {
+    action: Pick<ExecuteAction, "action_id" | "attempt_id">;
+    resultNonce: string;
+    resultDirectory: string;
+  },
+  state: StructuredCompletionState,
+): Promise<void> {
+  await mkdir(dispatch.resultDirectory, { recursive: true });
+  const destination = join(
+    dispatch.resultDirectory,
+    "structured-completion-state.json",
+  );
+  const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
+  const record: StructuredCompletionRecord = {
+    protocolVersion: STEP_RESULT_PROTOCOL_VERSION,
+    kind: "quest_engineering_structured_completion",
+    actionId: dispatch.action.action_id,
+    attemptId: dispatch.action.attempt_id,
+    nonce: dispatch.resultNonce,
+    state,
+  };
+  await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  await rename(temporary, destination);
+}
+
+export async function readStructuredCompletionState(dispatch: {
+  action: Pick<ExecuteAction, "action_id" | "attempt_id">;
+  resultNonce: string;
+  resultDirectory: string;
+}): Promise<StructuredCompletionState | null> {
+  let value: unknown;
+  try {
+    value = JSON.parse(
+      await readFile(
+        join(dispatch.resultDirectory, "structured-completion-state.json"),
+        "utf8",
+      ),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (
+    !record(value) ||
+    value.protocolVersion !== STEP_RESULT_PROTOCOL_VERSION ||
+    value.kind !== "quest_engineering_structured_completion" ||
+    value.actionId !== dispatch.action.action_id ||
+    value.attemptId !== dispatch.action.attempt_id ||
+    value.nonce !== dispatch.resultNonce ||
+    !validStructuredCompletionState(value.state)
+  )
+    throw new Error("Structured completion lifecycle state is invalid.");
+  return value.state;
+}
+
 export async function writeStepResultAtomic(
   directory: string,
   toolCallId: string,
   envelope: StepResultEnvelope,
 ): Promise<string> {
+  const prepared = await prepareStepResultAtomic(
+    directory,
+    toolCallId,
+    envelope,
+  );
+  return prepared.publish();
+}
+
+export async function prepareStepResultAtomic(
+  directory: string,
+  toolCallId: string,
+  envelope: StepResultEnvelope,
+): Promise<{ path: string; publish: () => string }> {
   await mkdir(directory, { recursive: true });
   const safeCallId =
     toolCallId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80) ||
@@ -74,8 +158,13 @@ export async function writeStepResultAtomic(
     flag: "wx",
     mode: 0o600,
   });
-  await rename(temporary, destination);
-  return destination;
+  return {
+    path: destination,
+    publish: () => {
+      renameSync(temporary, destination);
+      return destination;
+    },
+  };
 }
 
 export async function collectStepResult(dispatch: {
@@ -144,6 +233,38 @@ export function validateOutputs(
   }
   if (!Object.values(outputs).every(isJsonValue))
     throw new Error("Structured outputs contain a non-JSON-compatible value.");
+}
+
+function validStructuredCompletionState(
+  value: unknown,
+): value is StructuredCompletionState {
+  if (!record(value)) return false;
+  if (
+    !["awaiting_result", "exporting", "completed", "failed"].includes(
+      String(value.phase),
+    ) ||
+    typeof value.semanticAccepted !== "boolean"
+  )
+    return false;
+  for (const field of ["acceptedAt", "exportStartedAt", "exportCompletedAt"])
+    if (
+      value[field] !== undefined &&
+      (typeof value[field] !== "string" ||
+        !Number.isFinite(Date.parse(value[field])))
+    )
+      return false;
+  if (value.failure !== undefined) {
+    if (!record(value.failure)) return false;
+    if (
+      !["semantic_validation", "infrastructure", "stale_context"].includes(
+        String(value.failure.kind),
+      ) ||
+      typeof value.failure.code !== "string" ||
+      typeof value.failure.message !== "string"
+    )
+      return false;
+  }
+  return true;
 }
 
 function record(value: unknown): value is Record<string, unknown> {

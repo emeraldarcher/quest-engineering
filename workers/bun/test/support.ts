@@ -1,9 +1,12 @@
-import type { ExecuteAction } from "../src/protocol/types.ts";
+import {
+  type ExecuteAction,
+  WORKER_PROTOCOL_VERSION,
+} from "../src/protocol/types.ts";
 
 export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
   const base: ExecuteAction = {
     type: "execute_action",
-    protocol_version: 9,
+    protocol_version: WORKER_PROTOCOL_VERSION,
     worker_id: "worker-test",
     execution: {
       identity: {

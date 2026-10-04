@@ -16,7 +16,7 @@ import {
   sbxEnvironmentName,
 } from "../src/execution-environment/sbx-backend.ts";
 import { CliSbxClient } from "../src/execution-environment/sbx-client.ts";
-import { SBX_PI_PROFILE } from "../src/execution-environment/sbx-profile.ts";
+import { SBX_CODING_PROFILE } from "../src/execution-environment/sbx-profile.ts";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import { SbxRunExecutionStore } from "../src/execution-environment/sbx-run-store.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
@@ -35,10 +35,18 @@ const sbxBin = process.env.QE_SBX_BIN ?? "/opt/homebrew/bin/sbx";
  * and therefore cannot authorize a provider/model cycle.
  */
 test.skipIf(!enabled)(
-  "live account eligibility gates exact Herdr/SBX launch without inference",
+  "live mixed-profile Pi launch uses exact Herdr/SBX execution without inference",
   async () => {
     expect(herdrBin.startsWith("/")).toBe(true);
     expect(sbxBin.startsWith("/")).toBe(true);
+    const herdrContext = {
+      executable: herdrBin,
+      configHome: process.env.XDG_CONFIG_HOME ?? "",
+      configPath: process.env.HERDR_CONFIG_PATH ?? "",
+      id: `sha256:${"4".repeat(64)}`,
+    };
+    expect(herdrContext.configHome.startsWith("/")).toBe(true);
+    expect(herdrContext.configPath.startsWith("/")).toBe(true);
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
     const root = await mkdtemp(join(parent, "sbx-herdr-live-"));
@@ -137,7 +145,7 @@ test.skipIf(!enabled)(
         reconnectMs: 1_000,
         resultTimeoutMs: 60_000,
         provider: "pi",
-        enabledHarnesses: ["pi"],
+        enabledHarnesses: ["pi", "antigravity"],
         fakeOutputs: {},
         fakeDelayMs: 0,
       };
@@ -159,7 +167,7 @@ test.skipIf(!enabled)(
         workerId,
         dataRoot,
         client: sbxClient,
-        executionProfile: SBX_PI_PROFILE,
+        executionProfile: SBX_CODING_PROFILE,
       });
       manager = new SbxRunExecutionManager(config, worktrees, { backend });
       const catalog = await manager.discover();
@@ -199,7 +207,7 @@ test.skipIf(!enabled)(
       const provider = new LocalHerdrConnectionProvider(sessionName, {
         workerId,
         dataRoot,
-        herdrExecutable: herdrBin,
+        herdrContext,
       });
       const infrastructure = await provider.ensureInfrastructure();
       const host = new HerdrTerminalBackend(provider);
@@ -213,7 +221,7 @@ test.skipIf(!enabled)(
       const attachment = host.attachment(prepared.ref);
       expect(attachment).toMatchObject({
         mode: "local_native_terminal",
-        terminalTargetId: prepared.ref.paneId,
+        paneId: prepared.ref.paneId,
         supportsObservation: true,
         supportsTakeover: true,
       });
@@ -308,6 +316,8 @@ test.skipIf(!enabled)(
       const probeSequence = Number.MAX_SAFE_INTEGER - 1;
       await host.reportAgentState({
         paneId: prepared.ref.paneId,
+        agent: "pi",
+        source: "quest-engineering:sbx-pi",
         state: "working",
         sequence: probeSequence,
       });
@@ -317,6 +327,8 @@ test.skipIf(!enabled)(
       });
       await host.reportAgentState({
         paneId: prepared.ref.paneId,
+        agent: "pi",
+        source: "quest-engineering:sbx-pi",
         state: "idle",
         sequence: probeSequence + 1,
       });
@@ -345,7 +357,7 @@ test.skipIf(!enabled)(
       const restartedProvider = new LocalHerdrConnectionProvider(sessionName, {
         workerId,
         dataRoot,
-        herdrExecutable: herdrBin,
+        herdrContext,
       });
       const adopted = await restartedProvider.ensureInfrastructure();
       expect(adopted.sessionIncarnation).toBe(

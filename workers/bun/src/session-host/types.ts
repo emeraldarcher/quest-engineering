@@ -40,6 +40,23 @@ export interface HostedPane {
   cwd?: string;
   foregroundCwd?: string;
 }
+export interface HostedPaneProcess {
+  pid: number;
+  name: string;
+  argv0?: string;
+  argv?: string[];
+  cmdline?: string;
+  cwd?: string;
+}
+
+export interface HostedPaneProcessInfo {
+  paneId: string;
+  shellPid?: number;
+  foregroundProcessGroupId?: number;
+  tty?: string;
+  foregroundProcesses: HostedPaneProcess[];
+}
+
 export interface HostedSnapshot {
   workspaces: Array<{
     workspaceId: string;
@@ -59,6 +76,54 @@ export interface HostedExecutionRef {
   terminalId?: string;
   agentName: string;
   nativeSession?: NativeSessionRef;
+}
+
+/** Immutable physical target retained independently from current authority. */
+export interface ManagedAgentPhysicalIdentity {
+  physicalLineageId: string;
+  environmentId: string;
+  environmentIncarnation: string;
+  sessionName: string;
+  sessionIncarnation: string;
+  workspaceId: string;
+  tabId: string;
+  paneId: string;
+  terminalId: string;
+  agentName: string;
+  agentIntegrationKind: "agy";
+  paneShellPid: number;
+  paneForegroundProcessGroupId: number;
+  /** Derived from the complete canonical foreground-process observation. */
+  paneProcessIdentityDigest: string;
+}
+
+/**
+ * Current Product and generation-fenced authority for one physical target.
+ * Product authorization and prompt intent are mandatory; this is deliberately
+ * not a generic text-input capability and is separate from human Take Control.
+ */
+export interface PromptInputAuthority extends ManagedAgentPhysicalIdentity {
+  workerId: string;
+  questLaunchId: string;
+  runId: string;
+  actionId: string;
+  occurrenceId: string;
+  attemptId: string;
+  herdrEndpointGeneration: number;
+  herdrServerGeneration: string;
+  ownershipToken: string;
+  resultNonce: string;
+  promptAuthorizedAt: string;
+  promptIntentAt: string;
+}
+
+/** Backward-compatible transport name; authority semantics are explicit above. */
+export type InteractivePromptAuthority = PromptInputAuthority;
+
+export interface InteractivePromptInput {
+  authority: PromptInputAuthority;
+  /** Terminal-protocol bytes. Prompt content itself must remain literal. */
+  text: string;
 }
 
 export type SessionBackendReadinessStatus =
@@ -102,7 +167,9 @@ export interface TerminalAttachmentDescriptor {
   mode: "local_native_terminal";
   backendKind: "herdr" | (string & {});
   terminalSessionId: string;
-  terminalTargetId: string;
+  /** Digest-only fence; never a path or executable authority. */
+  localContextId: string;
+  paneId: string;
   terminalId?: string;
   supportsObservation: boolean;
   supportsTakeover: boolean;
@@ -136,9 +203,11 @@ export interface TerminalSessionBackend {
     title: string;
     tokens: Record<string, string>;
   }): Promise<void>;
-  /** Report guest-native Pi lifecycle through the host-owned Herdr socket. */
+  /** Report guest-native lifecycle through the host-owned Herdr socket. */
   reportAgentState?(input: {
     paneId: string;
+    agent: "pi" | "agy";
+    source: "quest-engineering:sbx-pi" | "quest-engineering:sbx-antigravity";
     state: "idle" | "working" | "blocked";
     sequence: number;
     nativeSession?: NativeSessionRef;
@@ -164,6 +233,16 @@ export interface TerminalSessionBackend {
   ): Promise<HostedAgent>;
   /** Inspect the backend's current authoritative terminal-agent state. */
   inspectAgentState(target: string): Promise<HostedAgent>;
+  inspectPaneProcess?(paneId: string): Promise<HostedPaneProcessInfo>;
+  /**
+   * Stage literal automated prompt input after validating full Product,
+   * environment, endpoint, session, pane, and authorization authority.
+   */
+  stageInteractivePrompt?(input: InteractivePromptInput): Promise<void>;
+  /** Send the one native Enter action for already-staged authorized input. */
+  submitInteractivePrompt?(
+    authority: InteractivePromptAuthority,
+  ): Promise<void>;
   /** Close exactly one owned pane, terminating its child process without terminal input. */
   closePane(paneId: string): Promise<void>;
   sendKeys(target: string, keys: string[]): Promise<void>;

@@ -6,6 +6,11 @@ import {
   sbxEnvironmentName,
 } from "../src/execution-environment/sbx-backend.ts";
 import {
+  SbxClientError,
+  type SbxRequestOptions,
+  type SbxSandboxSummary,
+} from "../src/execution-environment/sbx-client.ts";
+import {
   SBX_EXECUTION_PROFILE_V1,
   SBX_PI_EXECUTION_PROFILE_V2,
   SBX_PI_PROFILE,
@@ -370,6 +375,108 @@ test("an externally stopped sandbox cannot execute through an old running lease"
   );
 });
 
+test("stop reconciles a lost timeout response and remains idempotent", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "timeout_stopped");
+  const value = stopBackend(root, state, client);
+  const lease = await value.ensure(sbxSpec("run-stop-response-loss"));
+
+  await value.stop(lease.ref);
+  await value.stop(lease.ref);
+
+  expect(client.stopCalls).toBe(1);
+  expect(client.stopTimeouts).toEqual([7]);
+  expect(client.listTimeouts.at(-1)).toBeLessThanOrEqual(3);
+  expect(await value.inspect(lease.ref)).toMatchObject({
+    state: "stopped",
+    usable: false,
+  });
+});
+
+test("timed-out stop reports authoritative running state without an automatic retry", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "timeout_running");
+  const store = new ExecutionEnvironmentStore(root);
+  const value = stopBackend(root, state, client, store);
+  const spec = sbxSpec("run-stop-still-running");
+  const lease = await value.ensure(spec);
+  const startedAt = Date.now();
+
+  await expect(value.stop(lease.ref)).rejects.toMatchObject({
+    code: "operation_timeout",
+    operation: "stop",
+    message: expect.stringContaining("inventory still reports running"),
+  });
+
+  expect(Date.now() - startedAt).toBeLessThan(500);
+  expect(client.stopCalls).toBe(1);
+  expect(store.current("sbx", spec.workerId, spec.runId)).toMatchObject({
+    state: "running",
+    diagnostics: [
+      expect.objectContaining({ code: "sbx_stop_reconciled_running" }),
+    ],
+  });
+  expect(await value.inspect(lease.ref)).toMatchObject({
+    state: "running",
+    usable: true,
+  });
+});
+
+test("timed-out stop persists uncertainty when final inventory is unavailable", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "timeout_inventory_unavailable");
+  const store = new ExecutionEnvironmentStore(root);
+  const value = stopBackend(root, state, client, store);
+  const spec = sbxSpec("run-stop-uncertain");
+  const lease = await value.ensure(spec);
+
+  await expect(value.stop(lease.ref)).rejects.toMatchObject({
+    code: "operation_timeout",
+    operation: "stop",
+    message: expect.stringContaining("final state is uncertain"),
+  });
+
+  expect(client.stopCalls).toBe(1);
+  expect(store.current("sbx", spec.workerId, spec.runId)).toMatchObject({
+    state: "degraded",
+    diagnostics: [
+      expect.objectContaining({ code: "sbx_stop_state_uncertain" }),
+    ],
+  });
+});
+
+test("a bounded failed stop can be reconciled and recovered after Worker restart", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new StopScenarioClient(state, "timeout_running");
+  const first = stopBackend(root, state, client);
+  const spec = sbxSpec("run-stop-restart-recovery");
+  const lease = await first.ensure(spec);
+  await expect(first.stop(lease.ref)).rejects.toMatchObject({
+    code: "operation_timeout",
+  });
+  first.close();
+  backends.splice(backends.indexOf(first), 1);
+
+  const sandbox = state.sandboxes.values().next().value as
+    | SbxSandboxSummary
+    | undefined;
+  if (!sandbox) throw new Error("expected fake sandbox");
+  sandbox.status = "stopped";
+  const restarted = backend(root, state);
+  const recovered = await restarted.recover(lease.ref, spec);
+
+  expect(recovered.ref).toEqual(lease.ref);
+  expect(state.createCalls).toBe(1);
+  expect(await restarted.inspect(lease.ref)).toMatchObject({
+    state: "running",
+    usable: true,
+  });
+});
+
 test("generic lease exec returns nonzero status without changing semantics", async () => {
   const fixture = await setup();
   const lease = await fixture.backend.ensure(sbxSpec("run-nonzero"));
@@ -412,6 +519,74 @@ function backend(
   });
   backends.push(value);
   return value;
+}
+
+function stopBackend(
+  root: string,
+  state: ReturnType<typeof fakeSbxState>,
+  client: FakeSbxClient,
+  store?: ExecutionEnvironmentStore,
+): SbxExecutionEnvironmentBackend {
+  const value = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client,
+    ...(store ? { store } : {}),
+    verifier: new FakeSbxVerifier(state),
+    reconciliationPollMs: 1,
+    reconciliationAttempts: 100,
+    stopRequestTimeoutMs: 7,
+    stopReconciliationTimeoutMs: 8,
+    stopInspectionTimeoutMs: 3,
+  });
+  backends.push(value);
+  return value;
+}
+
+class StopScenarioClient extends FakeSbxClient {
+  stopCalls = 0;
+  readonly stopTimeouts: number[] = [];
+  readonly listTimeouts: number[] = [];
+
+  constructor(
+    state: ReturnType<typeof fakeSbxState>,
+    private readonly scenario:
+      | "timeout_stopped"
+      | "timeout_running"
+      | "timeout_inventory_unavailable",
+  ) {
+    super(state);
+  }
+
+  override async list(
+    options: SbxRequestOptions = {},
+  ): Promise<SbxSandboxSummary[]> {
+    if (options.timeoutMs !== undefined)
+      this.listTimeouts.push(options.timeoutMs);
+    if (this.stopCalls > 0 && this.scenario === "timeout_inventory_unavailable")
+      throw new SbxClientError(
+        "operation_timeout",
+        "synthetic inventory timeout",
+        ["ls", "--json"],
+      );
+    return super.list(options);
+  }
+
+  override async stop(
+    sandboxName: string,
+    options: SbxRequestOptions = {},
+  ): Promise<void> {
+    this.stopCalls += 1;
+    if (options.timeoutMs !== undefined)
+      this.stopTimeouts.push(options.timeoutMs);
+    if (this.scenario === "timeout_stopped")
+      await super.stop(sandboxName, options);
+    throw new SbxClientError(
+      "operation_timeout",
+      "synthetic stop response timeout",
+      ["stop", sandboxName],
+    );
+  }
 }
 
 function rejectingBackend(

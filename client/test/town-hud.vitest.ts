@@ -7,12 +7,13 @@ import {
   within,
 } from "@testing-library/svelte";
 import { get } from "svelte/store";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "../src/App.svelte";
 import { ApiClient } from "../src/api/client";
 import TownHud from "../src/components/hud/TownHud.svelte";
 import { type ClientFixture, createFixture } from "../src/fixtures/fixtures";
 import { type BuildingId, createAppStore } from "../src/state/app-store";
+import { attachTestLiveSession } from "./live-session-fixture";
 
 afterEach(() => {
   cleanup();
@@ -82,6 +83,45 @@ test("live session attention is counted while remaining distinguishable", () => 
   expect(
     screen.getByTitle(/2 live sessions waiting for human help/),
   ).toBeTruthy();
+});
+
+test("attention-toast Open Session observes without Take Control authority", async () => {
+  const value = fixture("work-yard-running");
+  const run = value.selectedRunId ? value.runs[value.selectedRunId] : null;
+  const step = run?.steps.at(-1);
+  if (!run || !step?.attempt) throw new Error("Expected current Attempt");
+  const session = attachTestLiveSession(step, {
+    canObserve: true,
+    canTakeover: false,
+  });
+  const target = {
+    attentionId: "attention-observe-only",
+    runId: run.id,
+    occurrenceId: step.occurrence_id,
+    attemptId: step.attempt.id,
+    sessionId: session.id,
+    questTitle: run.quest.title,
+    memberName: step.member?.name ?? "Builder",
+    stepName: step.name ?? step.semantic_step_key,
+    harnessName: session.harness.display_name,
+    message: "Inspect the live session before deciding.",
+  };
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  const observe = vi.spyOn(store, "openSession").mockResolvedValue(true);
+  const takeover = vi.spyOn(store, "takeControl").mockResolvedValue(true);
+  store.attentionNotifications.set([target]);
+  render(App, { props: { store } });
+
+  expect(screen.queryByRole("button", { name: "Take Control" })).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Open Session" }));
+
+  expect(observe).toHaveBeenCalledOnce();
+  expect(observe).toHaveBeenCalledWith(target);
+  expect(takeover).not.toHaveBeenCalled();
 });
 
 test("zero metric slots remain present and connectivity changes emphasis truthfully", async () => {

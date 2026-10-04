@@ -1,9 +1,31 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CliSbxClient } from "../src/execution-environment/sbx-client.ts";
+import {
+  CliSbxClient,
+  runSbxSubprocess,
+} from "../src/execution-environment/sbx-client.ts";
 
 const roots: string[] = [];
+const versionJson = JSON.stringify({
+  client: { version: "v0.43.0", revision: "client-rev" },
+  server: {
+    state: "running",
+    version: "v0.43.0",
+    revision: "server-rev",
+    api_version: "0.31.0",
+  },
+});
+const updateNotice = "update available: v0.46.0 (running v0.43.0)";
+const expectedVersion = {
+  clientVersion: "v0.43.0",
+  clientRevision: "client-rev",
+  serverState: "running",
+  serverVersion: "v0.43.0",
+  serverRevision: "server-rev",
+  apiVersion: "0.31.0",
+};
+
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -36,6 +58,103 @@ else process.exit(2);
   ]);
 });
 
+for (const [name, stdout] of [
+  ["plain JSON", versionJson],
+  ["a leading update warning", `${updateNotice}\n${versionJson}`],
+  ["a trailing update warning", `${versionJson}\n${updateNotice}`],
+  [
+    "an ANSI-colored update warning",
+    `\u001b[33m${updateNotice}\u001b[0m\n${versionJson}`,
+  ],
+] as const) {
+  test(`CLI client accepts exactly one version document with ${name}`, async () => {
+    expect(await versionClient(stdout).version()).toEqual(expectedVersion);
+  });
+}
+
+test("CLI client keeps an update warning on stderr separate from JSON stdout", async () => {
+  const client = new CliSbxClient("/fake/sbx", async () => ({
+    exitCode: 0,
+    stdout: versionJson,
+    stderr: `${updateNotice}\n`,
+  }));
+  expect(await client.version()).toEqual(expectedVersion);
+});
+
+test("CLI client rejects unsupported non-JSON framing", async () => {
+  for (const stdout of [
+    `daemon returned an arbitrary notice\n${versionJson}`,
+    `\u001b[2K${updateNotice}\n${versionJson}`,
+  ])
+    await expect(versionClient(stdout).version()).rejects.toMatchObject({
+      code: "malformed_backend_response",
+    });
+});
+
+test("CLI client rejects multiple JSON documents in stdout", async () => {
+  await expect(
+    versionClient(
+      `${versionJson}\n\u001b[33m${versionJson}\u001b[0m`,
+    ).version(),
+  ).rejects.toMatchObject({ code: "malformed_backend_response" });
+});
+
+test("CLI client rejects a truncated JSON document in stdout", async () => {
+  await expect(
+    versionClient(versionJson.slice(0, -1)).version(),
+  ).rejects.toMatchObject({ code: "malformed_backend_response" });
+  await expect(
+    versionClient(`${versionJson}\n{"truncated":`).version(),
+  ).rejects.toMatchObject({ code: "malformed_backend_response" });
+});
+
+test("CLI client rejects malformed JSON string escaping", async () => {
+  await expect(
+    versionClient(`${updateNotice}\n{"client":"bad\\q"}`).version(),
+  ).rejects.toMatchObject({ code: "malformed_backend_response" });
+});
+
+test("CLI client preserves nonzero exit classification before JSON parsing", async () => {
+  const client = new CliSbxClient("/fake/sbx", async () => ({
+    exitCode: 7,
+    stdout: versionJson,
+    stderr: "sbx failed",
+  }));
+  await expect(client.version()).rejects.toMatchObject({
+    code: "operation_failed",
+  });
+});
+
+test("SBX subprocess runner drains delayed large stdout and stderr without merging streams", async () => {
+  const executable = await script(`
+const stdout = "stdout-start\\n" + "o".repeat(512 * 1024) + "\\nstdout-end\\n";
+const stderr = "stderr-start\\n" + "e".repeat(512 * 1024) + "\\nstderr-end\\n";
+const write = (stream, value) => new Promise((resolve) => stream.write(value, resolve));
+await Promise.all([
+  write(process.stdout, stdout.slice(0, 19)),
+  write(process.stderr, stderr.slice(0, 19)),
+]);
+await Bun.sleep(20);
+await Promise.all([
+  write(process.stdout, stdout.slice(19)),
+  write(process.stderr, stderr.slice(19)),
+]);
+`);
+  const result = await runSbxSubprocess(executable)({
+    args: [],
+    timeoutMs: 5_000,
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toBe(
+    `stdout-start\n${"o".repeat(512 * 1024)}\nstdout-end\n`,
+  );
+  expect(result.stderr).toBe(
+    `stderr-start\n${"e".repeat(512 * 1024)}\nstderr-end\n`,
+  );
+  expect(result.stdout).not.toContain("stderr-start");
+  expect(result.stderr).not.toContain("stdout-start");
+});
+
 test("CLI client rejects malformed structured output", async () => {
   const executable = await script(
     `console.log(JSON.stringify({sandboxes:[{name:"missing-fields"}]}))`,
@@ -52,6 +171,24 @@ test("CLI client terminates timed-out commands and classifies the error", async 
   await expect(client.list()).rejects.toMatchObject({
     code: "operation_timeout",
   });
+});
+
+test("CLI client applies dedicated lifecycle timeouts to literal stop and inventory argv", async () => {
+  const calls: Array<{ args: readonly string[]; timeoutMs: number }> = [];
+  const client = new CliSbxClient("/fake/sbx", async (request) => {
+    calls.push({ args: [...request.args], timeoutMs: request.timeoutMs });
+    return request.args[0] === "ls"
+      ? { exitCode: 0, stdout: '{"sandboxes":[]}', stderr: "" }
+      : { exitCode: 0, stdout: "", stderr: "" };
+  });
+
+  await client.stop("qe-exact-sandbox", { timeoutMs: 1_234 });
+  await client.list({ timeoutMs: 567 });
+
+  expect(calls).toEqual([
+    { args: ["stop", "qe-exact-sandbox"], timeoutMs: 1_234 },
+    { args: ["ls", "--json"], timeoutMs: 567 },
+  ]);
 });
 
 test("CLI errors redact environment values from retained command arguments", async () => {
@@ -82,7 +219,7 @@ test("CLI client registers a sandbox-scoped command secret without retaining res
   await client.setDynamicSecret({
     sandboxName: "qe-test",
     placeholder: "nonsecret-placeholder",
-    host: "chatgpt.com",
+    hosts: ["chatgpt.com", "www.googleapis.com"],
     resolverCommand: "/trusted/credential-helper",
     refreshInterval: "5m",
   });
@@ -94,6 +231,8 @@ test("CLI client registers a sandbox-scoped command secret without retaining res
       "nonsecret-placeholder",
       "--host",
       "chatgpt.com",
+      "--host",
+      "www.googleapis.com",
       "--command",
       "/trusted/credential-helper",
       "--refresh",
@@ -112,7 +251,7 @@ test("CLI client registers a sandbox-scoped command secret without retaining res
     .setDynamicSecret({
       sandboxName: "qe-test",
       placeholder: "nonsecret-placeholder",
-      host: "chatgpt.com",
+      hosts: ["chatgpt.com"],
       resolverCommand: "/trusted/credential-helper",
       refreshInterval: "5m",
     })
@@ -171,6 +310,14 @@ test("CLI launcher arguments preserve structured guest cwd and environment", () 
     "printf ok",
   ]);
 });
+
+function versionClient(stdout: string): CliSbxClient {
+  return new CliSbxClient("/fake/sbx", async () => ({
+    exitCode: 0,
+    stdout,
+    stderr: "",
+  }));
+}
 
 async function script(body: string): Promise<string> {
   const parent = join(process.cwd(), ".pi", "tmp");

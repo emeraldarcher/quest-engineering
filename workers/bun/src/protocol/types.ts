@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 9 as const;
+export const WORKER_PROTOCOL_VERSION = 10 as const;
 
 export type JsonValue =
   | string
@@ -207,6 +207,7 @@ export interface ReconcileSession {
     attachment_mode: "local_native_terminal";
     backend_kind: string;
     terminal_session_id: string;
+    local_context_id: string;
     terminal_target_id: string;
     terminal_id?: string;
     supports_observation: boolean;
@@ -282,8 +283,22 @@ export type AccountAvailability =
   | "verified_unavailable"
   | "unknown";
 
+export interface ExecutorExecutionEnvironment {
+  backend_kind: string;
+  profile: {
+    id: string;
+    digest: string;
+  };
+  capabilities: Array<{
+    kind: string;
+    mode: string;
+    detail?: string;
+  }>;
+}
+
 export interface ExecutorCapability {
   harness_kind: string;
+  execution_environment?: ExecutorExecutionEnvironment;
   models: Array<{
     provider: string;
     model: string;

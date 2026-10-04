@@ -24,6 +24,8 @@ const OPERATIONS = [
   "tab.rename",
   "pane.report_metadata",
   "pane.process_info",
+  "pane.send_text",
+  "pane.send_keys",
   "agent.start",
   "agent.prompt",
   "agent.get",
@@ -46,6 +48,8 @@ const PARAMETERS: Record<string, string[]> = {
     "tokens",
   ],
   "pane.process_info": ["pane_id"],
+  "pane.send_text": ["pane_id", "text"],
+  "pane.send_keys": ["pane_id", "keys"],
   "agent.start": ["pane_id", "name", "kind", "args", "command", "timeout_ms"],
   "agent.prompt": ["target", "text", "wait"],
   "agent.get": ["target"],
@@ -104,6 +108,27 @@ test("protocol 999 missing a Pi-only capability disables Pi but not Antigravity"
   expect(antigravity.ready).toBe(true);
 });
 
+test("environment-backed harnesses reject Herdr without explicit managed launch", () => {
+  const value = evidence(22, {
+    agentExplicitLaunch: false,
+    missingParameter: ["agent.start", "command"],
+  });
+  for (const harness of ["pi", "antigravity"]) {
+    const readiness = evaluateHerdrCompatibility(harness, value);
+    expect(readiness).toMatchObject({
+      status: "incompatible",
+      ready: false,
+    });
+    expect(readiness.missingCapabilities).toContain("agent.explicit_launch");
+    expect(readiness.diagnostics).toContainEqual({
+      code: "missing_capability",
+      capability: "agent.explicit_launch",
+      message:
+        "Herdr cannot prove generic exact managed launch support in both live capabilities and agent.start schema metadata.",
+    });
+  }
+});
+
 test("protocol 999 with an incompatible operation contract names the semantic capability", () => {
   const value = evidence(999, {
     missingParameter: ["agent.prompt", "wait"],
@@ -119,21 +144,24 @@ test("protocol 999 with an incompatible operation contract names the semantic ca
   );
 });
 
-test("protocol 999 missing a shared prompt capability fails both harnesses", () => {
-  const value = evidence(999, {
+test("agent prompt remains Pi-only while pane literal input is Antigravity-only", () => {
+  const noAgentPrompt = evidence(999, {
     operations: OPERATIONS.filter((operation) => operation !== "agent.prompt"),
   });
-  for (const harness of ["pi", "antigravity"]) {
-    const readiness = evaluateHerdrCompatibility(harness, value);
-    expect(readiness.ready).toBe(false);
-    expect(readiness.missingCapabilities).toContain("agent.prompt");
-    expect(readiness.diagnostics).toContainEqual(
-      expect.objectContaining({
-        capability: "agent.prompt",
-        message: expect.stringContaining("agent.prompt"),
-      }),
-    );
-  }
+  expect(evaluateHerdrCompatibility("pi", noAgentPrompt).ready).toBe(false);
+  expect(evaluateHerdrCompatibility("antigravity", noAgentPrompt).ready).toBe(
+    true,
+  );
+
+  const noPaneText = evidence(999, {
+    operations: OPERATIONS.filter(
+      (operation) => operation !== "pane.send_text",
+    ),
+  });
+  const antigravity = evaluateHerdrCompatibility("antigravity", noPaneText);
+  expect(antigravity.ready).toBe(false);
+  expect(antigravity.missingCapabilities).toContain("terminal.literal_input");
+  expect(evaluateHerdrCompatibility("pi", noPaneText).ready).toBe(true);
 });
 
 test("protocol 999 missing required response metadata fails the affected capability", () => {
@@ -246,6 +274,12 @@ test("readiness fences a stale observation failure after newer success and reval
   const provider = new LocalHerdrConnectionProvider("test-herdr", {
     workerId: "test-worker",
     dataRoot: root,
+    herdrContext: {
+      executable: process.execPath,
+      configHome: root,
+      configPath: join(root, "config.toml"),
+      id: `sha256:${"1".repeat(64)}`,
+    },
     runCommand: async (args) => ({
       exitCode: 0,
       stdout: JSON.stringify(
@@ -329,6 +363,7 @@ function evidence(
     states?: string[];
     integrations?: HerdrCompatibilityEvidence["integrations"];
     missingParameter?: [string, string];
+    agentExplicitLaunch?: boolean;
   } = {},
 ): HerdrCompatibilityEvidence {
   const endpointGeneration = overrides.endpointGeneration ?? 1;
@@ -341,7 +376,7 @@ function evidence(
       endpoint_compatible: true,
       capabilities: {
         endpoint_protocol_generation: endpointGeneration,
-        agent_explicit_launch: true,
+        agent_explicit_launch: overrides.agentExplicitLaunch ?? true,
       },
     },
     schema: schema(
@@ -353,7 +388,7 @@ function evidence(
       version: "test-herdr",
       protocol,
       endpointGeneration,
-      agentExplicitLaunch: true,
+      agentExplicitLaunch: overrides.agentExplicitLaunch ?? true,
     },
     snapshot: { workspaces: [], panes: [], agents: [] },
     integrations: overrides.integrations ?? [

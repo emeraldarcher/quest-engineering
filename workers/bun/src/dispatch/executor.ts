@@ -550,6 +550,11 @@ export class DispatchExecutor {
       const recovered = await this.recoverExecution(lineage, dispatch);
       if (!recovered.found || !recovered.agent)
         throw new Error(recovered.detail);
+      if (recovered.agent.nativeSession)
+        this.registry.recordNativeSession(
+          lineage.lineageId,
+          recovered.agent.nativeSession,
+        );
       if (recovered.ref) {
         this.registry.recordHost(lineage.lineageId, {
           herdrSession: recovered.ref.sessionName,

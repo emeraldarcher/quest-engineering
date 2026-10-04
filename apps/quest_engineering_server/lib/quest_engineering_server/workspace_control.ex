@@ -231,6 +231,7 @@ defmodule QuestEngineering.Server.WorkspaceControl do
           where:
             binding.workspace_id == ^workspace_id and binding.status == "available" and
               worker.status == "connected" and
+              worker.ready_generation == worker.connection_generation and
               binding.last_seen_generation == worker.connection_generation
       )
 

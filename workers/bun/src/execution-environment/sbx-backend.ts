@@ -7,15 +7,14 @@ import type {
   SbxSandboxSummary,
 } from "./sbx-client.ts";
 import { CliSbxClient, SbxClientError } from "./sbx-client.ts";
-import {
-  type SbxPiCredentialProvision,
-  SbxPiCredentialProvisioner,
-} from "./sbx-pi-credential.ts";
+import { SbxMixedCredentialProvisioner } from "./sbx-mixed-credential.ts";
+import { SbxPiCredentialProvisioner } from "./sbx-pi-credential.ts";
 import {
   SBX_DISABLED_CREDENTIAL_ENVIRONMENT,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   type SBX_EXECUTION_PROFILE_V1,
   SBX_GUEST_PATHS,
+  SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_RUNTIME_NETWORK_TARGETS,
   SBX_SHELL_PROFILE,
   type SbxExecutionProfile,
@@ -58,7 +57,7 @@ import {
 } from "./types.ts";
 
 export interface SbxCredentialProvisioner {
-  provision(sandboxName: string): Promise<SbxPiCredentialProvision>;
+  provision(sandboxName: string): Promise<unknown>;
 }
 
 export interface SbxExecutionEnvironmentBackendOptions {
@@ -78,6 +77,12 @@ export interface SbxExecutionEnvironmentBackendOptions {
   reconciliationPollMs?: number;
   reconciliationAttempts?: number;
   ownerWaitAttempts?: number;
+  /** Bound for the one native `sbx stop` request. */
+  stopRequestTimeoutMs?: number;
+  /** Aggregate bound for authoritative inventory reconciliation after stop. */
+  stopReconciliationTimeoutMs?: number;
+  /** Bound for each native inventory request made by stop. */
+  stopInspectionTimeoutMs?: number;
 }
 
 /** Durable Run-owned Docker Sandboxes lifecycle. Not wired to dispatch through Phase 3. */
@@ -101,6 +106,9 @@ export class SbxExecutionEnvironmentBackend
   private readonly reconciliationPollMs: number;
   private readonly reconciliationAttempts: number;
   private readonly ownerWaitAttempts: number;
+  private readonly stopRequestTimeoutMs: number;
+  private readonly stopReconciliationTimeoutMs: number;
+  private readonly stopInspectionTimeoutMs: number;
 
   constructor(private readonly options: SbxExecutionEnvironmentBackendOptions) {
     this.client = options.client ?? new CliSbxClient();
@@ -123,15 +131,30 @@ export class SbxExecutionEnvironmentBackend
         this.executionProfile,
       );
     this.credentialProvisioner =
-      this.executionProfile.credentialMode === "host_pi_oauth_dynamic_proxy"
-        ? (options.credentialProvisioner ??
-          new SbxPiCredentialProvisioner(this.client))
-        : undefined;
+      options.credentialProvisioner ??
+      (this.executionProfile.credentialMode === "host_pi_oauth_dynamic_proxy"
+        ? new SbxPiCredentialProvisioner(this.client)
+        : this.executionProfile.credentialMode ===
+            "host_mixed_oauth_dynamic_proxies"
+          ? new SbxMixedCredentialProvisioner(this.client)
+          : undefined);
     this.processId = options.processId ?? process.pid;
     this.isProcessAlive = options.isProcessAlive ?? processAlive;
     this.reconciliationPollMs = options.reconciliationPollMs ?? 250;
     this.reconciliationAttempts = options.reconciliationAttempts ?? 120;
     this.ownerWaitAttempts = options.ownerWaitAttempts ?? 2_640;
+    this.stopRequestTimeoutMs = positiveMilliseconds(
+      options.stopRequestTimeoutMs ?? 30_000,
+      "stopRequestTimeoutMs",
+    );
+    this.stopReconciliationTimeoutMs = positiveMilliseconds(
+      options.stopReconciliationTimeoutMs ?? 30_000,
+      "stopReconciliationTimeoutMs",
+    );
+    this.stopInspectionTimeoutMs = positiveMilliseconds(
+      options.stopInspectionTimeoutMs ?? 5_000,
+      "stopInspectionTimeoutMs",
+    );
   }
 
   readiness(): Promise<EnvironmentReadiness> {
@@ -313,24 +336,34 @@ export class SbxExecutionEnvironmentBackend
   async stop(ref: EnvironmentRef): Promise<void> {
     await this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
       const record = this.requireCurrentRef(ref, "stop");
-      const sandbox = await this.requireExactSandbox(record, "stop");
-      if (sandbox.status !== "stopped") {
-        if (sandbox.status !== "running")
-          throw unhealthy(
-            `Cannot stop SBX environment in state ${sandbox.status}.`,
-            "stop",
-          );
-        try {
-          await this.client.stop(record.displayName);
-        } catch (error) {
-          const reconciled = await this.requireExactSandbox(record, "stop");
-          if (reconciled.status !== "stopped") throw normalize(error, "stop");
-        }
+      const initial = await this.observeSandboxForStop(record);
+      if (initial.kind !== "exact")
+        throw this.persistStopObservation(record, initial, undefined);
+      if (initial.sandbox.status === "stopped") {
+        this.store.markState(record.recordId, "stopped");
+        return;
       }
-      const stopped = await this.pollSandbox(record, "stopped", "stop");
-      if (!stopped || stopped.status !== "stopped")
-        throw unhealthy("SBX environment did not reach stopped state.", "stop");
-      this.store.markState(record.recordId, "stopped");
+      if (initial.sandbox.status !== "running")
+        throw this.persistStopObservation(record, initial, undefined);
+
+      let requestError: unknown = null;
+      try {
+        await this.client.stop(record.displayName, {
+          timeoutMs: this.stopRequestTimeoutMs,
+        });
+      } catch (error) {
+        requestError = error;
+      }
+
+      const reconciled = await this.reconcileStoppedSandbox(record);
+      if (
+        reconciled.kind === "exact" &&
+        reconciled.sandbox.status === "stopped"
+      ) {
+        this.store.markState(record.recordId, "stopped");
+        return;
+      }
+      throw this.persistStopObservation(record, reconciled, requestError);
     });
   }
 
@@ -959,7 +992,7 @@ export class SbxExecutionEnvironmentBackend
     )
       throw new EnvironmentBackendError(
         "environment_spec_mismatch",
-        "Environment profile does not match qe-execution-v1.",
+        `Environment profile does not match ${this.profile.id}.`,
         operation,
       );
     if (
@@ -997,17 +1030,33 @@ export class SbxExecutionEnvironmentBackend
       .filter((requirement) => requirement.capability === "model_provider")
       .flatMap((requirement) => [...requirement.targets])
       .sort();
-    const expectedTargets = [...SBX_PI_RUNTIME_NETWORK_TARGETS].sort();
+    const mixed =
+      this.executionProfile.credentialMode ===
+      "host_mixed_oauth_dynamic_proxies";
+    const expectedTargets = [
+      ...(mixed
+        ? SBX_MIXED_RUNTIME_NETWORK_TARGETS
+        : SBX_PI_RUNTIME_NETWORK_TARGETS),
+    ].sort();
     const exactProviderNetwork =
       spec.networkRequirements.length === 1 &&
       providerTargets.length === expectedTargets.length &&
       providerTargets.every(
         (target, index) => target === expectedTargets[index],
       );
+    const credentials = spec.credentialGrants
+      .map((grant) => `${grant.kind}:${grant.scope ?? ""}`)
+      .sort();
+    const expectedCredentials = (
+      mixed
+        ? ["antigravity-oauth:subscription", "openai-codex-oauth:subscription"]
+        : ["openai-codex-oauth:subscription"]
+    ).sort();
     const exactCredential =
-      spec.credentialGrants.length === 1 &&
-      spec.credentialGrants[0]?.kind === "openai-codex-oauth" &&
-      spec.credentialGrants[0]?.scope === "subscription";
+      credentials.length === expectedCredentials.length &&
+      credentials.every(
+        (credential, index) => credential === expectedCredentials[index],
+      );
     const exactControl =
       spec.controlChannels.length === 1 &&
       spec.controlChannels[0]?.kind === "worker_file_mailbox_v1" &&
@@ -1015,7 +1064,9 @@ export class SbxExecutionEnvironmentBackend
     if (!exactProviderNetwork || !exactCredential || !exactControl)
       throw new EnvironmentBackendError(
         "environment_requirements_unmet",
-        "Pi SBX requires exact ChatGPT subscription egress, one host-managed subscription grant, and the attempt-scoped Worker mailbox relay.",
+        mixed
+          ? "Mixed coding SBX requires exact Pi and Antigravity subscription egress, both host-managed subscription grants, and the attempt-scoped Worker mailbox relay."
+          : "Pi SBX requires exact ChatGPT subscription egress, one host-managed subscription grant, and the attempt-scoped Worker mailbox relay.",
         operation,
       );
   }
@@ -1193,6 +1244,133 @@ export class SbxExecutionEnvironmentBackend
     return null;
   }
 
+  private async observeSandboxForStop(
+    record: DurableEnvironmentRecord,
+    timeoutMs = this.stopInspectionTimeoutMs,
+  ): Promise<StopObservation> {
+    try {
+      return locateSandbox(
+        record,
+        await this.client.list({ timeoutMs }),
+        this.executionProfile.nativeAgent,
+      );
+    } catch (error) {
+      return { kind: "unavailable", error };
+    }
+  }
+
+  private async reconcileStoppedSandbox(
+    record: DurableEnvironmentRecord,
+  ): Promise<StopObservation> {
+    const deadline = Date.now() + this.stopReconciliationTimeoutMs;
+    let latest: StopObservation = {
+      kind: "unavailable",
+      error: new Error("SBX stop reconciliation did not inspect inventory."),
+    };
+    do {
+      const remainingMs = Math.max(1, deadline - Date.now());
+      latest = await this.observeSandboxForStop(
+        record,
+        Math.min(this.stopInspectionTimeoutMs, remainingMs),
+      );
+      if (
+        latest.kind === "missing" ||
+        latest.kind === "mismatch" ||
+        (latest.kind === "exact" && latest.sandbox.status === "stopped")
+      )
+        return latest;
+      const sleepMs = Math.min(
+        this.reconciliationPollMs,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (sleepMs > 0) await Bun.sleep(sleepMs);
+    } while (Date.now() < deadline);
+    return latest;
+  }
+
+  private persistStopObservation(
+    record: DurableEnvironmentRecord,
+    observation: StopObservation,
+    requestError: unknown | null | undefined,
+  ): EnvironmentBackendError {
+    const attempted = requestError !== undefined;
+    if (observation.kind === "missing") {
+      const message = attempted
+        ? "Durable ownership exists but the SBX environment is missing after stop reconciliation."
+        : "SBX stop was not requested because the durably owned environment is missing.";
+      this.store.markState(record.recordId, "missing", [
+        { code: "environment_not_found", message },
+      ]);
+      return new EnvironmentBackendError(
+        "environment_not_found",
+        message,
+        "stop",
+      );
+    }
+    if (observation.kind === "mismatch") {
+      this.store.markState(record.recordId, "incompatible", [
+        {
+          code: "environment_identity_mismatch",
+          message: observation.message,
+        },
+      ]);
+      return identityMismatch(observation.message, "stop");
+    }
+
+    const requestFailure =
+      requestError === null || requestError === undefined
+        ? null
+        : normalize(requestError, "stop");
+    if (observation.kind === "exact") {
+      if (observation.sandbox.status === "stopped") {
+        this.store.markState(record.recordId, "stopped");
+        return unhealthy(
+          "SBX stop reconciliation reached an unexpected terminal path.",
+          "stop",
+        );
+      }
+      if (observation.sandbox.status === "running") {
+        const message = attempted
+          ? requestFailure
+            ? `SBX stop request failed; authoritative inventory still reports running. Retained environment state was preserved. ${requestFailure.message}`
+            : "SBX stop request returned, but authoritative inventory still reports running. Retained environment state was preserved."
+          : "Cannot stop an SBX environment before authoritative inventory reports running or stopped.";
+        this.store.markState(record.recordId, "running", [
+          { code: "sbx_stop_reconciled_running", message },
+        ]);
+        return new EnvironmentBackendError(
+          requestFailure?.code ?? "environment_unhealthy",
+          message,
+          "stop",
+        );
+      }
+      const message = attempted
+        ? `SBX stop final state is uncertain: authoritative inventory reports ${observation.sandbox.status}. Retained environment state was preserved.`
+        : `Cannot stop SBX environment in state ${observation.sandbox.status}.`;
+      this.store.markState(record.recordId, "degraded", [
+        { code: "sbx_stop_state_uncertain", message },
+      ]);
+      return new EnvironmentBackendError(
+        requestFailure?.code ?? "environment_unhealthy",
+        message,
+        "stop",
+      );
+    }
+
+    const inventoryFailure = normalize(observation.error, "stop");
+    const message = attempted
+      ? `SBX stop final state is uncertain because authoritative inventory was unavailable. Retained environment state was preserved. ${inventoryFailure.message}`
+      : `SBX stop was not requested because authoritative inventory was unavailable. ${inventoryFailure.message}`;
+    this.store.markState(record.recordId, "degraded", [
+      { code: "sbx_stop_state_uncertain", message },
+    ]);
+    return new EnvironmentBackendError(
+      requestFailure?.code ?? inventoryFailure.code,
+      message,
+      "stop",
+    );
+  }
+
   private async pollSandbox(
     record: DurableEnvironmentRecord,
     target: "running" | "stopped",
@@ -1260,6 +1438,8 @@ type LocatedSandbox =
   | { kind: "exact"; sandbox: SbxSandboxSummary }
   | { kind: "missing" }
   | { kind: "mismatch"; message: string };
+
+type StopObservation = LocatedSandbox | { kind: "unavailable"; error: unknown };
 
 function locateSandbox(
   record: DurableEnvironmentRecord,
@@ -1538,6 +1718,12 @@ function unhealthy(
     message,
     operation,
   );
+}
+
+function positiveMilliseconds(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error(`${name} must be a positive integer.`);
+  return value;
 }
 
 function processAlive(processId: number): boolean {

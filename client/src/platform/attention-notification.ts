@@ -1,4 +1,4 @@
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   onAction,
@@ -20,6 +20,25 @@ export interface AttentionTarget {
   message: string;
 }
 
+type NotificationInitializationOperation =
+  | "detect_notification_action_capability"
+  | "register_notification_action_types"
+  | "register_notification_action_listener";
+
+export class NotificationInitializationError extends Error {
+  readonly operation: NotificationInitializationOperation;
+  readonly nativeError: string;
+
+  constructor(operation: NotificationInitializationOperation, cause: unknown) {
+    super("Native attention notifications could not be initialized.", {
+      cause,
+    });
+    this.name = "NotificationInitializationError";
+    this.operation = operation;
+    this.nativeError = nativeErrorMessage(cause);
+  }
+}
+
 let initialized: Promise<void> | null = null;
 let route: ((target: AttentionTarget) => void) | null = null;
 
@@ -28,7 +47,25 @@ export function initializeAttentionNotifications(
 ): Promise<void> {
   route = onOpen;
   if (!isTauri()) return Promise.resolve();
-  initialized ??= (async () => {
+  initialized ??= initializeNativeAttentionNotifications();
+  return initialized;
+}
+
+async function initializeNativeAttentionNotifications(): Promise<void> {
+  let actionTypesSupported: boolean;
+  try {
+    actionTypesSupported = await invoke<boolean>(
+      "notification_action_types_supported",
+    );
+  } catch (cause) {
+    throw new NotificationInitializationError(
+      "detect_notification_action_capability",
+      cause,
+    );
+  }
+  if (!actionTypesSupported) return;
+
+  try {
     await registerActionTypes([
       {
         id: "qe-live-session-attention",
@@ -41,12 +78,23 @@ export function initializeAttentionNotifications(
         ],
       },
     ]);
+  } catch (cause) {
+    throw new NotificationInitializationError(
+      "register_notification_action_types",
+      cause,
+    );
+  }
+  try {
     await onAction((notification) => {
       const target = notification.extra?.target;
       if (isAttentionTarget(target)) route?.(target);
     });
-  })();
-  return initialized;
+  } catch (cause) {
+    throw new NotificationInitializationError(
+      "register_notification_action_listener",
+      cause,
+    );
+  }
 }
 
 export async function notifyHumanAttention(
@@ -66,6 +114,16 @@ export async function notifyHumanAttention(
     autoCancel: true,
     extra: { target },
   });
+}
+
+function nativeErrorMessage(cause: unknown): string {
+  if (typeof cause === "string") return cause;
+  if (cause instanceof Error) return cause.message;
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return String(cause);
+  }
 }
 
 function stableNotificationId(value: string): number {

@@ -13,6 +13,8 @@ defmodule QuestEngineering.Server.Persistence.Worker do
     field :status, :string
     field :connection_id, :string
     field :connection_generation, :integer, default: 0
+    field :ready_generation, :integer
+    field :ready_at, :utc_datetime_usec
     field :connected_at, :utc_datetime_usec
     field :disconnected_at, :utc_datetime_usec
     field :last_heartbeat_at, :utc_datetime_usec
@@ -30,6 +32,8 @@ defmodule QuestEngineering.Server.Persistence.Worker do
       :status,
       :connection_id,
       :connection_generation,
+      :ready_generation,
+      :ready_at,
       :connected_at,
       :disconnected_at,
       :last_heartbeat_at
@@ -51,5 +55,6 @@ defmodule QuestEngineering.Server.Persistence.Worker do
     |> check_constraint(:status, name: :workers_status_valid)
     |> check_constraint(:max_concurrency, name: :workers_max_concurrency_positive)
     |> check_constraint(:active_dispatches, name: :workers_active_dispatches_valid)
+    |> check_constraint(:ready_generation, name: :workers_ready_generation_valid)
   end
 end

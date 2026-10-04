@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "qe": {
+      "command": "/usr/bin/node",
+      "args": ["/qe/state/antigravity-control/mcp-server.mjs"],
+      "disabled": false
+    }
+  }
+}

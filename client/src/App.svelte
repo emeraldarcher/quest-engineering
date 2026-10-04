@@ -10,7 +10,11 @@ import WorkYardWindow from "./components/work-yard/WorkYardWindow.svelte";
 import QuestBoardWindow from "./components/quest-board/QuestBoardWindow.svelte";
 import WarRoomWindow from "./components/war-room/WarRoomWindow.svelte";
 import StarterCrewOnboarding from "./components/onboarding/StarterCrewOnboarding.svelte";
-import type { AppStore, BuildingId } from "./state/app-store";
+import {
+  type AppStore,
+  type BuildingId,
+  unexpectedClientRejection,
+} from "./state/app-store";
 
 export let store: AppStore;
 const {
@@ -20,6 +24,7 @@ const {
   liveAttentions: liveAttentionsStore,
   attentionNotifications: attentionNotificationsStore,
   loading: loadingStore,
+  bootstrapState: bootstrapStateStore,
   error: errorStore,
   realtimeStatus: realtimeStatusStore,
   serverReachable: serverReachableStore,
@@ -68,13 +73,12 @@ const buildings: Array<{ id: BuildingId; label: string; hotkey: string }> = [
 $: product = $productStore;
 $: starterStatus = $starterStatusStore;
 $: showOnboarding = Boolean(
-  !$loadingStore &&
-    !$selectedBuildingStore &&
+  !$selectedBuildingStore &&
     !onboardingDismissed &&
     starterStatus &&
-    (starterCompletionVisible ||
-      onboardingScene ||
-      ["empty", "recoverable_partial", "conflict"].includes(starterStatus.state)),
+    ($bootstrapStateStore === "needs_product_onboarding" ||
+      starterCompletionVisible ||
+      onboardingScene),
 );
 $: activeCrew = $activeCrewStore;
 $: townStatus = {
@@ -85,7 +89,7 @@ $: townStatus = {
 };
 function handleUnhandledRejection(event: PromiseRejectionEvent) {
   event.preventDefault();
-  store.reportError(event.reason);
+  store.reportError(unexpectedClientRejection(event.reason));
 }
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
@@ -208,7 +212,7 @@ async function openQuestRun(runId: string) {
     liveAttentionCount={$liveAttentionsStore.length}
   />
   {#if $loadingStore}<div class="notice">Loading Product data…</div>{/if}
-  {#if $errorStore && $selectedBuildingStore !== "quest-board"}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}</div>{/if}
+  {#if $errorStore && $selectedBuildingStore !== "quest-board"}<div class="error" role="alert"><strong>{$errorStore.code}</strong> — {$errorStore.message}{#if typeof $errorStore.meta.operation === "string" && typeof $errorStore.meta.native_error === "string"}<small class="error-diagnostic">{$errorStore.meta.operation}: {$errorStore.meta.native_error}</small>{/if}</div>{/if}
 
   <div class="attention-toasts" aria-live="assertive">
     {#each $attentionNotificationsStore as attention (attention.attentionId)}
@@ -218,7 +222,7 @@ async function openQuestRun(runId: string) {
         <strong>{attention.memberName} needs your help</strong>
         <p>{attention.questTitle} <span aria-hidden="true">·</span> {attention.stepName}</p>
         <small>{attention.harnessName} is waiting: {attention.message}</small>
-        <button class="toast-open" on:click={() => store.focusAttention(attention, true)}>Open Session</button>
+        <button class="toast-open" on:click={() => store.openSession(attention)}>Open Session</button>
       </article>
     {/each}
   </div>
@@ -260,5 +264,6 @@ async function openQuestRun(runId: string) {
   .toast-dismiss { position:absolute; top:.3rem; right:.35rem; padding:.05rem .35rem; color:#775348; background:transparent; border:0; box-shadow:none; }
   .toast-open { justify-self:start; margin-top:.35rem; color:#fff8e8; background:#316d68; border-color:#214c49; border-radius:6px; font-weight:800; }
   .error { color: #ffd174; border: 2px solid #a05b58; }
+  .error-diagnostic { display: block; margin-top: .25rem; color: #ffe5b3; overflow-wrap: anywhere; }
   .window-close { position: absolute; z-index: 9; top: 4.55rem; right: 1.3rem; padding: .1rem .5rem; font-size: 1.2rem; }
 </style>

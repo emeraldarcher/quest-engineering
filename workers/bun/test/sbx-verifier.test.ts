@@ -5,6 +5,7 @@ import {
   SBX_PI_PROFILE,
 } from "../src/execution-environment/sbx-profile.ts";
 import {
+  decodeAntigravityCapabilityContractV1,
   decodePiCapabilityContract,
   LiveSbxEnvironmentVerifier,
 } from "../src/execution-environment/sbx-verifier.ts";
@@ -49,6 +50,49 @@ test("PiCapabilityContract gates capabilities while retaining version only as pr
     decodePiCapabilityContract({
       ...contract,
       capabilities: { ...contract.capabilities, runtimeCatalog: false },
+    }),
+  ).toThrow("lacks required execution capabilities");
+});
+
+test("Antigravity compatibility is capability-based while provenance remains explicit", () => {
+  const contract = {
+    schemaVersion: 1,
+    compatible: true,
+    capabilities: {
+      executable: true,
+      interactiveTui: true,
+      exactModelSelection: true,
+      modelDiscovery: true,
+      reasoningDiscovery: true,
+      privateHome: true,
+      nativeConversationIdentity: true,
+      mcp: true,
+      stopHook: true,
+      structuredCompletion: true,
+      retainedSessionRecovery: true,
+      deterministicState: true,
+      autonomousGuestPermissions: true,
+      innerSandboxOptional: true,
+      externallyManagedCredential: true,
+      guestRefreshDisabled: true,
+    },
+    provenance: {
+      executable: "/opt/qe/antigravity/agy",
+      version: "999.0.0",
+      artifactSha256: "a".repeat(64),
+      platform: "linux/arm64",
+    },
+  };
+  expect(
+    decodeAntigravityCapabilityContractV1(contract).provenance.version,
+  ).toBe("999.0.0");
+  expect(() =>
+    decodeAntigravityCapabilityContractV1({
+      ...contract,
+      capabilities: {
+        ...contract.capabilities,
+        structuredCompletion: false,
+      },
     }),
   ).toThrow("lacks required execution capabilities");
 });

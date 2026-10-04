@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   assertExecutionSupported,
   discoveredExecutorCapabilities,
+  SBX_EXECUTOR_EXECUTION_ENVIRONMENT,
 } from "../src/capabilities.ts";
 import type { WorkerCapabilities } from "../src/protocol/types.ts";
 import { action } from "./support.ts";
@@ -186,6 +187,61 @@ test("native policy remains valid across adapter capability-profile changes with
   });
 });
 
+test("isolated SBX shell authority satisfies terminal.shell without a host grant", () => {
+  const advertised = capabilities([
+    "workspace.filesystem",
+    "workspace.search",
+    "terminal.shell",
+  ]);
+  const executor = advertised.executors[1];
+  const binding = advertised.workspace_bindings[0];
+  if (!executor || !binding) throw new Error("missing shell authority fixture");
+  executor.execution_environment = structuredClone(
+    SBX_EXECUTOR_EXECUTION_ENVIRONMENT,
+  );
+  binding.allow_unconfined_shell = false;
+
+  expect(() =>
+    assertExecutionSupported(antigravityShellAction(), advertised),
+  ).not.toThrow();
+});
+
+test("HostNative and incomplete SBX environments cannot inherit isolated shell authority", () => {
+  const hostNative = capabilities([
+    "workspace.filesystem",
+    "workspace.search",
+    "terminal.shell",
+  ]);
+  const hostExecutor = hostNative.executors[1];
+  const hostBinding = hostNative.workspace_bindings[0];
+  if (!hostExecutor || !hostBinding)
+    throw new Error("missing host shell authority fixture");
+  hostExecutor.execution_environment = {
+    ...structuredClone(SBX_EXECUTOR_EXECUTION_ENVIRONMENT),
+    backend_kind: "host_native",
+  };
+  hostBinding.allow_unconfined_shell = false;
+  expect(() =>
+    assertExecutionSupported(antigravityShellAction(), hostNative),
+  ).toThrow("not supported");
+
+  const incompleteSbx = structuredClone(hostNative);
+  const sbxExecutor = incompleteSbx.executors[1];
+  const sbxBinding = incompleteSbx.workspace_bindings[0];
+  if (!sbxExecutor || !sbxBinding)
+    throw new Error("missing SBX shell authority fixture");
+  sbxExecutor.execution_environment = {
+    ...structuredClone(SBX_EXECUTOR_EXECUTION_ENVIRONMENT),
+    capabilities: SBX_EXECUTOR_EXECUTION_ENVIRONMENT.capabilities.filter(
+      (capability) => capability.kind !== "host_filesystem",
+    ),
+  };
+  sbxBinding.allow_unconfined_shell = true;
+  expect(() =>
+    assertExecutionSupported(antigravityShellAction(), incompleteSbx),
+  ).toThrow("not supported");
+});
+
 test("enumerated catalog changes invalidate only unavailable selected values", () => {
   const changed = capabilities();
   const model = changed.executors[0]?.models[0];
@@ -203,6 +259,22 @@ test("enumerated catalog changes invalidate only unavailable selected values", (
   };
   expect(() => assertExecutionSupported(request, changed)).not.toThrow();
 });
+
+function antigravityShellAction() {
+  const request = action();
+  request.execution.configuration = {
+    harness_kind: "antigravity",
+    model: { provider: "antigravity", model: "no-effort" },
+    reasoning: null,
+    reasoning_capability: { kind: "unsupported" },
+    tool_policy: { kind: "native_permissions" },
+    tool_enforcement: "native_permissions",
+    resolved_tool_profile: {
+      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"],
+    },
+  };
+  return request;
+}
 
 test("resolved reasoning null requires frozen unsupported capability evidence", () => {
   const request = action();

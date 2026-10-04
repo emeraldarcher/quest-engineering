@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import type { WorkerConfig, WorkspaceBindingConfig } from "../config.ts";
 import type { DispatchRecord, HarnessLineage } from "../dispatch/registry.ts";
@@ -9,11 +15,23 @@ import {
   newAccountAvailabilityEvidence,
 } from "../harnesses/account-availability.ts";
 import {
+  type AntigravityDiscoveryResult,
+  discoverAntigravityModels,
+} from "../harnesses/antigravity/discovery.ts";
+import type { AntigravityCommandHookSpec } from "../harnesses/antigravity/hook-readiness.ts";
+import {
+  type AntigravityInitialInputReadiness,
+  type AntigravityNativeFreshConversationState,
+  inspectAntigravityInitialInputReadiness,
+  isAntigravityInputReadyForMode,
+} from "../harnesses/antigravity/initial-input-readiness.ts";
+import {
   controlDescriptorPath,
   type StructuredCompletionBoundary,
 } from "../harnesses/control/authority.ts";
 import {
   forwardHarnessControlPayload,
+  HarnessControlClient,
   SBX_CONTROL_MAILBOX_ENV,
 } from "../harnesses/control/client.ts";
 import { mappedPiTools } from "../harnesses/pi/tools.ts";
@@ -34,14 +52,15 @@ import type {
   RunWorktreeRecord,
   RunWorktreeRegistry,
 } from "../workspace/run-worktrees.ts";
+import { resolveRunExecutionProfile } from "./profile-resolution.ts";
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
+  SBX_ANTIGRAVITY_EXECUTABLE,
+  SBX_CODING_EXECUTION_PROFILE_V1,
   SBX_DISPOSABLE_RESOURCE_POLICY,
+  SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_DISCOVERY_SCRIPT,
   SBX_PI_EXECUTABLE,
-  SBX_PI_EXECUTION_PROFILE_V2,
-  SBX_PI_PROFILE,
-  SBX_PI_RUNTIME_NETWORK_TARGETS,
 } from "./sbx-profile.ts";
 import { SbxRunExecutionStore } from "./sbx-run-store.ts";
 import type {
@@ -56,6 +75,11 @@ const PI_EXTENSION_ENTRIES = [
   "workspace-permission-extension.ts",
   "human-assistance-extension.ts",
   "sbx-herdr-state-extension.ts",
+] as const;
+const ANTIGRAVITY_CONTROL_ENTRIES = [
+  "mcp-server.ts",
+  "bridge-cli.ts",
+  "sbx-launcher.ts",
 ] as const;
 
 export interface DiscoveredPiModelCatalog {
@@ -151,17 +175,40 @@ export type ProviderEligibilityFailure = Extract<
   { state: "verified_unavailable" }
 >;
 
-export interface PreparedSbxPiExecution {
+export interface PreparedSbxHarnessExecution {
   lease: EnvironmentLease;
   workspace: PrivateLineageWorkspace;
+  harnessKind: "pi" | "antigravity";
+  guestExecutable: string;
+  guestHome: string;
+  guestLogPath: string | null;
+  hostLogPath: string | null;
   hostCwd: string;
   paneEnvironment: Record<string, string>;
   guestEnvironment: Record<string, string>;
   extensionPaths: string[];
   materializedArtifacts: Record<string, MaterializedArtifact>;
-  /** Bind exact Pi argv to the environment-owned host launcher. */
+  /** Bind exact harness argv to the environment-owned host launcher. */
   launchDescriptor(args: readonly string[]): Promise<HostLaunchDescriptor>;
   syncControl(): Promise<void>;
+  installAntigravityHook(spec: AntigravityCommandHookSpec): Promise<void>;
+  removeAntigravityHook(name: string): Promise<void>;
+  proveAntigravityReadiness(input: {
+    spec: AntigravityCommandHookSpec;
+    binding: {
+      actionId: string;
+      attemptId: string;
+      lineageId: string;
+      resultNonce: string;
+    };
+    requireConversationFree: boolean;
+    timeoutMs: number;
+  }): Promise<{
+    mcpChildReady: true;
+    stopHookReady: true;
+    initialInputReady: true;
+    initialInput: AntigravityInitialInputReadiness;
+  }>;
   activityCursor(): Promise<number>;
   observedActivityAfter(cursor: number): string | null;
   providerTurnCursor(): Promise<number>;
@@ -171,6 +218,9 @@ export interface PreparedSbxPiExecution {
   awaitAttestation(timeoutMs?: number): Promise<void>;
   stopRelay(awaitNativeIdleMs?: number): Promise<void>;
 }
+
+/** Compatibility name for the accepted Pi adapter; the boundary is mixed. */
+export type PreparedSbxPiExecution = PreparedSbxHarnessExecution;
 
 interface ExtensionBundle {
   name: string;
@@ -184,13 +234,16 @@ interface RuntimeContext {
   lease: EnvironmentLease;
   workspace: PrivateLineageWorkspace;
   controlRoot: string;
+  guestHome: string;
+  guestLogPath: string | null;
+  hostLogPath: string | null;
   relay: SbxControlMailboxRelay | null;
 }
 
 /**
- * Production Pi execution boundary. There is intentionally no HostNative
- * branch: every prepared execution has an exact SBX lease and private Git
- * workspace before Herdr can launch Pi.
+ * Production mixed-harness execution boundary. There is intentionally no
+ * HostNative branch: every Pi or Antigravity execution has the Run's exact SBX
+ * lease and a PhysicalLineage private-Git workspace before Herdr can launch it.
  */
 export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   private readonly backend: SbxExecutionEnvironmentBackend;
@@ -201,7 +254,12 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     digest: string;
     bundles: ExtensionBundle[];
   }> | null = null;
+  private antigravityBundles: Promise<{
+    digest: string;
+    bundles: ExtensionBundle[];
+  }> | null = null;
   private readonly accountAvailability: AccountAvailabilityEvidenceStore;
+  private readonly accountAvailabilityNow: () => Date;
   constructor(
     private readonly config: WorkerConfig,
     private readonly worktrees: RunWorktreeRegistry,
@@ -209,14 +267,18 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       backend?: SbxExecutionEnvironmentBackend;
       privateGit?: PrivateGitWorkspaceManager;
       store?: SbxRunExecutionStore;
+      accountAvailabilityNow?: () => Date;
     } = {},
   ) {
+    const executionProfile = resolveRunExecutionProfile(
+      config.enabledHarnesses ?? ["pi", "antigravity"],
+    ).profile;
     this.backend =
       options.backend ??
       new SbxExecutionEnvironmentBackend({
         workerId: config.workerId,
         dataRoot: config.dataRoot,
-        executionProfile: SBX_PI_PROFILE,
+        executionProfile,
       });
     this.privateGit =
       options.privateGit ??
@@ -225,6 +287,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     this.accountAvailability = new AccountAvailabilityEvidenceStore(
       join(config.dataRoot, "pi-account-availability.json"),
     );
+    this.accountAvailabilityNow =
+      options.accountAvailabilityNow ?? (() => new Date());
   }
 
   async discover(): Promise<DiscoveredPiModelCatalog> {
@@ -256,12 +320,13 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       const context: AccountAvailabilityContext = {
         accountScope: discovered.accountScope,
         authGeneration: discovered.authGeneration,
-        profileId: SBX_PI_EXECUTION_PROFILE_V2.id,
-        profileDigest: SBX_PI_EXECUTION_PROFILE_V2.digest,
+        profileId: SBX_CODING_EXECUTION_PROFILE_V1.id,
+        profileDigest: SBX_CODING_EXECUTION_PROFILE_V1.digest,
       };
       discovered.models = await this.accountAvailability.annotate(
         discovered.models,
         context,
+        this.accountAvailabilityNow(),
       );
       const configured =
         this.config.executorModels ??
@@ -269,6 +334,69 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           ? [splitConfiguredModel(this.config.piModel)]
           : undefined);
       return applyConfiguredPiModelScope(discovered, configured);
+    } finally {
+      if (lease) await this.backend.remove(lease.ref).catch(() => undefined);
+    }
+  }
+
+  async discoverAntigravity(): Promise<AntigravityDiscoveryResult> {
+    const runId = `antigravity-discovery-${randomUUID()}`;
+    const spec = this.spec({
+      runId,
+      workspaceId: `discovery-${randomUUID()}`,
+      access: "none",
+      sourceIdentity: "repository-owned-mixed-coding-profile",
+      frozenBase: "none",
+      materialization: "disposable_fixture",
+    });
+    let lease: EnvironmentLease | null = null;
+    try {
+      lease = await this.backend.ensure(spec);
+      const discovered = await discoverAntigravityModels(async (args) => {
+        const result = await (lease as EnvironmentLease).exec({
+          executable: SBX_ANTIGRAVITY_EXECUTABLE,
+          args,
+          cwd: (lease as EnvironmentLease).paths.workspace,
+          environment: {
+            HOME: (lease as EnvironmentLease).paths.home,
+            BROWSER: "/bin/false",
+          },
+          timeoutMs: 60_000,
+        });
+        return result;
+      });
+      const registration = await lease.exec({
+        executable: SBX_ANTIGRAVITY_EXECUTABLE,
+        args: ["mcp", "list"],
+        environment: { HOME: lease.paths.home, BROWSER: "/bin/false" },
+        timeoutMs: 30_000,
+      });
+      const mcpReady =
+        registration.exitCode === 0 &&
+        registration.stdout
+          .split("\n")
+          .some(
+            (line) =>
+              /^qe\s/.test(line.trim()) &&
+              /\bstdio\b/.test(line) &&
+              /\benabled\b/.test(line),
+          );
+      if (mcpReady) discovered.capabilities.push("native.mcp");
+      else discovered.missingCapabilities.push("native.mcp");
+      discovered.compatible =
+        discovered.compatible &&
+        mcpReady &&
+        lease.ref.profile.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
+        lease.ref.profile.digest === SBX_CODING_EXECUTION_PROFILE_V1.digest;
+      discovered.diagnostics.push(
+        mcpReady
+          ? "The profile-owned qe stdio MCP registration is enabled."
+          : "The profile-owned qe stdio MCP registration is missing or disabled.",
+        `Runtime provenance: ${lease.ref.profile.id}@${lease.ref.profile.digest}.`,
+      );
+      discovered.capabilities.sort();
+      discovered.missingCapabilities.sort();
+      return discovered;
     } finally {
       if (lease) await this.backend.remove(lease.ref).catch(() => undefined);
     }
@@ -282,8 +410,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         {
           accountScope: evidence.accountScope,
           authGeneration: evidence.authGeneration,
-          profileId: SBX_PI_EXECUTION_PROFILE_V2.id,
-          profileDigest: SBX_PI_EXECUTION_PROFILE_V2.digest,
+          profileId: SBX_CODING_EXECUTION_PROFILE_V1.id,
+          profileDigest: SBX_CODING_EXECUTION_PROFILE_V1.digest,
         },
         { provider: evidence.provider, model: evidence.model },
         evidence.state,
@@ -323,7 +451,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
     hostArtifacts: Record<string, MaterializedArtifact>,
-  ): Promise<PreparedSbxPiExecution> {
+  ): Promise<PreparedSbxHarnessExecution> {
     const worktree = await this.requiredWorktree(dispatch);
     const binding = this.requiredBinding(worktree);
     if (!worktree.baseRevision)
@@ -395,13 +523,45 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         access: physicalAccess,
       });
     }
-    const extensions = await this.bundledExtensions();
+    const harnessKind = dispatch.action.execution.configuration.harness_kind;
+    if (harnessKind !== "pi" && harnessKind !== "antigravity")
+      throw new Error(
+        `The mixed coding profile cannot launch harness ${harnessKind}.`,
+      );
     const controlRoot = posix.join(
       lease.paths.control,
       "lineages",
       digest(lineage.lineageId).slice(0, 32),
     );
-    const extensionRoot = posix.join(lease.paths.state, "pi-extensions");
+    const guestHome =
+      harnessKind === "antigravity"
+        ? posix.join(
+            lease.paths.state,
+            "antigravity-lineages",
+            digest(lineage.lineageId).slice(0, 32),
+            "home",
+          )
+        : lease.paths.home;
+    const guestExecutable =
+      harnessKind === "antigravity"
+        ? SBX_ANTIGRAVITY_EXECUTABLE
+        : SBX_PI_EXECUTABLE;
+    const guestLogPath =
+      harnessKind === "antigravity"
+        ? posix.join(controlRoot, "antigravity.log")
+        : null;
+    const hostLogPath =
+      harnessKind === "antigravity"
+        ? join(dirname(lineage.resultControlPath), "antigravity.log")
+        : null;
+    const extensions =
+      harnessKind === "antigravity"
+        ? await this.bundledAntigravityControl()
+        : await this.bundledExtensions();
+    const extensionRoot = posix.join(
+      lease.paths.state,
+      harnessKind === "antigravity" ? "antigravity-control" : "pi-extensions",
+    );
     await lease.workerExec({
       executable: "/usr/bin/install",
       args: [
@@ -416,8 +576,17 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         posix.join(controlRoot, "mailbox", "requests"),
         posix.join(controlRoot, "mailbox", "responses"),
         extensionRoot,
+        guestHome,
+        posix.join(guestHome, ".cache"),
+        posix.join(guestHome, ".tmp"),
       ],
     });
+    if (harnessKind === "antigravity")
+      await this.seedAntigravityHome(
+        lease,
+        guestHome,
+        workspace.paths.workspace,
+      );
     const extensionPaths: string[] = [];
     for (const bundle of extensions.bundles) {
       const path = posix.join(extensionRoot, bundle.name);
@@ -428,7 +597,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       });
       if (receipt.sha256 !== bundle.sha256)
         throw new Error(
-          "Pi extension changed while crossing the SBX boundary.",
+          "Harness integration changed while crossing the SBX boundary.",
         );
       extensionPaths.push(path);
     }
@@ -448,7 +617,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       profileDigest: lease.ref.profile.digest,
       physicalLineageId: lineage.lineageId,
       workspacePath: workspace.paths.workspace,
-      homePath: lease.paths.home,
+      homePath: guestHome,
+      harnessKind,
     } as const;
     const ownershipMarkerPath = posix.join(
       lease.paths.state,
@@ -470,8 +640,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     const requiredGuestPaths = [
       ownershipMarkerPath,
       launchBindingPath,
-      SBX_PI_EXECUTABLE,
+      guestExecutable,
       workspace.paths.workspace,
+      guestHome,
       controlRoot,
       guestPaths.mailbox,
       ...extensionPaths,
@@ -483,17 +654,44 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       launchBindingPath,
       requiredGuestPaths,
       workspace.paths.workspace,
+      guestExecutable,
     );
     const guestEnvironment: Record<string, string> = {
+      HOME: guestHome,
+      XDG_CACHE_HOME: posix.join(guestHome, ".cache"),
+      TMPDIR: posix.join(guestHome, ".tmp"),
+      BROWSER: "/bin/false",
       QE_HARNESS_CONTROL_PATH: guestPaths.descriptor,
       [SBX_CONTROL_MAILBOX_ENV]: guestPaths.mailbox,
       QE_RESULT_CONTROL_PATH: guestPaths.result,
       QE_ATTENTION_CONTROL_PATH: guestPaths.attention,
       QE_RECOVERY_CONTROL_PATH: guestPaths.recovery,
       QE_SBX_RUNTIME_STATE_PATH: guestPaths.runtimeState,
+      QE_HARNESS_MCP_STARTUP_EVIDENCE_PATH: guestPaths.mcpStartup,
       QE_WORKSPACE_ACCESS: access,
       QE_WORKSPACE_ROOT: workspace.paths.workspace,
-      QE_ALLOWED_PI_TOOLS: mappedPiTools(dispatch).join(","),
+      ...(harnessKind === "pi"
+        ? { QE_ALLOWED_PI_TOOLS: mappedPiTools(dispatch).join(",") }
+        : {
+            QE_ANTIGRAVITY_EXPECTED_ARGV_JSON: JSON.stringify([
+              ...(lineage.nativeSession?.agent === "agy" &&
+              lineage.nativeSession.kind === "id"
+                ? ["--conversation", lineage.nativeSession.value]
+                : []),
+              "--model",
+              dispatch.action.execution.configuration.model.model,
+              ...(typeof dispatch.action.execution.configuration.reasoning ===
+              "string"
+                ? [
+                    "--effort",
+                    dispatch.action.execution.configuration.reasoning,
+                  ]
+                : []),
+              "--dangerously-skip-permissions",
+              "--log-file",
+              guestLogPath as string,
+            ]),
+          }),
       QE_ARTIFACT_ROOT: posix.join(lease.paths.state, "execution-artifacts"),
       QE_SBX_ATTESTATION_JSON: JSON.stringify(attestation),
       QE_SBX_OWNERSHIP_MARKER_PATH: ownershipMarkerPath,
@@ -507,6 +705,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       lease,
       workspace,
       controlRoot,
+      guestHome,
+      guestLogPath,
+      hostLogPath,
       relay: null,
     };
     const previous = this.contexts.get(lineage.lineageId);
@@ -531,9 +732,14 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     });
     let launchPromise: Promise<HostLaunchDescriptor> | null = null;
     let launchArgvDigest: string | null = null;
-    const prepared: PreparedSbxPiExecution = {
+    const prepared: PreparedSbxHarnessExecution = {
       lease,
       workspace,
+      harnessKind,
+      guestExecutable,
+      guestHome,
+      guestLogPath,
+      hostLogPath,
       hostCwd: worktree.canonicalRoot,
       paneEnvironment,
       guestEnvironment,
@@ -544,13 +750,23 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         if (launchArgvDigest && launchArgvDigest !== guestArgvSha256)
           throw environmentLaunchFailure(
             "environment_launch_mismatch",
-            "The physical lineage requested conflicting Pi launch argv.",
+            "The physical lineage requested conflicting harness launch argv.",
           );
         launchArgvDigest = guestArgvSha256;
+        const nativeLaunch =
+          harnessKind === "antigravity"
+            ? {
+                executable: "/usr/bin/node",
+                args: [
+                  posix.join(extensionRoot, "sbx-launcher.mjs"),
+                  guestExecutable,
+                  ...args,
+                ],
+              }
+            : { executable: guestExecutable, args: [...args] };
         launchPromise ??= lease
           .launcher({
-            executable: SBX_PI_EXECUTABLE,
-            args: [...args],
+            ...nativeLaunch,
             cwd: workspace.paths.workspace,
             environment: guestEnvironment,
           })
@@ -568,7 +784,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
                 binding: {
                   physicalLineageId: lineage.lineageId,
                   workspacePath: workspace.paths.workspace,
-                  guestExecutable: SBX_PI_EXECUTABLE,
+                  guestExecutable,
                   guestCwd: workspace.paths.workspace,
                   guestArgvSha256,
                 },
@@ -586,7 +802,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
                 launcherContractVersion: launcherProvenance.contractVersion,
                 launcherEntrypoint: launcherProvenance.entrypoint,
                 launcherEntrypointSha256: launcherProvenance.entrypointSha256,
-                guestExecutable: SBX_PI_EXECUTABLE,
+                guestExecutable,
                 guestCwd: workspace.paths.workspace,
                 guestArgvSha256,
                 physicalLineageId: lineage.lineageId,
@@ -601,6 +817,12 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         return launchPromise;
       },
       syncControl: () => this.syncControl(context),
+      installAntigravityHook: (hook) =>
+        this.installAntigravityHook(context, hook, guestHome),
+      removeAntigravityHook: (name) =>
+        this.removeAntigravityHook(context, name),
+      proveAntigravityReadiness: (input) =>
+        this.proveAntigravityReadiness(context, input),
       activityCursor: async () => {
         await context.relay?.refresh();
         return context.relay?.activityCursor() ?? 0;
@@ -638,6 +860,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           async (evidence) => {
             await this.recordProviderEvidence(evidence);
           },
+          guestLogPath,
+          hostLogPath,
         );
         context.relay.start();
       },
@@ -658,11 +882,15 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     return prepared;
   }
 
-  async verifyAndBind(input: {
+  async verifyAndPrepare(input: {
     dispatch: DispatchRecord;
     lineageId: string;
     outputs: Record<string, JsonValue>;
-  }): Promise<Record<string, JsonValue>> {
+    assertCurrent: () => void;
+  }): Promise<{
+    outputs: Record<string, JsonValue>;
+    commit: () => void;
+  }> {
     const context = this.contexts.get(input.lineageId);
     if (
       !context ||
@@ -672,9 +900,10 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       throw new Error(
         "No exact active SBX/private-Git completion context exists.",
       );
+    input.assertCurrent();
     const outputs = structuredClone(input.outputs);
     if (!input.dispatch.completionRequirement.physicalExportRequired)
-      return outputs;
+      return { outputs, commit: () => input.assertCurrent() };
     const durable = this.store.get(input.lineageId);
     const changeExport =
       durable?.changeExport ??
@@ -686,13 +915,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           baseCommit: this.requiredBase(context.dispatch),
         },
       }));
+    input.assertCurrent();
     await this.importVerifiedExport(context.dispatch, changeExport);
-    if (!durable?.changeExport)
-      this.store.bindExport(
-        input.lineageId,
-        input.dispatch.action.action_id,
-        changeExport,
-      );
+    input.assertCurrent();
     for (const declaration of input.dispatch.completionRequirement.outputs) {
       if (declaration.kind !== "change_set") continue;
       const current = outputs[declaration.name];
@@ -705,7 +930,18 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         physical: physicalExportValue(changeExport),
       };
     }
-    return outputs;
+    return {
+      outputs,
+      commit: () => {
+        input.assertCurrent();
+        if (!durable?.changeExport)
+          this.store.bindExport(
+            input.lineageId,
+            input.dispatch.action.action_id,
+            changeExport,
+          );
+      },
+    };
   }
 
   failureCode(lineageId: string): string | null {
@@ -782,51 +1018,378 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     return result;
   }
 
+  private async seedAntigravityHome(
+    lease: EnvironmentLease,
+    guestHome: string,
+    guestWorkspace: string,
+  ): Promise<void> {
+    const result = await lease.workerExec({
+      executable: "/usr/bin/python3",
+      args: [
+        "-c",
+        "import json,os,pathlib,shutil; home=pathlib.Path(os.environ['QE_HOME']); directories=[home,home/'.cache',home/'.tmp',home/'.gemini',home/'.gemini/config',home/'.gemini/config/projects',home/'.gemini/antigravity',home/'.gemini/antigravity-cli',home/'.gemini/antigravity-cli/cache'];\nfor p in directories:\n p.mkdir(parents=True,exist_ok=True); os.chown(p,1000,1000); os.chmod(p,0o700)\nsources=[('/home/agent/.gemini/config/mcp_config.json',home/'.gemini/config/mcp_config.json'),('/home/agent/.gemini/antigravity-cli/antigravity-oauth-token',home/'.gemini/antigravity-cli/antigravity-oauth-token'),('/home/agent/.gemini/antigravity-cli/qe-auth-generation',home/'.gemini/antigravity-cli/qe-auth-generation'),('/home/agent/.gemini/antigravity-cli/qe-account-scope',home/'.gemini/antigravity-cli/qe-account-scope'),('/home/agent/.gemini/antigravity-cli/cache/onboarding.json',home/'.gemini/antigravity-cli/cache/onboarding.json')];\nfor source,target in sources:\n shutil.copyfile(source,target); os.chown(target,1000,1000); os.chmod(target,0o600)\nsettings=home/'.gemini/antigravity-cli/settings.json'\ntry: value=json.loads(settings.read_text())\nexcept FileNotFoundError: value={}\nvalue['trustedWorkspaces']=[os.environ['QE_WORKSPACE']]\ntemporary=settings.with_name(settings.name+'.qe-new'); temporary.write_text(json.dumps(value,separators=(',',':'))+'\\n'); os.chown(temporary,1000,1000); os.chmod(temporary,0o600); temporary.replace(settings)",
+      ],
+      environment: { QE_HOME: guestHome, QE_WORKSPACE: guestWorkspace },
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0)
+      throw new Error("Could not seed the Run-private Antigravity HOME.");
+  }
+
+  private async installAntigravityHook(
+    context: RuntimeContext,
+    spec: AntigravityCommandHookSpec,
+    guestHome: string,
+  ): Promise<void> {
+    if (
+      context.dispatch.action.execution.configuration.harness_kind !==
+      "antigravity"
+    )
+      throw new Error("Antigravity hook requested for another harness.");
+    const path = antigravityHookPath(guestHome);
+    const result = await context.lease.exec({
+      executable: "/usr/bin/node",
+      args: [
+        "-e",
+        "const{mkdirSync,readFileSync,writeFileSync,renameSync,chmodSync}=require('node:fs');const{dirname}=require('node:path');const p=process.env.QE_HOOK_PATH;let c={};try{c=JSON.parse(readFileSync(p,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e}const s=JSON.parse(process.env.QE_HOOK_SPEC);c[s.name]={...(c[s.name]||{}),[s.event]:[{type:'command',command:s.command,timeout:s.timeoutSeconds}]};mkdirSync(dirname(p),{recursive:true,mode:0o700});const t=p+'.qe-new';writeFileSync(t,JSON.stringify(c,null,2)+'\\n',{mode:0o600});chmodSync(t,0o600);renameSync(t,p)",
+      ],
+      environment: {
+        HOME: guestHome,
+        QE_HOOK_PATH: path,
+        QE_HOOK_SPEC: JSON.stringify(spec),
+      },
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0)
+      throw new Error(
+        "Could not install the Run-private Antigravity Stop hook.",
+      );
+  }
+
+  private async removeAntigravityHook(
+    context: RuntimeContext,
+    name: string,
+  ): Promise<void> {
+    if (
+      context.dispatch.action.execution.configuration.harness_kind !==
+      "antigravity"
+    )
+      return;
+    const path = antigravityHookPath(context.guestHome);
+    await context.lease.exec({
+      executable: "/usr/bin/node",
+      args: [
+        "-e",
+        "const{readFileSync,writeFileSync,renameSync,rmSync}=require('node:fs');const p=process.env.QE_HOOK_PATH;try{const c=JSON.parse(readFileSync(p,'utf8'));delete c[process.env.QE_HOOK_NAME];if(Object.keys(c).length===0)rmSync(p,{force:true});else{const t=p+'.qe-new';writeFileSync(t,JSON.stringify(c,null,2)+'\\n',{mode:0o600});renameSync(t,p)}}catch(e){if(e.code!=='ENOENT')throw e}",
+      ],
+      environment: { QE_HOOK_PATH: path, QE_HOOK_NAME: name },
+      timeoutMs: 30_000,
+    });
+  }
+
+  private async proveAntigravityReadiness(
+    context: RuntimeContext,
+    input: {
+      spec: AntigravityCommandHookSpec;
+      binding: {
+        actionId: string;
+        attemptId: string;
+        lineageId: string;
+        resultNonce: string;
+      };
+      requireConversationFree: boolean;
+      timeoutMs: number;
+    },
+  ): Promise<{
+    mcpChildReady: true;
+    stopHookReady: true;
+    initialInputReady: true;
+    initialInput: AntigravityInitialInputReadiness;
+  }> {
+    if (!context.guestLogPath || !context.hostLogPath)
+      throw new Error("Antigravity readiness has no guest log binding.");
+    const paths = guestControlPaths(context.controlRoot);
+    const hookContract = await context.lease.exec({
+      executable: "/usr/bin/node",
+      args: [
+        "-e",
+        "const{readFileSync}=require('node:fs');const c=JSON.parse(readFileSync(process.env.QE_HOOK_PATH,'utf8'));const s=JSON.parse(process.env.QE_HOOK_SPEC);const a=c?.[s.name]?.[s.event];const ok=Array.isArray(a)&&a.length===1&&a[0]?.type==='command'&&a[0]?.command===s.command&&a[0]?.timeout===s.timeoutSeconds;process.stdout.write(ok?'true':'false')",
+      ],
+      environment: {
+        QE_HOOK_PATH: antigravityHookPath(context.guestHome),
+        QE_HOOK_SPEC: JSON.stringify(input.spec),
+      },
+      timeoutMs: 30_000,
+    });
+    if (hookContract.stdout !== "true")
+      throw new Error(
+        "Antigravity's lineage-private Stop hook contract is not exact.",
+      );
+    const deadline = Date.now() + Math.min(input.timeoutMs, 30_000);
+    const model = context.dispatch.action.execution.configuration.model.model;
+    let mcpReady = false;
+    let hookReady = false;
+    let initialInput: AntigravityInitialInputReadiness | null = null;
+    while (
+      Date.now() < deadline &&
+      (!mcpReady ||
+        !hookReady ||
+        !initialInput ||
+        !isAntigravityInputReadyForMode(
+          initialInput,
+          input.requireConversationFree,
+        ))
+    ) {
+      await context.relay?.refresh();
+      const result = await context.lease.exec({
+        executable: "/usr/bin/python3",
+        args: [
+          "-c",
+          "import hashlib,json,os,pathlib; evidence=pathlib.Path(os.environ['QE_EVIDENCE']); descriptor=os.environ['QE_DESCRIPTOR']; expected=hashlib.sha256(descriptor.encode()).hexdigest(); ok=False\ntry:\n lines=evidence.read_text().splitlines()[-128:]\n for line in reversed(lines):\n  v=json.loads(line); pid=v.get('pid',0); ok=v.get('kind')=='qe_harness_mcp_startup' and v.get('descriptorPathHash')==expected and v.get('bridgeAcceptedContext') is True and isinstance(pid,int) and pid>0;\n  if ok:\n   try:\n    os.kill(pid,0); cmd=(pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().replace(b'\\0',b' ')); env=pathlib.Path(f'/proc/{pid}/environ').read_bytes().split(b'\\0'); ok=b'/qe/state/antigravity-control/mcp-server.mjs' in cmd and f'QE_HARNESS_CONTROL_PATH={descriptor}'.encode() in env\n   except OSError: ok=False\n   break\nexcept Exception: pass\nprint(json.dumps({'ready':ok},separators=(',',':')))",
+        ],
+        environment: {
+          QE_EVIDENCE: paths.mcpStartup,
+          QE_DESCRIPTOR: paths.descriptor,
+        },
+        timeoutMs: 30_000,
+      });
+      try {
+        mcpReady = JSON.parse(result.stdout).ready === true;
+      } catch {
+        mcpReady = false;
+      }
+      try {
+        const [log, nativeState] = await Promise.all([
+          readFile(context.hostLogPath, "utf8"),
+          this.inspectAntigravityFreshConversationState(context),
+        ]);
+        hookReady =
+          /loaded \d+ named hooks from \d+ hooks\.json file\(s\)/.test(log);
+        const projectResolutionFailed = /failed to resolve project:/i.test(log);
+        const workspaceResolved = log.includes(
+          `workspaceDirs=[${context.workspace.paths.workspace}]`,
+        );
+        initialInput = inspectAntigravityInitialInputReadiness(log, model, {
+          ...nativeState,
+          project: {
+            ...nativeState.project,
+            ready:
+              nativeState.project.ready &&
+              !projectResolutionFailed &&
+              workspaceResolved,
+            workspaceResolved,
+          },
+          prompt: {
+            ...nativeState.prompt,
+            focusReady:
+              nativeState.prompt.focusReady &&
+              /Full redraw completed .* for conversation\s+\(epoch 0, items \d+\)/.test(
+                log,
+              ),
+          },
+        });
+      } catch {
+        hookReady = false;
+        initialInput = null;
+      }
+      if (
+        !mcpReady ||
+        !hookReady ||
+        !initialInput ||
+        !isAntigravityInputReadyForMode(
+          initialInput,
+          input.requireConversationFree,
+        )
+      )
+        await Bun.sleep(100);
+    }
+    if (!mcpReady)
+      throw new Error("Antigravity's guest QE MCP child is not alive.");
+    if (!hookReady)
+      throw new Error("Antigravity did not discover the guest Stop hook.");
+    if (
+      !initialInput ||
+      !isAntigravityInputReadyForMode(
+        initialInput,
+        input.requireConversationFree,
+      )
+    )
+      throw new Error(
+        `Antigravity's existing TUI is not ready for ${input.requireConversationFree ? "a fresh conversation" : "the retained conversation"}: ${
+          [
+            ...(initialInput?.missingSignals ?? []),
+            ...(initialInput?.missingFreshConversationRequirements ?? []),
+          ].join(", ") ||
+          initialInput?.conversationState ||
+          "native readiness evidence unavailable"
+        }.`,
+      );
+    const descriptor = controlDescriptorPath(context.lineage);
+    const status = await new HarnessControlClient(
+      descriptor,
+    ).completionStatus();
+    if (
+      !status.binding ||
+      status.binding.actionId !== input.binding.actionId ||
+      status.binding.attemptId !== input.binding.attemptId ||
+      status.binding.lineageId !== input.binding.lineageId ||
+      status.binding.resultNonce !== input.binding.resultNonce
+    )
+      throw new Error("Antigravity MCP resolved stale control authority.");
+    const hookResult = await context.lease.exec({
+      executable: "/usr/bin/python3",
+      args: [
+        "-c",
+        "import json,os,subprocess; p=subprocess.run(['/usr/bin/node',os.environ['QE_BRIDGE'],'hook','stop'],input=json.dumps({'conversationId':'00000000-0000-4000-8000-000000000001','executionNum':0,'terminationReason':'qe_zero_inference_readiness','fullyIdle':True,'modelName':'synthetic-no-inference'}),text=True,capture_output=True,env=os.environ); print(json.dumps({'code':p.returncode,'stdout':p.stdout},separators=(',',':')))",
+      ],
+      environment: {
+        ...preparedControlEnvironment(paths),
+        QE_BRIDGE: posix.join(
+          context.lease.paths.state,
+          "antigravity-control",
+          "bridge-cli.mjs",
+        ),
+      },
+      timeoutMs: 30_000,
+    });
+    const synthetic = JSON.parse(hookResult.stdout) as {
+      code: number;
+      stdout: string;
+    };
+    const output = JSON.parse(synthetic.stdout || "{}") as Record<
+      string,
+      unknown
+    >;
+    if (synthetic.code !== 0 || output.decision !== "continue")
+      throw new Error(
+        "Antigravity Stop hook did not reach current QE authority.",
+      );
+    return {
+      mcpChildReady: true,
+      stopHookReady: true,
+      initialInputReady: true,
+      initialInput,
+    };
+  }
+
+  private async inspectAntigravityFreshConversationState(
+    context: RuntimeContext,
+  ): Promise<AntigravityNativeFreshConversationState> {
+    const result = await context.lease.exec({
+      executable: "/usr/bin/python3",
+      args: [
+        "-c",
+        "import json,os,pathlib,re,stat; home=pathlib.Path(os.environ['QE_HOME']); cache=home/'.gemini/antigravity-cli/cache'; marker=cache/'default_project_id.txt'; project_id=None\ntry: project_id=marker.read_text().strip() or None\nexcept Exception: pass\ncache_writable=False\ntry:\n s=cache.stat(); cache_writable=s.st_uid==1000 and bool(stat.S_IMODE(s.st_mode)&stat.S_IWUSR)\nexcept Exception: pass\nprojects=home/'.gemini/config/projects'; conversation_store=home/'.gemini/antigravity'; project_config=(projects/f'{project_id}.json') if isinstance(project_id,str) and re.fullmatch(r'[A-Za-z0-9._-]+',project_id) else None\nconfig_present=bool(project_config and project_config.is_file())\ndef owned_writable(path):\n try:\n  s=path.stat(); return s.st_uid==1000 and bool(stat.S_IMODE(s.st_mode)&stat.S_IWUSR)\n except Exception: return False\nconfig_writable=owned_writable(projects) and bool(project_config and owned_writable(project_config)); conversation_store_writable=owned_writable(conversation_store)\ncustom=any(p.is_file() for p in [home/'.gemini/antigravity-cli/keybindings.json',home/'.gemini/keybindings.json',home/'.gemini/config/keybindings.json'])\ndef load(path):\n try:\n  value=json.loads(path.read_text()); return value if isinstance(value,dict) else {}\n except Exception: return {}\ndef walk(value):\n if isinstance(value,dict):\n  for key,item in value.items():\n   yield str(key).lower(),item\n   yield from walk(item)\n elif isinstance(value,list):\n  for item in value: yield from walk(item)\nmode='default'\nfor key,value in walk({'settings':load(home/'.gemini/antigravity-cli/settings.json'),'config':load(home/'.gemini/config/config.json')}):\n if key in ['editormode','editor_mode','vimmode','vim_mode','vim_insert_first']:\n  mode='vim' if value is True or str(value).lower()=='vim' else ('default' if value is False or str(value).lower() in ['default','standard'] else 'unknown')\nenter='prompt.submit' if mode=='default' and not custom else ('vim.insert.submit' if mode=='vim' and not custom else 'unknown')\nready=project_id=='default-cli-project' and cache_writable and config_present and config_writable and conversation_store_writable\nprint(json.dumps({'project':{'ready':ready,'resolvedProjectId':project_id,'defaultProject':project_id=='default-cli-project','cacheWritable':cache_writable,'configPresent':config_present,'configWritable':config_writable,'conversationStoreWritable':conversation_store_writable,'workspaceResolved':False},'prompt':{'focusReady':mode=='default' and not custom,'editorMode':mode,'enterBinding':enter,'customKeybindingsPresent':custom}},separators=(',',':')))",
+      ],
+      environment: { QE_HOME: context.guestHome },
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0)
+      throw new Error("Antigravity native project readiness probe failed.");
+    const value = JSON.parse(
+      result.stdout,
+    ) as AntigravityNativeFreshConversationState;
+    if (
+      !value ||
+      typeof value.project?.ready !== "boolean" ||
+      typeof value.project?.defaultProject !== "boolean" ||
+      typeof value.project?.cacheWritable !== "boolean" ||
+      typeof value.project?.configPresent !== "boolean" ||
+      typeof value.project?.configWritable !== "boolean" ||
+      typeof value.project?.conversationStoreWritable !== "boolean" ||
+      typeof value.project?.workspaceResolved !== "boolean" ||
+      (value.project?.resolvedProjectId !== null &&
+        typeof value.project?.resolvedProjectId !== "string") ||
+      typeof value.prompt?.focusReady !== "boolean" ||
+      !["default", "vim", "unknown"].includes(value.prompt?.editorMode) ||
+      !["prompt.submit", "vim.insert.submit", "unknown"].includes(
+        value.prompt?.enterBinding,
+      ) ||
+      typeof value.prompt?.customKeybindingsPresent !== "boolean"
+    )
+      throw new Error(
+        "Antigravity native project readiness evidence is invalid.",
+      );
+    return value;
+  }
+
+  private async bundledAntigravityControl(): Promise<{
+    digest: string;
+    bundles: ExtensionBundle[];
+  }> {
+    if (this.antigravityBundles) return this.antigravityBundles;
+    const entrypoints = ANTIGRAVITY_CONTROL_ENTRIES.map((name) =>
+      resolve(import.meta.dir, `../harnesses/antigravity/${name}`),
+    );
+    // MCP and bridge live in the generic control directory.
+    entrypoints[0] = resolve(
+      import.meta.dir,
+      "../harnesses/control/mcp-server.ts",
+    );
+    entrypoints[1] = resolve(
+      import.meta.dir,
+      "../harnesses/control/bridge-cli.ts",
+    );
+    this.antigravityBundles = this.bundleEntrypoints(
+      entrypoints,
+      "Antigravity control",
+    );
+    return this.antigravityBundles;
+  }
+
   private async bundledExtensions(): Promise<{
     digest: string;
     bundles: ExtensionBundle[];
   }> {
     if (this.extensionBundles) return this.extensionBundles;
-    this.extensionBundles = (async () => {
-      const entrypoints = PI_EXTENSION_ENTRIES.map((name) =>
-        resolve(import.meta.dir, `../harnesses/pi/${name}`),
-      );
-      const result = await Bun.build({
-        entrypoints,
-        target: "node",
-        format: "esm",
-        splitting: false,
-        minify: false,
-        naming: "[name].mjs",
-      });
-      if (!result.success)
-        throw new Error(
-          `Failed to build immutable Pi extensions: ${result.logs.join(" ")}`,
-        );
-      const bundles = await Promise.all(
-        result.outputs.map(async (output) => {
-          const bytes = new Uint8Array(await output.arrayBuffer());
-          return {
-            name: basename(output.path),
-            bytes,
-            sha256: digestBytes(bytes),
-          };
-        }),
-      );
-      bundles.sort((left, right) => left.name.localeCompare(right.name));
-      return {
-        digest: `sha256:${digest(
-          JSON.stringify(
-            bundles.map((bundle) => ({
-              name: bundle.name,
-              sha256: bundle.sha256,
-            })),
-          ),
-        )}`,
-        bundles,
-      };
-    })();
+    const entrypoints = PI_EXTENSION_ENTRIES.map((name) =>
+      resolve(import.meta.dir, `../harnesses/pi/${name}`),
+    );
+    this.extensionBundles = this.bundleEntrypoints(
+      entrypoints,
+      "Pi extensions",
+    );
     return this.extensionBundles;
+  }
+
+  private async bundleEntrypoints(
+    entrypoints: string[],
+    label: string,
+  ): Promise<{ digest: string; bundles: ExtensionBundle[] }> {
+    const result = await Bun.build({
+      entrypoints,
+      target: "node",
+      format: "esm",
+      splitting: false,
+      minify: false,
+      naming: "[name].mjs",
+    });
+    if (!result.success)
+      throw new Error(
+        `Failed to build immutable ${label}: ${result.logs.join(" ")}`,
+      );
+    const bundles = await Promise.all(
+      result.outputs.map(async (output) => {
+        const bytes = new Uint8Array(await output.arrayBuffer());
+        return {
+          name: basename(output.path),
+          bytes,
+          sha256: digestBytes(bytes),
+        };
+      }),
+    );
+    bundles.sort((left, right) => left.name.localeCompare(right.name));
+    return {
+      digest: `sha256:${digest(
+        JSON.stringify(
+          bundles.map((bundle) => ({
+            name: bundle.name,
+            sha256: bundle.sha256,
+          })),
+        ),
+      )}`,
+      bundles,
+    };
   }
 
   private async validateGuestLaunchPaths(
@@ -836,6 +1399,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     launchBindingPath: string,
     requiredPaths: readonly string[],
     workspacePath: string,
+    guestExecutable: string,
   ): Promise<void> {
     const result = await lease.exec({
       executable: "/usr/bin/python3",
@@ -848,7 +1412,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         QE_MARKER: ownershipMarkerPath,
         QE_BINDING: launchBindingPath,
         QE_PATHS: JSON.stringify(requiredPaths),
-        QE_EXECUTABLE: SBX_PI_EXECUTABLE,
+        QE_EXECUTABLE: guestExecutable,
         QE_WORKSPACE: workspacePath,
       },
       timeoutMs: 30_000,
@@ -989,18 +1553,23 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           frozenBase: { kind: "git_commit", value: input.frozenBase },
         },
       },
-      profile: SBX_PI_EXECUTION_PROFILE_V2,
+      profile: SBX_CODING_EXECUTION_PROFILE_V1,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
       networkRequirements: [
         {
           capability: "model_provider",
-          targets: SBX_PI_RUNTIME_NETWORK_TARGETS,
+          targets: SBX_MIXED_RUNTIME_NETWORK_TARGETS,
         },
       ],
       credentialGrants: [
         {
           grantId: "sbx-host-openai-oauth",
           kind: "openai-codex-oauth",
+          scope: "subscription",
+        },
+        {
+          grantId: "sbx-host-antigravity-oauth",
+          kind: "antigravity-oauth",
           scope: "subscription",
         },
       ],
@@ -1011,9 +1580,20 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         { kind: "host_filesystem", mode: "unexposed" },
         { kind: "container_runtime", mode: "isolated" },
         { kind: "harness_runtime", mode: "pi_native_extensions" },
-        { kind: "credentials", mode: "host_pi_oauth_dynamic_proxy" },
-        { kind: "network_policy", mode: "openai_subscription_only" },
+        {
+          kind: "harness_runtime",
+          mode: "antigravity_capability_contract_v1",
+        },
+        {
+          kind: "credentials",
+          mode: "host_mixed_oauth_dynamic_proxies",
+        },
+        {
+          kind: "network_policy",
+          mode: "mixed_subscription_providers_only",
+        },
         { kind: "control_channel", mode: "worker_file_mailbox_v1" },
+        { kind: "environment_exec", mode: "available" },
         { kind: "pty_launcher", mode: "available" },
       ],
     };
@@ -1039,6 +1619,8 @@ export class SbxControlMailboxRelay {
   private failureReported = false;
   private attestationState: "pending" | "passed" | "failed" = "pending";
   private attestationFailure: string | null = null;
+  private guestLogOffset = 0;
+  private guestLogMirrored = false;
 
   constructor(
     private readonly lease: EnvironmentLease,
@@ -1052,6 +1634,8 @@ export class SbxControlMailboxRelay {
     private readonly onProviderEvidence: (
       evidence: ProviderAvailabilityEvidence,
     ) => Promise<void> = async () => undefined,
+    private readonly guestLogPath: string | null = null,
+    private readonly hostLogPath: string | null = null,
   ) {}
 
   start(): void {
@@ -1176,9 +1760,13 @@ export class SbxControlMailboxRelay {
       executable: "/usr/bin/python3",
       args: [
         "-c",
-        "import json,os,pathlib; root=pathlib.Path(os.environ['QE_ROOT']); req=root/'mailbox'/'requests'; out={'requests':sorted([p.name for p in req.glob('*.json')])[:16] if req.is_dir() else []};\nfor key,name in [('runtime','runtime-state.json'),('attention','attention-control.json'),('recovery','recovery-control.json')]:\n p=root/name\n try:\n  if p.is_file() and p.stat().st_size <= 65536: out[key]=json.loads(p.read_text())\n except Exception: pass\nprint(json.dumps(out,separators=(',',':')))",
+        "import base64,json,os,pathlib; root=pathlib.Path(os.environ['QE_ROOT']); req=root/'mailbox'/'requests'; out={'requests':sorted([p.name for p in req.glob('*.json')])[:16] if req.is_dir() else []};\nfor key,name in [('runtime','runtime-state.json'),('attention','attention-control.json'),('recovery','recovery-control.json')]:\n p=root/name\n try:\n  if p.is_file() and p.stat().st_size <= 65536: out[key]=json.loads(p.read_text())\n except Exception: pass\ntry:\n p=pathlib.Path(os.environ['QE_LOG']); offset=int(os.environ['QE_LOG_OFFSET']); size=p.stat().st_size if p.is_file() else 0; start=offset if size>=offset else 0\n if p.is_file():\n  with p.open('rb') as f: f.seek(start); chunk=f.read(524288)\n  out.update({'logChunk':base64.b64encode(chunk).decode(),'logOffset':start+len(chunk),'logReset':start==0})\nexcept Exception: pass\nprint(json.dumps(out,separators=(',',':')))",
       ],
-      environment: { QE_ROOT: this.controlRoot },
+      environment: {
+        QE_ROOT: this.controlRoot,
+        QE_LOG: this.guestLogPath ?? "/qe/no-antigravity-log",
+        QE_LOG_OFFSET: String(this.guestLogOffset),
+      },
       timeoutMs: 30_000,
     });
     if (result.exitCode !== 0)
@@ -1188,6 +1776,9 @@ export class SbxControlMailboxRelay {
       runtime?: unknown;
       attention?: unknown;
       recovery?: unknown;
+      logChunk?: unknown;
+      logOffset?: unknown;
+      logReset?: unknown;
     };
     const requestNames = new Set(value.requests ?? []);
     for (const processed of this.processedRequests.keys())
@@ -1213,6 +1804,19 @@ export class SbxControlMailboxRelay {
         mode: 0o600,
       });
       this.processedRequests.set(name, requestDigest);
+    }
+    if (
+      this.hostLogPath &&
+      typeof value.logChunk === "string" &&
+      Number.isSafeInteger(value.logOffset) &&
+      Number(value.logOffset) >= 0
+    ) {
+      const chunk = new Uint8Array(Buffer.from(value.logChunk, "base64"));
+      if (!this.guestLogMirrored || value.logReset === true)
+        await writeAtomic(this.hostLogPath, chunk);
+      else if (chunk.length > 0) await appendFile(this.hostLogPath, chunk);
+      this.guestLogMirrored = true;
+      this.guestLogOffset = Number(value.logOffset);
     }
     await this.reportRuntime(value.runtime);
     await this.mirrorControl("attention", value.attention, this.lastAttention);
@@ -1295,6 +1899,12 @@ export class SbxControlMailboxRelay {
     const native = record(value.nativeSession)
       ? value.nativeSession
       : undefined;
+    const reportedAgent =
+      this.lineage.harnessKind === "antigravity" ? "agy" : "pi";
+    const reportedSource =
+      reportedAgent === "agy"
+        ? "quest-engineering:sbx-antigravity"
+        : "quest-engineering:sbx-pi";
     let nativeSession: NativeSessionRef | undefined;
     if (
       native &&
@@ -1302,13 +1912,15 @@ export class SbxControlMailboxRelay {
       typeof native.value === "string"
     )
       nativeSession = {
-        source: "pi",
-        agent: "pi",
+        source: reportedAgent === "agy" ? "antigravity" : "pi",
+        agent: reportedAgent,
         kind: native.kind,
         value: native.value,
       };
     await this.host.reportAgentState?.({
       paneId: this.paneId,
+      agent: reportedAgent,
+      source: reportedSource,
       state: state as "idle" | "working" | "blocked",
       sequence,
       ...(nativeSession ? { nativeSession } : {}),
@@ -1355,7 +1967,24 @@ function guestControlPaths(root: string) {
     attention: posix.join(root, "attention-control.json"),
     recovery: posix.join(root, "recovery-control.json"),
     runtimeState: posix.join(root, "runtime-state.json"),
+    mcpStartup: posix.join(root, "mcp-startup.jsonl"),
     mailbox: posix.join(root, "mailbox"),
+  };
+}
+
+function antigravityHookPath(home: string): string {
+  return posix.join(home, ".gemini", "config", "hooks.json");
+}
+
+function preparedControlEnvironment(
+  paths: ReturnType<typeof guestControlPaths>,
+): Record<string, string> {
+  return {
+    QE_HARNESS_CONTROL_PATH: paths.descriptor,
+    [SBX_CONTROL_MAILBOX_ENV]: paths.mailbox,
+    QE_RESULT_CONTROL_PATH: paths.result,
+    QE_ATTENTION_CONTROL_PATH: paths.attention,
+    QE_RECOVERY_CONTROL_PATH: paths.recovery,
   };
 }
 
@@ -1523,14 +2152,13 @@ async function hostGit(
   return stdout;
 }
 
-async function writeAtomic(path: string, value: string): Promise<void> {
+async function writeAtomic(
+  path: string,
+  value: string | Uint8Array,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, value, {
-    encoding: "utf8",
-    mode: 0o600,
-    flag: "wx",
-  });
+  await writeFile(temporary, value, { mode: 0o600, flag: "wx" });
   await rename(temporary, path);
 }
 

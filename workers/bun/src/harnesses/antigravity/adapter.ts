@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { WorkerConfig } from "../../config.ts";
 import {
@@ -8,23 +8,25 @@ import {
   type HarnessLineage,
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
+import type {
+  PreparedSbxHarnessExecution,
+  SbxRunExecutionManager,
+} from "../../execution-environment/sbx-run.ts";
 import type { JsonValue, ReasoningCapability } from "../../protocol/types.ts";
 import { HerdrApiError } from "../../session-host/herdr/client.ts";
+import { paneProcessIdentityDigest } from "../../session-host/pane-process-identity.ts";
 import type {
   HostedAgent,
   HostedExecutionRef,
   HostedPane,
+  HostedPaneProcessInfo,
+  InteractivePromptAuthority,
   TerminalSessionBackend,
 } from "../../session-host/types.ts";
 import { materializeExecutionArtifacts } from "../../workspace/execution-artifacts.ts";
 import { controlDescriptorPath } from "../control/authority.ts";
 import { HarnessControlClient } from "../control/client.ts";
-import { HARNESS_CONTROL_PATH_ENV } from "../control/descriptor.ts";
-import {
-  assertCurrentBridgeAuthority,
-  waitForMcpProcessBinding,
-} from "../control/mcp-readiness.ts";
-import { QE_MCP_STARTUP_EVIDENCE_ENV } from "../control/mcp-server.ts";
+import { assertCurrentBridgeAuthority } from "../control/mcp-readiness.ts";
 import {
   collectStepResult,
   readControl,
@@ -32,9 +34,10 @@ import {
 } from "../control/result-envelope.ts";
 import { harnessPromptFor } from "../prompt.ts";
 import {
-  ambiguousPromptError,
-  errorProvesPromptSubmission,
+  type NativeTurnActivity,
   observeAntigravityNativeActivity,
+  observeAntigravityPromptDispatch,
+  observeLatestAntigravityConversation,
   persistedPromptEvidence,
   promptActivityStallMs,
   promptEvidenceCursor,
@@ -63,22 +66,26 @@ import {
   discoverAntigravityModels,
   type NativeCommandRunner,
 } from "./discovery.ts";
+import type { AntigravityCommandHookSpec } from "./hook-readiness.ts";
+import type { AntigravityInitialInputReadiness } from "./initial-input-readiness.ts";
 import {
-  type AntigravityCommandHookSpec,
-  inspectAntigravityCommandHook,
-  installAntigravityCommandHook,
-  proveAntigravityStopHookReadiness,
-  removeAntigravityCommandHook,
-  waitForAntigravityHookDiscovery,
-} from "./hook-readiness.ts";
+  ANTIGRAVITY_INTERACTIVE_PROMPT_TRANSPORT,
+  encodeAntigravityInteractivePrompt,
+  type InteractivePromptSubmissionBinding,
+  initialPromptSubmissionState,
+  promptHash,
+  readPromptSubmissionState,
+  transitionPromptSubmissionState,
+  writePromptSubmissionState,
+} from "./interactive-prompt.ts";
 
 const HOOK_NAME = "qe-worker-stop-v1";
 
 interface AntigravityDependencies {
   discoverModels?: typeof discoverAntigravityModels;
   runNativeCommand?: NativeCommandRunner;
-  proveReadiness?: typeof proveAntigravityStopHookReadiness;
   now?: () => string;
+  executionManager?: SbxRunExecutionManager;
 }
 
 /** Interactive-first Antigravity adapter. MCP transports payloads only. */
@@ -109,23 +116,28 @@ export class AntigravityHarness implements AgentHarness {
 
   private readonly discoverModels: typeof discoverAntigravityModels;
   private readonly runNativeCommand: NativeCommandRunner | undefined;
-  private readonly proveReadiness: typeof proveAntigravityStopHookReadiness;
   private readonly now: () => string;
-  private readonly bridgeCliPath = resolve(
-    import.meta.dir,
-    "..",
-    "control",
-    "bridge-cli.ts",
-  );
-  private readonly mcpServerPath = resolve(
-    import.meta.dir,
-    "..",
-    "control",
-    "mcp-server.ts",
-  );
+  private readonly executionManager: SbxRunExecutionManager | undefined;
+  private lastReadyDiscovery: HarnessDiscovery | null = null;
+  private readonly sbxExecutions = new Map<
+    string,
+    PreparedSbxHarnessExecution
+  >();
+  private readonly promptReadiness = new Map<
+    string,
+    {
+      conversation: "none" | "active";
+      initialInputReady: true;
+      nativeEvidence: AntigravityInitialInputReadiness;
+      binding: InteractivePromptSubmissionBinding;
+      submissionPath: string;
+      paneProcess: HostedPaneProcessInfo;
+      paneProcessIdentityDigest: string;
+      foregroundProcessGroupId: number;
+    }
+  >();
+  private readonly promptSubmissionStarted = new Set<string>();
   private stopped = false;
-  private readonly activeHookWorkspaces = new Map<string, string>();
-  private readonly originalHookContents = new Map<string, string | null>();
 
   constructor(
     private readonly host: TerminalSessionBackend,
@@ -135,18 +147,49 @@ export class AntigravityHarness implements AgentHarness {
     this.discoverModels =
       dependencies.discoverModels ?? discoverAntigravityModels;
     this.runNativeCommand = dependencies.runNativeCommand;
-    this.proveReadiness =
-      dependencies.proveReadiness ?? proveAntigravityStopHookReadiness;
     this.now = dependencies.now ?? (() => new Date().toISOString());
+    this.executionManager = dependencies.executionManager;
   }
 
   async discover(): Promise<HarnessDiscovery> {
-    const [backend, native] = await Promise.all([
-      this.host.readiness(),
-      this.discoverModels(this.runNativeCommand),
-    ]);
+    const backend = await this.host.readiness();
+    const onlyBackendIntegrationMissing =
+      backend.missingCapabilities.length > 0 &&
+      backend.missingCapabilities.every(
+        (capability) => capability === "integration.antigravity.current",
+      );
+    if (!backend.ready && !onlyBackendIntegrationMissing)
+      return {
+        kind: this.kind,
+        displayName: this.displayName,
+        strategy: this.integrationStrategy,
+        integration: {
+          status:
+            backend.status === "unavailable"
+              ? "unavailable"
+              : "incompatible_version",
+          detail: backendReadinessDetail(backend),
+          installed: true,
+          authenticated: false,
+        },
+        models: [],
+        capabilities: { ...this.capabilities, structuredResult: false },
+      };
+    const native = this.executionManager
+      ? await this.executionManager.discoverAntigravity()
+      : await this.discoverModels(this.runNativeCommand);
     const registration = native.installed
-      ? await this.inspectMcpRegistration()
+      ? this.executionManager
+        ? {
+            ready: true,
+            detail:
+              "The immutable mixed SBX profile owns QE MCP registration and the guest Stop bridge.",
+          }
+        : {
+            ready: false,
+            detail:
+              "Antigravity execution requires the immutable mixed SBX profile.",
+          }
       : { ready: false, detail: "Antigravity CLI is unavailable." };
     const ready =
       backend.ready &&
@@ -154,10 +197,7 @@ export class AntigravityHarness implements AgentHarness {
       native.authenticated &&
       native.compatible &&
       registration.ready;
-    const onlyBackendIntegrationMissing = backend.missingCapabilities.every(
-      (capability) => capability === "integration.antigravity.current",
-    );
-    return {
+    const discovery: HarnessDiscovery = {
       kind: this.kind,
       displayName: this.displayName,
       strategy: this.integrationStrategy,
@@ -193,6 +233,8 @@ export class AntigravityHarness implements AgentHarness {
       models: native.models,
       capabilities: { ...this.capabilities, structuredResult: ready },
     };
+    if (ready) this.lastReadyDiscovery = discovery;
+    return discovery;
   }
 
   async start(
@@ -200,25 +242,31 @@ export class AntigravityHarness implements AgentHarness {
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     await this.assertExactConfiguration(dispatch);
+    if (!this.executionManager)
+      throw new Error(
+        "Antigravity execution requires the Run-owned mixed SBX boundary.",
+      );
     const sessionIncarnation = requireSessionIncarnation(this.host);
     const physicalLineage = {
       ...lineage,
       herdrSession: this.host.sessionName,
       herdrSessionIncarnation: sessionIncarnation,
     };
-    const cwd = executionCwd(this.config, dispatch);
-    mkdirSync(cwd, { recursive: true });
-    await this.activateHook(lineage, cwd);
-    const environment = this.environment(lineage);
-    const workspaceId = await this.ensureWorkspace(environment, cwd);
+    const sbx = await this.executionManager.prepare(
+      dispatch,
+      physicalLineage,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    this.sbxExecutions.set(lineage.lineageId, sbx);
+    const cwd = sbx.hostCwd;
+    await sbx.installAntigravityHook(this.stopHookSpec(sbx));
+    const workspaceId = await this.ensureWorkspace(sbx.paneEnvironment, cwd);
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    // A dedicated tab guarantees this process receives its immutable session
-    // environment even when the Herdr workspace already existed.
     const pane = await this.host.createTab({
       workspaceId,
       cwd,
       label: displayLabel(dispatch),
-      environment,
+      environment: sbx.paneEnvironment,
     });
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     const agentName = agentNameFor(lineage.lineageId);
@@ -227,6 +275,7 @@ export class AntigravityHarness implements AgentHarness {
       dispatch,
       physicalLineage,
       true,
+      sbx.lease.ref,
     );
     await writeControlAtomic(physicalLineage.resultControlPath, {
       protocolVersion: 1,
@@ -236,19 +285,33 @@ export class AntigravityHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
+    await sbx.syncControl();
     await this.host.reportMetadata({
       paneId: pane.paneId,
       title: displayLabel(dispatch),
       tokens: launchTokens,
     });
-    await prepareStartupEvidence(lineage);
-    const agent = await this.host.startAgent({
-      paneId: pane.paneId,
-      name: agentName,
-      integrationKind: "agy",
-      args: this.args(dispatch, lineage),
-      expectedTokens: launchTokens,
-    });
+    const args = this.args(dispatch, lineage);
+    const command = await sbx.launchDescriptor(args);
+    sbx.startRelay(this.host, pane.paneId);
+    let agent: HostedAgent;
+    try {
+      agent = await this.host.startAgent({
+        paneId: pane.paneId,
+        name: agentName,
+        integrationKind: "agy",
+        args,
+        command,
+        expectedTokens: launchTokens,
+      });
+      await sbx.awaitAttestation();
+    } catch (error) {
+      await sbx.stopRelay().catch(() => undefined);
+      await sbx.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
+      this.sbxExecutions.delete(lineage.lineageId);
+      await this.host.closePane(pane.paneId).catch(() => undefined);
+      throw error;
+    }
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
     return {
       lineage: physicalLineage,
@@ -267,49 +330,138 @@ export class AntigravityHarness implements AgentHarness {
     dispatch: DispatchRecord,
     execution: HarnessPreparedExecution,
   ): Promise<void> {
-    const cwd = executionCwd(this.config, dispatch);
     const lineage = execution.lineage;
-    const descriptorPath = controlDescriptorPath(lineage);
-    await waitForMcpProcessBinding({
-      evidencePath: startupEvidencePath(lineage),
-      descriptorPath,
-      timeoutMs: this.config.resultTimeoutMs,
-    });
-    await assertCurrentBridgeAuthority(
-      descriptorPath,
-      expectedControlBinding(dispatch, lineage),
-    );
-    await this.proveReadiness({
-      hookConfigPath: hookConfigPath(cwd),
-      spec: this.stopHookSpec(),
-      logPath: nativeLogPath(lineage),
-      syntheticArgv: [process.execPath, this.bridgeCliPath, "hook", "stop"],
-      syntheticPayload: {
-        conversationId: "00000000-0000-4000-8000-000000000001",
-        executionNum: 0,
-        terminationReason: "qe_zero_inference_readiness",
-        fullyIdle: true,
-        modelName: "synthetic-no-inference",
-      },
-      env: {
-        ...process.env,
-        [HARNESS_CONTROL_PATH_ENV]: descriptorPath,
-      },
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx)
+      throw new Error("Antigravity readiness has no exact SBX execution.");
+    const binding = expectedControlBinding(dispatch, lineage);
+    await assertCurrentBridgeAuthority(controlDescriptorPath(lineage), binding);
+    const nativeSession =
+      lineage.nativeSession ?? execution.agent.nativeSession;
+    const nativeReadiness = await sbx.proveAntigravityReadiness({
+      spec: this.stopHookSpec(sbx),
+      binding,
+      requireConversationFree: !nativeSession,
       timeoutMs: Math.min(this.config.resultTimeoutMs, 30_000),
     });
+    if (!lineage.nativeSession && nativeSession)
+      throw new OperationalExecutionError(
+        "Fresh Antigravity readiness unexpectedly found an active native conversation before prompt authorization.",
+        "operator_recovery_required",
+        "pre_authorization_native_activity",
+        { native_conversation_id: nativeSession.value },
+      );
+    if (
+      lineage.nativeSession &&
+      (!execution.agent.nativeSession ||
+        !nativeIdentityMatches(lineage, execution.agent))
+    )
+      throw new OperationalExecutionError(
+        "Retained Antigravity readiness could not prove the exact native conversation.",
+        "operator_recovery_required",
+        "antigravity_conversation_identity_mismatch",
+      );
+    const backend = await this.host.readiness();
+    const endpointGeneration = backend.provenance.endpointGeneration;
+    const serverGeneration = backend.provenance.serverGeneration;
+    const sessionIncarnation = execution.ref.sessionIncarnation;
+    if (
+      !backend.ready ||
+      !backend.capabilities.includes("terminal.literal_input") ||
+      !backend.capabilities.includes("terminal.submit_input") ||
+      !Number.isSafeInteger(endpointGeneration) ||
+      !serverGeneration ||
+      !sessionIncarnation ||
+      execution.ref.sessionName !== this.host.sessionName ||
+      sessionIncarnation !== this.host.sessionIncarnation()
+    )
+      throw new Error(
+        "Antigravity interactive input lacks a current exact Herdr endpoint authority.",
+      );
+    if (!this.host.inspectPaneProcess)
+      throw new Error(
+        "Antigravity interactive input cannot inspect its managed pane process.",
+      );
+    const processInfo = await this.host.inspectPaneProcess(
+      execution.ref.paneId,
+    );
+    if (
+      !Number.isSafeInteger(processInfo.shellPid) ||
+      !Number.isSafeInteger(processInfo.foregroundProcessGroupId) ||
+      processInfo.foregroundProcesses.length === 0
+    )
+      throw new Error(
+        "Antigravity initial input readiness does not belong to the exact managed TUI process.",
+      );
+    const submissionBinding = interactivePromptBinding(
+      this.config.workerId,
+      dispatch,
+      lineage,
+      execution.ref,
+      sbx,
+      endpointGeneration as number,
+      serverGeneration,
+    );
+    const submissionPath = interactivePromptSubmissionPath(lineage);
+    const prompt = antigravityPromptFor(dispatch, sbx.materializedArtifacts);
+    const existingSubmission = await readPromptSubmissionState(submissionPath);
+    if (
+      !dispatch.promptIntentAt &&
+      existingSubmission &&
+      existingSubmission.phase !== "not_submitted"
+    )
+      throw new OperationalExecutionError(
+        "Antigravity readiness found a prior physical prompt submission for this lineage.",
+        "operator_recovery_required",
+        "antigravity_duplicate_prompt_rejected",
+      );
+    if (!dispatch.promptIntentAt)
+      await writePromptSubmissionState(
+        submissionPath,
+        initialPromptSubmissionState(submissionBinding, prompt, this.now()),
+      );
+    const readiness = {
+      conversation: nativeSession ? ("active" as const) : ("none" as const),
+      initialInputReady: true as const,
+      nativeEvidence: nativeReadiness.initialInput,
+      binding: submissionBinding,
+      submissionPath,
+      paneProcess: processInfo,
+      paneProcessIdentityDigest: paneProcessIdentityDigest(processInfo),
+      foregroundProcessGroupId: processInfo.foregroundProcessGroupId as number,
+    };
+    this.promptReadiness.set(lineage.lineageId, readiness);
     await writeFile(
       join(dirname(nativeLogPath(lineage)), "pre-inference-readiness.json"),
       `${JSON.stringify(
         {
-          version: 1,
+          version: 4,
           kind: "antigravity_pre_inference_readiness",
           actionId: dispatch.action.action_id,
           attemptId: dispatch.action.attempt_id,
-          workspaceRoot: cwd,
+          workspaceRoot: sbx.hostCwd,
           argv: this.args(dispatch, lineage),
-          stopHookReady: true,
-          mcpChildReady: true,
+          conversationState: readiness.conversation,
+          conversationId: nativeSession?.value ?? null,
+          initialInputReady: readiness.initialInputReady,
+          initialInputTransport: ANTIGRAVITY_INTERACTIVE_PROMPT_TRANSPORT,
+          nativeInputReadiness: nativeReadiness.initialInput,
+          herdrEndpointGeneration: endpointGeneration,
+          herdrServerGeneration: serverGeneration,
+          herdrSession: execution.ref.sessionName,
+          herdrSessionIncarnation: sessionIncarnation,
+          paneId: execution.ref.paneId,
+          terminalId: execution.ref.terminalId ?? null,
+          foregroundProcessGroupId: readiness.foregroundProcessGroupId,
+          paneProcessIdentity: {
+            shellPid: readiness.paneProcess.shellPid,
+            foregroundProcessGroupId: readiness.foregroundProcessGroupId,
+            digest: readiness.paneProcessIdentityDigest,
+          },
+          stopHookReady: nativeReadiness.stopHookReady,
+          mcpChildReady: nativeReadiness.mcpChildReady,
           bridgeContextValid: true,
+          arbitraryReadinessDelayMs: 0,
           recordedAt: this.now(),
         },
         null,
@@ -356,7 +508,10 @@ export class AntigravityHarness implements AgentHarness {
       reject(
         "The retained Antigravity process is not idle and conversation-free.",
       );
-    const cwd = executionCwd(this.config, target);
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx)
+      reject("The retained Antigravity process has no exact SBX execution.");
+    const cwd = (sbx as PreparedSbxHarnessExecution).hostCwd;
     if (
       !samePath(agent.cwd ?? agent.foregroundCwd, cwd) ||
       agent.workspaceId !== lineage.workspaceId ||
@@ -365,27 +520,30 @@ export class AntigravityHarness implements AgentHarness {
       reject(
         "The retained Antigravity process does not match the exact workspace, terminal, and pane provenance.",
       );
-    await this.assertPreparedHookConfiguration(cwd);
     const readiness = await readPreparedProcessReadiness(lineage);
     const expectedArgs = this.args(target, lineage);
     if (
       readiness.kind !== "antigravity_pre_inference_readiness" ||
+      readiness.version !== 4 ||
+      !isCurrentFreshConversationReadiness(readiness.nativeInputReadiness) ||
       readiness.actionId !== source.action.action_id ||
       readiness.attemptId !== source.action.attempt_id ||
       readiness.workspaceRoot !== cwd ||
       readiness.stopHookReady !== true ||
       readiness.mcpChildReady !== true ||
+      readiness.initialInputReady !== true ||
+      readiness.initialInputTransport !==
+        ANTIGRAVITY_INTERACTIVE_PROMPT_TRANSPORT ||
       readiness.bridgeContextValid !== true ||
       !sameStringArray(readiness.argv, expectedArgs)
     )
       reject(
         "The retained Antigravity launch and readiness evidence do not match the requested Attempt policy.",
       );
-    await waitForMcpProcessBinding({
-      evidencePath: startupEvidencePath(lineage),
-      descriptorPath: controlDescriptorPath(lineage),
-      timeoutMs: this.config.resultTimeoutMs,
-    });
+    await assertCurrentBridgeAuthority(
+      controlDescriptorPath(lineage),
+      expectedControlBinding(target, lineage),
+    );
   }
 
   async continue(
@@ -393,6 +551,10 @@ export class AntigravityHarness implements AgentHarness {
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
     await this.assertExactConfiguration(dispatch);
+    if (!this.executionManager)
+      throw new Error(
+        "Antigravity continuation requires the Run-owned mixed SBX boundary.",
+      );
     if (
       !lineage.herdrSessionIncarnation ||
       lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
@@ -400,7 +562,13 @@ export class AntigravityHarness implements AgentHarness {
       throw new Error(
         "The continued Antigravity TUI belongs to another Herdr session incarnation.",
       );
-    await this.activateHook(lineage, executionCwd(this.config, dispatch));
+    const sbx = await this.executionManager.prepare(
+      dispatch,
+      lineage,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    this.sbxExecutions.set(lineage.lineageId, sbx);
+    await sbx.installAntigravityHook(this.stopHookSpec(sbx));
     await writeControlAtomic(lineage.resultControlPath, {
       protocolVersion: 1,
       workerId: dispatch.action.worker_id,
@@ -409,15 +577,27 @@ export class AntigravityHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
-    const agent = await this.findExactLiveAgent(lineage);
-    if (!agent || !nativeIdentityMatches(lineage, agent))
+    await sbx.syncControl();
+    const liveAgent = await this.findExactLiveAgent(lineage);
+    const agent = liveAgent
+      ? await this.reconcileNativeIdentity(lineage, liveAgent)
+      : null;
+    if (!agent)
       throw new Error(
         "The exact continued Antigravity TUI is missing or has incompatible provenance.",
       );
+    sbx.startRelay(this.host, agent.paneId);
+    await sbx.awaitAttestation();
     await this.host.reportMetadata({
       paneId: agent.paneId,
       title: displayLabel(dispatch),
-      tokens: provenance(this.config.workerId, dispatch, lineage, true),
+      tokens: provenance(
+        this.config.workerId,
+        dispatch,
+        lineage,
+        true,
+        sbx.lease.ref,
+      ),
     });
     return {
       lineage,
@@ -445,10 +625,10 @@ export class AntigravityHarness implements AgentHarness {
       nonce: dispatch.resultNonce,
       resultDirectory: dispatch.resultDirectory,
     });
-    const prompt = antigravityPromptFor(
-      dispatch,
-      materializeExecutionArtifacts(this.config, dispatch),
-    );
+    const sbx = this.sbxExecutions.get(execution.lineage.lineageId);
+    if (!sbx) throw new Error("Antigravity prompt has no exact SBX execution.");
+    await sbx.syncControl();
+    const prompt = antigravityPromptFor(dispatch, sbx.materializedArtifacts);
     const evidence = await promptEvidenceCursor(
       "antigravity_log",
       nativeLogPath(execution.lineage),
@@ -462,7 +642,7 @@ export class AntigravityHarness implements AgentHarness {
     return this.submitAndCollect(
       dispatch,
       execution.lineage,
-      execution.ref.paneId,
+      execution.ref,
       execution.agent,
       prompt,
       evidence,
@@ -476,10 +656,9 @@ export class AntigravityHarness implements AgentHarness {
     agent: HostedAgent,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
-    const prompt = antigravityPromptFor(
-      dispatch,
-      materializeExecutionArtifacts(this.config, dispatch),
-    );
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx) throw new Error("Antigravity wait has no exact SBX execution.");
+    const prompt = antigravityPromptFor(dispatch, sbx.materializedArtifacts);
     const evidence =
       persistedPromptEvidence(dispatch, "antigravity_log", prompt) ??
       (await promptEvidenceCursor(
@@ -496,151 +675,62 @@ export class AntigravityHarness implements AgentHarness {
     );
   }
 
-  async recover(lineage: HarnessLineage): Promise<HarnessRecoveredExecution> {
-    let sessionIncarnation = requireSessionIncarnation(this.host);
-    const live =
-      lineage.herdrSessionIncarnation === sessionIncarnation
-        ? await this.findExactLiveAgent(lineage)
-        : null;
-    sessionIncarnation = requireSessionIncarnation(this.host);
-    if (live && lineage.herdrSessionIncarnation === sessionIncarnation) {
-      if (!nativeIdentityMatches(lineage, live))
-        return {
-          found: false,
-          detail:
-            "The surviving Antigravity TUI has an unverifiable native conversation identity.",
-        };
-      const configuration = persistedConfiguration(lineage);
-      const cwd = persistedExecutionCwd(this.config, lineage, configuration);
-      if (cwd) await this.activateHook(lineage, cwd);
-      return {
-        found: true,
-        agent: live,
-        detail: `Herdr found the original Antigravity TUI in ${live.status} state.`,
-      };
-    }
-    const native = lineage.nativeSession;
-    if (!native || native.kind !== "id" || native.agent !== "agy")
-      return {
-        found: false,
-        detail:
-          "The Antigravity TUI is gone and no verified native conversation ID is available.",
-      };
-    const recoveryLineage = {
-      ...lineage,
-      herdrSession: this.host.sessionName,
-      herdrSessionIncarnation: sessionIncarnation,
-    };
-    const configuration = persistedConfiguration(lineage);
-    await this.assertPersistedConfigurationAvailable(configuration);
-    const cwd = persistedExecutionCwd(this.config, lineage, configuration);
-    if (!cwd)
-      return {
-        found: false,
-        detail: "Recovery workspace provenance is invalid.",
-      };
-    await this.activateHook(lineage, cwd);
-    const environment = {
-      [HARNESS_CONTROL_PATH_ENV]: controlDescriptorPath(lineage),
-      [QE_MCP_STARTUP_EVIDENCE_ENV]: startupEvidencePath(lineage),
-    };
-    const workspaceId = await this.ensureWorkspace(environment, cwd);
-    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    const pane = await this.host.createTab({
-      workspaceId,
-      cwd,
-      label: "Antigravity recovery",
-      environment,
-    });
-    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    const agentName = `${agentNameFor(lineage.lineageId)}-recovery`;
-    let recoveryControl: Awaited<ReturnType<typeof readControl>> | null = null;
-    try {
-      recoveryControl = await readControl(lineage.resultControlPath);
-    } catch (error) {
-      if (
-        lineage.activeActionId ||
-        (error as NodeJS.ErrnoException).code !== "ENOENT"
-      )
-        throw error;
-    }
+  async recover(
+    lineage: HarnessLineage,
+    dispatch?: DispatchRecord,
+  ): Promise<HarnessRecoveredExecution> {
+    const sessionIncarnation = requireSessionIncarnation(this.host);
     if (
-      recoveryControl &&
-      (recoveryControl.workerId !== this.config.workerId ||
-        recoveryControl.lineageId !== lineage.lineageId ||
-        recoveryControl.nonce === "")
-    )
-      throw new Error("Antigravity recovery control provenance is invalid.");
-    const recoveryTokens = {
-      ...retainedProvenance(this.config.workerId, recoveryLineage, agentName),
-      ...(recoveryControl
-        ? {
-            qe_active_state: "active",
-            qe_active_action_id: recoveryControl.action.action_id,
-            qe_action_hash: identityHash(recoveryControl.action.action_id),
-            qe_run_id: recoveryControl.action.run_id,
-            qe_occurrence_hash: identityHash(
-              recoveryControl.action.occurrence_id,
-            ),
-            qe_attempt_hash: identityHash(recoveryControl.action.attempt_id),
-            qe_result_nonce: recoveryControl.nonce,
-          }
-        : {}),
-    };
-    await this.host.reportMetadata({
-      paneId: pane.paneId,
-      title: "Antigravity recovery",
-      tokens: recoveryTokens,
-    });
-    await prepareStartupEvidence(lineage);
-    const model = record(configuration.model);
-    const agent = await this.host.startAgent({
-      paneId: pane.paneId,
-      name: agentName,
-      integrationKind: "agy",
-      args: [
-        "--conversation",
-        native.value,
-        "--model",
-        String(model?.model ?? ""),
-        ...effortArgs(configuration.reasoning),
-        "--log-file",
-        nativeLogPath(lineage),
-      ],
-      expectedTokens: recoveryTokens,
-    });
-    assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    if (
-      !agent.nativeSession ||
-      agent.nativeSession.kind !== "id" ||
-      agent.nativeSession.value !== native.value
+      !lineage.herdrSessionIncarnation ||
+      lineage.herdrSessionIncarnation !== sessionIncarnation
     )
       return {
         found: false,
         detail:
-          "Relaunched Antigravity did not verify the retained conversation identity.",
+          "The original Antigravity execution belongs to another Herdr session incarnation.",
       };
-    await this.proveRecoveredProcessReadiness({
-      ...recoveryLineage,
-      agentName,
-      workspaceId: pane.workspaceId,
-      tabId: pane.tabId,
-      paneId: pane.paneId,
-      terminalId: pane.terminalId ?? null,
-      nativeSession: agent.nativeSession,
-    });
+    if (!this.executionManager || !dispatch)
+      return {
+        found: false,
+        detail:
+          "Antigravity recovery requires the exact Run-owned SBX dispatch context.",
+      };
+    const found = await this.findExactLiveAgent(lineage);
+    if (!found)
+      return {
+        found: false,
+        detail:
+          "Herdr cannot verify the original Antigravity TUI; fresh recovery may resume its verified conversation in the lineage-private SBX HOME.",
+      };
+    const live = await this.reconcileNativeIdentity(
+      lineage,
+      found,
+      Boolean(dispatch.promptIntentAt),
+    );
+    if (!live)
+      return {
+        found: false,
+        detail:
+          "The surviving Antigravity TUI has an unverifiable native conversation identity.",
+      };
+    const recoveredLineage =
+      live.nativeSession && !lineage.nativeSession
+        ? { ...lineage, nativeSession: live.nativeSession }
+        : lineage;
+    const sbx = await this.executionManager.prepare(
+      dispatch,
+      recoveredLineage,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    this.sbxExecutions.set(lineage.lineageId, sbx);
+    await sbx.installAntigravityHook(this.stopHookSpec(sbx));
+    await sbx.syncControl();
+    sbx.startRelay(this.host, live.paneId);
+    await sbx.awaitAttestation();
     return {
       found: true,
-      agent,
-      ref: refFor(
-        this.host.sessionName,
-        sessionIncarnation,
-        agentName,
-        pane,
-        agent,
-      ),
-      detail:
-        "Antigravity resumed the verified conversation in a new terminal/process incarnation.",
+      agent: live,
+      detail: `Herdr found the original Antigravity TUI in ${live.status} state.`,
     };
   }
 
@@ -688,7 +778,7 @@ export class AntigravityHarness implements AgentHarness {
         nativeSession: agent.nativeSession,
         evidence: "native_session",
       };
-    const activity = await observeAntigravityNativeActivity({
+    const activity = await observeAntigravityPromptDispatch({
       logPath: nativeLogPath(lineage),
       evidence: {
         kind: "antigravity_log",
@@ -696,10 +786,11 @@ export class AntigravityHarness implements AgentHarness {
         promptHash: "pre-authorization-gate",
       },
     });
-    if (!activity.working) return null;
+    if (activity.state === "pending") return null;
     return {
-      observedAt: activity.observedAt ?? this.now(),
-      nativeSession: activity.nativeSession ?? null,
+      observedAt: activity.observedAt,
+      nativeSession:
+        activity.state === "accepted" ? activity.nativeSession : null,
       evidence: "native_user_message",
     };
   }
@@ -708,11 +799,12 @@ export class AntigravityHarness implements AgentHarness {
     if (!lineage.paneId)
       throw new Error("Antigravity session has no live pane to retire.");
     await this.host.closePane(lineage.paneId);
-    try {
-      await this.deactivateHook(lineage);
-    } catch {
-      // Physical retirement is authoritative; a future launch rewrites its exact hook namespace.
-    }
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    await sbx?.stopRelay();
+    await sbx?.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
+    this.sbxExecutions.delete(lineage.lineageId);
+    this.promptReadiness.delete(lineage.lineageId);
+    this.promptSubmissionStarted.delete(lineage.lineageId);
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
@@ -724,7 +816,12 @@ export class AntigravityHarness implements AgentHarness {
   async close(lineage: HarnessLineage): Promise<void> {
     if (lineage.paneId)
       await this.host.sendKeys(lineage.paneId, ["ctrl+c", "ctrl+c"]);
-    await this.deactivateHook(lineage);
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    await sbx?.stopRelay();
+    await sbx?.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
+    this.sbxExecutions.delete(lineage.lineageId);
+    this.promptReadiness.delete(lineage.lineageId);
+    this.promptSubmissionStarted.delete(lineage.lineageId);
   }
 
   attachment(lineage: HarnessLineage) {
@@ -759,13 +856,21 @@ export class AntigravityHarness implements AgentHarness {
         await this.host.reportMetadata({
           paneId: lineage.paneId,
           title: displayLabel(dispatch),
-          tokens: provenance(this.config.workerId, dispatch, lineage, false),
+          tokens: provenance(
+            this.config.workerId,
+            dispatch,
+            lineage,
+            false,
+            this.sbxExecutions.get(lineage.lineageId)?.lease.ref,
+          ),
         });
       } catch {
         // Durable QE state outranks stale terminal metadata.
       }
     }
-    await this.deactivateHook(lineage);
+    await this.sbxExecutions
+      .get(lineage.lineageId)
+      ?.removeAntigravityHook(HOOK_NAME);
   }
 
   async discoverAdoptionCandidates(
@@ -842,6 +947,11 @@ export class AntigravityHarness implements AgentHarness {
           (agent.name !== undefined && agent.name !== expectedAgentName)
         )
           continue;
+        const nativeSession =
+          agent.nativeSession ??
+          (await observeLatestAntigravityConversation({
+            logPath: join(dirname(resultControlPath), "antigravity.log"),
+          }));
         candidates.push({
           action: control.action,
           state: ["working", "blocked", "unknown"].includes(agent.status)
@@ -873,7 +983,7 @@ export class AntigravityHarness implements AgentHarness {
             paneId: agent.paneId,
             terminalId: agent.terminalId ?? null,
             agentName: expectedAgentName,
-            nativeSession: agent.nativeSession ?? null,
+            nativeSession,
           },
         });
       } catch {
@@ -888,158 +998,374 @@ export class AntigravityHarness implements AgentHarness {
     this.host.disconnect();
   }
 
-  private async proveRecoveredProcessReadiness(
-    lineage: HarnessLineage,
-  ): Promise<void> {
-    const configuration = persistedConfiguration(lineage);
-    const cwd = persistedExecutionCwd(this.config, lineage, configuration);
-    if (!cwd) throw new Error("Recovery workspace provenance is invalid.");
-    const descriptorPath = controlDescriptorPath(lineage);
-    await waitForMcpProcessBinding({
-      evidencePath: startupEvidencePath(lineage),
-      descriptorPath,
-      timeoutMs: this.config.resultTimeoutMs,
-    });
-    const control = await readControl(lineage.resultControlPath);
-    await assertCurrentBridgeAuthority(descriptorPath, {
-      actionId: control.action.action_id,
-      attemptId: control.action.attempt_id,
-      lineageId: lineage.lineageId,
-      resultNonce: control.nonce,
-    });
-    const inspection = await inspectAntigravityCommandHook(
-      hookConfigPath(cwd),
-      this.stopHookSpec(),
-    );
-    if (
-      !inspection.namespacedHookPresent ||
-      !inspection.eventRegistered ||
-      !inspection.commandMatches ||
-      !inspection.timeoutMatches
-    )
-      throw new Error(
-        "Recovered Antigravity Stop hook configuration is invalid.",
-      );
-    await waitForAntigravityHookDiscovery({
-      logPath: nativeLogPath(lineage),
-      minimumNamedHooks: inspection.namedHookCount,
-      minimumConfigFiles: 1,
-      timeoutMs: Math.min(this.config.resultTimeoutMs, 30_000),
-    });
-  }
-
-  private async assertPreparedHookConfiguration(cwd: string): Promise<void> {
-    const stop = await inspectAntigravityCommandHook(
-      hookConfigPath(cwd),
-      this.stopHookSpec(),
-    );
-    if (
-      !stop.namespacedHookPresent ||
-      !stop.eventRegistered ||
-      !stop.commandMatches ||
-      !stop.timeoutMatches
-    )
-      rejectPreparedProcessAdoption(
-        "The retained Antigravity process no longer has the exact QE Stop hook.",
-      );
-  }
-
-  private async activateHook(
-    lineage: HarnessLineage,
-    cwd: string,
-  ): Promise<void> {
-    const path = hookConfigPath(cwd);
-    if (!this.originalHookContents.has(cwd))
-      this.originalHookContents.set(cwd, await optionalFile(path));
-    await installAntigravityCommandHook(path, this.stopHookSpec());
-    this.activeHookWorkspaces.set(lineage.lineageId, cwd);
-  }
-
-  private async deactivateHook(lineage: HarnessLineage): Promise<void> {
-    const cwd = this.activeHookWorkspaces.get(lineage.lineageId);
-    if (!cwd) return;
-    this.activeHookWorkspaces.delete(lineage.lineageId);
-    if ([...this.activeHookWorkspaces.values()].includes(cwd)) return;
-    const path = hookConfigPath(cwd);
-    await removeAntigravityCommandHook(path, HOOK_NAME);
-    const original = this.originalHookContents.get(cwd);
-    this.originalHookContents.delete(cwd);
-    if (original !== undefined) {
-      const current = await optionalFile(path);
-      if (semanticallySameHookConfig(current, original)) {
-        if (original !== null)
-          await writeFile(path, original, { encoding: "utf8", mode: 0o600 });
-      }
-    }
-  }
-
   private async submitAndCollect(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
-    target: string,
+    ref: HostedExecutionRef,
     initial: HostedAgent,
     prompt: string,
     evidence: PromptEvidenceCursor,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
-    let current = initial;
-    let acceptedAt: string;
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx) throw new Error("Antigravity prompt has no exact SBX execution.");
+    const readiness = this.promptReadiness.get(lineage.lineageId);
+    if (!readiness)
+      throw new Error(
+        "Antigravity prompt dispatch has no current preauthorization readiness proof.",
+      );
+    if (!dispatch.promptAuthorizedAt || !dispatch.promptIntentAt)
+      throw new OperationalExecutionError(
+        "Antigravity pane input is unavailable before exact Product prompt authorization and intent.",
+        "operator_recovery_required",
+        "antigravity_prompt_not_authorized",
+        { provider_cycles: 0 },
+      );
+    if (
+      ref.paneId !== readiness.binding.paneId ||
+      !sameInteractivePromptBinding(
+        readiness.binding,
+        interactivePromptBinding(
+          this.config.workerId,
+          dispatch,
+          lineage,
+          ref,
+          sbx,
+          readiness.binding.herdrEndpointGeneration,
+          readiness.binding.herdrServerGeneration,
+        ),
+      )
+    )
+      throw new OperationalExecutionError(
+        "Antigravity pane input authority became stale before any input was written.",
+        "operator_recovery_required",
+        "antigravity_prompt_input_fence_failed",
+        { provider_cycles: 0 },
+      );
+    if (this.promptSubmissionStarted.has(lineage.lineageId))
+      throw new OperationalExecutionError(
+        "Duplicate Antigravity prompt submission was rejected.",
+        "operator_recovery_required",
+        "antigravity_duplicate_prompt_rejected",
+        { provider_cycles: 0 },
+      );
+    const retainedConversation = lineage.nativeSession;
+    if (retainedConversation) {
+      if (
+        readiness.conversation !== "active" ||
+        retainedConversation.agent !== "agy" ||
+        retainedConversation.kind !== "id" ||
+        !initial.nativeSession ||
+        initial.nativeSession.agent !== "agy" ||
+        initial.nativeSession.kind !== "id" ||
+        initial.nativeSession.value !== retainedConversation.value
+      )
+        throw new OperationalExecutionError(
+          "The retained Antigravity conversation does not match the exact PhysicalLineage.",
+          "operator_recovery_required",
+          "antigravity_conversation_identity_mismatch",
+        );
+    } else if (
+      readiness.conversation !== "none" ||
+      !readiness.initialInputReady ||
+      initial.nativeSession
+    )
+      throw new OperationalExecutionError(
+        "Fresh Antigravity interactive input is not conversation-free and ready.",
+        "operator_recovery_required",
+        "antigravity_initial_dispatch_not_fresh",
+        { provider_cycles: 0 },
+      );
+
+    if (
+      !this.host.stageInteractivePrompt ||
+      !this.host.submitInteractivePrompt ||
+      !this.host.inspectPaneProcess
+    )
+      throw new OperationalExecutionError(
+        "Herdr does not expose the required fenced pane-input transport.",
+        "operator_recovery_required",
+        "antigravity_prompt_input_unavailable",
+        { provider_cycles: 0 },
+      );
+    const currentPaneProcess = await this.host
+      .inspectPaneProcess(ref.paneId)
+      .catch((error) => {
+        throw new OperationalExecutionError(
+          `Antigravity pane process identity could not be revalidated: ${error instanceof Error ? error.message : String(error)}`,
+          "operator_recovery_required",
+          "antigravity_prompt_input_fence_failed",
+          { provider_cycles: 0 },
+        );
+      });
+    if (
+      currentPaneProcess.shellPid !== readiness.paneProcess.shellPid ||
+      currentPaneProcess.foregroundProcessGroupId !==
+        readiness.foregroundProcessGroupId ||
+      paneProcessIdentityDigest(currentPaneProcess) !==
+        readiness.paneProcessIdentityDigest
+    )
+      throw new OperationalExecutionError(
+        "Antigravity pane process identity changed after preauthorization observation.",
+        "operator_recovery_required",
+        "antigravity_prompt_input_fence_failed",
+        { provider_cycles: 0 },
+      );
+    let submission = await readPromptSubmissionState(readiness.submissionPath);
+    if (
+      !submission ||
+      submission.phase !== "not_submitted" ||
+      submission.promptHash !== promptHash(prompt) ||
+      !sameInteractivePromptBinding(submission, readiness.binding)
+    )
+      throw new OperationalExecutionError(
+        "Antigravity prompt submission state is missing, stale, or already consumed.",
+        "operator_recovery_required",
+        "antigravity_duplicate_prompt_rejected",
+        { provider_cycles: 0 },
+      );
+    this.promptSubmissionStarted.add(lineage.lineageId);
+    await assertCurrentBridgeAuthority(
+      controlDescriptorPath(lineage),
+      expectedControlBinding(dispatch, lineage),
+    );
+    const authority = interactivePromptAuthority(
+      readiness.binding,
+      lineage,
+      readiness.paneProcess,
+      readiness.paneProcessIdentityDigest,
+      dispatch.promptAuthorizedAt,
+      dispatch.promptIntentAt,
+    );
+    const encodedPrompt = encodeAntigravityInteractivePrompt(prompt);
+    submission = transitionPromptSubmissionState(
+      submission,
+      "text_stage_requested",
+      this.now(),
+    );
+    await writePromptSubmissionState(readiness.submissionPath, submission);
     try {
-      // Submission acknowledgement is independent from native turn activity.
-      current = await this.host.prompt(target, prompt);
-      acceptedAt = this.now();
+      await this.host.stageInteractivePrompt({
+        authority,
+        text: encodedPrompt,
+      });
+      submission = transitionPromptSubmissionState(
+        submission,
+        "text_staged",
+        this.now(),
+      );
+      await writePromptSubmissionState(readiness.submissionPath, submission);
     } catch (error) {
-      if (errorProvesPromptSubmission(error)) {
-        acceptedAt = this.now();
-        current = await this.host.inspectAgentState(target);
-      } else if (ambiguousPromptError(error)) {
-        const resolution = await reconcileAmbiguousPrompt({
-          observe: () =>
-            observeAntigravityNativeActivity({
-              logPath: nativeLogPath(lineage),
-              evidence,
-            }),
-          resultExists: () => structuredResultExists(dispatch.resultDirectory),
-          timeoutMs: promptActivityStallMs(this.config),
-        });
-        if (resolution === "settled") {
-          const outputs = (await collectStepResult(dispatch)).envelope.outputs;
-          acceptedAt = this.now();
-          onEvent({
-            type: "prompt_accepted",
-            acceptedAt,
-            inspection: withState(
-              this.inspectionFor(lineage, current),
-              "waiting_for_activity",
-            ),
-          });
-          onEvent({
-            type: "structured_result_received",
-            observedAt: this.now(),
-            inspection: this.inspectionFor(lineage, current),
-          });
-          return outputs;
-        }
-        if (!resolution) throw uncertainPrompt(error);
-        acceptedAt = resolution.observedAt ?? this.now();
-      } else throw error;
+      const authorityError = inputAuthorityError(error) ? error : null;
+      const knownNoSideEffectRejection = authorityError?.sideEffect === "none";
+      submission = transitionPromptSubmissionState(
+        submission,
+        knownNoSideEffectRejection
+          ? "text_stage_rejected"
+          : "text_stage_uncertain",
+        this.now(),
+        {
+          detail: error instanceof Error ? error.message : String(error),
+          ...(knownNoSideEffectRejection
+            ? { fenceMismatchFields: authorityError.mismatchFields }
+            : {}),
+        },
+      );
+      await writePromptSubmissionState(
+        readiness.submissionPath,
+        submission,
+      ).catch(() => undefined);
+      if (authorityError)
+        throw new OperationalExecutionError(
+          `Antigravity pane input failed its exact identity fence: ${authorityError.message}`,
+          "operator_recovery_required",
+          "antigravity_prompt_input_fence_failed",
+          {
+            provider_cycles: 0,
+            ...(authorityError.mismatchFields.length > 0
+              ? {
+                  input_fence_mismatch_fields: [
+                    ...authorityError.mismatchFields,
+                  ],
+                }
+              : {}),
+            input_side_effect: authorityError.sideEffect,
+          },
+        );
+      throw uncertainPrompt(error);
     }
+
+    submission = transitionPromptSubmissionState(
+      submission,
+      "submit_requested",
+      this.now(),
+    );
+    await writePromptSubmissionState(readiness.submissionPath, submission);
+    try {
+      await this.host.submitInteractivePrompt(authority);
+      submission = transitionPromptSubmissionState(
+        submission,
+        "submit_sent",
+        this.now(),
+      );
+      await writePromptSubmissionState(readiness.submissionPath, submission);
+    } catch (error) {
+      submission = transitionPromptSubmissionState(
+        submission,
+        "submit_uncertain",
+        this.now(),
+        { detail: error instanceof Error ? error.message : String(error) },
+      );
+      await writePromptSubmissionState(
+        readiness.submissionPath,
+        submission,
+      ).catch(() => undefined);
+      // Enter may have reached the pane. Reconcile only against authoritative
+      // native log evidence; never send text or Enter again.
+    }
+    const processInfo = await this.host
+      .inspectPaneProcess(ref.paneId)
+      .catch((error) => {
+        throw uncertainPrompt(error);
+      });
+    if (
+      processInfo.shellPid !== readiness.paneProcess.shellPid ||
+      processInfo.foregroundProcessGroupId !==
+        readiness.foregroundProcessGroupId ||
+      paneProcessIdentityDigest(processInfo) !==
+        readiness.paneProcessIdentityDigest
+    )
+      throw uncertainPrompt(
+        new Error(
+          "The managed pane changed foreground process after prompt submission.",
+        ),
+      );
+
+    const accepted = await this.awaitNativePromptAcceptance(
+      lineage,
+      evidence,
+      retainedConversation?.value,
+    );
+    submission = transitionPromptSubmissionState(
+      submission,
+      "native_accepted",
+      accepted.observedAt,
+      { nativeConversationId: accepted.nativeSession.value },
+    );
+    await writePromptSubmissionState(
+      readiness.submissionPath,
+      submission,
+    ).catch(() => undefined);
+    submission = transitionPromptSubmissionState(
+      submission,
+      "conversation_identity_observed",
+      accepted.observedAt,
+      { nativeConversationId: accepted.nativeSession.value },
+    );
+    await writePromptSubmissionState(
+      readiness.submissionPath,
+      submission,
+    ).catch(() => undefined);
+    let current = initial;
+    try {
+      current = await this.host.inspectAgentState(ref.paneId);
+    } catch {
+      // The native append-only log remains authoritative for conversation identity.
+    }
+    current = { ...current, nativeSession: accepted.nativeSession };
     onEvent({
       type: "prompt_accepted",
-      acceptedAt,
+      acceptedAt: accepted.observedAt,
       inspection: withState(
         this.inspectionFor(lineage, current),
         "waiting_for_activity",
       ),
     });
+    onEvent({
+      type: "native_activity",
+      observedAt: accepted.observedAt,
+      inspection: withState(this.inspectionFor(lineage, current), "running"),
+    });
     return this.waitForAuthorizedResult(
       dispatch,
-      lineage,
+      { ...lineage, nativeSession: accepted.nativeSession },
       current,
       evidence,
       onEvent,
-      acceptedAt,
+      accepted.observedAt,
+      accepted.observedAt,
     );
+  }
+
+  private async awaitNativePromptAcceptance(
+    lineage: HarnessLineage,
+    evidence: PromptEvidenceCursor,
+    expectedConversationId?: string,
+  ): Promise<{
+    observedAt: string;
+    nativeSession: NonNullable<HostedAgent["nativeSession"]>;
+  }> {
+    const deadline = Date.now() + promptActivityStallMs(this.config);
+    while (Date.now() < deadline) {
+      const observation = await this.observeNativePromptDispatch(
+        lineage,
+        evidence,
+        expectedConversationId,
+      );
+      if (observation.working && observation.nativeSession)
+        return {
+          observedAt: observation.observedAt ?? this.now(),
+          nativeSession: observation.nativeSession,
+        };
+      await Bun.sleep(50);
+    }
+    throw uncertainPrompt(
+      new Error(
+        expectedConversationId
+          ? "Antigravity continuation produced no authoritative native acceptance or rejection evidence."
+          : "Antigravity initial dispatch produced no authoritative native acceptance or rejection evidence.",
+      ),
+    );
+  }
+
+  private async observeNativePromptDispatch(
+    lineage: HarnessLineage,
+    evidence: PromptEvidenceCursor,
+    expectedConversationId?: string,
+  ): Promise<NativeTurnActivity> {
+    const observation = await observeAntigravityPromptDispatch({
+      logPath: nativeLogPath(lineage),
+      evidence,
+    });
+    if (observation.state === "rejected")
+      throw new OperationalExecutionError(
+        `Antigravity rejected the authorized prompt before provider activity: ${observation.message}`,
+        "operator_recovery_required",
+        expectedConversationId
+          ? "antigravity_continuation_dispatch_failed"
+          : "antigravity_initial_dispatch_failed",
+        { provider_cycles: 0 },
+      );
+    if (observation.state !== "accepted")
+      return { working: false, observedAt: null };
+    if (
+      expectedConversationId &&
+      observation.nativeSession.value !== expectedConversationId
+    )
+      throw new OperationalExecutionError(
+        "Antigravity accepted the continuation into a different native conversation.",
+        "operator_recovery_required",
+        "antigravity_conversation_identity_mismatch",
+        {
+          expected_conversation_id: expectedConversationId,
+          observed_conversation_id: observation.nativeSession.value,
+        },
+      );
+    return {
+      working: true,
+      observedAt: observation.observedAt,
+      nativeSession: observation.nativeSession,
+    };
   }
 
   private async waitForAuthorizedResult(
@@ -1049,19 +1375,23 @@ export class AntigravityHarness implements AgentHarness {
     evidence: PromptEvidenceCursor,
     onEvent: (event: HarnessEvent) => void,
     acceptedAt = dispatch.promptAcceptedAt,
+    nativeActivityObservedAt?: string,
   ): Promise<Record<string, JsonValue>> {
     let current = initial;
     const target = current.paneId || lineage.paneId;
     let previous = "";
-    let nativeActivity = Boolean(dispatch.nativeActivityAt);
+    let nativeActivity = Boolean(
+      dispatch.nativeActivityAt || nativeActivityObservedAt,
+    );
     let stalled = Boolean(dispatch.stalledAt && !nativeActivity);
     if (!acceptedAt) {
       const resolution = await reconcileAmbiguousPrompt({
         observe: () =>
-          observeAntigravityNativeActivity({
-            logPath: nativeLogPath(lineage),
+          this.observeNativePromptDispatch(
+            lineage,
             evidence,
-          }),
+            lineage.nativeSession?.value,
+          ),
         resultExists: () => structuredResultExists(dispatch.resultDirectory),
         timeoutMs: promptActivityStallMs(this.config),
       });
@@ -1119,6 +1449,16 @@ export class AntigravityHarness implements AgentHarness {
       const status = await new HarnessControlClient(
         controlDescriptorPath(lineage),
       ).completionStatus();
+      if (status.completion?.phase === "failed")
+        throw new OperationalExecutionError(
+          `Quest Engineering accepted the structured Step result, but physical completion failed: ${status.completion.failure?.message ?? "unknown export failure"}`,
+          "operator_recovery_required",
+          "structured_completion_export_failed",
+          {
+            completion_failure_code:
+              status.completion.failure?.code ?? "invalid_bridge_response",
+          },
+        );
       if (status.contractViolation)
         throw new HerdrApiError(
           "harness_contract_violation",
@@ -1159,7 +1499,15 @@ export class AntigravityHarness implements AgentHarness {
         continue;
       }
       if (!target) throw new Error("Antigravity lineage has no agent target.");
-      current = await this.host.inspectAgentState(target);
+      const observed = await this.host.inspectAgentState(target);
+      current = {
+        ...observed,
+        ...(observed.nativeSession
+          ? { nativeSession: observed.nativeSession }
+          : lineage.nativeSession
+            ? { nativeSession: lineage.nativeSession }
+            : {}),
+      };
       let inspection = await this.currentInspectionFor(lineage, current);
       if (!nativeActivity) {
         const state = waitingForActivitySince(
@@ -1251,61 +1599,57 @@ export class AntigravityHarness implements AgentHarness {
     return agent;
   }
 
+  private async reconcileNativeIdentity(
+    lineage: HarnessLineage,
+    agent: HostedAgent,
+    discoverAfterPromptIntent = false,
+  ): Promise<HostedAgent | null> {
+    const observed =
+      agent.nativeSession ??
+      (await observeLatestAntigravityConversation({
+        logPath: nativeLogPath(lineage),
+      }));
+    if (!lineage.nativeSession) {
+      if (!observed) return agent;
+      return discoverAfterPromptIntent
+        ? { ...agent, nativeSession: observed }
+        : null;
+    }
+    return observed?.agent === lineage.nativeSession.agent &&
+      observed.kind === lineage.nativeSession.kind &&
+      observed.value === lineage.nativeSession.value
+      ? { ...agent, nativeSession: observed }
+      : null;
+  }
+
   private args(dispatch: DispatchRecord, lineage: HarnessLineage): string[] {
     const configuration = dispatch.action.execution.configuration;
+    const sbx = this.sbxExecutions.get(lineage.lineageId);
+    if (!sbx?.guestLogPath)
+      throw new Error("Antigravity launch has no exact guest log binding.");
+    const native = lineage.nativeSession;
     return [
+      ...(native?.agent === "agy" && native.kind === "id"
+        ? ["--conversation", native.value]
+        : []),
       "--model",
       configuration.model.model,
       ...effortArgs(configuration.reasoning),
+      "--dangerously-skip-permissions",
       "--log-file",
-      nativeLogPath(lineage),
+      sbx.guestLogPath,
     ];
   }
 
-  private environment(lineage: HarnessLineage): Record<string, string> {
-    return {
-      [HARNESS_CONTROL_PATH_ENV]: controlDescriptorPath(lineage),
-      [QE_MCP_STARTUP_EVIDENCE_ENV]: startupEvidencePath(lineage),
-    };
-  }
-
-  private stopHookSpec(): AntigravityCommandHookSpec {
+  private stopHookSpec(
+    sbx: PreparedSbxHarnessExecution,
+  ): AntigravityCommandHookSpec {
     return {
       name: HOOK_NAME,
       event: "Stop",
-      command: `${process.execPath} '${this.bridgeCliPath}' hook stop`,
+      command: `/usr/bin/node '${sbx.lease.paths.state}/antigravity-control/bridge-cli.mjs' hook stop`,
       timeoutSeconds: 10,
     };
-  }
-
-  private async assertPersistedConfigurationAvailable(
-    configuration: Record<string, unknown>,
-  ): Promise<void> {
-    if (
-      record(configuration.tool_policy)?.kind !== "native_permissions" ||
-      configuration.tool_enforcement !== "native_permissions" ||
-      !Array.isArray(record(configuration.resolved_tool_profile)?.tools)
-    )
-      throw new Error(
-        "The retained Antigravity execution did not freeze its resolved QE semantic capability profile.",
-      );
-    const model = record(configuration.model);
-    const provider = model?.provider;
-    const modelId = model?.model;
-    const effort = configuration.reasoning;
-    const discovery = await this.discover();
-    if (
-      discovery.integration.status !== "ready" ||
-      !discovery.models.some(
-        (candidate) =>
-          candidate.provider === provider &&
-          candidate.model === modelId &&
-          reasoningMatches(candidate.reasoningCapability, effort),
-      )
-    )
-      throw new Error(
-        "The retained Antigravity model/effort pair is unavailable; recovery fallback is forbidden.",
-      );
   }
 
   private async assertExactConfiguration(
@@ -1326,7 +1670,7 @@ export class AntigravityHarness implements AgentHarness {
       throw new Error(
         "Antigravity models must use the antigravity provider namespace.",
       );
-    const discovery = await this.discover();
+    const discovery = this.lastReadyDiscovery ?? (await this.discover());
     if (discovery.integration.status !== "ready")
       throw new Error(discovery.integration.detail);
     const model = discovery.models.find(
@@ -1341,33 +1685,6 @@ export class AntigravityHarness implements AgentHarness {
       throw new Error(
         "The exact Antigravity model/effort pair is not available; fallback is forbidden.",
       );
-  }
-
-  private async inspectMcpRegistration(): Promise<{
-    ready: boolean;
-    detail: string;
-  }> {
-    const result = await (this.runNativeCommand
-      ? this.runNativeCommand(["mcp", "list"])
-      : nativeCommand(["mcp", "list"]));
-    const line = result.stdout
-      .split("\n")
-      .find((value) => /^qe\s/.test(value.trim()));
-    const ready =
-      result.exitCode === 0 &&
-      Boolean(
-        line &&
-          /\bstdio\b/.test(line) &&
-          /\benabled\b/.test(line) &&
-          line.includes(process.execPath) &&
-          line.includes(this.mcpServerPath),
-      );
-    return {
-      ready,
-      detail: ready
-        ? "The qe stdio MCP transport is enabled."
-        : "The qe stdio MCP transport is missing or disabled.",
-    };
   }
 
   private async ensureWorkspace(
@@ -1401,24 +1718,12 @@ export function antigravityPromptFor(
   return harnessPromptFor(dispatch, materialized, {
     completionTool: "qe_complete_step",
     humanAssistanceInstruction:
-      "- Antigravity's native permission prompts remain authoritative. When blocked, leave the interactive prompt visible for human takeover; do not invent approval.",
+      "- The Run-owned SBX filesystem is the workspace authority. If Antigravity requests non-permission human input, leave the interactive prompt visible for takeover; do not invent a response.",
   });
 }
 
-function hookConfigPath(cwd: string): string {
-  return join(cwd, ".agents", "hooks.json");
-}
 function nativeLogPath(lineage: HarnessLineage): string {
   return join(dirname(lineage.resultControlPath), "antigravity.log");
-}
-function startupEvidencePath(lineage: HarnessLineage): string {
-  return join(dirname(lineage.resultControlPath), "mcp-startup.jsonl");
-}
-function executionCwd(config: WorkerConfig, dispatch: DispatchRecord): string {
-  const execution = dispatch.action.execution;
-  return execution.execution_workspace.access === "none"
-    ? join(config.dataRoot, "isolated", execution.context.logical_lineage_id)
-    : execution.execution_workspace.canonical_root;
 }
 function displayLabel(dispatch: DispatchRecord): string {
   return `Antigravity · ${dispatch.action.semantic_step_key.replace(/[-_]/g, " ").slice(0, 60)}`;
@@ -1435,16 +1740,25 @@ function provenance(
   dispatch: DispatchRecord,
   lineage: HarnessLineage,
   active: boolean,
+  environment?: { environmentId: string; incarnation: string },
 ): Record<string, string> {
   return {
     qe_owner: "quest-engineering-worker/v1",
     qe_worker_id: workerId,
+    qe_launch_id: dispatch.action.execution.identity.launch_id,
     qe_lineage_id: lineage.lineageId,
     qe_harness_kind: "antigravity",
     qe_agent_name: lineage.agentName ?? agentNameFor(lineage.lineageId),
     qe_ownership_token: lineage.ownershipToken,
     ...(lineage.herdrSessionIncarnation
       ? { qe_session_incarnation: lineage.herdrSessionIncarnation }
+      : {}),
+    ...(environment
+      ? {
+          qe_environment_hash: identityHash(
+            `${environment.environmentId}\0${environment.incarnation}`,
+          ),
+        }
       : {}),
     ...(active
       ? {
@@ -1461,25 +1775,6 @@ function provenance(
           qe_active_action_id: "",
           qe_result_nonce: "",
         }),
-  };
-}
-function retainedProvenance(
-  workerId: string,
-  lineage: HarnessLineage,
-  agentName = lineage.agentName ?? agentNameFor(lineage.lineageId),
-): Record<string, string> {
-  return {
-    qe_owner: "quest-engineering-worker/v1",
-    qe_worker_id: workerId,
-    qe_lineage_id: lineage.lineageId,
-    qe_harness_kind: "antigravity",
-    qe_agent_name: agentName,
-    qe_ownership_token: lineage.ownershipToken,
-    ...(lineage.herdrSessionIncarnation
-      ? { qe_session_incarnation: lineage.herdrSessionIncarnation }
-      : {}),
-    qe_active_state: lineage.activeActionId ? "active" : "inactive",
-    qe_active_action_id: lineage.activeActionId ?? "",
   };
 }
 function refFor(
@@ -1502,6 +1797,133 @@ function refFor(
     ...(agent.nativeSession ? { nativeSession: agent.nativeSession } : {}),
   };
 }
+function interactivePromptBinding(
+  workerId: string,
+  dispatch: DispatchRecord,
+  lineage: HarnessLineage,
+  ref: HostedExecutionRef,
+  sbx: PreparedSbxHarnessExecution,
+  herdrEndpointGeneration: number,
+  herdrServerGeneration: string,
+): InteractivePromptSubmissionBinding {
+  const identity = dispatch.action.execution.identity;
+  if (
+    dispatch.action.worker_id !== workerId ||
+    identity.action_id !== dispatch.action.action_id ||
+    identity.run_id !== dispatch.action.run_id ||
+    identity.occurrence_id !== dispatch.action.occurrence_id ||
+    identity.attempt_id !== dispatch.action.attempt_id ||
+    sbx.lease.ref.workerId !== workerId ||
+    sbx.lease.ref.runId !== dispatch.action.run_id ||
+    (lineage.herdrSession && ref.sessionName !== lineage.herdrSession) ||
+    (lineage.herdrSessionIncarnation &&
+      ref.sessionIncarnation !== lineage.herdrSessionIncarnation) ||
+    (lineage.workspaceId && ref.workspaceId !== lineage.workspaceId) ||
+    (lineage.paneId && ref.paneId !== lineage.paneId) ||
+    (lineage.tabId && ref.tabId !== lineage.tabId) ||
+    (lineage.terminalId && ref.terminalId !== lineage.terminalId) ||
+    (lineage.agentName && ref.agentName !== lineage.agentName)
+  )
+    throw new Error(
+      "Antigravity prompt binding does not match exact Product and physical authority.",
+    );
+  if (
+    !ref.sessionIncarnation ||
+    !ref.tabId ||
+    !ref.terminalId ||
+    !Number.isSafeInteger(herdrEndpointGeneration) ||
+    !herdrServerGeneration
+  )
+    throw new Error("Antigravity prompt binding is incomplete.");
+  return {
+    workerId,
+    questLaunchId: identity.launch_id,
+    runId: dispatch.action.run_id,
+    actionId: dispatch.action.action_id,
+    occurrenceId: dispatch.action.occurrence_id,
+    attemptId: dispatch.action.attempt_id,
+    physicalLineageId: lineage.lineageId,
+    environmentId: sbx.lease.ref.environmentId,
+    environmentIncarnation: sbx.lease.ref.incarnation,
+    herdrEndpointGeneration,
+    herdrServerGeneration,
+    herdrSession: ref.sessionName,
+    herdrSessionIncarnation: ref.sessionIncarnation,
+    workspaceId: ref.workspaceId,
+    tabId: ref.tabId,
+    paneId: ref.paneId,
+    terminalId: ref.terminalId,
+    agentName: ref.agentName,
+    resultNonce: dispatch.resultNonce,
+  };
+}
+
+function sameInteractivePromptBinding(
+  left: InteractivePromptSubmissionBinding,
+  right: InteractivePromptSubmissionBinding,
+): boolean {
+  return Object.entries(right).every(
+    ([key, value]) =>
+      left[key as keyof InteractivePromptSubmissionBinding] === value,
+  );
+}
+
+function interactivePromptAuthority(
+  binding: InteractivePromptSubmissionBinding,
+  lineage: HarnessLineage,
+  process: HostedPaneProcessInfo,
+  processIdentityDigest: string,
+  promptAuthorizedAt: string,
+  promptIntentAt: string,
+): InteractivePromptAuthority {
+  return {
+    workerId: binding.workerId,
+    questLaunchId: binding.questLaunchId,
+    runId: binding.runId,
+    actionId: binding.actionId,
+    occurrenceId: binding.occurrenceId,
+    attemptId: binding.attemptId,
+    physicalLineageId: binding.physicalLineageId,
+    environmentId: binding.environmentId,
+    environmentIncarnation: binding.environmentIncarnation,
+    herdrEndpointGeneration: binding.herdrEndpointGeneration,
+    herdrServerGeneration: binding.herdrServerGeneration,
+    sessionName: binding.herdrSession,
+    sessionIncarnation: binding.herdrSessionIncarnation,
+    workspaceId: binding.workspaceId,
+    tabId: binding.tabId,
+    paneId: binding.paneId,
+    terminalId: binding.terminalId,
+    agentName: binding.agentName,
+    agentIntegrationKind: "agy",
+    paneShellPid: process.shellPid as number,
+    paneForegroundProcessGroupId: process.foregroundProcessGroupId as number,
+    paneProcessIdentityDigest: processIdentityDigest,
+    ownershipToken: lineage.ownershipToken,
+    resultNonce: binding.resultNonce,
+    promptAuthorizedAt,
+    promptIntentAt,
+  };
+}
+
+function interactivePromptSubmissionPath(lineage: HarnessLineage): string {
+  return join(
+    dirname(nativeLogPath(lineage)),
+    "interactive-prompt-submission.json",
+  );
+}
+
+function inputAuthorityError(error: unknown): error is HerdrApiError {
+  return (
+    error instanceof HerdrApiError &&
+    [
+      "input_authority_invalid",
+      "input_authority_stale",
+      "input_authority_mismatch",
+    ].includes(error.code)
+  );
+}
+
 function requireSessionIncarnation(host: TerminalSessionBackend): string {
   const incarnation = host.sessionIncarnation();
   if (!incarnation)
@@ -1588,37 +2010,11 @@ function reasoningMatches(
         typeof requested === "string" &&
         capability.values.includes(requested);
 }
-async function optionalFile(path: string): Promise<string | null> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-function semanticallySameHookConfig(
-  left: string | null,
-  right: string | null,
-): boolean {
-  if (left === null || right === null) return left === right;
-  try {
-    return (
-      JSON.stringify(JSON.parse(left)) === JSON.stringify(JSON.parse(right))
-    );
-  } catch {
-    return left === right;
-  }
-}
 function withState(
   inspection: HarnessInspection,
   state: "waiting_for_activity" | "running" | "stalled",
 ): HarnessInspection {
   return { ...inspection, state };
-}
-function persistedConfiguration(
-  lineage: HarnessLineage,
-): Record<string, unknown> {
-  return JSON.parse(lineage.configurationJson) as Record<string, unknown>;
 }
 function expectedControlBinding(
   dispatch: DispatchRecord,
@@ -1630,18 +2026,6 @@ function expectedControlBinding(
     lineageId: lineage.lineageId,
     resultNonce: dispatch.resultNonce,
   };
-}
-function persistedExecutionCwd(
-  config: WorkerConfig,
-  lineage: HarnessLineage,
-  configuration: Record<string, unknown>,
-): string | null {
-  if (configuration.workspace_access === "none")
-    return join(config.dataRoot, "isolated", lineage.logicalLineageId);
-  return typeof configuration.workspace_root === "string" &&
-    configuration.workspace_root
-    ? configuration.workspace_root
-    : null;
 }
 function samePath(left: string | undefined, right: string): boolean {
   return Boolean(left && resolve(left) === resolve(right));
@@ -1661,6 +2045,44 @@ async function readPreparedProcessReadiness(
       "The retained Antigravity pre-inference readiness proof is unavailable.",
     );
   }
+}
+function isCurrentFreshConversationReadiness(value: unknown): boolean {
+  if (!readinessRecord(value)) return false;
+  const readiness = value;
+  const nativeState = readiness.nativeState;
+  if (!readinessRecord(nativeState)) return false;
+  const project = nativeState.project;
+  const prompt = nativeState.prompt;
+  return (
+    readiness.kind === "antigravity_initial_input_readiness" &&
+    readiness.version === 2 &&
+    readiness.ready === true &&
+    readiness.tuiInputReady === true &&
+    readiness.freshConversationReady === true &&
+    readiness.nativeConversationBootstrap === "ready_without_conversation" &&
+    readiness.conversationState === "none" &&
+    Array.isArray(readiness.missingSignals) &&
+    readiness.missingSignals.length === 0 &&
+    Array.isArray(readiness.missingFreshConversationRequirements) &&
+    readiness.missingFreshConversationRequirements.length === 0 &&
+    readinessRecord(project) &&
+    project.ready === true &&
+    project.resolvedProjectId === "default-cli-project" &&
+    project.defaultProject === true &&
+    project.cacheWritable === true &&
+    project.configPresent === true &&
+    project.configWritable === true &&
+    project.conversationStoreWritable === true &&
+    project.workspaceResolved === true &&
+    readinessRecord(prompt) &&
+    prompt.focusReady === true &&
+    prompt.editorMode === "default" &&
+    prompt.enterBinding === "prompt.submit" &&
+    prompt.customKeybindingsPresent === false
+  );
+}
+function readinessRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function rejectPreparedProcessAdoption(message: string): never {
   throw new OperationalExecutionError(
@@ -1683,28 +2105,4 @@ function backendReadinessDetail(
     readiness.diagnostics.map((diagnostic) => diagnostic.message).join(" ") ||
     `Herdr backend contract is ready for ${readiness.harnessKind}.`
   );
-}
-
-async function prepareStartupEvidence(lineage: HarnessLineage): Promise<void> {
-  const path = startupEvidencePath(lineage);
-  await mkdir(dirname(path), { recursive: true });
-  const file = Bun.file(path);
-  if (!(await file.exists()))
-    await writeFile(path, "", { encoding: "utf8", mode: 0o600 });
-}
-function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-function nativeCommand(args: string[]) {
-  const result = Bun.spawnSync(["agy", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return {
-    exitCode: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
 }

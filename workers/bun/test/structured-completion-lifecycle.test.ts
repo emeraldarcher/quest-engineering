@@ -15,6 +15,7 @@ import {
 import { HarnessControlClient } from "../src/harnesses/control/client.ts";
 import { collectStepResult } from "../src/harnesses/control/result-envelope.ts";
 import { HarnessControlServer } from "../src/harnesses/control/server.ts";
+import { StructuredCompletionWaitPolicy } from "../src/harnesses/turn-lifecycle.ts";
 import type {
   AgentHarness,
   HarnessDiscovery,
@@ -33,7 +34,7 @@ afterEach(async () => {
   );
 });
 
-test("sanitized Sol ordering keeps authority live for a result 17+ seconds after provider settlement", async () => {
+test("long provider turn and delayed completion succeed without a transport lifetime deadline", async () => {
   const parent = join(process.cwd(), ".pi", "tmp");
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, "delayed-structured-result-"));
@@ -81,7 +82,7 @@ test("sanitized Sol ordering keeps authority live for a result 17+ seconds after
   );
   const exportEvents: string[] = [];
   const authority = new HarnessControlAuthority(registry, 2, {
-    async verifyAndBind({ dispatch, outputs }) {
+    async verifyAndPrepare({ dispatch, outputs, assertCurrent }) {
       exportEvents.push("semantic_result_accepted");
       const source = await readFile(
         join(fixtureRoot, "src", "greeting.js"),
@@ -96,24 +97,34 @@ test("sanitized Sol ordering keeps authority live for a result 17+ seconds after
       const checkpointId = `checkpoint-${tree.slice(0, 12)}`;
       exportEvents.push("checkpoint");
       const exportId = `export-${dispatch.action.action_id}`;
-      exportEvents.push("export");
       return {
-        ...outputs,
-        change_set: {
-          ...(outputs.change_set as Record<string, JsonValue>),
-          physical: {
-            workspace_fingerprint: fingerprint,
-            resulting_tree: tree,
-            checkpoint_id: checkpointId,
-            export_id: exportId,
+        outputs: {
+          ...outputs,
+          change_set: {
+            ...(outputs.change_set as Record<string, JsonValue>),
+            physical: {
+              workspace_fingerprint: fingerprint,
+              resulting_tree: tree,
+              checkpoint_id: checkpointId,
+              export_id: exportId,
+            },
           },
+        },
+        commit: () => {
+          assertCurrent();
+          exportEvents.push("export");
         },
       };
     },
   });
   const controlServer = new HarnessControlServer(authority);
   await controlServer.start();
-  const harness = new DelayedStructuredHarness(fixtureRoot, resultDelayMs);
+  const clock = new ManualClock(Date.parse("2026-10-02T06:32:15.546Z"));
+  const harness = new DelayedStructuredHarness(
+    fixtureRoot,
+    resultDelayMs,
+    clock,
+  );
   const reports: ReconcileDispatch[] = [];
   const executor = new DispatchExecutor(
     registry,
@@ -148,6 +159,7 @@ test("sanitized Sol ordering keeps authority live for a result 17+ seconds after
     accepted: true,
     completed: false,
   });
+  harness.releaseCompletion();
 
   await operation;
   const completed = registry.get(dispatch.action.action_id);
@@ -165,6 +177,8 @@ test("sanitized Sol ordering keeps authority live for a result 17+ seconds after
     localTests: 1,
     completionAcknowledged: true,
     mailboxLiveImmediatelyBeforeResult: true,
+    oldTransportLifetimeCrossedWhileActive: true,
+    completionGraceRemainedOpen: true,
   });
   expect(exportEvents).toEqual([
     "semantic_result_accepted",
@@ -201,6 +215,38 @@ test("sanitized Sol ordering keeps authority live for a result 17+ seconds after
   registry.close();
 }, 30_000);
 
+test("fake clock starts grace only after settlement and suspends it for Stop continuation", () => {
+  const clock = new ManualClock(0);
+  const policy = new StructuredCompletionWaitPolicy(1_000, clock.now);
+
+  clock.advance(60_000);
+  expect(policy.phase()).toBe("provider_active");
+  expect(policy.expired()).toBe(false);
+
+  policy.providerSettled();
+  clock.advance(999);
+  expect(policy.phase()).toBe("awaiting_structured_completion");
+  expect(policy.expired()).toBe(false);
+  clock.advance(1);
+  expect(policy.expired()).toBe(true);
+
+  policy.continuationStarted();
+  clock.advance(60_000);
+  expect(policy.phase()).toBe("continuation_active");
+  expect(policy.expired()).toBe(false);
+
+  policy.providerSettled();
+  clock.advance(1_000);
+  expect(policy.expired()).toBe(true);
+
+  policy.resultAccepted();
+  clock.advance(60_000);
+  expect(policy.phase()).toBe("exporting");
+  expect(policy.expired()).toBe(false);
+  policy.exportCompleted();
+  expect(policy.phase()).toBe("completed");
+});
+
 class DelayedStructuredHarness implements AgentHarness {
   readonly kind = "fake";
   readonly displayName = "Delayed structured fake";
@@ -230,12 +276,23 @@ class DelayedStructuredHarness implements AgentHarness {
   localTests = 0;
   completionAcknowledged = false;
   mailboxLiveImmediatelyBeforeResult = false;
+  oldTransportLifetimeCrossedWhileActive = false;
+  completionGraceRemainedOpen = false;
   finalInspection: HarnessInspection | null = null;
+  private releaseAfterSettlement!: () => void;
+  private readonly afterSettlement = new Promise<void>((resolve) => {
+    this.releaseAfterSettlement = resolve;
+  });
 
   constructor(
     private readonly fixtureRoot: string,
     private readonly resultDelayMs: number,
+    private readonly clock: ManualClock,
   ) {}
+
+  releaseCompletion(): void {
+    this.releaseAfterSettlement();
+  }
 
   async discover(): Promise<HarnessDiscovery> {
     return {
@@ -287,24 +344,28 @@ class DelayedStructuredHarness implements AgentHarness {
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
     this.prompts += 1;
-    const startedAt = Date.now();
+    const completionWait = new StructuredCompletionWaitPolicy(
+      this.resultDelayMs + 1_000,
+      this.clock.now,
+    );
     onEvent({
       type: "prompt_accepted",
-      acceptedAt: new Date().toISOString(),
-      inspection: activeInspection(execution.lineage),
+      acceptedAt: this.clock.iso(),
+      inspection: activeInspection(execution.lineage, this.clock.iso()),
     });
     onEvent({
       type: "native_activity",
-      observedAt: new Date().toISOString(),
-      inspection: activeInspection(execution.lineage),
-    });
-    onEvent({
-      type: "provider_turn_settled",
-      observedAt: new Date().toISOString(),
-      inspection: activeInspection(execution.lineage),
+      observedAt: this.clock.iso(),
+      inspection: activeInspection(execution.lineage, this.clock.iso()),
     });
 
-    await Bun.sleep(8_000);
+    this.clock.advance(12_000);
+    this.oldTransportLifetimeCrossedWhileActive = !completionWait.expired();
+    onEvent({
+      type: "native_activity",
+      observedAt: this.clock.iso(),
+      inspection: activeInspection(execution.lineage, this.clock.iso()),
+    });
     await writeFile(
       join(this.fixtureRoot, "src", "greeting.js"),
       "export const greeting = (name) => `Hello, $" + "{name}!`;\n",
@@ -324,8 +385,15 @@ class DelayedStructuredHarness implements AgentHarness {
     ]);
     if (exitCode !== 0) throw new Error(`Local fake test failed: ${stderr}`);
     this.localTests += 1;
-    const remaining = this.resultDelayMs - (Date.now() - startedAt);
-    if (remaining > 0) await Bun.sleep(remaining);
+    completionWait.providerSettled();
+    onEvent({
+      type: "provider_turn_settled",
+      observedAt: this.clock.iso(),
+      inspection: activeInspection(execution.lineage, this.clock.iso()),
+    });
+    await this.afterSettlement;
+    this.clock.advance(this.resultDelayMs);
+    this.completionGraceRemainedOpen = !completionWait.expired();
 
     const client = new HarnessControlClient(
       controlDescriptorPath(execution.lineage),
@@ -336,18 +404,22 @@ class DelayedStructuredHarness implements AgentHarness {
       { change_set: { files: ["src/greeting.js"] } },
       "delayed-structured-result",
     );
-    this.completionAcknowledged = acknowledgement.completed === true;
+    this.completionAcknowledged = acknowledgement.semanticAccepted === true;
+    completionWait.resultAccepted();
+    await waitForAsync(
+      async () => (await client.completionStatus()).completed === true,
+    );
     const collected = await collectStepResult(dispatch);
+    completionWait.exportCompleted();
     onEvent({
       type: "structured_result_received",
       observedAt: collected.envelope.createdAt,
-      inspection: activeInspection(execution.lineage),
+      inspection: activeInspection(execution.lineage, this.clock.iso()),
     });
-    await Bun.sleep(50);
-    this.finalInspection = idleInspection(execution.lineage);
+    this.finalInspection = idleInspection(execution.lineage, this.clock.iso());
     onEvent({
       type: "native_idle",
-      observedAt: new Date().toISOString(),
+      observedAt: this.clock.iso(),
       inspection: this.finalInspection,
     });
     return collected.envelope.outputs;
@@ -381,23 +453,29 @@ function agentFor(
   };
 }
 
-function activeInspection(lineage: HarnessLineage): HarnessInspection {
+function activeInspection(
+  lineage: HarnessLineage,
+  observedAt = new Date().toISOString(),
+): HarnessInspection {
   return {
     state: "running",
     agent: agentFor(lineage, "working"),
     attention: null,
     intervention: null,
-    lastActivityAt: new Date().toISOString(),
+    lastActivityAt: observedAt,
   };
 }
 
-function idleInspection(lineage: HarnessLineage): HarnessInspection {
+function idleInspection(
+  lineage: HarnessLineage,
+  observedAt = new Date().toISOString(),
+): HarnessInspection {
   return {
     state: "retained",
     agent: agentFor(lineage, "idle"),
     attention: null,
     intervention: null,
-    lastActivityAt: new Date().toISOString(),
+    lastActivityAt: observedAt,
   };
 }
 
@@ -405,4 +483,24 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (!predicate() && Date.now() < deadline) await Bun.sleep(10);
   if (!predicate()) throw new Error("condition was not observed");
+}
+
+async function waitForAsync(predicate: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!(await predicate()) && Date.now() < deadline) await Bun.sleep(5);
+  if (!(await predicate())) throw new Error("condition was not observed");
+}
+
+class ManualClock {
+  constructor(private value: number) {}
+
+  readonly now = () => this.value;
+
+  advance(durationMs: number): void {
+    this.value += durationMs;
+  }
+
+  iso(): string {
+    return new Date(this.value).toISOString();
+  }
 }

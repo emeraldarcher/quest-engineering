@@ -107,6 +107,19 @@ test.skipIf(!live)(
         ["-c", "import pathlib; pathlib.Path('runtime-ok').write_text('ok')"],
         review.paths.runtimeTemp,
       );
+      const adoptedReview = await manager.ensureWorktree({
+        lease,
+        repositoryId: source.repositoryId,
+        physicalLineageId: "review",
+        access: "read_only",
+      });
+      expect(adoptedReview.physicalId).toBe(review.physicalId);
+      const reviewFingerprint = await manager.fingerprint({
+        lease,
+        physicalLineageId: "review",
+      });
+      expect(reviewFingerprint.headCommit).toBe(baseCommit);
+      expect(reviewFingerprint.untrackedPaths).toEqual([]);
       const beforeStop = await manager.fingerprint({
         lease,
         physicalLineageId: "implementation",

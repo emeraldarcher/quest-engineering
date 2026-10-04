@@ -12,6 +12,7 @@ import { ApiClient } from "../src/api/client";
 import {
   ApiError,
   type HumanAttention,
+  type LocalSessionAttachmentDescriptor,
   type RunProjection,
 } from "../src/api/contracts";
 import WorkYardWindow from "../src/components/work-yard/WorkYardWindow.svelte";
@@ -153,7 +154,8 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
     "ws://fixture.invalid/socket",
     value,
   );
-  const open = vi.spyOn(store, "openLiveSession").mockResolvedValue(true);
+  const observe = vi.spyOn(store, "openSession").mockResolvedValue(true);
+  const takeover = vi.spyOn(store, "takeControl").mockResolvedValue(true);
   render(WorkYardWindow, {
     props: { store, product: value.product, onClose: vi.fn() },
   });
@@ -167,12 +169,13 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
   await fireEvent.click(
     within(waitingCard).getByRole("button", { name: "Take Control" }),
   );
-  expect(open).toHaveBeenCalledWith(
-    run.id,
-    second.attempt.id,
-    second.session,
-    "takeover",
-  );
+  expect(takeover).toHaveBeenCalledWith({
+    runId: run.id,
+    occurrenceId: second.occurrence_id,
+    attemptId: second.attempt.id,
+    sessionId: second.session?.id,
+  });
+  expect(observe).not.toHaveBeenCalled();
   const runningCard = cards[0] as HTMLElement;
   expect(
     within(runningCard).queryByRole("button", { name: "Take Control" }),
@@ -180,12 +183,69 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
   await fireEvent.click(
     within(runningCard).getByRole("button", { name: "Open Session" }),
   );
-  expect(open).toHaveBeenCalledWith(
-    run.id,
-    first.attempt.id,
-    first.session,
-    "observe",
+  expect(observe).toHaveBeenCalledWith({
+    runId: run.id,
+    occurrenceId: first.occurrence_id,
+    attemptId: first.attempt.id,
+    sessionId: first.session?.id,
+  });
+  expect(takeover).toHaveBeenCalledTimes(1);
+});
+
+test("an already-open empty Work Yard selects the first realtime Run and keeps observation eligible", async () => {
+  const { value, run, step } = operatorSetup();
+  const populatedProduct = value.product;
+  value.selectedRunId = null;
+  value.product = { ...populatedProduct, runs: [] };
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
   );
+  const open = vi.spyOn(store, "openSession").mockResolvedValue(true);
+  const rendered = render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(screen.getByRole("heading", { name: "No Runs yet" })).toBeTruthy();
+  await rendered.rerender({ product: populatedProduct });
+
+  const yard = screen.getByRole("complementary", { name: "Work Yard" });
+  await waitFor(() =>
+    expect(
+      within(yard).getByRole("heading", { name: run.quest.title }),
+    ).toBeTruthy(),
+  );
+  const selectedRun = within(yard).getByRole("button", {
+    name: new RegExp(run.quest.title),
+  });
+  expect(selectedRun.getAttribute("aria-current")).toBe("true");
+  let openButtons = within(yard).getAllByRole("button", {
+    name: "Open Session",
+  });
+  expect(openButtons).toHaveLength(1);
+  expect((openButtons[0] as HTMLButtonElement).disabled).toBe(false);
+  expect(
+    within(yard).queryByRole("button", { name: "Take Control" }),
+  ).toBeNull();
+
+  store.selectedRun.set({ ...run, revision: run.revision + 1 });
+  await waitFor(() => {
+    openButtons = within(yard).getAllByRole("button", {
+      name: "Open Session",
+    });
+    expect(openButtons).toHaveLength(1);
+    expect((openButtons[0] as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  await fireEvent.click(openButtons[0] as HTMLButtonElement);
+  expect(open).toHaveBeenCalledTimes(1);
+  expect(open).toHaveBeenCalledWith({
+    runId: run.id,
+    occurrenceId: step.occurrence_id,
+    attemptId: step.attempt?.id,
+    sessionId: step.session?.id,
+  });
 });
 
 test("pre-prompt execution exposes distinct confirmed authorization and cancellation commands", async () => {
@@ -248,6 +308,94 @@ test("pre-prompt execution exposes distinct confirmed authorization and cancella
   expect(run.id).toBe(identity.runId);
 });
 
+test("Work Yard preserves the exact pane ID through inputless native attachment", async () => {
+  const { value, api, run, step, store } = operatorSetup();
+  const descriptor: LocalSessionAttachmentDescriptor = {
+    descriptor_token: "descriptor-token",
+    expires_at: "2099-01-01T00:00:00Z",
+    mode: "local_native_terminal",
+    worker_id: "local-worker",
+    worker_generation: 4,
+    session_id: "session-pre-prompt",
+    state: "waiting_for_human",
+    takeover_allowed: false,
+    recovery_allowed: false,
+    terminal: {
+      attachment_mode: "local_native_terminal",
+      backend_kind: "herdr",
+      terminal_session_id: "worker-session",
+      local_context_id: `sha256:${"a".repeat(64)}`,
+      pane_id: "w2:p2",
+      terminal_id: "terminal-1",
+      supports_observation: true,
+      supports_takeover: true,
+    },
+  };
+  vi.spyOn(api, "getSessionAttachment").mockResolvedValue(descriptor);
+  vi.spyOn(api, "recordSessionOpened").mockResolvedValue("session-pre-prompt");
+  const owner = {
+    runId: run.id,
+    occurrenceId: step.occurrence_id,
+    attemptId: step.attempt?.id ?? "",
+    sessionId: "session-pre-prompt",
+  };
+  const localObservation = {
+    ...owner,
+    localSessionId: "local-observation-1",
+    terminalSessionId: "worker-session",
+    paneId: "w2:p2",
+    terminalId: "terminal-1",
+    mode: "observe" as const,
+    state: "attached" as const,
+    reason: null,
+  };
+  const nativeOpen = vi
+    .spyOn(liveSessionPlatform, "openLocalLiveSession")
+    .mockResolvedValue(localObservation);
+  const nativeClose = vi
+    .spyOn(liveSessionPlatform, "closeLocalLiveSession")
+    .mockResolvedValue({
+      ...localObservation,
+      state: "detached",
+      reason: "explicit_close",
+    });
+  const cancelExecution = vi.spyOn(api, "cancelExecutionAttempt");
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  await fireEvent.click(screen.getByRole("button", { name: "Open Session" }));
+
+  await waitFor(() =>
+    expect(nativeOpen).toHaveBeenCalledWith(descriptor, "observe", owner),
+  );
+  await waitFor(() =>
+    expect(get(store.localObservations)[owner.sessionId]).toMatchObject({
+      localSessionId: "local-observation-1",
+      state: "attached",
+    }),
+  );
+  const detach = await screen.findByRole("button", {
+    name: "Detach Session",
+  });
+  await waitFor(() =>
+    expect((detach as HTMLButtonElement).disabled).toBe(false),
+  );
+  await fireEvent.click(detach);
+  await waitFor(() =>
+    expect(nativeClose).toHaveBeenCalledWith(localObservation),
+  );
+  expect(cancelExecution).not.toHaveBeenCalled();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Open Session" })).toBeTruthy(),
+  );
+  expect(descriptor.terminal.pane_id).toBe("w2:p2");
+  expect(api.recordSessionOpened).toHaveBeenCalledWith(
+    "descriptor-token",
+    "observe",
+  );
+});
+
 test("operator command pending state does not block inputless Open Session", async () => {
   const { value, step, store, identity } = operatorSetup();
   store.executionCommands.set([
@@ -259,7 +407,7 @@ test("operator command pending state does not block inputless Open Session", asy
       error: null,
     },
   ]);
-  const open = vi.spyOn(store, "openLiveSession").mockResolvedValue(true);
+  const open = vi.spyOn(store, "openSession").mockResolvedValue(true);
   render(WorkYardWindow, {
     props: { store, product: value.product, onClose: vi.fn() },
   });
@@ -275,12 +423,12 @@ test("operator command pending state does not block inputless Open Session", asy
   expect(cancelButton.disabled).toBe(true);
   expect((openButton as HTMLButtonElement).disabled).toBe(false);
   await fireEvent.click(openButton);
-  expect(open).toHaveBeenCalledWith(
-    identity.runId,
-    identity.attemptId,
-    step.session,
-    "observe",
-  );
+  expect(open).toHaveBeenCalledWith({
+    runId: identity.runId,
+    occurrenceId: identity.occurrenceId,
+    attemptId: identity.attemptId,
+    sessionId: step.session?.id,
+  });
 });
 
 test("cancellation remains available before a live session is projected", () => {
@@ -878,15 +1026,13 @@ function operatorSetup() {
   });
   step.session.native_identity.conversation_id = null;
   step.session.attachment.can_takeover = false;
-  const store = createAppStore(
-    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
-    "ws://fixture.invalid/socket",
-    value,
-  );
+  const api = new ApiClient({ httpBaseUrl: "http://fixture.invalid" });
+  const store = createAppStore(api, "ws://fixture.invalid/socket", value);
   return {
     value,
     run,
     step,
+    api,
     store,
     identity: {
       runId: run.id,

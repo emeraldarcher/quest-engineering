@@ -1,9 +1,24 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
-import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import {
+  type DispatchRecord,
+  DispatchRegistry,
+} from "../src/dispatch/registry.ts";
+import type {
+  PreparedSbxPiExecution,
+  SbxRunExecutionManager,
+} from "../src/execution-environment/sbx-run.ts";
+import type { HostLaunchDescriptor } from "../src/execution-environment/types.ts";
 import {
   AntigravityHarness,
   antigravityPromptFor,
@@ -30,12 +45,16 @@ import type {
   HarnessEvent,
 } from "../src/harnesses/types.ts";
 import { HerdrApiError } from "../src/session-host/herdr/client.ts";
+import { paneProcessIdentityDigest } from "../src/session-host/pane-process-identity.ts";
 import type {
   HostedAgent,
   HostedAgentStatus,
   HostedExecutionRef,
   HostedPane,
+  HostedPaneProcessInfo,
   HostedSnapshot,
+  InteractivePromptAuthority,
+  InteractivePromptInput,
   SessionBackendReadiness,
   TerminalAttachmentDescriptor,
   TerminalSessionBackend,
@@ -43,6 +62,10 @@ import type {
 import { action } from "./support.ts";
 
 const roots: string[] = [];
+const INITIAL_CONVERSATION_ID = "11111111-1111-4111-8111-111111111111";
+const RETAINED_CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
+const STALE_CONVERSATION_ID = "33333333-3333-4333-8333-333333333333";
+const EXPECTED_CONVERSATION_ID = "44444444-4444-4444-8444-444444444444";
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -129,14 +152,89 @@ async function fixture(
       args[0] === "--version"
         ? `${ANTIGRAVITY_TESTED_VERSION}\n`
         : args[0] === "--help"
-          ? "--conversation --effort --log-file --model --prompt-interactive\n"
+          ? "--conversation --effort --log-file --model\n"
           : args[0] === "models"
             ? (selection.modelsOutput ??
               "gemini-test-high\tGemini Test (High)\n")
             : `qe stdio enabled ${process.execPath} ${resolve(import.meta.dir, "..", "src", "harnesses", "control", "mcp-server.ts")}\n`,
     stderr: "",
   });
-  const harness = new AntigravityHarness(host, config, { runNativeCommand });
+  const installedHooks: unknown[] = [];
+  const executionManager = {
+    discoverAntigravity: async () =>
+      discoverAntigravityModels(runNativeCommand),
+    prepare: async (
+      _dispatch: unknown,
+      preparedLineage: typeof current,
+      artifacts: PreparedSbxPiExecution["materializedArtifacts"],
+    ) => {
+      const controlRoot = dirname(preparedLineage.resultControlPath);
+      const prepared = {
+        lease: {
+          ref: {
+            workerId: "worker-test",
+            runId: execute.run_id,
+            environmentId: "environment-1",
+            incarnation: "environment-incarnation-1",
+          },
+          paths: { state: join(root, "guest-state") },
+        },
+        workspace: {},
+        harnessKind: "antigravity",
+        guestExecutable: "/opt/qe/antigravity/agy",
+        guestHome: join(root, "guest-home"),
+        guestLogPath: join(controlRoot, "antigravity.log"),
+        hostLogPath: join(controlRoot, "antigravity.log"),
+        hostCwd: workspace,
+        paneEnvironment: {
+          [HARNESS_CONTROL_PATH_ENV]: controlDescriptorPath(preparedLineage),
+          [QE_MCP_STARTUP_EVIDENCE_ENV]: join(controlRoot, "mcp-startup.jsonl"),
+        },
+        materializedArtifacts: artifacts,
+        installAntigravityHook: async (spec: unknown) => {
+          installedHooks.push(spec);
+        },
+        removeAntigravityHook: async () => undefined,
+        proveAntigravityReadiness: async () => {
+          if (!host.initialInputReady)
+            throw new Error("synthetic TUI input manager is not ready");
+          return {
+            mcpChildReady: true as const,
+            stopHookReady: true as const,
+            initialInputReady: true as const,
+            initialInput: readyInitialInputEvidence(
+              execute.execution.configuration.model.model,
+            ),
+          };
+        },
+        syncControl: async () => undefined,
+        launchDescriptor: async (args: readonly string[]) => ({
+          executable: "/usr/local/bin/sbx",
+          args: ["exec", "test-sandbox", "--", ...args],
+          cwd: workspace,
+          environment: {},
+          provenance: {
+            kind: "execution_environment",
+            binding: {
+              physicalLineageId: preparedLineage.lineageId,
+              workspacePath: "/qe/workspaces/test",
+              guestExecutable: "/opt/qe/antigravity/agy",
+              guestCwd: "/qe/workspaces/test",
+              guestArgvSha256: "test-argv",
+            },
+          },
+        }),
+        startRelay: () => undefined,
+        awaitAttestation: async () => undefined,
+        stopRelay: async () => undefined,
+      };
+      return prepared as unknown as PreparedSbxPiExecution;
+    },
+  } as unknown as SbxRunExecutionManager;
+  const harness = new AntigravityHarness(host, config, {
+    runNativeCommand,
+    executionManager,
+  });
   return {
     root,
     workspace,
@@ -149,6 +247,8 @@ async function fixture(
     host,
     harness,
     runNativeCommand,
+    installedHooks,
+    executionManager,
     async close() {
       await server.stop();
       registry.close();
@@ -196,24 +296,42 @@ test("pre-authorization observation detects a native user turn without sending i
   await value.close();
 });
 
+test("pre-authorization observation fences a rejected native user message", async () => {
+  const value = await fixture();
+  try {
+    await appendFile(
+      join(value.root, "lineages", value.lineage.lineageId, "antigravity.log"),
+      "SendUserMessage failed: no active conversation\n",
+    );
+    expect(
+      await value.harness.observePreAuthorizationActivity(value.lineage),
+    ).toMatchObject({
+      nativeSession: null,
+      evidence: "native_user_message",
+    });
+  } finally {
+    await value.close();
+  }
+});
+
 test("newer Antigravity provenance remains ready when its native contract passes", async () => {
   const result = await discoverAntigravityModels(
-    antigravityDiscoveryRunner("1.2.3"),
+    antigravityDiscoveryRunner("1.2.8"),
   );
   expect(result).toMatchObject({
     authenticated: true,
     compatible: true,
-    version: "1.2.3",
+    version: "1.2.8",
     missingCapabilities: [],
   });
   expect(result.diagnostics).toContainEqual(
-    expect.stringContaining("newer than QE's human-tested 1.2.2 provenance"),
+    expect.stringContaining("newer than QE's human-tested 1.2.7 provenance"),
   );
 });
 
 test("newer Antigravity provenance missing a required native capability fails specifically", async () => {
   const result = await discoverAntigravityModels(
-    antigravityDiscoveryRunner("1.2.3", "--conversation"),
+    antigravityDiscoveryRunner("1.2.8", "--conversation"),
   );
   expect(result.compatible).toBe(false);
   expect(result.missingCapabilities).toContain("native.conversation_resume");
@@ -236,7 +354,7 @@ test("malformed Antigravity version provenance fails closed without inference", 
 });
 
 test("malformed Antigravity model metadata fails closed without inference", async () => {
-  const run = antigravityDiscoveryRunner("1.2.3");
+  const run = antigravityDiscoveryRunner("1.2.8");
   const result = await discoverAntigravityModels(async (args) =>
     args[0] === "models"
       ? { exitCode: 0, stdout: "not-a-model-record\n", stderr: "" }
@@ -298,7 +416,7 @@ gemini-conflict-low\tGemini Conflict (High)
   });
 });
 
-test("Antigravity discovery fails only its harness when its Herdr integration is unavailable", async () => {
+test("Antigravity discovery still requires Herdr native observation integration", async () => {
   const value = await fixture();
   try {
     value.host.backendReadiness = {
@@ -324,12 +442,74 @@ test("Antigravity discovery fails only its harness when its Herdr integration is
   }
 });
 
+test("Antigravity discovery rejects missing explicit launch before SBX discovery", async () => {
+  const value = await fixture();
+  let sbxDiscoveries = 0;
+  const discoverAntigravity = value.executionManager.discoverAntigravity.bind(
+    value.executionManager,
+  );
+  value.executionManager.discoverAntigravity = async () => {
+    sbxDiscoveries += 1;
+    return discoverAntigravity();
+  };
+  try {
+    value.host.backendReadiness = {
+      ...readyBackend("antigravity"),
+      status: "incompatible",
+      ready: false,
+      missingCapabilities: ["agent.explicit_launch"],
+      diagnostics: [
+        {
+          code: "missing_capability",
+          capability: "agent.explicit_launch",
+          message:
+            "Herdr cannot prove generic exact managed launch support in both live capabilities and agent.start schema metadata.",
+        },
+      ],
+    };
+    const discovery = await value.harness.discover();
+    expect(discovery).toMatchObject({
+      integration: {
+        status: "incompatible_version",
+        authenticated: false,
+      },
+      models: [],
+      capabilities: { structuredResult: false },
+    });
+    expect(discovery.integration.detail).toContain(
+      "generic exact managed launch support",
+    );
+    expect(sbxDiscoveries).toBe(0);
+    expect(value.host.startRequests).toHaveLength(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("Antigravity has no host-native execution fallback", async () => {
+  const value = await fixture();
+  try {
+    const withoutBoundary = new AntigravityHarness(value.host, value.config, {
+      runNativeCommand: value.runNativeCommand,
+    });
+    await expect(
+      withoutBoundary.start(value.dispatch, value.lineage),
+    ).rejects.toThrow("immutable mixed SBX profile");
+    expect(value.host.startRequests).toHaveLength(0);
+  } finally {
+    await value.close();
+  }
+});
+
 test("interactive launch pins model and effort, proves readiness, and keeps the live TUI attachable", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
     expect(value.host.startRequests).toHaveLength(1);
-    expect(Object.keys(value.host.agent.tokens ?? {})).toHaveLength(14);
+    expect(Object.keys(value.host.agent.tokens ?? {})).toHaveLength(16);
+    expect(value.host.agent.tokens?.qe_environment_hash).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
     expect(value.host.agent.tokens?.qe_agent_name).toBe(
       execution.ref.agentName,
     );
@@ -340,13 +520,22 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
     expect(value.host.agent.tokens?.qe_attempt_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(value.host.startRequests[0]?.args.includes("--print")).toBe(false);
     expect(value.host.startRequests[0]?.args.includes("--tools")).toBe(false);
+    expect(value.host.startRequests[0]?.args.includes("--sandbox")).toBe(false);
     expect(
       value.host.startRequests[0]?.args.includes(
         "--dangerously-skip-permissions",
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(value.host.startRequests[0]).toMatchObject({
       integrationKind: "agy",
+      command: {
+        executable: "/usr/local/bin/sbx",
+        provenance: {
+          binding: {
+            guestExecutable: "/opt/qe/antigravity/agy",
+          },
+        },
+      },
       args: expect.arrayContaining([
         "--model",
         "gemini-test-high",
@@ -354,14 +543,16 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
         "high",
       ]),
     });
-    const hooks = JSON.parse(
-      await Bun.file(join(value.workspace, ".agents", "hooks.json")).text(),
-    );
-    expect(hooks["qe-worker-stop-v1"].Stop).toEqual([
+    expect(
+      await Bun.file(join(value.workspace, ".agents", "hooks.json")).exists(),
+    ).toBe(false);
+    expect(value.installedHooks).toContainEqual(
       expect.objectContaining({
+        name: "qe-worker-stop-v1",
+        event: "Stop",
         command: expect.stringContaining("hook stop"),
       }),
-    ]);
+    );
     await value.harness.ready(value.dispatch, execution);
     await value.authority.bind(value.dispatch, value.lineage);
     value.registry.recordHost(value.lineage.lineageId, {
@@ -380,7 +571,7 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
       ),
     ).toMatchObject({
       backendKind: "herdr",
-      terminalTargetId: execution.ref.agentName,
+      paneId: execution.ref.paneId,
       supportsObservation: true,
       supportsTakeover: true,
     });
@@ -426,14 +617,470 @@ test("inference authorization keeps the prepared MCP child across descriptor rot
         change_set: { status: "authorized" },
       });
     };
+    const authorized = authorizePrompt(value);
     expect(
       await value.harness.sendInputAndCollect(
-        value.dispatch,
+        authorized,
         execution,
         () => undefined,
       ),
     ).toEqual({ change_set: { status: "authorized" } });
-    expect(value.host.promptCalls).toBe(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.promptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("fresh lineage submits through the existing TUI and captures its native identity", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    expect(execution.agent.nativeSession).toBeUndefined();
+    await value.harness.ready(value.dispatch, execution);
+    const readiness = JSON.parse(
+      await Bun.file(
+        join(
+          value.root,
+          "lineages",
+          value.lineage.lineageId,
+          "pre-inference-readiness.json",
+        ),
+      ).text(),
+    );
+    expect(readiness).toMatchObject({
+      conversationState: "none",
+      initialInputReady: true,
+      initialInputTransport: "herdr_pane_bracketed_paste",
+      mcpChildReady: true,
+      stopHookReady: true,
+    });
+    await value.authority.bind(value.dispatch, value.lineage);
+    value.host.onPrompt = async () => {
+      await new HarnessControlClient(
+        controlDescriptorPath(value.lineage),
+      ).completeStep({ change_set: { status: "initial" } });
+    };
+    const events: HarnessEvent[] = [];
+    const authorized = authorizePrompt(value);
+    const outputs = await value.harness.sendInputAndCollect(
+      authorized,
+      execution,
+      (event) => events.push(event),
+    );
+    expect(outputs).toEqual({ change_set: { status: "initial" } });
+    expect(value.host.startRequests).toHaveLength(1);
+    expect(Object.keys(value.host.agent.tokens ?? {})).toHaveLength(16);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.promptCalls).toBe(0);
+    expect(
+      events.find((event) => event.type === "prompt_baseline")?.evidence.cursor,
+    ).toBeGreaterThan(0);
+    const staged = value.host.stagedPromptInputs[0]?.text;
+    expect(staged).toContain(antigravityPromptFor(value.dispatch));
+    expect(staged?.startsWith("\u001b[200~")).toBe(true);
+    expect(staged?.endsWith("\u001b[201~")).toBe(true);
+    expect(
+      events.find((event) => event.type === "prompt_accepted")?.inspection.agent
+        ?.nativeSession,
+    ).toEqual({
+      source: "antigravity",
+      agent: "agy",
+      kind: "id",
+      value: INITIAL_CONVERSATION_ID,
+    });
+  } finally {
+    await value.close();
+  }
+});
+
+test("uncertain submit acknowledgement reconciles native acceptance without resubmission", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    await value.authority.bind(value.dispatch, value.lineage);
+    value.host.submitError = new HerdrApiError(
+      "timeout",
+      "synthetic submit acknowledgement loss",
+    );
+    value.host.onPrompt = async () => {
+      await new HarnessControlClient(
+        controlDescriptorPath(value.lineage),
+      ).completeStep({ change_set: { status: "reconciled" } });
+    };
+    expect(
+      await value.harness.sendInputAndCollect(
+        authorizePrompt(value),
+        execution,
+        () => undefined,
+      ),
+    ).toEqual({ change_set: { status: "reconciled" } });
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.promptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("retained conversation selects exact continuation prompt transport", async () => {
+  const value = await fixture();
+  try {
+    const started = await value.harness.start(value.dispatch, value.lineage);
+    value.host.establishConversation(RETAINED_CONVERSATION_ID);
+    const nativeSession = value.host.agent.nativeSession;
+    if (!nativeSession) throw new Error("fixture conversation was not created");
+    const lineage = { ...started.lineage, nativeSession };
+    const execution = {
+      ...started,
+      lineage,
+      agent: value.host.agent,
+      ref: { ...started.ref, nativeSession },
+    };
+    await value.harness.ready(value.dispatch, execution);
+    await value.authority.bind(value.dispatch, lineage);
+    value.host.onPrompt = async () => {
+      await new HarnessControlClient(
+        controlDescriptorPath(lineage),
+      ).completeStep({
+        change_set: { status: "continued" },
+      });
+    };
+    expect(
+      await value.harness.sendInputAndCollect(
+        authorizePrompt(value),
+        execution,
+        () => undefined,
+      ),
+    ).toEqual({ change_set: { status: "continued" } });
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.promptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("interactive first-message rejection records no native acceptance or provider cycle", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    value.host.autoNativeAcceptance = false;
+    value.host.onPrompt = () =>
+      value.host.appendNativeRejection("no active conversation");
+    const events: HarnessEvent[] = [];
+    await expect(
+      value.harness.sendInputAndCollect(
+        authorizePrompt(value),
+        execution,
+        (event) => events.push(event),
+      ),
+    ).rejects.toMatchObject({
+      code: "antigravity_initial_dispatch_failed",
+      evidence: { provider_cycles: 0 },
+    });
+    expect(events.map((event) => event.type)).toEqual(["prompt_baseline"]);
+    expect(value.host.promptCalls).toBe(0);
+    expect(value.host.agent.nativeSession).toBeUndefined();
+  } finally {
+    await value.close();
+  }
+});
+
+test("post-intent recovery keeps native interactive rejection explicit", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    value.registry.recordPromptEvidence(value.dispatch.action.action_id, {
+      kind: "antigravity_log",
+      cursor: 0,
+      promptHash: createHash("sha256")
+        .update(antigravityPromptFor(value.dispatch))
+        .digest("hex"),
+    });
+    value.registry.markPromptIntent(value.dispatch.action.action_id);
+    await value.host.appendNativeRejection("no active conversation");
+    await expect(
+      value.harness.waitAndCollect(
+        value.registry.get(value.dispatch.action.action_id),
+        execution.lineage,
+        execution.agent,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({
+      code: "antigravity_initial_dispatch_failed",
+      evidence: { provider_cycles: 0 },
+    });
+  } finally {
+    await value.close();
+  }
+});
+
+test("retained conversation identity fails closed when stale or from another PhysicalLineage", async () => {
+  const stale = await fixture();
+  try {
+    const started = await stale.harness.start(stale.dispatch, stale.lineage);
+    stale.host.establishConversation(STALE_CONVERSATION_ID);
+    const lineage = {
+      ...started.lineage,
+      nativeSession: {
+        source: "antigravity" as const,
+        agent: "agy",
+        kind: "id" as const,
+        value: EXPECTED_CONVERSATION_ID,
+      },
+    };
+    await expect(
+      stale.harness.ready(stale.dispatch, {
+        ...started,
+        lineage,
+        agent: stale.host.agent,
+      }),
+    ).rejects.toMatchObject({
+      code: "antigravity_conversation_identity_mismatch",
+    });
+
+    stale.host.establishConversation(EXPECTED_CONVERSATION_ID);
+    stale.host.agent.tokens = {
+      ...stale.host.agent.tokens,
+      qe_lineage_id: "another-physical-lineage",
+    };
+    await expect(
+      stale.harness.continue(stale.dispatch, lineage),
+    ).rejects.toThrow("missing or has incompatible provenance");
+  } finally {
+    await stale.close();
+  }
+});
+
+test("cancellation before first message leaves fresh readiness conversation-free", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    await value.harness.close(execution.lineage);
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
+    expect(value.host.promptCalls).toBe(0);
+    expect(value.host.agent.nativeSession).toBeUndefined();
+  } finally {
+    await value.close();
+  }
+});
+
+test("preauthorization interactive prompt input is structurally rejected", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    await expect(
+      value.harness.sendInputAndCollect(
+        value.dispatch,
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_not_authorized" });
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("input readiness is independent from a live TUI and fails before authorization", async () => {
+  const value = await fixture();
+  try {
+    value.host.initialInputReady = false;
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await expect(
+      value.harness.ready(value.dispatch, execution),
+    ).rejects.toThrow("input manager is not ready");
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("stale pane, process, and endpoint generation fail before literal input", async () => {
+  const stalePane = await fixture();
+  try {
+    const execution = await stalePane.harness.start(
+      stalePane.dispatch,
+      stalePane.lineage,
+    );
+    await stalePane.harness.ready(stalePane.dispatch, execution);
+    await expect(
+      stalePane.harness.sendInputAndCollect(
+        authorizePrompt(stalePane),
+        { ...execution, ref: { ...execution.ref, paneId: "stale-pane" } },
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_input_fence_failed" });
+    expect(stalePane.host.stagedPromptCalls).toBe(0);
+  } finally {
+    await stalePane.close();
+  }
+
+  const staleGeneration = await fixture();
+  try {
+    const execution = await staleGeneration.harness.start(
+      staleGeneration.dispatch,
+      staleGeneration.lineage,
+    );
+    await staleGeneration.harness.ready(staleGeneration.dispatch, execution);
+    staleGeneration.host.backendReadiness = {
+      ...staleGeneration.host.backendReadiness,
+      provenance: {
+        ...staleGeneration.host.backendReadiness.provenance,
+        endpointGeneration: 2,
+      },
+    };
+    await expect(
+      staleGeneration.harness.sendInputAndCollect(
+        authorizePrompt(staleGeneration),
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_input_fence_failed" });
+    expect(staleGeneration.host.stagedPromptCalls).toBe(0);
+    expect(staleGeneration.host.submitPromptCalls).toBe(0);
+  } finally {
+    await staleGeneration.close();
+  }
+
+  const staleProcess = await fixture();
+  try {
+    const execution = await staleProcess.harness.start(
+      staleProcess.dispatch,
+      staleProcess.lineage,
+    );
+    await staleProcess.harness.ready(staleProcess.dispatch, execution);
+    staleProcess.host.foregroundProcessGroupId = 5252;
+    await expect(
+      staleProcess.harness.sendInputAndCollect(
+        authorizePrompt(staleProcess),
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "antigravity_prompt_input_fence_failed" });
+    expect(staleProcess.host.stagedPromptCalls).toBe(0);
+    expect(staleProcess.host.submitPromptCalls).toBe(0);
+  } finally {
+    await staleProcess.close();
+  }
+});
+
+test("authorization transition records a deterministic pre-write fence rejection", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    value.host.stageAuthorityError = new HerdrApiError(
+      "input_authority_mismatch",
+      "Synthetic secret-safe prompt-input fence rejection.",
+      "terminal.authorized_prompt_input",
+      {
+        mismatchFields: ["result_nonce"],
+        sideEffect: "none",
+      },
+    );
+
+    const error = await value.harness
+      .sendInputAndCollect(authorizePrompt(value), execution, () => undefined)
+      .catch((caught) => caught);
+    expect(error).toMatchObject({
+      code: "antigravity_prompt_input_fence_failed",
+      evidence: {
+        provider_cycles: 0,
+        input_fence_mismatch_fields: ["result_nonce"],
+        input_side_effect: "none",
+      },
+    });
+    const submission = JSON.parse(
+      await readFile(
+        join(
+          dirname(execution.lineage.resultControlPath),
+          "interactive-prompt-submission.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(submission).toMatchObject({
+      phase: "text_stage_rejected",
+      fenceMismatchFields: ["result_nonce"],
+    });
+    expect(submission.textStageRequestedAt).toBeString();
+    expect(submission.textStageRejectedAt).toBeString();
+    expect(submission.textStagedAt).toBeUndefined();
+    expect(value.host.stagedPromptCalls).toBe(0);
+    expect(value.host.submitPromptCalls).toBe(0);
+    expect(value.host.promptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("process replacement after text staging prevents the separate Enter action", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    value.host.onStage = () => {
+      value.host.foregroundProcessGroupId = 5252;
+    };
+    await expect(
+      value.harness.sendInputAndCollect(
+        authorizePrompt(value),
+        execution,
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "agent_prompt_uncertain" });
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("duplicate prompt submit is rejected and the same TUI process remains", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    await value.harness.ready(value.dispatch, execution);
+    const processBefore = await value.host.inspectPaneProcess(
+      execution.ref.paneId,
+    );
+    value.host.onPrompt = async () => {
+      await new HarnessControlClient(
+        controlDescriptorPath(value.lineage),
+      ).completeStep({ change_set: { status: "once" } });
+    };
+    const authorized = authorizePrompt(value);
+    expect(
+      await value.harness.sendInputAndCollect(
+        authorized,
+        execution,
+        () => undefined,
+      ),
+    ).toEqual({ change_set: { status: "once" } });
+    await expect(
+      value.harness.sendInputAndCollect(authorized, execution, () => undefined),
+    ).rejects.toMatchObject({ code: "antigravity_duplicate_prompt_rejected" });
+    const processAfter = await value.host.inspectPaneProcess(
+      execution.ref.paneId,
+    );
+    expect(value.host.startRequests).toHaveLength(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(processAfter.foregroundProcessGroupId).toBe(
+      processBefore.foregroundProcessGroupId,
+    );
   } finally {
     await value.close();
   }
@@ -491,19 +1138,34 @@ test("prepared pre-prompt Antigravity adoption requires exact idle conversation-
     targetAction.execution.context.logical_lineage_id =
       source.action.execution.context.logical_lineage_id;
     const target = value.registry.accept(targetAction).dispatch;
+    value.registry.occupy(value.lineage.lineageId, target.action.action_id);
     const retained = value.registry.getLineage(value.lineage.lineageId);
+    await value.authority.bind(target, retained);
 
-    await expect(
-      value.harness.provePreparedProcessAdoption(source, target, retained),
-    ).resolves.toBeUndefined();
+    await value.harness.provePreparedProcessAdoption(source, target, retained);
 
-    const hookPath = join(value.workspace, ".agents", "hooks.json");
-    const hooks = await Bun.file(hookPath).text();
-    await Bun.write(hookPath, "{}\n");
+    const readinessPath = join(
+      value.root,
+      "lineages",
+      value.lineage.lineageId,
+      "pre-inference-readiness.json",
+    );
+    const readiness = await Bun.file(readinessPath).text();
+    const legacy = JSON.parse(readiness) as {
+      version: number;
+      nativeInputReadiness: { version: number };
+    };
+    legacy.version = 3;
+    legacy.nativeInputReadiness.version = 1;
+    await Bun.write(readinessPath, `${JSON.stringify(legacy)}\n`);
     await expect(
       value.harness.provePreparedProcessAdoption(source, target, retained),
     ).rejects.toMatchObject({ code: "prepared_process_adoption_rejected" });
-    await Bun.write(hookPath, hooks);
+    await Bun.write(readinessPath, "{}\n");
+    await expect(
+      value.harness.provePreparedProcessAdoption(source, target, retained),
+    ).rejects.toMatchObject({ code: "prepared_process_adoption_rejected" });
+    await Bun.write(readinessPath, readiness);
 
     value.host.agent.status = "working";
     await expect(
@@ -540,13 +1202,13 @@ test("fresh retained-work recovery uses the same generic launch contract as a no
     expect(Object.keys(normal.host.environment).sort()).toEqual(
       Object.keys(recovery.host.environment).sort(),
     );
-    const normalHooks = JSON.parse(
-      await Bun.file(join(normal.workspace, ".agents", "hooks.json")).text(),
-    );
-    const recoveryHooks = JSON.parse(
-      await Bun.file(join(recovery.workspace, ".agents", "hooks.json")).text(),
-    );
-    expect(recoveryHooks).toEqual(normalHooks);
+    expect(recovery.installedHooks).toHaveLength(1);
+    expect(normal.installedHooks).toHaveLength(1);
+    expect(recovery.installedHooks[0]).toMatchObject({
+      name: "qe-worker-stop-v1",
+      event: "Stop",
+      command: expect.stringContaining("antigravity-control/bridge-cli.mjs"),
+    });
   } finally {
     await Promise.all([normal.close(), recovery.close()]);
   }
@@ -631,7 +1293,7 @@ test("semantic MCP completion is authoritative even while Herdr still projects w
     };
     const events: HarnessEvent[] = [];
     const outputs = await value.harness.sendInputAndCollect(
-      value.dispatch,
+      authorizePrompt(value),
       execution,
       (event) => events.push(event),
     );
@@ -654,7 +1316,7 @@ test("semantic MCP completion is authoritative even while Herdr still projects w
   }
 });
 
-test("accepted prompt can become stalled and later work without uncertainty or resubmission", async () => {
+test("accepted native prompt waits for structured completion without resubmission", async () => {
   const value = await fixture();
   try {
     value.config.promptActivityStallMs = 5;
@@ -665,16 +1327,6 @@ test("accepted prompt can become stalled and later work without uncertainty or r
     value.host.onPrompt = async () => {
       nativeTurn = (async () => {
         await Bun.sleep(150);
-        await appendFile(
-          join(
-            value.root,
-            "lineages",
-            value.lineage.lineageId,
-            "antigravity.log",
-          ),
-          "Sending user message to conversation 22222222-2222-4222-8222-222222222222 (items=1, media=0)\n",
-        );
-        await Bun.sleep(150);
         await new HarnessControlClient(
           controlDescriptorPath(value.lineage),
         ).completeStep({ change_set: { status: "delayed" } });
@@ -682,7 +1334,7 @@ test("accepted prompt can become stalled and later work without uncertainty or r
     };
     const events: HarnessEvent[] = [];
     const outputs = await value.harness.sendInputAndCollect(
-      value.dispatch,
+      authorizePrompt(value),
       execution,
       (event) => events.push(event),
     );
@@ -692,12 +1344,14 @@ test("accepted prompt can become stalled and later work without uncertainty or r
     expect(events.map((event) => event.type)).toEqual(
       expect.arrayContaining([
         "prompt_accepted",
-        "stalled",
         "native_activity",
         "structured_result_received",
       ]),
     );
-    expect(value.host.promptCalls).toBe(1);
+    expect(events.some((event) => event.type === "stalled")).toBe(false);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.promptCalls).toBe(0);
     expect(value.host.promptOptions).toBeUndefined();
   } finally {
     await value.close();
@@ -729,11 +1383,15 @@ test("missing result becomes a bounded harness_contract_violation", async () => 
     };
     await expect(
       value.harness.sendInputAndCollect(
-        value.dispatch,
+        authorizePrompt(value),
         execution,
         () => undefined,
       ),
     ).rejects.toMatchObject({ code: "harness_contract_violation" });
+    expect(value.host.startRequests).toHaveLength(1);
+    expect(value.host.stagedPromptCalls).toBe(1);
+    expect(value.host.submitPromptCalls).toBe(1);
+    expect(value.host.foregroundProcessGroupId).toBe(4242);
   } finally {
     await value.close();
   }
@@ -790,7 +1448,7 @@ test("native blocked state projects stable HumanAttention and takeover identity"
   }
 });
 
-test("recovery adopts only the exact surviving TUI and verified native conversation", async () => {
+test("recovery adopts only the exact surviving SBX TUI and never host-relaunches it", async () => {
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
@@ -810,27 +1468,56 @@ test("recovery adopts only the exact surviving TUI and verified native conversat
     const persisted = value.registry.getLineage(value.lineage.lineageId);
     const restartedHarness = new AntigravityHarness(value.host, value.config, {
       runNativeCommand: value.runNativeCommand,
+      executionManager: value.executionManager,
     });
-    expect(await restartedHarness.recover(persisted)).toMatchObject({
+    expect(
+      await restartedHarness.recover(persisted, value.dispatch),
+    ).toMatchObject({
       found: true,
       agent: { name: execution.ref.agentName },
     });
     value.host.sessionIncarnationId = "replacement-session-incarnation";
     value.host.removeAgentOnSnapshot = true;
-    const relaunched = await value.harness.recover(persisted);
+    const launches = value.host.startRequests.length;
+    const relaunched = await value.harness.recover(persisted, value.dispatch);
     expect(relaunched).toMatchObject({
+      found: false,
+      detail: expect.stringContaining("another Herdr session incarnation"),
+    });
+    expect(value.host.startRequests).toHaveLength(launches);
+  } finally {
+    await value.close();
+  }
+});
+
+test("post-intent recovery reconstructs native conversation identity from the append-only log", async () => {
+  const value = await fixture();
+  try {
+    const execution = await value.harness.start(value.dispatch, value.lineage);
+    value.registry.recordHost(value.lineage.lineageId, {
+      herdrSession: execution.ref.sessionName,
+      herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
+      workspaceId: execution.ref.workspaceId,
+      paneId: execution.ref.paneId,
+      ...(execution.ref.terminalId
+        ? { terminalId: execution.ref.terminalId }
+        : {}),
+      agentName: execution.ref.agentName,
+    });
+    value.host.establishConversation(INITIAL_CONVERSATION_ID);
+    await value.host.appendNativeAcceptance(INITIAL_CONVERSATION_ID);
+    delete value.host.agent.nativeSession;
+    const persisted = value.registry.getLineage(value.lineage.lineageId);
+    const recovered = await value.harness.recover(persisted, {
+      ...value.dispatch,
+      promptIntentAt: new Date().toISOString(),
+    });
+    expect(recovered).toMatchObject({
       found: true,
-      ref: {
-        agentName: expect.stringContaining("qe-agy-"),
-        sessionIncarnation: "replacement-session-incarnation",
-      },
       agent: {
-        nativeSession: { value: "conversation-1" },
+        nativeSession: { value: INITIAL_CONVERSATION_ID },
       },
     });
-    expect(value.host.startRequests.at(-1)?.args).toEqual(
-      expect.arrayContaining(["--conversation", "conversation-1"]),
-    );
   } finally {
     await value.close();
   }
@@ -840,6 +1527,9 @@ test("a Worker restart can adopt exact active Antigravity terminal provenance", 
   const value = await fixture();
   try {
     await value.harness.start(value.dispatch, value.lineage);
+    value.host.establishConversation(INITIAL_CONVERSATION_ID);
+    await value.host.appendNativeAcceptance(INITIAL_CONVERSATION_ID);
+    delete value.host.agent.nativeSession;
     await writeControlAtomic(value.lineage.resultControlPath, {
       protocolVersion: 1,
       workerId: value.dispatch.action.worker_id,
@@ -856,7 +1546,7 @@ test("a Worker restart can adopt exact active Antigravity terminal provenance", 
       action: { action_id: value.dispatch.action.action_id },
       lineage: {
         harnessKind: "antigravity",
-        nativeSession: { value: "conversation-1" },
+        nativeSession: { value: INITIAL_CONVERSATION_ID },
       },
     });
   } finally {
@@ -942,6 +1632,62 @@ test("fresh retained-work recovery tells Antigravity to preserve the diff and co
   }
 });
 
+function authorizePrompt(value: {
+  registry: DispatchRegistry;
+  dispatch: DispatchRecord;
+}): DispatchRecord {
+  value.registry.authorizePrompt(value.dispatch.action.action_id);
+  value.registry.markPromptIntent(value.dispatch.action.action_id);
+  return value.registry.get(value.dispatch.action.action_id);
+}
+
+function readyInitialInputEvidence(model: string) {
+  return {
+    kind: "antigravity_initial_input_readiness" as const,
+    version: 2 as const,
+    tuiInputReady: true,
+    freshConversationReady: true,
+    ready: true,
+    nativeConversationBootstrap: "ready_without_conversation" as const,
+    conversationState: "none" as const,
+    model,
+    signals: {
+      cli_input_loop: 1,
+      empty_conversation_render: 2,
+      authentication: 3,
+      cli_startup: 4,
+      code_assist: 5,
+      model_catalog: 6,
+      model_resolution: 7,
+      post_login_experiments: 8,
+      post_login_code_assist: 9,
+      post_login_model_resolution: 10,
+      post_model_experiments: 11,
+      customization_reload: 12,
+    },
+    missingSignals: [],
+    missingFreshConversationRequirements: [],
+    nativeState: {
+      project: {
+        ready: true,
+        resolvedProjectId: "default-cli-project",
+        defaultProject: true,
+        cacheWritable: true,
+        configPresent: true,
+        configWritable: true,
+        conversationStoreWritable: true,
+        workspaceResolved: true,
+      },
+      prompt: {
+        focusReady: true,
+        editorMode: "default" as const,
+        enterBinding: "prompt.submit" as const,
+        customKeybindingsPresent: false,
+      },
+    },
+  };
+}
+
 function antigravityDiscoveryRunner(version: string, omittedHelpFlag?: string) {
   return async (args: string[]) => ({
     exitCode: 0,
@@ -949,13 +1695,7 @@ function antigravityDiscoveryRunner(version: string, omittedHelpFlag?: string) {
       args[0] === "--version"
         ? `${version}\n`
         : args[0] === "--help"
-          ? [
-              "--conversation",
-              "--effort",
-              "--log-file",
-              "--model",
-              "--prompt-interactive",
-            ]
+          ? ["--conversation", "--effort", "--log-file", "--model"]
               .filter((flag) => flag !== omittedHelpFlag)
               .join(" ")
           : "gemini-test-high\tGemini Test (High)\n",
@@ -975,14 +1715,28 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     name: string;
     integrationKind: string;
     args: string[];
+    command?: HostLaunchDescriptor;
   }> = [];
   readonly panes: HostedPane[];
   agent: HostedAgent;
   onPrompt: (() => Promise<void>) | null = null;
+  onStage: (() => Promise<void> | void) | null = null;
   promptOptions:
     | { until?: HostedAgentStatus[]; timeoutMs?: number }
     | undefined;
   promptCalls = 0;
+  prompts: string[] = [];
+  stagedPromptCalls = 0;
+  stagedPromptInputs: InteractivePromptInput[] = [];
+  submitPromptCalls = 0;
+  submittedAuthorities: InteractivePromptAuthority[] = [];
+  autoNativeAcceptance = true;
+  initialInputReady = true;
+  stageAuthorityError: HerdrApiError | null = null;
+  stageError: Error | null = null;
+  submitError: Error | null = null;
+  foregroundProcessGroupId = 4242;
+  private logPath: string | null = null;
   removeAgentOnSnapshot = false;
   inspectError: Error | null = null;
   backendReadiness = readyBackend("antigravity");
@@ -1054,6 +1808,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     name: string;
     integrationKind: string;
     args: string[];
+    command?: HostLaunchDescriptor;
   }): Promise<HostedAgent> {
     this.startRequests.push(input);
     const pane = this.panes.find(
@@ -1083,8 +1838,9 @@ class FakeAntigravityHost implements TerminalSessionBackend {
         })}\n`,
       );
     }
+    this.logPath = input.args[input.args.indexOf("--log-file") + 1] as string;
     await writeFile(
-      input.args[input.args.indexOf("--log-file") + 1] as string,
+      this.logPath,
       "hooks_manager.go:53] loaded 1 named hooks from 1 hooks.json file(s)\n",
     );
     this.removeAgentOnSnapshot = false;
@@ -1096,10 +1852,99 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     _options?: { until?: HostedAgentStatus[]; timeoutMs?: number },
   ): Promise<HostedAgent> {
     this.promptCalls += 1;
+    this.prompts.push(_text);
     this.promptOptions = _options;
-    this.agent.status = "working";
-    await this.onPrompt?.();
     return this.agent;
+  }
+  async inspectPaneProcess(paneId: string): Promise<HostedPaneProcessInfo> {
+    return {
+      paneId,
+      shellPid: 100,
+      foregroundProcessGroupId: this.foregroundProcessGroupId,
+      tty: "/dev/ttys001",
+      foregroundProcesses: [
+        {
+          pid: 101,
+          name: "agy",
+          argv: ["/opt/qe/antigravity/agy"],
+          cwd: this.cwd,
+        },
+      ],
+    };
+  }
+  async stageInteractivePrompt(input: InteractivePromptInput): Promise<void> {
+    if (this.stageAuthorityError) throw this.stageAuthorityError;
+    if (
+      input.authority.herdrEndpointGeneration !==
+        this.backendReadiness.provenance.endpointGeneration ||
+      input.authority.herdrServerGeneration !==
+        this.backendReadiness.provenance.serverGeneration
+    )
+      throw new HerdrApiError(
+        "input_authority_stale",
+        "synthetic endpoint generation mismatch",
+      );
+    const process = await this.inspectPaneProcess(input.authority.paneId);
+    if (
+      input.authority.paneShellPid !== process.shellPid ||
+      input.authority.paneForegroundProcessGroupId !==
+        process.foregroundProcessGroupId ||
+      input.authority.paneProcessIdentityDigest !==
+        paneProcessIdentityDigest(process)
+    )
+      throw new HerdrApiError(
+        "input_authority_mismatch",
+        "synthetic pane process identity mismatch",
+      );
+    this.stagedPromptCalls += 1;
+    this.stagedPromptInputs.push(input);
+    if (this.stageError) throw this.stageError;
+    await this.onStage?.();
+  }
+  async submitInteractivePrompt(
+    authority: InteractivePromptAuthority,
+  ): Promise<void> {
+    const process = await this.inspectPaneProcess(authority.paneId);
+    if (
+      authority.paneShellPid !== process.shellPid ||
+      authority.paneForegroundProcessGroupId !==
+        process.foregroundProcessGroupId ||
+      authority.paneProcessIdentityDigest !== paneProcessIdentityDigest(process)
+    )
+      throw new HerdrApiError(
+        "input_authority_mismatch",
+        "synthetic pane process identity mismatch",
+      );
+    this.submitPromptCalls += 1;
+    this.submittedAuthorities.push(authority);
+    this.agent.status = "working";
+    if (this.agent.nativeSession)
+      await this.appendNativeAcceptance(this.agent.nativeSession.value);
+    else if (this.autoNativeAcceptance) {
+      this.establishConversation(INITIAL_CONVERSATION_ID);
+      await this.appendNativeAcceptance(INITIAL_CONVERSATION_ID);
+    }
+    await this.onPrompt?.();
+    if (this.submitError) throw this.submitError;
+  }
+  establishConversation(id: string): void {
+    this.agent.nativeSession = {
+      source: "antigravity",
+      agent: "agy",
+      kind: "id",
+      value: id,
+    };
+  }
+  async appendNativeAcceptance(id: string): Promise<void> {
+    if (!this.logPath) throw new Error("fake Antigravity log is unavailable");
+    await appendFile(
+      this.logPath,
+      `Sending user message to conversation ${id} (items=1, media=0)\n`,
+    );
+  }
+  async appendNativeRejection(message: string): Promise<void> {
+    if (!this.logPath) throw new Error("fake Antigravity log is unavailable");
+    await appendFile(this.logPath, `SendUserMessage failed: ${message}\n`);
   }
   async observeAgentState(): Promise<HostedAgent> {
     return this.agent;
@@ -1117,7 +1962,8 @@ class FakeAntigravityHost implements TerminalSessionBackend {
       mode: "local_native_terminal",
       backendKind: "herdr",
       terminalSessionId: ref.sessionName,
-      terminalTargetId: ref.agentName,
+      localContextId: `sha256:${"0".repeat(64)}`,
+      paneId: ref.paneId,
       ...(ref.terminalId ? { terminalId: ref.terminalId } : {}),
       supportsObservation: true,
       supportsTakeover: true,
@@ -1139,12 +1985,8 @@ class FakeAntigravityHost implements TerminalSessionBackend {
       workspaceId: "workspace-1",
       tabId: "tab-1",
       interactiveReady: true,
-      nativeSession: {
-        source: "antigravity",
-        agent: "agy",
-        kind: "id",
-        value: "conversation-1",
-      },
+      launchPending: false,
+      nativeMaterialized: true,
       tokens: {},
     };
   }
@@ -1156,7 +1998,7 @@ function readyBackend(harnessKind: string): SessionBackendReadiness {
     harnessKind,
     status: "ready",
     ready: true,
-    capabilities: [],
+    capabilities: ["terminal.literal_input", "terminal.submit_input"],
     missingCapabilities: [],
     diagnostics: [],
     provenance: {
@@ -1165,6 +2007,7 @@ function readyBackend(harnessKind: string): SessionBackendReadiness {
       testedProtocol: 22,
       endpointGeneration: 1,
       serverGeneration: "test-generation",
+      sessionIncarnation: "test-session-incarnation",
     },
   };
 }

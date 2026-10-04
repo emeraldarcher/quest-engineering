@@ -5,18 +5,32 @@ import type {
   HostedAgent,
   HostedAgentStatus,
   HostedPane,
+  HostedPaneProcessInfo,
   HostedSnapshot,
   NativeSessionRef,
 } from "../types.ts";
 import type { HerdrIntegrationEvidence } from "./compatibility.ts";
 
+export interface HerdrSafeErrorDiagnostics {
+  /** Safe field names only; compared values are deliberately omitted. */
+  mismatchFields?: readonly string[];
+  /** The rejection happened before the requested transport side effect. */
+  sideEffect?: "none" | "unknown";
+}
+
 export class HerdrApiError extends Error {
+  readonly mismatchFields: readonly string[];
+  readonly sideEffect: "none" | "unknown";
+
   constructor(
     readonly code: string,
     message: string,
     readonly capability?: string,
+    diagnostics: HerdrSafeErrorDiagnostics = {},
   ) {
     super(message);
+    this.mismatchFields = [...(diagnostics.mismatchFields ?? [])];
+    this.sideEffect = diagnostics.sideEffect ?? "unknown";
   }
 }
 
@@ -68,6 +82,8 @@ export interface HerdrControlClient {
   }): Promise<void>;
   reportAgentState(input: {
     paneId: string;
+    agent: "pi" | "agy";
+    source: "quest-engineering:sbx-pi" | "quest-engineering:sbx-antigravity";
     state: "idle" | "working" | "blocked";
     sequence: number;
     nativeSession?: NativeSessionRef;
@@ -83,6 +99,9 @@ export interface HerdrControlClient {
     options?: { until?: HostedAgentStatus[]; timeoutMs?: number },
   ): Promise<HostedAgent>;
   getAgent(target: string): Promise<HostedAgent>;
+  getPaneProcess(paneId: string): Promise<HostedPaneProcessInfo>;
+  sendPaneText(paneId: string, text: string): Promise<void>;
+  sendPaneKeys(paneId: string, keys: string[]): Promise<void>;
   closePane(paneId: string): Promise<void>;
   sendKeys(target: string, keys: string[]): Promise<void>;
   disconnect(): void;
@@ -301,6 +320,8 @@ export class HerdrSocketClient implements HerdrControlClient {
 
   async reportAgentState(input: {
     paneId: string;
+    agent: "pi" | "agy";
+    source: "quest-engineering:sbx-pi" | "quest-engineering:sbx-antigravity";
     state: "idle" | "working" | "blocked";
     sequence: number;
     nativeSession?: NativeSessionRef;
@@ -309,8 +330,8 @@ export class HerdrSocketClient implements HerdrControlClient {
     if (session)
       await this.request("pane.report_agent_session", {
         pane_id: input.paneId,
-        source: "quest-engineering:sbx-pi",
-        agent: "pi",
+        source: input.source,
+        agent: input.agent,
         seq: input.sequence * 2,
         ...(session.kind === "path"
           ? { agent_session_path: session.value }
@@ -318,8 +339,8 @@ export class HerdrSocketClient implements HerdrControlClient {
       });
     await this.request("pane.report_agent", {
       pane_id: input.paneId,
-      source: "quest-engineering:sbx-pi",
-      agent: "pi",
+      source: input.source,
+      agent: input.agent,
       state: input.state,
       seq: input.sequence * 2 + 1,
       ...(session?.kind === "path"
@@ -624,6 +645,119 @@ export class HerdrSocketClient implements HerdrControlClient {
       undefined,
       "agent.inspect",
     );
+  }
+
+  async getPaneProcess(paneId: string): Promise<HostedPaneProcessInfo> {
+    const result = await this.request("pane.process_info", { pane_id: paneId });
+    const info = object(
+      result.process_info,
+      "process_info",
+      "terminal.shell_readiness",
+    );
+    const shellPid = optionalInteger(
+      info.shell_pid,
+      "process_info.shell_pid",
+      "terminal.shell_readiness",
+    );
+    const foregroundProcessGroupId = optionalInteger(
+      info.foreground_process_group_id,
+      "process_info.foreground_process_group_id",
+      "terminal.shell_readiness",
+    );
+    const tty = optionalString(
+      info.tty,
+      "process_info.tty",
+      "terminal.shell_readiness",
+    );
+    return {
+      paneId: string(
+        info.pane_id,
+        "process_info.pane_id",
+        "terminal.shell_readiness",
+      ),
+      ...(shellPid === undefined ? {} : { shellPid }),
+      ...(foregroundProcessGroupId === undefined
+        ? {}
+        : { foregroundProcessGroupId }),
+      ...(tty === undefined ? {} : { tty }),
+      foregroundProcesses: strictArray(
+        info.foreground_processes ?? [],
+        "process_info.foreground_processes",
+      ).map((process) => {
+        const argv = process.argv;
+        if (
+          argv !== undefined &&
+          argv !== null &&
+          (!Array.isArray(argv) ||
+            argv.some((item) => typeof item !== "string"))
+        )
+          throw new HerdrApiError(
+            "malformed_response",
+            "Herdr returned malformed pane process argv.",
+            "terminal.shell_readiness",
+          );
+        return {
+          pid: integer(
+            process.pid,
+            "process_info.foreground_processes.pid",
+            "terminal.shell_readiness",
+          ),
+          name: string(
+            process.name,
+            "process_info.foreground_processes.name",
+            "terminal.shell_readiness",
+          ),
+          ...(optionalString(
+            process.argv0,
+            "process_info.foreground_processes.argv0",
+            "terminal.shell_readiness",
+          )
+            ? {
+                argv0: optionalString(
+                  process.argv0,
+                  "process_info.foreground_processes.argv0",
+                  "terminal.shell_readiness",
+                ) as string,
+              }
+            : {}),
+          ...(Array.isArray(argv) ? { argv: argv as string[] } : {}),
+          ...(optionalString(
+            process.cmdline,
+            "process_info.foreground_processes.cmdline",
+            "terminal.shell_readiness",
+          )
+            ? {
+                cmdline: optionalString(
+                  process.cmdline,
+                  "process_info.foreground_processes.cmdline",
+                  "terminal.shell_readiness",
+                ) as string,
+              }
+            : {}),
+          ...(optionalString(
+            process.cwd,
+            "process_info.foreground_processes.cwd",
+            "terminal.shell_readiness",
+          )
+            ? {
+                cwd: optionalString(
+                  process.cwd,
+                  "process_info.foreground_processes.cwd",
+                  "terminal.shell_readiness",
+                ) as string,
+              }
+            : {}),
+        };
+      }),
+    };
+  }
+
+  async sendPaneText(paneId: string, text: string): Promise<void> {
+    await this.request("pane.send_text", { pane_id: paneId, text });
+  }
+
+  async sendPaneKeys(paneId: string, keys: string[]): Promise<void> {
+    await this.request("pane.send_keys", { pane_id: paneId, keys });
   }
 
   async closePane(paneId: string): Promise<void> {

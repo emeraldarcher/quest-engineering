@@ -1,14 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { workerCapabilities } from "../src/capabilities.ts";
-import { loadConfig } from "../src/config.ts";
+import { herdrLocalContextId, loadConfig } from "../src/config.ts";
 import {
   applyConfiguredPiModelScope,
   type DiscoveredPiModelCatalog,
 } from "../src/execution-environment/sbx-run.ts";
 import type { HarnessDiscovery } from "../src/harnesses/types.ts";
+import { herdrProcessEnvironment } from "../src/session-host/herdr/connection.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -77,12 +78,78 @@ test("production config requires one exact absolute Herdr executable", async () 
   ).toThrow("must identify an existing executable file");
 });
 
+test("Herdr local context is HOME-independent and split namespaces are fenced", async () => {
+  const shared = await environment({ HOME: "/private/worker-home" });
+  const worker = loadConfig(shared);
+  const desktop = loadConfig({ ...shared, HOME: "/private/desktop-home" });
+  expect(desktop.herdrLocalContextId).toBe(worker.herdrLocalContextId);
+  expect(desktop.herdrConfigHome).toBe(worker.herdrConfigHome);
+
+  const splitHome = join(import.meta.dir, "..", "..", "..", ".pi", "hcs");
+  await mkdir(splitHome, { recursive: true });
+  roots.push(splitHome);
+  const split = loadConfig({ ...shared, XDG_CONFIG_HOME: splitHome });
+  expect(split.herdrLocalContextId).not.toBe(worker.herdrLocalContextId);
+
+  const processEnvironment = herdrProcessEnvironment(
+    {
+      HOME: "/private/worker-home",
+      XDG_CONFIG_HOME: "/wrong",
+      HERDR_CONFIG_PATH: "/wrong/config.toml",
+      HERDR_SESSION: "wrong-session",
+      HERDR_SOCKET_PATH: "/wrong/herdr.sock",
+    },
+    {
+      executable: worker.herdrBin as string,
+      configHome: worker.herdrConfigHome as string,
+      configPath: worker.herdrConfigPath as string,
+      id: worker.herdrLocalContextId as string,
+    },
+  );
+  expect(processEnvironment.HOME).toBe("/private/worker-home");
+  expect(processEnvironment.XDG_CONFIG_HOME).toBe(worker.herdrConfigHome);
+  expect(processEnvironment.HERDR_CONFIG_PATH).toBe(worker.herdrConfigPath);
+  expect(processEnvironment.HERDR_SESSION).toBeUndefined();
+  expect(processEnvironment.HERDR_SOCKET_PATH).toBeUndefined();
+});
+
+test("Herdr local context digest has a cross-runtime stable vector", () => {
+  expect(
+    herdrLocalContextId(
+      "/opt/qe/herdr",
+      "/var/run/qe-herdr",
+      "/etc/qe/herdr.toml",
+    ),
+  ).toBe(
+    "sha256:2baa25a6a46e4124aba866c27b9cb716748cb7d3b0ec9fad01c00a7e259dd2d0",
+  );
+});
+
+test("production Herdr context rejects implicit or nonexistent paths", async () => {
+  const configured = await environment();
+  const missingHome = { ...configured };
+  delete missingHome.XDG_CONFIG_HOME;
+  expect(() => loadConfig(missingHome)).toThrow("XDG_CONFIG_HOME is required");
+  expect(() =>
+    loadConfig({ ...configured, HERDR_CONFIG_PATH: "/missing/herdr.toml" }),
+  ).toThrow("HERDR_CONFIG_PATH must identify an existing file");
+});
+
 test("dispatch availability defaults active and supports generic maintenance registration", async () => {
   const active = loadConfig(await environment());
   expect(active.dispatchAvailability).toBe("active");
-  expect(
-    workerCapabilities(active, "darwin", "arm64").dispatch_availability,
-  ).toBe("active");
+  const activeCapabilities = workerCapabilities(active, "darwin", "arm64");
+  expect(activeCapabilities.dispatch_availability).toBe("active");
+  expect(activeCapabilities.executors[0]?.execution_environment).toMatchObject({
+    backend_kind: "sbx",
+    profile: { id: "qe-coding-execution-v1" },
+    capabilities: expect.arrayContaining([
+      { kind: "filesystem_namespace", mode: "isolated" },
+      { kind: "host_filesystem", mode: "unexposed" },
+      { kind: "environment_exec", mode: "available" },
+      { kind: "pty_launcher", mode: "available" },
+    ]),
+  });
 
   const maintenance = loadConfig(
     await environment({ QE_WORKER_DISPATCH_AVAILABILITY: "maintenance" }),
@@ -273,8 +340,15 @@ async function environment(
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, "model-scope-"));
   roots.push(root);
+  const configHome = join(import.meta.dir, "..", "..", "..", ".pi", "hcm");
+  await mkdir(configHome, { recursive: true });
+  roots.push(configHome);
+  const configPath = join(root, "herdr.toml");
+  await writeFile(configPath, 'theme = "default"\n');
   return {
     HOME: "/Users/test",
+    XDG_CONFIG_HOME: configHome,
+    HERDR_CONFIG_PATH: configPath,
     QE_CONTROL_PLANE_URL: "ws://127.0.0.1:4000/worker/websocket",
     QE_WORKER_ID: "model-scope-worker",
     QE_WORKER_TOKEN: "unused",

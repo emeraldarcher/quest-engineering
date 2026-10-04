@@ -278,7 +278,7 @@ test("sandbox provisioner stores only a scoped resolver command and nonsecret pl
   expect(dynamicSecret).toEqual({
     sandboxName: "sandbox-a",
     placeholder: provision.placeholder,
-    host: "chatgpt.com",
+    hosts: ["chatgpt.com"],
     resolverCommand: "/trusted/qe-pi-credential-helper",
     refreshInterval: SBX_PI_DYNAMIC_SECRET_REFRESH,
   });
