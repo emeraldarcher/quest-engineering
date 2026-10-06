@@ -1922,6 +1922,16 @@ function safeDeliveryMessage(code: string): string {
     remote_branch_conflict: "The remote Run branch differs from this Delivery.",
     delivery_content_changed:
       "Run workspace content changed after Delivery inspection.",
+    delivery_entry_changed:
+      "A Run repository entry changed during Delivery inspection.",
+    delivery_entry_unsupported:
+      "The Run repository contains an unsupported filesystem entry.",
+    delivery_entry_uninspectable:
+      "A Run repository entry could not be inspected safely.",
+    delivery_file_inspection_too_large:
+      "An untracked file exceeds the Delivery inspection limit.",
+    delivery_path_unsafe:
+      "The Run repository reported an unsafe Delivery path.",
     cross_repository_pull_request_not_supported:
       "v0.13 supports same-repository GitHub Pull Requests only.",
     base_branch_unresolved: "The Run base branch is unavailable.",
