@@ -235,7 +235,17 @@ export class HerdrTerminalBackend implements TerminalSessionBackend {
   async closePane(paneId: string): Promise<void> {
     const client = await this.client();
     try {
-      await client.closePane(paneId);
+      try {
+        await client.closePane(paneId);
+      } catch (closeError) {
+        try {
+          const snapshot = await client.snapshot();
+          if (!snapshot.panes.some((pane) => pane.paneId === paneId)) return;
+        } catch {
+          // Preserve the destructive close error when absence cannot be proven.
+        }
+        throw closeError;
+      }
     } finally {
       this.clients.delete(client);
     }

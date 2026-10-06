@@ -137,6 +137,11 @@ defmodule QuestEngineering.ServerWeb.Api do
     {status, to_string(code), "Local live-session attachment is unavailable.", [], %{}}
   end
 
+  defp error_view(:worker_upgrade_required),
+    do:
+      {409, "worker_upgrade_required",
+       "The assigned Worker must support whole-Run resource cleanup.", [], %{}}
+
   defp error_view(code)
        when code in [
               :delivery_not_retryable,

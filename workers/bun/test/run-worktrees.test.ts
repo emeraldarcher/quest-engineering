@@ -13,6 +13,11 @@ import {
 import { join, relative } from "node:path";
 import { workerCapabilities } from "../src/capabilities.ts";
 import type { WorkerConfig } from "../src/config.ts";
+import { FakeExecutionEnvironmentBackend } from "../src/execution-environment/fake.ts";
+import { cleanupExecutionEnvironment } from "../src/execution-environment/run-cleanup.ts";
+import type { EnvironmentSpec } from "../src/execution-environment/types.ts";
+import { RunCleanupCoordinator } from "../src/run-cleanup.ts";
+import { RunCleanupStore } from "../src/run-cleanup-store.ts";
 import { RunWorktreeRegistry } from "../src/workspace/run-worktrees.ts";
 
 const roots: string[] = [];
@@ -101,6 +106,116 @@ test("isolates simultaneous Runs without linking or mutating source Git metadata
   restarted.close();
 });
 
+test("bounded whole-Run cleanup physically retires owned resources and preserves shared/history authorities", async () => {
+  const fixture = await setup();
+  const registry = new RunWorktreeRegistry(fixture.config);
+  const worktreeRequest = request("1", workspace(1), binding(1));
+  const provisioned = await registry.provision(worktreeRequest);
+  await registry.retain(provisioned.worktreeId);
+  const sourceBefore = await repositorySnapshot(fixture.source);
+
+  const environmentRoot = join(fixture.root, "physical-environment");
+  const sharedHerdrMarker = join(fixture.root, "shared-herdr.marker");
+  const historyEvidence = join(fixture.root, "product-history.json");
+  await mkdir(environmentRoot);
+  await writeFile(sharedHerdrMarker, "shared infrastructure\n");
+  await writeFile(historyEvidence, '{"status":"completed"}\n');
+  const harness = Bun.spawn(["sh", "-c", "sleep 5"], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+
+  const backend = new FakeExecutionEnvironmentBackend();
+  await backend.ensure(cleanupSpec(worktreeRequest.run_id));
+  const cleanupStore = new RunCleanupStore(fixture.config.dataRoot);
+  const events: string[] = [];
+  const coordinator = new RunCleanupCoordinator(cleanupStore, {
+    assertRunIdle: () => undefined,
+    assertHostIdentity: (value) => {
+      registry.assertIdentity({
+        worktreeId: value.worktreeId,
+        runId: value.runId,
+        bindingId: value.workspaceBindingId,
+        identityHash: value.identityHash,
+      });
+    },
+    requestHostCleanup: (worktreeId) => {
+      registry.requestCleanup(worktreeId);
+    },
+    cleanupHostRepository: async (worktreeId) => {
+      events.push("host");
+      const cleaned = await registry.cleanup(worktreeId);
+      return cleaned.state === "removed"
+        ? { state: "removed" }
+        : {
+            state: "failed",
+            issue: { code: "host_failed", message: "Host cleanup failed." },
+          };
+    },
+    harnessTargets: () => [
+      {
+        lineageId: "physical-lineage-1",
+        harnessKind: "physical-fixture",
+        herdrSession: "shared-herdr",
+        herdrSessionIncarnation: "shared-herdr-incarnation",
+        paneId: "physical-pane-1",
+        terminalId: "physical-terminal-1",
+        agentName: "physical-agent-1",
+        authorityDigest: "sha256:physical-authority",
+        nativeSessionDigest: null,
+      },
+    ],
+    closeHarnessTargets: async (_runId, targets) => {
+      expect(targets.map((target) => target.lineageId)).toEqual([
+        "physical-lineage-1",
+      ]);
+      events.push("harness");
+      harness.kill();
+      await harness.exited;
+      return { state: "retired" };
+    },
+    currentEnvironment: () =>
+      backend.currentEnvironment(worktreeRequest.run_id),
+    cleanupEnvironment: async (ref) => {
+      events.push("environment");
+      const outcome = await cleanupExecutionEnvironment(backend, ref);
+      if (outcome.state === "removed")
+        await rm(environmentRoot, { recursive: true });
+      return outcome;
+    },
+    report: async () => undefined,
+  });
+
+  await coordinator.request(
+    {
+      runId: worktreeRequest.run_id,
+      worktreeId: worktreeRequest.worktree_id,
+      workspaceBindingId: worktreeRequest.workspace_binding_id,
+      identityHash: worktreeRequest.identity_hash,
+    },
+    false,
+  );
+
+  expect(events).toEqual(["harness", "environment", "host"]);
+  expect(await Bun.file(environmentRoot).exists()).toBe(false);
+  expect(await Bun.file(provisioned.canonicalRoot).exists()).toBe(false);
+  expect(await Bun.file(sharedHerdrMarker).text()).toBe(
+    "shared infrastructure\n",
+  );
+  expect(await Bun.file(historyEvidence).text()).toBe(
+    '{"status":"completed"}\n',
+  );
+  expect(await repositorySnapshot(fixture.source)).toEqual(sourceBefore);
+  expect(cleanupStore.get(worktreeRequest.run_id)).toMatchObject({
+    harness: { state: "retired" },
+    executionEnvironment: { state: "removed" },
+    hostRunRepository: { state: "removed" },
+  });
+
+  cleanupStore.close();
+  registry.close();
+});
+
 test("rejects a publication remote that aliases the source Git common directory", async () => {
   const fixture = await setup();
   await command([
@@ -164,6 +279,34 @@ function request(id: string, workspaceId: string, bindingId: string) {
     identity_hash: `identity-${id}`,
   };
 }
+function cleanupSpec(runId: string): EnvironmentSpec {
+  return {
+    workerId: "worktree-test",
+    runId,
+    workspace: {
+      workspaceId: workspace(1),
+      access: "read_write",
+      materialization: {
+        kind: "existing_workspace",
+        sourceIdentity: "physical-proof-source",
+        frozenBase: {
+          kind: "git_commit",
+          value: "0123456789abcdef0123456789abcdef01234567",
+        },
+      },
+    },
+    profile: { id: "physical-proof", digest: "sha256:physical-proof" },
+    resourcePolicy: {
+      id: "physical-proof",
+      digest: "sha256:physical-proof",
+    },
+    networkRequirements: [],
+    credentialGrants: [],
+    controlChannels: [],
+    requiredCapabilities: [],
+  };
+}
+
 function workspace(id: number): string {
   return `10000000-0000-4000-8000-00000000000${id}`;
 }

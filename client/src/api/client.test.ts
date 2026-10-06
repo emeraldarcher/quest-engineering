@@ -343,6 +343,38 @@ test("local session descriptors are unavailable to web clients and marked for Ta
   });
 });
 
+test("requests whole-Run cleanup and decodes independent resource outcomes", async () => {
+  let requestedUrl = "";
+  let requestedBody: unknown;
+  globalThis.fetch = mock(async (url, init) => {
+    requestedUrl = String(url);
+    requestedBody = JSON.parse(String(init?.body));
+    return new Response(
+      JSON.stringify({
+        cleanup: {
+          state: "in_progress",
+          message: "Run cleanup is in progress.",
+          harness: { state: "retired", issue: null },
+          execution_environment: { state: "stopping", issue: null },
+          host_run_repository: { state: "cleanup_requested", issue: null },
+          issue: null,
+        },
+      }),
+    );
+  }) as unknown as typeof fetch;
+  const api = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+
+  expect(await api.cleanupRun("run/one", true)).toMatchObject({
+    state: "in_progress",
+    execution_environment: { state: "stopping" },
+    host_run_repository: { state: "cleanup_requested" },
+  });
+  expect(requestedUrl).toBe(
+    "http://example.test/api/v1/runs/run%2Fone/cleanup",
+  );
+  expect(requestedBody).toEqual({ acknowledge_unmerged: true });
+});
+
 test("maps Product validation envelope into a typed client error", async () => {
   globalThis.fetch = mock(
     async () =>

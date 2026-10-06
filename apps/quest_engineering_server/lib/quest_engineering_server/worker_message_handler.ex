@@ -92,6 +92,11 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          do: {:ok, workspace_response("run_worktree_removed", assignment.worktree_id)}
   end
 
+  def handle(worker_id, generation, %{type: :run_cleanup_state, cleanup: cleanup}) do
+    with {:ok, assignment} <- RunWorkspaceStore.record_cleanup(worker_id, generation, cleanup),
+         do: {:ok, workspace_response("run_cleanup_recorded", assignment.worktree_id)}
+  end
+
   def handle(worker_id, generation, %{type: :run_delivery_inspected, delivery: delivery}) do
     with {:ok, persisted} <- DeliveryStore.inspected(worker_id, generation, delivery) do
       DeliveryCoordinator.wake(persisted.run_id)

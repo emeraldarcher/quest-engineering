@@ -29,6 +29,7 @@ import {
   acceptedPlan,
   canCleanUp,
   canRunAgain,
+  cleanupPresentation,
   currentReviewResult,
   deliveryPresentation,
   diagnosticPresentation,
@@ -79,6 +80,7 @@ let search = "";
 let cleanupDialog: HTMLDialogElement;
 let cleanupCancel: HTMLButtonElement;
 let cleanupTrigger: HTMLButtonElement;
+let cleanupAcknowledgesUnmerged = false;
 let recoveryDialog: HTMLDialogElement;
 let recoveryCancel: HTMLButtonElement;
 let recoveryTrigger: HTMLButtonElement;
@@ -111,6 +113,7 @@ $: selectedMemberSteps = run
   : [];
 $: execution = run ? executionPresentation(run.status) : null;
 $: delivery = run ? deliveryPresentation(run.delivery) : null;
+$: cleanup = run ? cleanupPresentation(run.cleanup.state) : null;
 $: workspace = run
   ? workspacePresentation(run.execution_environment.state)
   : null;
@@ -484,12 +487,9 @@ async function reviewOnGitHub() {
 
 function requestCleanup(event: MouseEvent) {
   if (!run || !canCleanUp(run) || busy) return;
-  if (run.delivery?.state === "closed_unmerged") {
-    cleanupTrigger = event.currentTarget as HTMLButtonElement;
-    openCleanupConfirmation();
-    return;
-  }
-  void performCleanup(false);
+  cleanupTrigger = event.currentTarget as HTMLButtonElement;
+  cleanupAcknowledgesUnmerged = run.delivery?.state === "closed_unmerged";
+  openCleanupConfirmation();
 }
 
 function openCleanupConfirmation() {
@@ -504,7 +504,7 @@ function closeCleanupConfirmation() {
 
 async function confirmCleanup() {
   cleanupDialog.close();
-  await performCleanup(true);
+  await performCleanup(cleanupAcknowledgesUnmerged);
   cleanupTrigger?.focus();
 }
 
@@ -512,7 +512,7 @@ async function performCleanup(acknowledgeUnmerged: boolean) {
   if (!run) return;
   busy = true;
   try {
-    await store.cleanupWorktree(run.id, acknowledgeUnmerged);
+    await store.cleanupRun(run.id, acknowledgeUnmerged);
   } finally {
     busy = false;
   }
@@ -674,7 +674,13 @@ function attemptOutput(attempt: RunAttempt): string {
           {#if $errorStore}<div class="friendly-error" role="alert"><span aria-hidden="true">!</span><p><strong>That operation couldn't be completed.</strong> {$errorStore.message}</p></div>{/if}
           {#if tab === "overview"}
             <section class="overview" aria-label="Run overview">
-              {#if run.delivery?.issue}
+              {#if run.cleanup.issue}
+                {@const diagnostic = diagnosticPresentation(run.cleanup.issue)}
+                <article class="attention-card" role="status">
+                  <span class="attention-icon" aria-hidden="true">!</span>
+                  <div><span class="eyebrow">Run cleanup · {cleanup?.label}</span><h3>{diagnostic.title}</h3><p>{diagnostic.description}</p></div>
+                </article>
+              {:else if run.delivery?.issue}
                 {@const diagnostic = diagnosticPresentation(run.delivery.issue)}
                 <article class="attention-card" role="status">
                   <span class="attention-icon" aria-hidden="true">!</span>
@@ -930,13 +936,14 @@ function attemptOutput(attempt: RunAttempt): string {
               <div class="delivery-grid">
                 <section><span class="eyebrow">Repository evidence</span><h4>{run.delivery?.changes ? `${run.delivery.changes.files_changed} files changed` : "Not available yet"}</h4>{#if run.delivery?.changes}<p><strong>+{run.delivery.changes.additions}</strong> additions <span aria-hidden="true">·</span> <strong>−{run.delivery.changes.deletions}</strong> deletions</p>{/if}<small>Reported by Delivery and the assigned Worker.</small></section>
                 <section><span class="eyebrow">Pull Request</span>{#if run.delivery?.review}<h4>GitHub Pull Request #{run.delivery.review.number}</h4><p>{humanize(run.delivery.review.state)}</p>{:else}<h4>No Pull Request</h4><p>{run.delivery?.state === "preparing_review" ? "Preparing review" : "Delivery has not produced a Pull Request."}</p>{/if}</section>
-                <section><span class="eyebrow">Run workspace</span><h4>{workspace.label}</h4><p>{workspace.description}</p></section>
+                <section><span class="eyebrow">Run resource cleanup</span><h4>{cleanup?.label}</h4><p>{cleanup?.description}</p></section>
+                <section><span class="eyebrow">Host Run repository</span><h4>{workspace.label}</h4><p>{workspace.description}</p></section>
               </div>
               <div class="delivery-actions">
                 {#if run.delivery?.can_retry}<button class="primary" disabled={busy} on:click={retryPublishing}>Retry Publishing</button>{/if}
                 {#if run.delivery?.review}<button class="secondary" on:click={reviewOnGitHub}>Open Pull Request</button>{/if}
                 {#if canRunAgain(run, quest)}<button class="primary" disabled={busy} on:click={runAgain}>Run Again</button>{/if}
-                {#if canCleanUp(run)}<button bind:this={cleanupTrigger} class="secondary" disabled={busy} on:click={requestCleanup}>Clean Up Workspace</button>{/if}
+                {#if canCleanUp(run)}<button bind:this={cleanupTrigger} class="secondary" disabled={busy} on:click={requestCleanup}>{run.cleanup.state === "needs_attention" ? "Retry Run Cleanup" : "Clean Up Run Resources"}</button>{/if}
               </div>
             </section>
           {/if}
@@ -953,10 +960,14 @@ function attemptOutput(attempt: RunAttempt): string {
               {#if run.delivery}<div><span>Delivery base revision</span><code>{shortRevision(run.delivery.revisions.base)}</code></div><div><span>Delivery head revision</span><code>{shortRevision(run.delivery.revisions.head)}</code></div>{/if}
               <div><span>Run branch</span><code>{run.execution_environment.branch ?? "Unavailable"}</code></div>
               <div><span>Dirty source changes excluded</span><code>{run.execution_environment.source_dirty_changes_excluded === null ? "Unavailable" : run.execution_environment.source_dirty_changes_excluded ? "Yes" : "No"}</code></div>
+              <div><span>Harness cleanup</span><code>{humanize(run.cleanup.harness.state)}</code></div>
+              <div><span>Execution environment cleanup</span><code>{humanize(run.cleanup.execution_environment.state)}</code></div>
+              <div><span>Host Run repository cleanup</span><code>{humanize(run.cleanup.host_run_repository.state)}</code></div>
               {#each sessionSteps as step}{#if step.session}<div><span>{step.session.harness.display_name} QE lineage</span><code>{step.session.id}</code></div>{#if step.session.native_identity.conversation_id}<div><span>Native conversation</span><code>{step.session.native_identity.conversation_id}</code></div>{/if}{#if step.session.native_identity.terminal_id}<div><span>Terminal/process incarnation</span><code>{step.session.native_identity.terminal_id}</code></div>{/if}{#if step.attempt?.execution}<div><span>Resolved QE capabilities</span><code>{step.attempt.execution.resolved_tool_profile.tools.join(", ") || "No capabilities"}</code></div>{/if}{/if}{/each}
             </div>
             {#if $errorStore}<div class="technical-code"><span>Last operation code</span><code>{$errorStore.code}</code></div>{/if}
             {#if run.delivery?.issue}<div class="technical-code"><span>Delivery issue code</span><code>{run.delivery.issue.code}</code></div>{/if}
+            {#if run.cleanup.issue}<div class="technical-code"><span>Cleanup issue code</span><code>{run.cleanup.issue.code}</code></div>{/if}
             {#if run.execution_environment.issue}<div class="technical-code"><span>Workspace issue code</span><code>{run.execution_environment.issue.code}</code></div>{/if}
             {#if run.steps.some((step) => step.attempt)}
               <h4>Current Step attempts</h4>
@@ -1000,9 +1011,9 @@ function attemptOutput(attempt: RunAttempt): string {
   <dialog bind:this={cleanupDialog} aria-labelledby="cleanup-title" on:cancel|preventDefault={closeCleanupConfirmation}>
     <div class="dialog-card">
       <span class="dialog-icon" aria-hidden="true">!</span>
-      <h2 id="cleanup-title">Remove the retained workspace?</h2>
-      <p>This Pull Request closed without merge. Acknowledge that outcome before requesting removal of the isolated Run workspace.</p>
-      <div class="action-row"><button bind:this={cleanupCancel} class="secondary" on:click={closeCleanupConfirmation}>Keep Workspace</button><button class="destructive" disabled={busy} on:click={confirmCleanup}>Acknowledge and Clean Up</button></div>
+      <h2 id="cleanup-title">Remove disposable Run resources?</h2>
+      <p>This retires the Run session, stops and removes its execution environment, then removes its host repository. Product history and Delivery evidence remain.{cleanupAcknowledgesUnmerged ? " This also acknowledges that the Pull Request closed without merge." : ""}</p>
+      <div class="action-row"><button bind:this={cleanupCancel} class="secondary" on:click={closeCleanupConfirmation}>Keep Resources</button><button class="destructive" disabled={busy} on:click={confirmCleanup}>Acknowledge and Clean Up</button></div>
     </div>
   </dialog>
 </aside>

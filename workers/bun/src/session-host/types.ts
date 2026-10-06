@@ -243,7 +243,7 @@ export interface TerminalSessionBackend {
   submitInteractivePrompt?(
     authority: InteractivePromptAuthority,
   ): Promise<void>;
-  /** Close exactly one owned pane, terminating its child process without terminal input. */
+  /** Idempotently close exactly one owned pane, using authoritative absence after response loss. */
   closePane(paneId: string): Promise<void>;
   sendKeys(target: string, keys: string[]): Promise<void>;
   attachment(ref: HostedExecutionRef): TerminalAttachmentDescriptor;

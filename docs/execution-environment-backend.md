@@ -54,6 +54,7 @@ interface ExecutionEnvironmentBackend {
   readonly kind: string;
 
   readiness(): Promise<EnvironmentReadiness>;
+  currentEnvironment(runId: string): Promise<EnvironmentRef | null>;
   ensure(spec: EnvironmentSpec): Promise<EnvironmentLease>;
   recover(ref: EnvironmentRef, spec: EnvironmentSpec): Promise<EnvironmentLease>;
   inspect(ref: EnvironmentRef): Promise<EnvironmentInspection>;
@@ -63,7 +64,13 @@ interface ExecutionEnvironmentBackend {
 }
 ```
 
-`ensure` is Run-scoped and exact-spec idempotent. Reusing a Run environment with any changed spec field fails closed. `recover` accepts only the current exact ref, exact incarnation, and exact spec. `stop` durably records intent, crosses a provider-specific destructive boundary at most once for that stop cycle, and returns a provider-neutral projection with independent `intent`, `invocation`, `observation`, and aggregate `state` fields. `reconcileStop` is identity-fenced and read-only: it may inspect authoritative provider state but must never replay the destructive request. A pending stop immediately fences the lease. A confirmed stop retains identity; explicit SBX `recover` or `ensure` starts and re-verifies that same incarnation and opens a new lifecycle cycle. `remove` retires the physical binding, but refuses unresolved stop cycles because removal would discard reconciliation identity. A later `ensure` creates a new physical identity/incarnation and fences every old ref and lease. Removed refs are stale for every operation except idempotent repeated removal.
+`currentEnvironment` returns the exact current durable Run-owned incarnation, or `null` only when backend ownership authority proves there is none. `ensure` is Run-scoped and exact-spec idempotent. Reusing a Run environment with any changed spec field fails closed. `recover` accepts only the current exact ref, exact incarnation, and exact spec. `stop` durably records intent, crosses a provider-specific destructive boundary at most once for that stop cycle, and returns a provider-neutral projection with independent `intent`, `invocation`, `observation`, and aggregate `state` fields. `reconcileStop` is identity-fenced and read-only: it may inspect authoritative provider state but must never replay the destructive request. A pending stop immediately fences the lease. A confirmed stop retains identity; explicit SBX `recover` or `ensure` starts and re-verifies that same incarnation and opens a new lifecycle cycle. `remove` targets only that stopped incarnation and resolves only after authoritative absence evidence; it refuses unresolved stop cycles because removal would discard reconciliation identity. A later `ensure` creates a new physical identity/incarnation and fences every old ref and lease. Removed refs are stale for every operation except idempotent repeated removal.
+
+## Explicit whole-Run teardown
+
+Product cleanup freezes the Run worktree identity, all known Run-owned PhysicalLineage, pane, agent, native-session, Herdr-incarnation, and control-authority identities, and the exact current `EnvironmentRef` before physical teardown. The Worker retires exact harness control and closes Run-owned panes without stopping the shared Herdr session/server. Only after harness retirement does the backend-neutral coordinator call `stop` once or `reconcileStop` read-only when durable intent already exists. It removes the environment only after authoritative stopped/absent evidence, then removes the isolated host Run repository. A stale or replacement incarnation fails closed and is never followed.
+
+The three outcomes are durable and independent: harness `retained | retiring | retired | unavailable`, execution environment `cleanup_requested | stopping | stopped | removed | uncertain | failed`, and host repository `retained | cleanup_requested | removed | failed`. A Worker restart resumes these projections from SQLite. Environment uncertainty or failure blocks host-repository removal; harness unavailability blocks both environment and host removal. Runtime status, semantic artifacts and Change Sets, Delivery/export/PR evidence, Quest history, and append-only session evidence are retained.
 
 The SBX implementation persists restart-safe ownership before physical creation and verifies durable ownership, native UUID/name/agent inventory, and a guest ownership marker before adoption. A missing or conflicting physical environment is never silently replaced.
 

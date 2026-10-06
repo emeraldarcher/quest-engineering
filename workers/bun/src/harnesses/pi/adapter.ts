@@ -746,10 +746,9 @@ export class PiHarness implements AgentHarness {
 
   async close(lineage: HarnessLineage): Promise<void> {
     await this.sbxExecutions.get(lineage.lineageId)?.stopRelay();
+    if (lineage.paneId) await this.host.closePane(lineage.paneId);
     this.sbxExecutions.delete(lineage.lineageId);
     if (lineage.paneId) this.sbxExecutionsByPane.delete(lineage.paneId);
-    if (!lineage.paneId) return;
-    await this.host.sendKeys(lineage.paneId, ["ctrl+c", "ctrl+c"]);
   }
 
   disconnect(): void {

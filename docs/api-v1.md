@@ -48,7 +48,7 @@ GET  /runs/:id/changes
 POST /runs/:id/execution/authorize-prompt
 POST /runs/:id/attempts/:attempt_id/cancel
 POST /runs/:id/delivery/retry
-POST /runs/:id/worktree/cleanup
+POST /runs/:id/cleanup
 GET  /runs/:run_id/artifacts/:artifact_id
 ```
 
@@ -60,9 +60,9 @@ Operator eligibility is server-authoritative. A prepared pre-prompt Step recover
 
 Work Yard requires lightweight confirmation for both commands. Authorization confirmation makes the subscription-backed inference boundary explicit without referring to API credits. Cancellation confirmation states that the Attempt ends as cancelled while history is preserved. Mutation responses and subsequent realtime refetches remain authoritative; the client does not fabricate prompt, working, or cancelled lifecycle states.
 
-Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v10 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
+Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v11 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
 
-`Retry Publishing` resumes the same Delivery and runs no model work. Cleanup accepts `{ "acknowledge_unmerged": true }` when applicable, removes only a clean managed worktree non-forcibly, and retains branches/history.
+`Retry Publishing` resumes the same Delivery and runs no model work. Whole-Run cleanup accepts `{ "acknowledge_unmerged": true }` when applicable and is available only after terminal failed/cancelled execution or a completed Run with safe Delivery evidence. It retires Run-owned harness panes and control authority, converges and removes the frozen execution-environment incarnation, then removes only the isolated host Run repository. Shared Herdr infrastructure and Product history remain. The response and Run detail project `cleanup.state` plus independent `harness`, `execution_environment`, and `host_run_repository` outcomes; unresolved stop observation or any earlier resource failure never claims later removal.
 
 The central control plane reconciles open PRs every ten seconds. Before completion it verifies repository, base branch, head repository, head branch, and exact published head OID. Fork/cross-repository PR publishing is not supported in v0.13.
 

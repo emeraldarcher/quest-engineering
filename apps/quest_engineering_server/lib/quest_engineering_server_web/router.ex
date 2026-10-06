@@ -68,7 +68,7 @@ defmodule QuestEngineering.ServerWeb.Router do
     post "/runs/:id/attempts/:attempt_id/cancel", RunController, :cancel_execution_attempt
     post "/runs/:id/execution/mark-failed", RunController, :mark_execution_failed
     post "/runs/:id/delivery/retry", RunController, :retry_delivery
-    post "/runs/:id/worktree/cleanup", RunController, :cleanup
+    post "/runs/:id/cleanup", RunController, :cleanup
 
     post "/runs/:id/attempts/:attempt_id/sessions/:session_id/attachment",
          RunController,

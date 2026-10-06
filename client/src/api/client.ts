@@ -20,6 +20,7 @@ import {
   type QuestPreview,
   type Reasoning,
   type ReasoningCapability,
+  type RunCleanupProjection,
   type RunProjection,
   type RunSummary,
   type Squad,
@@ -222,11 +223,11 @@ export class ApiClient {
       {},
       (value) => decodeDelivery(asRecord(value, "delivery").delivery),
     );
-  cleanupWorktree = (runId: string, acknowledgeUnmerged = false) =>
+  cleanupRun = (runId: string, acknowledgeUnmerged = false) =>
     this.post(
-      `/runs/${encodeURIComponent(runId)}/worktree/cleanup`,
+      `/runs/${encodeURIComponent(runId)}/cleanup`,
       { acknowledge_unmerged: acknowledgeUnmerged },
-      (value) => asRecord(value, "execution environment").execution_environment,
+      (value) => decodeCleanup(asRecord(value, "run cleanup").cleanup),
     );
   getSessionAttachment = (
     runId: string,
@@ -845,6 +846,66 @@ function decodeSessionAttachment(
   };
 }
 
+function decodeCleanup(value: unknown): RunCleanupProjection {
+  const cleanup = asRecord(value, "run cleanup");
+  const harness = asRecord(cleanup.harness, "harness cleanup");
+  const environment = asRecord(
+    cleanup.execution_environment,
+    "execution environment cleanup",
+  );
+  const repository = asRecord(
+    cleanup.host_run_repository,
+    "host Run repository cleanup",
+  );
+  return {
+    state: asString(
+      cleanup.state,
+      "run cleanup",
+    ) as RunCleanupProjection["state"],
+    message: asString(cleanup.message, "run cleanup"),
+    harness: {
+      state: asString(
+        harness.state,
+        "harness cleanup",
+      ) as RunCleanupProjection["harness"]["state"],
+      issue: decodeCleanupIssue(harness.issue, "harness cleanup"),
+    },
+    execution_environment: {
+      state: asString(
+        environment.state,
+        "execution environment cleanup",
+      ) as RunCleanupProjection["execution_environment"]["state"],
+      issue: decodeCleanupIssue(
+        environment.issue,
+        "execution environment cleanup",
+      ),
+    },
+    host_run_repository: {
+      state: asString(
+        repository.state,
+        "host Run repository cleanup",
+      ) as RunCleanupProjection["host_run_repository"]["state"],
+      issue: decodeCleanupIssue(
+        repository.issue,
+        "host Run repository cleanup",
+      ),
+    },
+    issue: decodeCleanupIssue(cleanup.issue, "run cleanup"),
+  };
+}
+
+function decodeCleanupIssue(
+  value: unknown,
+  label: string,
+): { code: string; message: string } | null {
+  if (value == null) return null;
+  const issue = asRecord(value, `${label} issue`);
+  return {
+    code: asString(issue.code, `${label} issue`),
+    message: asString(issue.message, `${label} issue`),
+  };
+}
+
 function decodeRunSummary(value: unknown): RunSummary {
   const x = asRecord(value, "run summary");
   return {
@@ -897,6 +958,7 @@ function decodeRun(value: unknown): RunProjection {
       objective: asString(quest.objective, "quest"),
     },
     delivery: x.delivery == null ? null : decodeDelivery(x.delivery),
+    cleanup: decodeCleanup(x.cleanup),
     execution_environment: {
       workspace: {
         id: asString(environmentWorkspace.id, "environment Workspace"),

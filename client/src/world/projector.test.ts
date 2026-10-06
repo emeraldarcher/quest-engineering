@@ -16,6 +16,14 @@ const base = (): RunProjection => ({
   launch: { id: "launch-1" },
   quest: { id: "quest", title: "Quest", objective: "Work" },
   delivery: null,
+  cleanup: {
+    state: "not_requested",
+    message: "Resources retained.",
+    harness: { state: "retained", issue: null },
+    execution_environment: { state: "retained", issue: null },
+    host_run_repository: { state: "retained", issue: null },
+    issue: null,
+  },
   execution_environment: {
     workspace: { id: "workspace", key: "workspace", name: "Workspace" },
     state: "ready",

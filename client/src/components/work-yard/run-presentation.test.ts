@@ -25,6 +25,14 @@ function run(): RunProjection {
     revision: 1,
     launch: { id: "launch-current" },
     quest: { id: "quest-1", title: "Quest", objective: "Work" },
+    cleanup: {
+      state: "not_requested",
+      message: "Resources retained.",
+      harness: { state: "retained", issue: null },
+      execution_environment: { state: "retained", issue: null },
+      host_run_repository: { state: "retained", issue: null },
+      issue: null,
+    },
     execution_environment: {
       workspace: { id: "workspace", key: "workspace", name: "Project" },
       state: "retained",
@@ -128,15 +136,24 @@ describe("Work Yard operational presentation", () => {
     expect(canRunAgain(run(), quest("run-current", "run_again"))).toBe(true);
   });
 
-  test("cleanup uses only retained and known-positive Delivery states", () => {
+  test("cleanup requires retained resources and terminal Product policy", () => {
     const value = run();
     expect(canCleanUp(value)).toBe(true);
+    value.cleanup.state = "in_progress";
+    expect(canCleanUp(value)).toBe(false);
+    value.cleanup.state = "needs_attention";
+    value.execution_environment.state = "attention_required";
+    expect(canCleanUp(value)).toBe(true);
+    value.cleanup.state = "not_requested";
     value.execution_environment.state = "ready";
     expect(canCleanUp(value)).toBe(false);
     value.execution_environment.state = "retained";
     if (!value.delivery) throw new Error("Expected Delivery");
     value.delivery.state = "attention_required";
     expect(canCleanUp(value)).toBe(false);
+    value.status = "failed";
+    value.delivery = null;
+    expect(canCleanUp(value)).toBe(true);
   });
 
   test("merged Delivery proves Quest completion without a loaded current Quest", () => {

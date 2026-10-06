@@ -207,6 +207,21 @@ export class SbxExecutionEnvironmentBackend
     return inspectSbxReadiness(this.client, this.versionPolicy);
   }
 
+  async currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
+    const record = this.store.current(this.kind, this.options.workerId, runId);
+    if (!record) return null;
+    if (
+      record.profileId !== this.profile.id ||
+      record.profileDigest !== this.profile.digest
+    )
+      throw new EnvironmentBackendError(
+        "environment_spec_mismatch",
+        "Current Run environment belongs to another immutable profile.",
+        "inspect",
+      );
+    return refFor(record);
+  }
+
   async ensure(spec: EnvironmentSpec): Promise<EnvironmentLease> {
     this.validateSpec(spec, "ensure");
     await verifySbxProfileAssets(this.executionProfile);

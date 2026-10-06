@@ -857,9 +857,14 @@ test("Delivery actions use authoritative eligibility", async () => {
   await fireEvent.click(screen.getByRole("button", { name: "Delivery" }));
 
   expect(screen.getByRole("button", { name: "Run Again" })).toBeTruthy();
-  expect(
-    screen.getByRole("button", { name: "Clean Up Workspace" }),
-  ).toBeTruthy();
+  const cleanup = screen.getByRole("button", {
+    name: "Clean Up Run Resources",
+  });
+  expect(cleanup).toBeTruthy();
+  await fireEvent.click(cleanup);
+  expect(screen.getByRole("dialog").textContent).toContain(
+    "stops and removes its execution environment",
+  );
   expect(screen.queryByRole("button", { name: "Retry Publishing" })).toBeNull();
 });
 
@@ -937,10 +942,13 @@ test("closed-unmerged cleanup requires explicit acknowledgment", async () => {
   });
   await fireEvent.click(screen.getByRole("button", { name: "Delivery" }));
   await fireEvent.click(
-    screen.getByRole("button", { name: "Clean Up Workspace" }),
+    screen.getByRole("button", { name: "Clean Up Run Resources" }),
   );
 
   expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.getByRole("dialog").textContent).toContain(
+    "acknowledges that the Pull Request closed without merge",
+  );
   expect(
     screen.getByRole("button", { name: "Acknowledge and Clean Up" }),
   ).toBeTruthy();

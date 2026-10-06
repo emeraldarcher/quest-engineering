@@ -55,6 +55,28 @@ export abstract class TrackedExecutionEnvironmentBackend
 
   abstract readiness(): ReturnType<ExecutionEnvironmentBackend["readiness"]>;
 
+  async currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
+    await this.beforeOperation("inspect");
+    const matches = [...this.currentByOwner.entries()].flatMap(
+      ([owner, key]) => {
+        const binding = this.records.get(key);
+        return binding &&
+          binding.ref.runId === runId &&
+          binding.state !== "removed" &&
+          owner === ownerKey(binding.ref.workerId, binding.ref.runId)
+          ? [binding]
+          : [];
+      },
+    );
+    if (matches.length > 1)
+      throw new EnvironmentBackendError(
+        "environment_identity_mismatch",
+        `Run ${runId} has conflicting current environment ownership.`,
+        "inspect",
+      );
+    return matches[0] ? copyRef(matches[0].ref) : null;
+  }
+
   async ensure(spec: EnvironmentSpec): Promise<EnvironmentLease> {
     await this.beforeOperation("ensure");
     const snapshot = copySpec(spec);

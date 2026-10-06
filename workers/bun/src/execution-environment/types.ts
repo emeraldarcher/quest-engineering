@@ -289,6 +289,11 @@ export interface EnvironmentLease {
 export interface ExecutionEnvironmentBackend {
   readonly kind: string;
   readiness(): Promise<EnvironmentReadiness>;
+  /**
+   * Return the exact current durable Run-owned incarnation, or null only when
+   * the backend's ownership authority proves that the Run has none.
+   */
+  currentEnvironment(runId: string): Promise<EnvironmentRef | null>;
   ensure(spec: EnvironmentSpec): Promise<EnvironmentLease>;
   recover(
     ref: EnvironmentRef,
@@ -299,6 +304,7 @@ export interface ExecutionEnvironmentBackend {
   stop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
   /** Reconcile the exact incarnation using read-only provider operations only. */
   reconcileStop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
+  /** Remove only this stopped incarnation; resolve only after authoritative absence evidence. */
   remove(ref: EnvironmentRef): Promise<void>;
 }
 

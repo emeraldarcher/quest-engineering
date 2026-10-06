@@ -511,6 +511,35 @@ export interface DeliveryProjection {
   issue: { code: string; message: string } | null;
   can_retry: boolean;
 }
+export interface RunCleanupProjection {
+  state:
+    | "not_requested"
+    | "requested"
+    | "in_progress"
+    | "complete"
+    | "needs_attention";
+  message: string;
+  harness: {
+    state: "retained" | "retiring" | "retired" | "unavailable";
+    issue: { code: string; message: string } | null;
+  };
+  execution_environment: {
+    state:
+      | "retained"
+      | "cleanup_requested"
+      | "stopping"
+      | "stopped"
+      | "removed"
+      | "uncertain"
+      | "failed";
+    issue: { code: string; message: string } | null;
+  };
+  host_run_repository: {
+    state: "retained" | "cleanup_requested" | "removed" | "failed";
+    issue: { code: string; message: string } | null;
+  };
+  issue: { code: string; message: string } | null;
+}
 export interface RunProjection {
   id: string;
   status: StepState | "completed" | "failed";
@@ -534,6 +563,7 @@ export interface RunProjection {
     source_dirty_changes_excluded: boolean | null;
     issue: { code: string; message: string } | null;
   };
+  cleanup: RunCleanupProjection;
   delivery: DeliveryProjection | null;
   squad: { id: string; key: string; name: string; members: SnapshotMember[] };
   steps: RunStep[];
