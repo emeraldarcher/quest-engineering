@@ -7,6 +7,7 @@ import type {
   Quest,
   QuestLifecycleState,
   RunAttempt,
+  RunCleanupProjection,
   RunProjection,
   RunStep,
   RunSummary,
@@ -467,6 +468,17 @@ function densitySteps(): RunStep[] {
   ];
 }
 
+function retainedCleanup(): RunCleanupProjection {
+  return {
+    state: "not_requested",
+    message: "Disposable Run resources are retained.",
+    harness: { state: "retained", issue: null },
+    execution_environment: { state: "retained", issue: null },
+    host_run_repository: { state: "retained", issue: null },
+    issue: null,
+  };
+}
+
 function counts(steps: RunStep[]): RunProjection["step_counts"] {
   const result = {
     pending: 0,
@@ -502,6 +514,7 @@ function run(
       title: "Living Town Overhaul",
       objective: "Make the town dense, truthful, and readable.",
     },
+    cleanup: retainedCleanup(),
     execution_environment: {
       workspace: { id: workspace.id, key: workspace.key, name: workspace.name },
       state: terminal ? "retained" : "ready",
@@ -880,6 +893,7 @@ function createWorkYardFixture(name: FixtureName): ClientFixture {
       title: "Mini Test Run",
       objective: "Add a small documented greeting and verify the result.",
     },
+    cleanup: retainedCleanup(),
     execution_environment: {
       workspace: {
         id: "workspace-qe-test",
@@ -1229,6 +1243,7 @@ function createQuestBoardFixture(name: FixtureName): ClientFixture {
       objective:
         "Validate login requests and return clear errors for invalid credentials.",
     },
+    cleanup: retainedCleanup(),
     execution_environment: {
       workspace: {
         id: selectedProject.id,

@@ -19,6 +19,14 @@ test("decodes projected occurrence and nested attempt history", async () => {
             revision: 3,
             launch: { id: "launch-1" },
             quest: { id: "quest-1", title: "Quest", objective: "Work" },
+            cleanup: {
+              state: "not_requested",
+              message: "Disposable Run resources are retained.",
+              harness: { state: "retained", issue: null },
+              execution_environment: { state: "retained", issue: null },
+              host_run_repository: { state: "retained", issue: null },
+              issue: null,
+            },
             execution_environment: {
               workspace: { id: "workspace-1", key: "project", name: "Project" },
               state: "ready",

@@ -1,6 +1,6 @@
 # Quest Engineering Bun Worker v0.12
 
-The Bun Worker is the sole filesystem authority for Worker Protocol v10. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
+The Bun Worker is the sole filesystem authority for Worker Protocol v11. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
 
 ## Required configuration
 
@@ -70,6 +70,12 @@ Before any Action, including `workspace_access: none`:
 The configured source repository is read authority, never staging storage. Provisioning, replay, injected failure, and cleanup must leave its `HEAD`, symbolic `HEAD`, all refs, packed refs, index, status, config, hooks, and working files unchanged. Local-only, unpushed base commits remain supported because the OID is copied from the authorized local object database. A publication remote is copied only when its canonical identity differs from the source. Legacy records whose Git common directory points at the source are fenced as `run_worktree_legacy_source_linked`; cleanup recursively removes only the isolated Run repository.
 
 Dirty source changes are allowed but excluded and reported. Missing, corrupt, branch-switched, or source-linked Run repositories are never silently repaired, relocated, or recreated. Terminal Run repositories are retained. There is no automatic GC.
+
+## Explicit whole-Run cleanup
+
+`cleanup_run_resources` freezes the exact Run worktree identity, all known Run-owned PhysicalLineage, pane, agent, native-session, Herdr-incarnation, and control-authority identities, and the current `EnvironmentRef`/incarnation in `run-cleanups.sqlite` before physical teardown. The Worker first invalidates Run-owned control authority and closes each exact Pi or Antigravity pane; the shared Worker-owned Herdr session/server remains running. It then uses the generic `ExecutionEnvironmentBackend` contract to record one destructive stop intent, reconcile only with read-only observations after that boundary, remove only after authoritative stopped/absent evidence, and finally remove the host Run repository. A replacement environment incarnation is never followed or touched.
+
+Harness, execution-environment, and host-repository outcomes are persisted and reported independently. Worker restart resumes pending stop observation without replaying stop, and repeated commands are idempotent. Harness unavailability or unresolved environment identity blocks all later removal; environment uncertainty/failure blocks host-repository removal. Cleanup never rewrites Runtime success/failure/cancellation, Change Sets, Delivery/export/PR evidence, Quest history, or append-only session evidence.
 
 ## Filesystem access
 

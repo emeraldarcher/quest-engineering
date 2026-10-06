@@ -87,6 +87,8 @@ defmodule QuestEngineering.Server.Persistence.RunWorkspaceAssignment do
     field :retained_at, :utc_datetime_usec
     field :retention_confirmed_at, :utc_datetime_usec
     field :cleanup_requested_at, :utc_datetime_usec
+    field :cleanup_resources, :map
+    field :cleanup_updated_at, :utc_datetime_usec
     field :removed_at, :utc_datetime_usec
     timestamps(type: :utc_datetime_usec)
   end
@@ -119,6 +121,8 @@ defmodule QuestEngineering.Server.Persistence.RunWorkspaceAssignment do
       :retained_at,
       :retention_confirmed_at,
       :cleanup_requested_at,
+      :cleanup_resources,
+      :cleanup_updated_at,
       :removed_at
     ])
     |> validate_required([

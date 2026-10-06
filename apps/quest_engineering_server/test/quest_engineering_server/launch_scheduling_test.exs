@@ -1160,7 +1160,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 10,
+                      "protocol_version" => 11,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -1304,6 +1304,13 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert step.attempt.cancellation.request_id == request_id
     assert step.attempt.outputs == []
     assert projection.step_counts["cancelled"] == 1
+
+    assert {:ok, %{state: "cleanup_requested"}} =
+             RunWorkspaceStore.request_cleanup(launched.run_id)
+
+    assert {:ok, cleanup_projection} = RunProjection.get(launched.run_id)
+    assert cleanup_projection.status == "cancelled"
+    assert cleanup_projection.cleanup.state == "requested"
   end
 
   test "authorization that commits before cancellation remains historical while cancellation wins terminal authority",
@@ -2352,11 +2359,126 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
       })
     )
 
-    assert {:ok, %{state: "cleanup_requested"}} =
+    assert {:ok, before_cleanup} = RunProjection.get(launched.run_id)
+
+    assert {:ok, %{state: "cleanup_requested", cleanup_resources: resources}} =
              RunWorkspaceStore.request_cleanup(launched.run_id)
 
-    assert {:ok, %{state: "cleanup_requested"}} =
+    assert resources == %{
+             "harness" => %{"state" => "retiring"},
+             "execution_environment" => %{"state" => "cleanup_requested"},
+             "host_run_repository" => %{"state" => "cleanup_requested"}
+           }
+
+    assert {:ok, %{state: "cleanup_requested", cleanup_resources: ^resources}} =
              RunWorkspaceStore.request_cleanup(launched.run_id)
+
+    assert {:ok, projection} = RunProjection.get(launched.run_id)
+    assert projection.status == before_cleanup.status
+    assert projection.cleanup.state == "requested"
+    assert projection.delivery.state == "no_changes"
+  end
+
+  test "failed retained Runs may be cleaned while active Runs remain protected" do
+    failed_fixture = product_fixture()
+    assert {:ok, failed} = LaunchQuest.launch(failed_fixture.quest.id)
+
+    Repo.get!(RuntimeRun, failed.run_id)
+    |> Changeset.change(status: "failed")
+    |> Repo.update!()
+
+    Repo.get!(RunWorkspaceAssignment, failed.run_id)
+    |> Changeset.change(state: "retained", retained_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    assert {:ok, %{state: "cleanup_requested"}} =
+             RunWorkspaceStore.request_cleanup(failed.run_id)
+
+    [active_quest] = sibling_quests(failed_fixture.quest, 1)
+    assert {:ok, active} = LaunchQuest.launch(active_quest.id)
+
+    Repo.get!(RunWorkspaceAssignment, active.run_id)
+    |> Changeset.change(state: "retained", retained_at: DateTime.utc_now())
+    |> Repo.update!()
+
+    assert {:error, :cleanup_not_safe} =
+             RunWorkspaceStore.request_cleanup(active.run_id)
+  end
+
+  test "cleanup resource outcomes are generation fenced, independently projected, and preserve Product history",
+       context do
+    worker = register_worker("worker-run-cleanup", context.workspace_root)
+    fixture = product_fixture()
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+    complete(worker, dispatch)
+
+    assert Repo.get!(RunWorkspaceAssignment, launched.run_id).state == "retained"
+    delivery = Repo.get_by!(RunDelivery, run_id: launched.run_id)
+    delivery = Repo.update!(Changeset.change(delivery, state: "no_changes"))
+    assert {:ok, runtime_before_cleanup} = RuntimeStore.fetch_run(launched.run_id)
+    assert {:ok, before_cleanup} = RunProjection.get(launched.run_id)
+    assert before_cleanup.status == "completed"
+    assert {:ok, cleanup_assignment} = RunWorkspaceStore.request_cleanup(launched.run_id)
+
+    identity = %{
+      worktree_id: cleanup_assignment.worktree_id,
+      run_id: launched.run_id,
+      workspace_binding_id: cleanup_assignment.workspace_binding_id,
+      identity_hash: cleanup_assignment.identity_hash
+    }
+
+    assert {:error, :stale_generation} =
+             RunWorkspaceStore.record_cleanup(
+               worker.id,
+               worker.connection_generation + 1,
+               Map.merge(identity, %{
+                 resources: cleanup_resources("retired", "stopping", "cleanup_requested")
+               })
+             )
+
+    assert {:ok, _assignment} =
+             RunWorkspaceStore.record_cleanup(
+               worker.id,
+               worker.connection_generation,
+               Map.merge(identity, %{
+                 resources: cleanup_resources("retired", "stopping", "cleanup_requested")
+               })
+             )
+
+    assert {:ok, in_progress} = RunProjection.get(launched.run_id)
+    assert in_progress.status == before_cleanup.status
+    assert in_progress.cleanup.state == "in_progress"
+    assert in_progress.cleanup.execution_environment.state == "stopping"
+    assert in_progress.execution_environment.state == "cleanup_requested"
+
+    assert {:ok, _assignment} =
+             RunWorkspaceStore.record_cleanup(
+               worker.id,
+               worker.connection_generation,
+               Map.merge(identity, %{
+                 resources: cleanup_resources("retired", "removed", "removed")
+               })
+             )
+
+    assert {:ok, complete} = RunProjection.get(launched.run_id)
+    assert complete.status == before_cleanup.status
+    assert complete.cleanup.state == "complete"
+    assert complete.execution_environment.state == "removed"
+
+    assert {:error, :stale_cleanup_state} =
+             RunWorkspaceStore.record_cleanup(
+               worker.id,
+               worker.connection_generation,
+               Map.merge(identity, %{
+                 resources: cleanup_resources("retired", "stopping", "cleanup_requested")
+               })
+             )
+
+    assert Repo.get!(RunDelivery, delivery.id).state == "no_changes"
+    assert {:ok, runtime_after_cleanup} = RuntimeStore.fetch_run(launched.run_id)
+    assert runtime_after_cleanup == runtime_before_cleanup
   end
 
   test "an unchanged merged Pull Request atomically completes its Quest" do
@@ -2804,6 +2926,14 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
         last_seen_at: DateTime.utc_now()
       })
     )
+  end
+
+  defp cleanup_resources(harness, environment, host) do
+    %{
+      "harness" => %{"state" => harness},
+      "execution_environment" => %{"state" => environment},
+      "host_run_repository" => %{"state" => host}
+    }
   end
 
   defp execution_environment(backend_kind) do

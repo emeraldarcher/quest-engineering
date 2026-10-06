@@ -13,7 +13,10 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
   alias QuestEngineering.Server.Persistence.ProductWorkspace
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
+  alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.Worker
+  alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunChangeNotifier
@@ -110,23 +113,36 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
                from a in RunWorkspaceAssignment, where: a.run_id == ^run_id, lock: "FOR UPDATE"
              ) || Repo.rollback(:not_found)
 
-           delivery = Repo.get_by(RunDelivery, run_id: run_id)
+           cond do
+             is_map(assignment.cleanup_resources) ->
+               assignment
 
-           if assignment.state in ["cleanup_requested", "removed"] do
-             assignment
-           else
-             if assignment.state != "retained", do: Repo.rollback(:workspace_not_retained)
+             assignment.state in ["cleanup_requested", "removed"] ->
+               initialize_cleanup(assignment)
 
-             if delivery && delivery.state == "closed_unmerged" && not acknowledge_unmerged,
-               do: Repo.rollback(:unmerged_acknowledgement_required)
+             assignment.state != "retained" ->
+               Repo.rollback(:workspace_not_retained)
 
-             if is_nil(delivery) or
-                  delivery.state not in ~w(review_open merged closed_unmerged no_changes),
-                do: Repo.rollback(:cleanup_not_safe)
+             true ->
+               run = Repo.get(RuntimeRun, run_id) || Repo.rollback(:not_found)
+               delivery = Repo.get_by(RunDelivery, run_id: run_id)
 
-             assignment
-             |> Changeset.change(state: "cleanup_requested", cleanup_requested_at: now())
-             |> Repo.update!()
+               if active_execution?(run_id) or run.status == "running",
+                 do: Repo.rollback(:cleanup_not_safe)
+
+               if delivery && delivery.state == "closed_unmerged" && not acknowledge_unmerged,
+                 do: Repo.rollback(:unmerged_acknowledgement_required)
+
+               if run.status == "completed" and
+                    (is_nil(delivery) or
+                       delivery.state not in ~w(review_open merged closed_unmerged no_changes)),
+                  do: Repo.rollback(:cleanup_not_safe)
+
+               if delivery &&
+                    delivery.state not in ~w(review_open merged closed_unmerged no_changes),
+                  do: Repo.rollback(:cleanup_not_safe)
+
+               initialize_cleanup(assignment)
            end
          end) do
       {:ok, assignment} ->
@@ -136,6 +152,42 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
       error ->
         error
     end
+  end
+
+  def record_cleanup(worker_id, generation, cleanup) do
+    update_from_worker(worker_id, generation, cleanup, fn assignment ->
+      if assignment.state not in ["cleanup_requested", "removed"],
+        do: Repo.rollback(:stale_cleanup_state)
+
+      resources = cleanup.resources
+      validate_cleanup_progress!(assignment.cleanup_resources, resources)
+      harness = resources["harness"]
+      environment = resources["execution_environment"]
+      host = resources["host_run_repository"]
+
+      if host["state"] == "removed" and
+           (harness["state"] != "retired" or environment["state"] != "removed"),
+         do: Repo.rollback(:unsafe_cleanup_order)
+
+      issue =
+        [resources["harness"], environment, host]
+        |> Enum.find_value(& &1["issue"])
+
+      assignment
+      |> Changeset.change(
+        state: if(host["state"] == "removed", do: "removed", else: assignment.state),
+        cleanup_resources: resources,
+        cleanup_updated_at: now(),
+        removed_at:
+          if(host["state"] == "removed",
+            do: assignment.removed_at || now(),
+            else: assignment.removed_at
+          ),
+        failure_code: issue && issue["code"],
+        failure_details: issue
+      )
+      |> Repo.update!()
+    end)
   end
 
   # Compatibility only for pre-v4 test fixtures; production never enables this flag.
@@ -219,6 +271,65 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
       {:error, error} ->
         {:error, error}
     end
+  end
+
+  defp validate_cleanup_progress!(nil, _resources), do: :ok
+
+  defp validate_cleanup_progress!(previous, current) do
+    irreversible = [
+      {"harness", "retired"},
+      {"execution_environment", "removed"},
+      {"host_run_repository", "removed"}
+    ]
+
+    if Enum.any?(irreversible, fn {resource, state} ->
+         get_in(previous, [resource, "state"]) == state and
+           get_in(current, [resource, "state"]) != state
+       end),
+       do: Repo.rollback(:stale_cleanup_state)
+
+    :ok
+  end
+
+  defp initialize_cleanup(assignment) do
+    resources = %{
+      "harness" => %{"state" => "retiring"},
+      "execution_environment" => %{"state" => "cleanup_requested"},
+      "host_run_repository" => %{
+        "state" => if(assignment.state == "removed", do: "removed", else: "cleanup_requested")
+      }
+    }
+
+    assignment
+    |> Changeset.change(
+      state: if(assignment.state == "removed", do: "removed", else: "cleanup_requested"),
+      cleanup_requested_at: assignment.cleanup_requested_at || now(),
+      cleanup_resources: resources,
+      cleanup_updated_at: now(),
+      failure_code: nil,
+      failure_details: nil
+    )
+    |> Repo.update!()
+  end
+
+  defp active_execution?(run_id) do
+    active_schedule =
+      Repo.exists?(
+        from execution in ScheduledActionExecution,
+          where: execution.run_id == ^run_id and execution.state == "active"
+      )
+
+    active_dispatch =
+      Repo.exists?(
+        from dispatch in WorkerDispatch,
+          join: execution in ScheduledActionExecution,
+          on: execution.action_id == dispatch.action_id,
+          where:
+            execution.run_id == ^run_id and
+              dispatch.state in ["claimed", "dispatched", "acknowledged", "running", "uncertain"]
+      )
+
+    active_schedule or active_dispatch
   end
 
   defp ensure_locked(run_id) do

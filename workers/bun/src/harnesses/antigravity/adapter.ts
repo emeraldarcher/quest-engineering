@@ -814,11 +814,10 @@ export class AntigravityHarness implements AgentHarness {
   }
 
   async close(lineage: HarnessLineage): Promise<void> {
-    if (lineage.paneId)
-      await this.host.sendKeys(lineage.paneId, ["ctrl+c", "ctrl+c"]);
     const sbx = this.sbxExecutions.get(lineage.lineageId);
     await sbx?.stopRelay();
     await sbx?.removeAntigravityHook(HOOK_NAME).catch(() => undefined);
+    if (lineage.paneId) await this.host.closePane(lineage.paneId);
     this.sbxExecutions.delete(lineage.lineageId);
     this.promptReadiness.delete(lineage.lineageId);
     this.promptSubmissionStarted.delete(lineage.lineageId);

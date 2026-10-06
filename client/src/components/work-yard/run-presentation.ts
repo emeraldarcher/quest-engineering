@@ -112,6 +112,38 @@ const deliveryStates: Record<DeliveryProjection["state"], StatusPresentation> =
     },
   };
 
+const cleanupStates: Record<
+  RunProjection["cleanup"]["state"],
+  StatusPresentation
+> = {
+  not_requested: {
+    label: "Resources retained",
+    description: "Disposable Run resources remain available.",
+    tone: "neutral",
+  },
+  requested: {
+    label: "Cleanup requested",
+    description: "Run resource cleanup has been durably requested.",
+    tone: "active",
+  },
+  in_progress: {
+    label: "Cleanup in progress",
+    description: "Run resources are being retired and reconciled.",
+    tone: "active",
+  },
+  complete: {
+    label: "Cleanup complete",
+    description:
+      "Disposable Run resources were removed; Product history remains.",
+    tone: "success",
+  },
+  needs_attention: {
+    label: "Cleanup needs attention",
+    description: "One or more Run resources could not be confirmed removed.",
+    tone: "danger",
+  },
+};
+
 const workspaceStates: Record<
   RunProjection["execution_environment"]["state"],
   StatusPresentation
@@ -187,7 +219,7 @@ const diagnosticCopy: Record<string, { title: string; description: string }> = {
   worker_upgrade_required: {
     title: "Worker upgrade required",
     description:
-      "The assigned Worker does not support this Delivery operation.",
+      "The assigned Worker does not support this Run resource operation.",
   },
   acceptance_not_satisfied: {
     title: "Review was not accepted",
@@ -238,6 +270,12 @@ export function workspacePresentation(
   return workspaceStates[state];
 }
 
+export function cleanupPresentation(
+  state: RunProjection["cleanup"]["state"],
+): StatusPresentation {
+  return cleanupStates[state];
+}
+
 export function diagnosticPresentation(issue: {
   code: string;
   message: string;
@@ -284,11 +322,14 @@ export function formatLaunchTime(value: string): string {
 }
 
 export function canCleanUp(run: RunProjection): boolean {
+  if (run.cleanup.state === "needs_attention") return true;
   return (
     run.execution_environment.state === "retained" &&
-    ["awaiting_review", "merged", "closed_unmerged", "no_changes"].includes(
-      run.delivery?.state ?? "",
-    )
+    run.cleanup.state === "not_requested" &&
+    (["failed", "cancelled"].includes(run.status) ||
+      ["awaiting_review", "merged", "closed_unmerged", "no_changes"].includes(
+        run.delivery?.state ?? "",
+      ))
   );
 }
 

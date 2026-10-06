@@ -130,7 +130,7 @@ export function workerCapabilities(
     features: [
       "run_delivery_v1",
       "run_worktree_retention_v1",
-      "run_worktree_cleanup_v1",
+      "run_resource_cleanup_v1",
       "workspace_binding_status_v1",
       "live_execution_sessions_v1",
     ],

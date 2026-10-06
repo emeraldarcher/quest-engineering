@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 10
+  @version 11
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -40,6 +40,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @human_control_states ~w(intervention_pending human_control resuming_automation)
   @intervention_states ~w(intervention_pending resuming_automation resumed)
   @failure_classifications ~w(auto_retryable operator_recovery_required terminal_not_recoverable)
+  @harness_cleanup_states ~w(retained retiring retired unavailable)
+  @environment_cleanup_states ~w(cleanup_requested stopping stopped removed uncertain failed)
+  @host_cleanup_states ~w(retained cleanup_requested removed failed)
 
   defmodule Message do
     @moduledoc false
@@ -61,7 +64,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             delivery: map() | nil,
             session: map() | nil,
             sessions: [map()] | nil,
-            recovery: map() | nil
+            recovery: map() | nil,
+            cleanup: map() | nil
           }
 
     defstruct [
@@ -80,7 +84,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :delivery,
       :session,
       :sessions,
-      :recovery
+      :recovery,
+      :cleanup
     ]
   end
 
@@ -93,7 +98,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 10
+  @spec version() :: 11
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -210,8 +215,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     worktree_command("retain_run_worktree", worker_id, assignment)
   end
 
-  def cleanup_run_worktree(worker_id, assignment) do
-    worktree_command("cleanup_run_worktree", worker_id, assignment)
+  def cleanup_run_resources(worker_id, assignment) do
+    %{
+      "type" => "cleanup_run_resources",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "cleanup" => %{
+        "worktree_id" => assignment.worktree_id,
+        "run_id" => assignment.run_id,
+        "workspace_binding_id" => assignment.workspace_binding_id,
+        "identity_hash" => assignment.identity_hash
+      }
+    }
   end
 
   def inspect_run_delivery(worker_id, delivery, assignment) do
@@ -355,6 +370,12 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        when is_map(worktree) do
     with {:ok, decoded} <- decode_worktree_identity(worktree),
          do: {:ok, %Message{type: :run_worktree_removed, worker_id: worker_id, worktree: decoded}}
+  end
+
+  defp decode_message("run_cleanup_state", worker_id, %{"cleanup" => cleanup})
+       when is_map(cleanup) do
+    with {:ok, decoded} <- decode_run_cleanup(cleanup),
+         do: {:ok, %Message{type: :run_cleanup_state, worker_id: worker_id, cleanup: decoded}}
   end
 
   defp decode_message("run_delivery_inspected", worker_id, %{"delivery" => delivery})
@@ -1036,6 +1057,67 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        }}
     end
   end
+
+  defp decode_run_cleanup(value) do
+    with {:ok, identity} <- decode_worktree_identity(value),
+         {:ok, resources} <- required_plain_map(value, "resources"),
+         {:ok, harness} <-
+           decode_cleanup_resource(resources["harness"], @harness_cleanup_states),
+         {:ok, environment} <-
+           decode_cleanup_resource(
+             resources["execution_environment"],
+             @environment_cleanup_states
+           ),
+         {:ok, host} <-
+           decode_cleanup_resource(resources["host_run_repository"], @host_cleanup_states),
+         :ok <- validate_cleanup_order(harness, environment, host) do
+      {:ok,
+       Map.put(identity, :resources, %{
+         "harness" => harness,
+         "execution_environment" => environment,
+         "host_run_repository" => host
+       })}
+    end
+  end
+
+  defp decode_cleanup_resource(%{"state" => state} = value, allowed)
+       when is_binary(state) do
+    if state in allowed do
+      case Map.get(value, "issue") do
+        nil ->
+          {:ok, %{"state" => state}}
+
+        %{"code" => code, "message" => message}
+        when is_binary(code) and code != "" and is_binary(message) and message != "" ->
+          {:ok, %{"state" => state, "issue" => %{"code" => code, "message" => message}}}
+
+        _other ->
+          error(:invalid_field, "cleanup.resources.issue")
+      end
+    else
+      error(:invalid_field, "cleanup.resources.state")
+    end
+  end
+
+  defp decode_cleanup_resource(_value, _allowed),
+    do: error(:invalid_field, "cleanup.resources.state")
+
+  defp validate_cleanup_order(
+         %{"state" => "retired"},
+         %{"state" => "removed"},
+         %{"state" => "removed"}
+       ),
+       do: :ok
+
+  defp validate_cleanup_order(
+         %{"state" => harness_state},
+         %{"state" => environment_state},
+         %{"state" => "removed"}
+       )
+       when harness_state != "retired" or environment_state != "removed",
+       do: error(:invalid_field, "cleanup.resources.host_run_repository.state")
+
+  defp validate_cleanup_order(_harness, _environment, _host), do: :ok
 
   defp decode_delivery(value, kind) do
     with {:ok, delivery_id} <- required_string(value, "delivery_id"),

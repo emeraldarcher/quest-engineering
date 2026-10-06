@@ -10,7 +10,7 @@ import {
 } from "../src/protocol/types.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v10 ResolvedExecution codec", () => {
+describe("Worker Protocol v11 ResolvedExecution codec", () => {
   test("decodes only an exact Worker-generation cancellation command", () => {
     const command = {
       type: "cancel_dispatch",

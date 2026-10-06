@@ -40,6 +40,11 @@ import type {
   WorkerCapabilities,
 } from "./protocol/types.ts";
 import { WORKER_PROTOCOL_VERSION } from "./protocol/types.ts";
+import {
+  RunCleanupCoordinator,
+  type RunCleanupRequest,
+} from "./run-cleanup.ts";
+import { type RunCleanupRecord, RunCleanupStore } from "./run-cleanup-store.ts";
 import { LocalHerdrConnectionProvider } from "./session-host/herdr/connection.ts";
 import { HerdrTerminalBackend } from "./session-host/herdr/session-host.ts";
 import {
@@ -77,6 +82,7 @@ export class QuestEngineeringWorker {
   readonly executor: DispatchExecutor;
   readonly worktrees: RunWorktreeRegistry;
   readonly deliveries: RunDeliveryRegistry;
+  readonly cleanups: RunCleanupStore;
   readonly harnessControl: HarnessControlAuthority;
   readonly harnesses: HarnessRegistry;
   private readonly harnessControlServer: HarnessControlServer;
@@ -90,6 +96,8 @@ export class QuestEngineeringWorker {
   private readonly protocolOperations = new Set<Promise<unknown>>();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private recoveryScanActive = false;
+  private cleanupScanActive = false;
+  private readonly cleanupCoordinator: RunCleanupCoordinator;
   private readyGeneration: number | null = null;
   private registration: {
     generation: number;
@@ -120,6 +128,7 @@ export class QuestEngineeringWorker {
   ) {
     this.worktrees = new RunWorktreeRegistry(config);
     this.deliveries = new RunDeliveryRegistry(config, this.worktrees);
+    this.cleanups = new RunCleanupStore(config.dataRoot);
     const provider =
       config.provider === "fake"
         ? null
@@ -219,6 +228,61 @@ export class QuestEngineeringWorker {
       1_000,
       (dispatch) => this.handleTerminalFailure(dispatch),
     );
+    this.cleanupCoordinator = new RunCleanupCoordinator(this.cleanups, {
+      assertRunIdle: (runId) => this.assertRunIdle(runId),
+      assertHostIdentity: (request) => {
+        this.worktrees.assertIdentity({
+          worktreeId: request.worktreeId,
+          runId: request.runId,
+          bindingId: request.workspaceBindingId,
+          identityHash: request.identityHash,
+        });
+      },
+      requestHostCleanup: (worktreeId) => {
+        this.worktrees.requestCleanup(worktreeId);
+      },
+      cleanupHostRepository: async (worktreeId) => {
+        try {
+          const repository = await this.worktrees.cleanup(worktreeId);
+          return repository.state === "removed"
+            ? { state: "removed" as const }
+            : {
+                state: "failed" as const,
+                issue: {
+                  code:
+                    repository.failureCode ?? "run_repository_cleanup_failed",
+                  message:
+                    "The host Run repository could not be removed safely.",
+                },
+              };
+        } catch {
+          return {
+            state: "failed" as const,
+            issue: {
+              code: "run_repository_cleanup_failed",
+              message: "The host Run repository could not be removed safely.",
+            },
+          };
+        }
+      },
+      harnessTargets: (runId) => this.executor.cleanupTargets(runId),
+      closeHarnessTargets: (runId, targets) =>
+        this.executor.closeRunTargets(runId, targets),
+      currentEnvironment: (runId) =>
+        this.sbxExecutionManager?.currentEnvironment(runId) ??
+        Promise.resolve(null),
+      cleanupEnvironment: (target) =>
+        this.sbxExecutionManager?.cleanupEnvironment(target) ??
+        Promise.resolve({
+          state: "failed" as const,
+          issue: {
+            code: "environment_backend_unavailable",
+            message:
+              "The Worker cannot reconcile the frozen execution environment.",
+          },
+        }),
+      report: (cleanup) => this.reportRunCleanup(cleanup),
+    });
   }
 
   async prepareForStartup(): Promise<void> {
@@ -369,6 +433,7 @@ export class QuestEngineeringWorker {
     await this.harnessControlServer.stop();
     await this.sbxExecutionManager?.close();
     this.registry.close();
+    this.cleanups.close();
     this.deliveries.close();
     this.worktrees.close();
   }
@@ -435,19 +500,9 @@ export class QuestEngineeringWorker {
       }
       return;
     }
-    if (message.type === "cleanup_run_worktree") {
-      const request = message.worktree as Record<string, unknown>;
-      try {
-        this.assertRunIdle(String(request.run_id ?? ""));
-        const record = await this.worktrees.cleanup(
-          String(request.worktree_id ?? ""),
-        );
-        if (record.state === "removed")
-          await this.reportWorktreeState("run_worktree_removed", record);
-        else await this.reportWorktree(record);
-      } catch (error) {
-        await this.reportWorktreeCommandFailure(request, error);
-      }
+    if (message.type === "cleanup_run_resources") {
+      const request = decodeRunCleanupRequest(message.cleanup);
+      await this.startRunCleanup(request, true);
       return;
     }
     if (message.type === "inspect_run_delivery") {
@@ -609,11 +664,15 @@ export class QuestEngineeringWorker {
           const retained = await this.worktrees.retain(id);
           await this.reportWorktreeState("run_worktree_retained", retained);
         } else if (desired === "cleanup_requested" || desired === "removed") {
-          this.assertRunIdle(String(request.run_id ?? ""));
-          const removed = await this.worktrees.cleanup(id);
-          if (removed.state === "removed")
-            await this.reportWorktreeState("run_worktree_removed", removed);
-          else await this.reportWorktree(removed);
+          await this.startRunCleanup(
+            {
+              runId: String(request.run_id ?? ""),
+              worktreeId: id,
+              workspaceBindingId: String(request.workspace_binding_id ?? ""),
+              identityHash: String(request.identity_hash ?? ""),
+            },
+            false,
+          );
         } else {
           const observed =
             record.state === "ready" || record.state === "retained"
@@ -724,16 +783,24 @@ export class QuestEngineeringWorker {
           worker_id: this.config.workerId,
         })
         .catch(() => undefined);
-      if (!this.stopping)
+      if (!this.stopping) {
         void this.trackProtocolOperation(this.scanRecoveryRequests()).catch(
           () => undefined,
         );
+        void this.trackProtocolOperation(this.scanRunCleanups()).catch(
+          () => undefined,
+        );
+      }
     }, this.config.heartbeatMs);
     this.heartbeat.unref?.();
-    if (!this.stopping)
+    if (!this.stopping) {
       void this.trackProtocolOperation(this.scanRecoveryRequests()).catch(
         () => undefined,
       );
+      void this.trackProtocolOperation(this.scanRunCleanups()).catch(
+        () => undefined,
+      );
+    }
   }
 
   private onDisconnected(generation: number): void {
@@ -1061,6 +1128,46 @@ export class QuestEngineeringWorker {
       worker_id: this.config.workerId,
       binding,
     });
+  }
+
+  private startRunCleanup(
+    request: RunCleanupRequest,
+    retryFailures: boolean,
+  ): Promise<void> {
+    return this.cleanupCoordinator.request(request, retryFailures);
+  }
+
+  private async scanRunCleanups(): Promise<void> {
+    if (this.cleanupScanActive || !this.controlPlaneReady()) return;
+    this.cleanupScanActive = true;
+    try {
+      await this.cleanupCoordinator.reconcilePending();
+    } finally {
+      this.cleanupScanActive = false;
+    }
+  }
+
+  private async reportRunCleanup(cleanup: RunCleanupRecord): Promise<void> {
+    try {
+      await this.channel.sendProtocol({
+        type: "run_cleanup_state",
+        protocol_version: WORKER_PROTOCOL_VERSION,
+        worker_id: this.config.workerId,
+        cleanup: {
+          run_id: cleanup.runId,
+          worktree_id: cleanup.worktreeId,
+          workspace_binding_id: cleanup.workspaceBindingId,
+          identity_hash: cleanup.identityHash,
+          resources: {
+            harness: cleanup.harness,
+            execution_environment: cleanup.executionEnvironment,
+            host_run_repository: cleanup.hostRunRepository,
+          },
+        },
+      });
+    } catch {
+      this.markReconciliationDirty();
+    }
   }
 
   private assertRunIdle(runId: string): void {
@@ -1494,6 +1601,21 @@ export class QuestEngineeringWorker {
       return false;
     }
   }
+}
+
+function decodeRunCleanupRequest(value: unknown): RunCleanupRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Run cleanup payload is invalid.");
+  const input = value as Record<string, unknown>;
+  const request = {
+    runId: input.run_id,
+    worktreeId: input.worktree_id,
+    workspaceBindingId: input.workspace_binding_id,
+    identityHash: input.identity_hash,
+  };
+  if (Object.values(request).some((item) => typeof item !== "string" || !item))
+    throw new Error("Run cleanup identity is incomplete.");
+  return request as RunCleanupRequest;
 }
 
 function harnessSessionPayload(

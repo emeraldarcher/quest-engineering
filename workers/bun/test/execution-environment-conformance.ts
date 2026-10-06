@@ -82,6 +82,9 @@ export function executionEnvironmentConformance(
     ]);
     expect(second.ref).toEqual(first.ref);
     expect(second.paths).toEqual(first.paths);
+    expect(await backend.currentEnvironment(primarySpec.runId)).toEqual(
+      first.ref,
+    );
 
     const incompatible = structuredClone(primarySpec);
     incompatible.profile.digest = "sha256:incompatible";
@@ -162,6 +165,7 @@ export function executionEnvironmentConformance(
     expect(restarted.ref).toEqual(lease.ref);
     await backend.remove(lease.ref);
     await backend.remove(lease.ref);
+    expect(await backend.currentEnvironment(primarySpec.runId)).toBeNull();
     await expect(backend.inspect(lease.ref)).rejects.toMatchObject({
       code: "stale_environment_ref",
     });

@@ -309,6 +309,42 @@ export class RunWorktreeRegistry {
     return this.required(worktreeId);
   }
 
+  requestCleanup(worktreeId: string): RunWorktreeRecord {
+    const current = this.required(worktreeId);
+    if (current.state === "removed" || current.state === "cleanup_requested")
+      return current;
+    if (current.state !== "retained")
+      throw coded(
+        "run_worktree_cleanup_not_safe",
+        `Run repository is ${current.state}, not retained.`,
+      );
+    this.db
+      .query(
+        "UPDATE run_worktrees SET state='cleanup_requested',updated_at=? WHERE worktree_id=?",
+      )
+      .run(now(), worktreeId);
+    return this.required(worktreeId);
+  }
+
+  assertIdentity(input: {
+    worktreeId: string;
+    runId: string;
+    bindingId: string;
+    identityHash: string;
+  }): RunWorktreeRecord {
+    const current = this.required(input.worktreeId);
+    if (
+      current.runId !== input.runId ||
+      current.bindingId !== input.bindingId ||
+      current.identityHash !== input.identityHash
+    )
+      throw coded(
+        "run_worktree_identity_conflict",
+        "Run cleanup identity does not match the durable Run repository.",
+      );
+    return current;
+  }
+
   async cleanup(worktreeId: string): Promise<RunWorktreeRecord> {
     const current = this.required(worktreeId);
     if (current.state === "removed") return current;

@@ -55,7 +55,7 @@ test("running dispatch state omits terminal fields", () => {
   );
 });
 
-test("uncertain dispatch state includes the structured failure required by protocol v10", () => {
+test("uncertain dispatch state includes the structured failure required by protocol v11", () => {
   expect(
     dispatchReportMessage(
       "worker-1",

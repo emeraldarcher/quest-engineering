@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { HarnessControlAuthority } from "../harnesses/control/authority.ts";
 import { HarnessRegistry } from "../harnesses/registry.ts";
 import type {
@@ -13,6 +14,7 @@ import type {
   JsonValue,
   ReconcileDispatch,
 } from "../protocol/types.ts";
+import type { HarnessCleanupTarget } from "../run-cleanup-store.ts";
 import type {
   HostedAgent,
   TerminalAttachmentDescriptor,
@@ -170,6 +172,94 @@ export class DispatchExecutor {
       );
     }
     await this.start(actionId);
+  }
+
+  cleanupTargets(runId: string): HarnessCleanupTarget[] {
+    const lineageIds = [
+      ...new Set(
+        this.registry
+          .list()
+          .filter((dispatch) => dispatch.action.run_id === runId)
+          .flatMap((dispatch) =>
+            dispatch.lineageId ? [dispatch.lineageId] : [],
+          ),
+      ),
+    ].sort();
+    return lineageIds.map((lineageId) =>
+      cleanupTarget(this.registry.getLineage(lineageId)),
+    );
+  }
+
+  async closeRunTargets(
+    runId: string,
+    frozenTargets: readonly HarnessCleanupTarget[],
+  ): Promise<{
+    state: "retired" | "unavailable";
+    issue?: { code: string; message: string };
+  }> {
+    const dispatches = this.registry
+      .list()
+      .filter((dispatch) => dispatch.action.run_id === runId);
+    if (
+      dispatches.some((dispatch) =>
+        ["accepted", "running", "uncertain"].includes(dispatch.state),
+      )
+    )
+      throw new Error("Run execution is not settled for cleanup.");
+
+    let unavailable = false;
+    for (const target of frozenTargets) {
+      const lineageId = target.lineageId;
+      const dispatch = dispatches.find(
+        (candidate) => candidate.lineageId === lineageId,
+      );
+      if (!dispatch)
+        throw new Error(
+          "Frozen harness lineage does not belong to the cleanup Run.",
+        );
+      const lineage = this.registry.getLineage(lineageId);
+      if (JSON.stringify(cleanupTarget(lineage)) !== JSON.stringify(target))
+        throw new Error(
+          "Frozen harness identity changed before cleanup and will not be followed.",
+        );
+      if (lineage.activeActionId)
+        throw new Error("Frozen harness lineage is still actively owned.");
+      this.control?.invalidate(lineageId);
+      if (lineage.sessionState === "closed") continue;
+      const harness = this.harnessForLineage(lineage);
+      try {
+        await harness.close(lineage);
+        const closed = this.registry.updateSession(
+          lineageId,
+          "closed",
+          null,
+          new Date().toISOString(),
+          lineage.intervention,
+        );
+        await this.reportSession(dispatch, closed);
+      } catch {
+        unavailable = true;
+        const current = this.registry.getLineage(lineageId);
+        const fenced = this.registry.updateSession(
+          lineageId,
+          "unavailable",
+          null,
+          new Date().toISOString(),
+          current.intervention,
+        );
+        await this.reportSession(dispatch, fenced);
+      }
+    }
+    return unavailable
+      ? {
+          state: "unavailable",
+          issue: {
+            code: "harness_cleanup_unavailable",
+            message:
+              "One or more Run harness sessions could not be authoritatively closed; their control authority was retired.",
+          },
+        }
+      : { state: "retired" };
   }
 
   async retireForRecovery(
@@ -1153,6 +1243,24 @@ function payload(
       : {}),
   };
 }
+function cleanupTarget(lineage: HarnessLineage): HarnessCleanupTarget {
+  const digest = (value: string): string =>
+    `sha256:${createHash("sha256").update(value).digest("hex")}`;
+  return {
+    lineageId: lineage.lineageId,
+    harnessKind: lineage.harnessKind,
+    herdrSession: lineage.herdrSession,
+    herdrSessionIncarnation: lineage.herdrSessionIncarnation,
+    paneId: lineage.paneId,
+    terminalId: lineage.terminalId,
+    agentName: lineage.agentName,
+    authorityDigest: digest(lineage.ownershipToken),
+    nativeSessionDigest: lineage.nativeSession
+      ? digest(JSON.stringify(lineage.nativeSession))
+      : null,
+  };
+}
+
 function failureValue(error: unknown): Record<string, JsonValue> {
   const code =
     typeof error === "object" && error !== null && "code" in error

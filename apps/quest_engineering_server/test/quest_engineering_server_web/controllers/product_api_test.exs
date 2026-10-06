@@ -371,6 +371,10 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert %{"run" => %{"squad" => %{"members" => [%{"class" => %{"name" => "Builder"}}]}}} =
              json_response(projection, 200)
 
+    assert %{"error" => %{"code" => "workspace_not_retained"}} =
+             post_json("/api/v1/runs/#{run_id}/cleanup", %{})
+             |> json_response(409)
+
     assert %{"loadout" => %{"id" => ^loadout_id}} =
              json_response(post(build_conn(), "/api/v1/loadouts/#{loadout_id}/archive"), 200)
 

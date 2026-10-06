@@ -1009,9 +1009,9 @@ export function createAppStore(
     if (result) await invalidateRun(runId);
   }
 
-  async function cleanupWorktree(runId: string, acknowledgeUnmerged = false) {
+  async function cleanupRun(runId: string, acknowledgeUnmerged = false) {
     const result = await command(() =>
-      api.cleanupWorktree(runId, acknowledgeUnmerged),
+      api.cleanupRun(runId, acknowledgeUnmerged),
     );
     if (result) await invalidateRun(runId);
   }
@@ -1079,7 +1079,7 @@ export function createAppStore(
     recoverExecutionFresh,
     markExecutionFailed,
     retryPublishing,
-    cleanupWorktree,
+    cleanupRun,
     selectRun,
     selectBuildingId,
     isEmptyFirstRun,

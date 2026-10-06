@@ -197,7 +197,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         options
         |> Keyword.get(:capabilities, default_capabilities())
         |> Map.put_new("workspace_bindings", []),
-      protocol_version: Keyword.get(options, :protocol_version, 10),
+      protocol_version: Keyword.get(options, :protocol_version, 11),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -462,6 +462,20 @@ defmodule QuestEngineering.Server.FakeWorker do
     end)
   end
 
+  defp handle_protocol(%{"type" => "cleanup_run_resources", "cleanup" => cleanup}, state) do
+    send_protocol(state, %{
+      "type" => "run_cleanup_state",
+      "protocol_version" => state.protocol_version,
+      "worker_id" => state.worker_id,
+      "cleanup" =>
+        Map.put(cleanup, "resources", %{
+          "harness" => %{"state" => "retired"},
+          "execution_environment" => %{"state" => "removed"},
+          "host_run_repository" => %{"state" => "removed"}
+        })
+    })
+  end
+
   defp handle_protocol(%{"type" => "execute_action", "execution" => execution} = action, state) do
     identity = execution["identity"]
 
@@ -654,6 +668,7 @@ defmodule QuestEngineering.Server.FakeWorker do
       "arch" => "test",
       "max_concurrency" => 1,
       "tags" => ["fake"],
+      "features" => ["run_resource_cleanup_v1"],
       "workspace_bindings" => [],
       "executors" => [
         %{

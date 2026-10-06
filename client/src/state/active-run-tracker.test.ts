@@ -19,6 +19,14 @@ function projection(
     revision: 1,
     launch: { id: `launch-${id}` },
     quest: { id: `quest-${id}`, title: `Quest ${id}`, objective: "Work" },
+    cleanup: {
+      state: "not_requested",
+      message: "Resources retained.",
+      harness: { state: "retained", issue: null },
+      execution_environment: { state: "retained", issue: null },
+      host_run_repository: { state: "retained", issue: null },
+      issue: null,
+    },
     execution_environment: {
       workspace: { id: "workspace", key: "workspace", name: "Workspace" },
       state: "ready",

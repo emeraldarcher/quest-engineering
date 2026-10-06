@@ -203,19 +203,24 @@ defmodule QuestEngineering.ServerWeb.RunController do
 
   def cleanup(conn, %{"id" => run_id} = params) do
     case RunWorkspaceStore.request_cleanup(run_id, params["acknowledge_unmerged"] == true) do
-      {:ok, %{state: "removed"}} ->
-        json(conn, %{execution_environment: %{state: "removed"}})
-
       {:ok, assignment} ->
-        worker = Repo.get!(Worker, assignment.worker_id)
+        if cleanup_complete?(assignment.cleanup_resources) do
+          render_cleanup(conn, run_id)
+        else
+          worker = Repo.get!(Worker, assignment.worker_id)
 
-        case WorkerConnections.send_protocol(
-               worker.id,
-               worker.connection_generation,
-               WorkerProtocol.cleanup_run_worktree(worker.id, assignment)
-             ) do
-          :ok -> json(conn, %{execution_environment: %{state: "cleanup_requested"}})
-          {:error, error} -> Api.render_error(conn, error)
+          with true <- "run_resource_cleanup_v1" in (worker.capabilities["features"] || []),
+               :ok <-
+                 WorkerConnections.send_protocol(
+                   worker.id,
+                   worker.connection_generation,
+                   WorkerProtocol.cleanup_run_resources(worker.id, assignment)
+                 ) do
+            render_cleanup(conn, run_id)
+          else
+            false -> Api.render_error(conn, :worker_upgrade_required)
+            {:error, error} -> Api.render_error(conn, error)
+          end
         end
 
       {:error, error} ->
@@ -271,6 +276,22 @@ defmodule QuestEngineering.ServerWeb.RunController do
     if enabled and local_request and local_host and direct_request and tauri_client,
       do: :ok,
       else: {:error, :local_session_attachment_disabled}
+  end
+
+  defp cleanup_complete?(%{
+         "harness" => %{"state" => "retired"},
+         "execution_environment" => %{"state" => "removed"},
+         "host_run_repository" => %{"state" => "removed"}
+       }),
+       do: true
+
+  defp cleanup_complete?(_resources), do: false
+
+  defp render_cleanup(conn, run_id) do
+    case RunProjection.get(run_id) do
+      {:ok, run} -> json(conn, %{cleanup: run.cleanup})
+      {:error, error} -> Api.render_error(conn, error)
+    end
   end
 
   defp render_run(conn, run_id) do

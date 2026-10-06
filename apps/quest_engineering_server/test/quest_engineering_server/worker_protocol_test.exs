@@ -18,12 +18,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 10
+  @protocol_version 11
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v10 logical Workspace bindings" do
+  test "accepts explicit protocol v11 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -413,6 +413,68 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                "requested_at" => "2026-09-17T12:00:00.000000Z"
              }
            }
+  end
+
+  test "encodes generic Run cleanup and validates structured resource outcomes" do
+    command =
+      WorkerProtocol.cleanup_run_resources(@worker_id, %{
+        worktree_id: @worktree_id,
+        run_id: "run-cleanup",
+        workspace_binding_id: @binding_id,
+        identity_hash: "identity-cleanup"
+      })
+
+    assert command == %{
+             "type" => "cleanup_run_resources",
+             "protocol_version" => @protocol_version,
+             "worker_id" => @worker_id,
+             "cleanup" => %{
+               "worktree_id" => @worktree_id,
+               "run_id" => "run-cleanup",
+               "workspace_binding_id" => @binding_id,
+               "identity_hash" => "identity-cleanup"
+             }
+           }
+
+    report = %{
+      "type" => "run_cleanup_state",
+      "protocol_version" => @protocol_version,
+      "worker_id" => @worker_id,
+      "cleanup" =>
+        Map.merge(command["cleanup"], %{
+          "resources" => %{
+            "harness" => %{"state" => "retired"},
+            "execution_environment" => %{"state" => "stopping"},
+            "host_run_repository" => %{"state" => "cleanup_requested"}
+          }
+        })
+    }
+
+    assert {:ok,
+            %{
+              type: :run_cleanup_state,
+              cleanup: %{
+                resources: %{
+                  "execution_environment" => %{"state" => "stopping"}
+                }
+              }
+            }} = WorkerProtocol.decode_worker_message(report, @worker_id)
+
+    unsafe =
+      report
+      |> put_in(["cleanup", "resources", "host_run_repository", "state"], "removed")
+
+    assert {:error, %WorkerProtocol.Error{field: "cleanup.resources.host_run_repository.state"}} =
+             WorkerProtocol.decode_worker_message(unsafe, @worker_id)
+
+    harness_not_retired =
+      report
+      |> put_in(["cleanup", "resources", "harness", "state"], "retiring")
+      |> put_in(["cleanup", "resources", "execution_environment", "state"], "removed")
+      |> put_in(["cleanup", "resources", "host_run_repository", "state"], "removed")
+
+    assert {:error, %WorkerProtocol.Error{field: "cleanup.resources.host_run_repository.state"}} =
+             WorkerProtocol.decode_worker_message(harness_not_retired, @worker_id)
   end
 
   test "encodes logical and physical execution workspaces separately" do

@@ -53,6 +53,10 @@ import type {
   RunWorktreeRegistry,
 } from "../workspace/run-worktrees.ts";
 import { resolveRunExecutionProfile } from "./profile-resolution.ts";
+import {
+  cleanupExecutionEnvironment,
+  type RunEnvironmentCleanupOutcome,
+} from "./run-cleanup.ts";
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
   SBX_ANTIGRAVITY_EXECUTABLE,
@@ -65,7 +69,9 @@ import {
 import { SbxRunExecutionStore } from "./sbx-run-store.ts";
 import type {
   EnvironmentLease,
+  EnvironmentRef,
   EnvironmentSpec,
+  ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
 } from "./types.ts";
 
@@ -246,7 +252,9 @@ interface RuntimeContext {
  * lease and a PhysicalLineage private-Git workspace before Herdr can launch it.
  */
 export class SbxRunExecutionManager implements StructuredCompletionBoundary {
-  private readonly backend: SbxExecutionEnvironmentBackend;
+  private readonly backend: ExecutionEnvironmentBackend & {
+    close?: () => void;
+  };
   private readonly privateGit: PrivateGitWorkspaceManager;
   private readonly store: SbxRunExecutionStore;
   private readonly contexts = new Map<string, RuntimeContext>();
@@ -264,7 +272,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     private readonly config: WorkerConfig,
     private readonly worktrees: RunWorktreeRegistry,
     options: {
-      backend?: SbxExecutionEnvironmentBackend;
+      backend?: ExecutionEnvironmentBackend & { close?: () => void };
       privateGit?: PrivateGitWorkspaceManager;
       store?: SbxRunExecutionStore;
       accountAvailabilityNow?: () => Date;
@@ -967,6 +975,27 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     if (context) context.relay = null;
   }
 
+  currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
+    return this.backend.currentEnvironment(runId);
+  }
+
+  async cleanupEnvironment(
+    target: EnvironmentRef,
+  ): Promise<RunEnvironmentCleanupOutcome> {
+    const ownedContexts = [...this.contexts.entries()].filter(
+      ([, context]) => context.dispatch.action.run_id === target.runId,
+    );
+    await Promise.all(
+      ownedContexts.map(([, context]) => context.relay?.stop()),
+    );
+    for (const [, context] of ownedContexts) context.relay = null;
+
+    const outcome = await cleanupExecutionEnvironment(this.backend, target);
+    if (outcome.state === "removed")
+      for (const [lineageId] of ownedContexts) this.contexts.delete(lineageId);
+    return outcome;
+  }
+
   async close(): Promise<void> {
     await Promise.all(
       [...this.contexts.values()].map((context) => context.relay?.stop()),
@@ -974,7 +1003,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     this.contexts.clear();
     this.store.close();
     this.privateGit.close();
-    this.backend.close();
+    this.backend.close?.();
   }
 
   private async syncControl(context: RuntimeContext): Promise<void> {

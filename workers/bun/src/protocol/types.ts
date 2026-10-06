@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 10 as const;
+export const WORKER_PROTOCOL_VERSION = 11 as const;
 
 export type JsonValue =
   | string
@@ -321,7 +321,7 @@ export interface WorkerCapabilities {
   features?: Array<
     | "run_delivery_v1"
     | "run_worktree_retention_v1"
-    | "run_worktree_cleanup_v1"
+    | "run_resource_cleanup_v1"
     | "workspace_binding_status_v1"
     | "live_execution_sessions_v1"
   >;

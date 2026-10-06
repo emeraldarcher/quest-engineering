@@ -120,6 +120,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
     assignment = Repo.get(RunWorkspaceAssignment, run.id)
     delivery = DeliveryStore.fetch(run.id)
+    cleanup = cleanup(assignment)
 
     %{
       id: run.id,
@@ -128,6 +129,7 @@ defmodule QuestEngineering.Server.RunProjection do
       revision: revision,
       launch: %{id: launch.id},
       execution_environment: execution_environment(snapshot, assignment),
+      cleanup: cleanup,
       delivery: DeliveryStore.projection(delivery),
       quest: %{
         id: snapshot.quest.id,
@@ -156,7 +158,91 @@ defmodule QuestEngineering.Server.RunProjection do
           case execution_environment(snapshot, assignment).issue do
             nil -> []
             issue -> [issue]
+          end ++
+          case cleanup.issue do
+            nil -> []
+            issue -> [issue]
           end
+    }
+  end
+
+  defp cleanup(nil) do
+    %{
+      state: "needs_attention",
+      message: "Run cleanup ownership is unavailable.",
+      harness:
+        cleanup_resource("unavailable", %{
+          "code" => "run_workspace_assignment_missing",
+          "message" => "Run workspace assignment is missing."
+        }),
+      execution_environment: cleanup_resource("failed"),
+      host_run_repository: cleanup_resource("failed"),
+      issue: %{
+        code: "run_workspace_assignment_missing",
+        message: "Run workspace assignment is missing."
+      }
+    }
+  end
+
+  defp cleanup(%{cleanup_resources: resources}) when is_map(resources) do
+    harness = cleanup_resource(resources["harness"])
+    environment = cleanup_resource(resources["execution_environment"])
+    host = cleanup_resource(resources["host_run_repository"])
+    issue = harness.issue || environment.issue || host.issue
+
+    {state, message} =
+      cond do
+        harness.state == "retired" and environment.state == "removed" and
+            host.state == "removed" ->
+          {"complete", "Disposable Run resources were removed."}
+
+        harness.state == "unavailable" or environment.state in ["uncertain", "failed"] or
+            host.state == "failed" ->
+          {"needs_attention", "Run cleanup is incomplete and needs attention."}
+
+        harness.state == "retiring" and environment.state == "cleanup_requested" ->
+          {"requested", "Run cleanup was requested."}
+
+        true ->
+          {"in_progress", "Run cleanup is in progress."}
+      end
+
+    %{
+      state: state,
+      message: message,
+      harness: harness,
+      execution_environment: environment,
+      host_run_repository: host,
+      issue: issue
+    }
+  end
+
+  defp cleanup(assignment) do
+    %{
+      state: "not_requested",
+      message: "Disposable Run resources are retained.",
+      harness: cleanup_resource("retained"),
+      execution_environment: cleanup_resource("retained"),
+      host_run_repository:
+        cleanup_resource(if(assignment.state == "removed", do: "removed", else: "retained")),
+      issue: nil
+    }
+  end
+
+  defp cleanup_resource(%{"state" => state} = resource) do
+    cleanup_resource(state, resource["issue"])
+  end
+
+  defp cleanup_resource(state) when is_binary(state), do: cleanup_resource(state, nil)
+
+  defp cleanup_resource(state, issue) do
+    %{
+      state: state,
+      issue:
+        if(is_map(issue),
+          do: %{code: issue["code"], message: issue["message"]},
+          else: nil
+        )
     }
   end
 
@@ -181,31 +267,32 @@ defmodule QuestEngineering.Server.RunProjection do
 
   defp execution_environment(snapshot, assignment) do
     {state, message, issue} =
-      case assignment.state do
-        "waiting_for_host" ->
-          {"waiting_for_host", "Waiting for a Worker capable of hosting this Workspace.", nil}
+      case assignment.cleanup_resources do
+        %{"execution_environment" => %{"state" => "removed"}} ->
+          {"removed", "Run execution environment removed.", nil}
 
-        "provisioning" ->
-          {"preparing", "Preparing an isolated Run workspace.", nil}
+        %{"execution_environment" => %{"state" => state, "issue" => cleanup_issue}}
+        when state in ["uncertain", "failed"] ->
+          {"attention_required", "Run execution environment cleanup needs attention.",
+           %{
+             code: cleanup_issue["code"],
+             message: cleanup_issue["message"]
+           }}
 
-        "ready" ->
-          {"ready", "Run workspace ready.", nil}
+        %{"execution_environment" => %{"state" => state}}
+        when state in ["uncertain", "failed"] ->
+          {"attention_required", "Run execution environment cleanup needs attention.",
+           %{
+             code: "environment_cleanup_#{state}",
+             message: "Run execution environment cleanup needs attention."
+           }}
 
-        "retained" ->
-          {"retained", "Terminal Run workspace retained.", nil}
-
-        "cleanup_requested" ->
-          {"cleanup_requested", "Removing the retained Run workspace.", nil}
-
-        "removed" ->
-          {"removed", "Run workspace removed.", nil}
+        %{"execution_environment" => %{"state" => state}}
+        when state in ["cleanup_requested", "stopping", "stopped"] ->
+          {"cleanup_requested", "Cleaning up the Run execution environment.", nil}
 
         _ ->
-          {"attention_required", "The Run workspace requires attention.",
-           %{
-             code: assignment.failure_code || "run_workspace_attention_required",
-             message: "The Run workspace requires attention."
-           }}
+          workspace_environment_state(assignment)
       end
 
     %{
@@ -221,6 +308,35 @@ defmodule QuestEngineering.Server.RunProjection do
       source_dirty_changes_excluded: assignment.source_dirty_excluded,
       issue: issue
     }
+  end
+
+  defp workspace_environment_state(assignment) do
+    case assignment.state do
+      "waiting_for_host" ->
+        {"waiting_for_host", "Waiting for a Worker capable of hosting this Workspace.", nil}
+
+      "provisioning" ->
+        {"preparing", "Preparing an isolated Run workspace.", nil}
+
+      "ready" ->
+        {"ready", "Run workspace ready.", nil}
+
+      "retained" ->
+        {"retained", "Terminal Run resources retained.", nil}
+
+      "cleanup_requested" ->
+        {"cleanup_requested", "Cleaning up disposable Run resources.", nil}
+
+      "removed" ->
+        {"removed", "Run execution environment removed.", nil}
+
+      _ ->
+        {"attention_required", "The Run workspace requires attention.",
+         %{
+           code: assignment.failure_code || "run_workspace_attention_required",
+           message: "The Run workspace requires attention."
+         }}
+    end
   end
 
   defp execution_data(run_id) do
