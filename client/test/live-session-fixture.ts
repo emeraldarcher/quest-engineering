@@ -7,7 +7,7 @@ export function attachTestLiveSession(
     canTakeover,
     id = "session-pre-prompt",
   }: { canObserve: boolean; canTakeover: boolean; id?: string },
-) {
+): NonNullable<RunStep["session"]> {
   if (!step.attempt) throw new Error("Expected current Attempt");
   step.session = {
     id,
@@ -20,7 +20,6 @@ export function attachTestLiveSession(
     state: "waiting_for_human",
     native_identity: {
       conversation_id: null,
-      terminal_id: "terminal-1",
     },
     capabilities: {
       can_attach_terminal: true,
@@ -59,5 +58,5 @@ export function attachTestLiveSession(
     last_activity_at: "2026-09-26T00:00:01Z",
     events: [],
   };
-  return step.session;
+  return step.session as NonNullable<RunStep["session"]>;
 }

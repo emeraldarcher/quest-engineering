@@ -8,6 +8,7 @@ import {
   type HarnessLineage,
 } from "../src/dispatch/registry.ts";
 import { FakeHarness } from "../src/harnesses/fake/adapter.ts";
+import { nativeSessionRef } from "../src/harnesses/native-session.ts";
 import { HarnessRegistry } from "../src/harnesses/registry.ts";
 import type {
   AgentHarness,
@@ -23,7 +24,6 @@ import {
   WORKER_PROTOCOL_VERSION,
 } from "../src/protocol/types.ts";
 import { HerdrApiError } from "../src/session-host/herdr/client.ts";
-import type { HostedAgent } from "../src/session-host/types.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];
@@ -624,11 +624,11 @@ test("pre-authorization native input fences the process and fails without submit
   });
   expect(registry.getLineage(dispatch.lineageId as string)).toMatchObject({
     sessionState: "unavailable",
-    nativeSession: {
-      source: "antigravity",
-      kind: "id",
-      value: "native-conversation-1",
-    },
+    nativeSession: nativeSessionRef(
+      "antigravity",
+      "id",
+      "native-conversation-1",
+    ),
   });
   expect(harness.promptSubmissions).toBe(0);
   expect(harness.retirements).toBe(1);
@@ -668,7 +668,10 @@ test("terminal pre-prompt recovery adopts one prepared process, records history,
   expect(harness.adoptionProofs).toBe(1);
   expect(harness.starts).toBe(0);
   expect(harness.promptSubmissions).toBe(0);
-  expect(registry.physicalProcessTransition(target.action.action_id)).toEqual(
+  const processTransition = registry.physicalProcessTransition(
+    target.action.action_id,
+  );
+  expect(processTransition).toEqual(
     expect.objectContaining({
       sourceActionId: source.action.action_id,
       sourceAttemptId: source.action.attempt_id,
@@ -677,10 +680,10 @@ test("terminal pre-prompt recovery adopts one prepared process, records history,
       sourceLineageId: lineageId,
       targetLineageId: lineageId,
       mode: "prepared_process_adopted",
-      paneId: "pane-prepared",
-      terminalId: "terminal-prepared",
     }),
   );
+  expect(processTransition).not.toHaveProperty("herdrSession");
+  expect(processTransition).not.toHaveProperty("paneId");
   expect(registry.get(source.action.action_id)).toMatchObject({
     state: "failed",
     promptIntentAt: null,
@@ -997,7 +1000,9 @@ test("ambiguous native launch is uncertain and never retried or prompted", async
     promptIntentAt: null,
     failure: {
       code: "agent_launch_uncertain",
-      classification: "operator_recovery_required",
+      classification: "uncertain",
+      operation_phase: "prepare",
+      side_effect_certainty: "ambiguous",
     },
   });
   expect(harness.starts).toBe(1);
@@ -1033,12 +1038,9 @@ test("post-prompt backend loss recovers the exact lineage without resubmission",
   expect(harness.recoveries).toBe(1);
   expect(
     registry.getLineage(dispatch.lineageId as string).nativeSession,
-  ).toEqual({
-    source: "antigravity",
-    agent: "agy",
-    kind: "id",
-    value: "55555555-5555-4555-8555-555555555555",
-  });
+  ).toEqual(
+    nativeSessionRef("fake", "id", "55555555-5555-4555-8555-555555555555"),
+  );
   expect(sessionStates).toEqual(
     expect.arrayContaining(["unavailable", "recovering"]),
   );
@@ -1274,7 +1276,9 @@ test("incompatible backend contract fails visibly without transient retry", asyn
     state: "failed",
     failure: {
       code: "backend_incompatible",
-      classification: "operator_recovery_required",
+      classification: "terminal_not_recoverable",
+      operation_phase: "prepare",
+      side_effect_certainty: "not_submitted",
       message: expect.stringContaining("agent.prompt"),
     },
   });
@@ -1456,7 +1460,8 @@ class StagedRecoveryHarness extends InspectingProvider {
   ): Promise<HarnessRecoveredExecution> {
     return {
       found: true,
-      agent: prepared(lineage).agent,
+      handle: prepared(lineage).handle,
+      inspection: inspection(lineage),
       detail: "Recovered staged zero-inference process.",
     };
   }
@@ -1480,12 +1485,11 @@ class ContaminatedStagedRecoveryHarness extends StagedRecoveryHarness {
     if (!this.nativeConversationId) return null;
     return {
       observedAt: "2026-09-19T02:06:44.382Z",
-      nativeSession: {
-        source: "antigravity" as const,
-        agent: "agy",
-        kind: "id" as const,
-        value: this.nativeConversationId,
-      },
+      nativeSession: nativeSessionRef(
+        this.kind,
+        "id",
+        this.nativeConversationId,
+      ),
       evidence: "native_user_message" as const,
     };
   }
@@ -1656,17 +1660,18 @@ class PostPromptUnavailableHarness extends InspectingProvider {
         "backend_unavailable",
         "Herdr remained unavailable during exact-lineage recovery.",
       );
+    const nativeSession = nativeSessionRef(
+      this.kind,
+      "id",
+      "55555555-5555-4555-8555-555555555555",
+    );
     return {
       found: true,
-      agent: {
-        ...prepared(lineage).agent,
-        status: "working" as const,
-        nativeSession: {
-          source: "antigravity" as const,
-          agent: "agy",
-          kind: "id" as const,
-          value: "55555555-5555-4555-8555-555555555555",
-        },
+      handle: { ...prepared(lineage).handle, nativeSession },
+      inspection: {
+        ...inspection(lineage),
+        nativeSession,
+        activity: { state: "active" },
       },
       detail: "Recovered exact test lineage.",
     };
@@ -1712,7 +1717,8 @@ class SnapshotObservationHarness extends InspectingProvider {
       throw snapshotTimeout();
     return {
       found: true,
-      agent: { ...prepared(lineage).agent, status: "working" as const },
+      handle: prepared(lineage).handle,
+      inspection: inspection(lineage),
       detail:
         "Recovered the exact lineage after inventory observation resumed.",
     };
@@ -1809,36 +1815,29 @@ class BlockingProvider extends InspectingProvider {
   }
 }
 
-function inspection(lineage: HarnessLineage) {
+function inspection(lineage: HarnessLineage): HarnessInspection {
   return {
-    state: "running" as const,
-    agent: prepared(lineage).agent,
+    state: "running",
+    activity: { state: "active" },
+    nativeSession: lineage.nativeSession,
+    health: "healthy",
     attention: null,
     intervention: null,
     lastActivityAt: new Date().toISOString(),
+    interactive: null,
   };
 }
 
 function prepared(lineage: HarnessLineage): HarnessPreparedExecution {
-  const agent: HostedAgent = {
-    name: lineage.lineageId,
-    agent: "pi",
-    status: "idle",
-    paneId: "pane",
-    terminalId: "terminal",
-    workspaceId: "workspace",
-    tabId: "tab",
-  };
   return {
     lineage,
-    ref: {
-      sessionName: "fake",
-      workspaceId: "workspace",
-      tabId: "tab",
-      paneId: "pane",
-      terminalId: "terminal",
-      agentName: lineage.lineageId,
+    handle: {
+      schemaVersion: 1,
+      harnessKind: lineage.harnessKind,
+      executionId: lineage.lineageId,
+      ...(lineage.nativeSession
+        ? { nativeSession: lineage.nativeSession }
+        : {}),
     },
-    agent,
   };
 }

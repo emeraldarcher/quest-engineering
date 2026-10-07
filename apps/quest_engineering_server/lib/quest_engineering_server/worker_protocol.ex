@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 11
+  @version 12
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -39,7 +39,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @interaction_kinds ~w(confirmation text choice multiline_response conversational_intervention)
   @human_control_states ~w(intervention_pending human_control resuming_automation)
   @intervention_states ~w(intervention_pending resuming_automation resumed)
-  @failure_classifications ~w(auto_retryable operator_recovery_required terminal_not_recoverable)
+  @failure_classifications ~w(auto_retryable operator_recovery_required terminal_not_recoverable uncertain)
   @harness_cleanup_states ~w(retained retiring retired unavailable)
   @environment_cleanup_states ~w(cleanup_requested stopping stopped removed uncertain failed)
   @host_cleanup_states ~w(retained cleanup_requested removed failed)
@@ -98,7 +98,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 11
+  @spec version() :: 12
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -691,30 +691,19 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          {:ok, target_attempt_id} <- required_string(value, "target_attempt_id"),
          {:ok, source_lineage_id} <- required_string(value, "source_lineage_id"),
          {:ok, target_lineage_id} <- required_string(value, "target_lineage_id"),
-         {:ok, herdr_session} <- optional_string(value["herdr_session"]),
-         {:ok, herdr_incarnation} <- optional_string(value["herdr_session_incarnation"]),
-         {:ok, workspace_id} <- optional_string(value["workspace_id"]),
-         {:ok, pane_id} <- optional_string(value["pane_id"]),
-         {:ok, terminal_id} <- optional_string(value["terminal_id"]),
-         {:ok, agent_name} <- optional_string(value["agent_name"]),
          {:ok, recorded_at} <- timestamp(value["recorded_at"], "session.turn.recorded_at") do
-      {:ok,
-       Map.put(turn, "physical_process", %{
-         "mode" => mode,
-         "source_action_id" => source_action_id,
-         "source_attempt_id" => source_attempt_id,
-         "target_action_id" => target_action_id,
-         "target_attempt_id" => target_attempt_id,
-         "source_lineage_id" => source_lineage_id,
-         "target_lineage_id" => target_lineage_id,
-         "herdr_session" => herdr_session,
-         "herdr_session_incarnation" => herdr_incarnation,
-         "workspace_id" => workspace_id,
-         "pane_id" => pane_id,
-         "terminal_id" => terminal_id,
-         "agent_name" => agent_name,
-         "recorded_at" => DateTime.to_iso8601(recorded_at)
-       })}
+      physical_process = %{
+        "mode" => mode,
+        "source_action_id" => source_action_id,
+        "source_attempt_id" => source_attempt_id,
+        "target_action_id" => target_action_id,
+        "target_attempt_id" => target_attempt_id,
+        "source_lineage_id" => source_lineage_id,
+        "target_lineage_id" => target_lineage_id,
+        "recorded_at" => DateTime.to_iso8601(recorded_at)
+      }
+
+      {:ok, Map.put(turn, "physical_process", physical_process)}
     end
   end
 

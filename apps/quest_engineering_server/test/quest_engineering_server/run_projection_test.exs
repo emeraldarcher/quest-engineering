@@ -138,8 +138,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
            }
 
     assert second_step.session.native_identity == %{
-             conversation_id: "pi-test",
-             terminal_id: nil
+             conversation_id: "pi-test"
            }
 
     assert Enum.map(second_step.session.events, & &1.type) == ["attention_requested"]

@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { EnvironmentRef } from "./execution-environment/types.ts";
+import type { HarnessTransportBinding } from "./harnesses/transport-binding.ts";
 
 export type HarnessCleanupState =
   | "retained"
@@ -29,11 +30,7 @@ export interface CleanupIssue {
 export interface HarnessCleanupTarget {
   lineageId: string;
   harnessKind: string;
-  herdrSession: string | null;
-  herdrSessionIncarnation: string | null;
-  paneId: string | null;
-  terminalId: string | null;
-  agentName: string | null;
+  transportBinding: HarnessTransportBinding | null;
   authorityDigest: string;
   nativeSessionDigest: string | null;
 }

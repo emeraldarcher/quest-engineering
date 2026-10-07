@@ -3,12 +3,12 @@ import type {
   HarnessLineage,
 } from "../../dispatch/registry.ts";
 import type { JsonValue } from "../../protocol/types.ts";
-import type { HostedAgent } from "../../session-host/types.ts";
 import type {
   AgentHarness,
   HarnessCapabilities,
   HarnessDiscovery,
   HarnessEvent,
+  HarnessExecutionHandle,
   HarnessInspection,
   HarnessPreparedExecution,
   HarnessRecoveredExecution,
@@ -16,7 +16,7 @@ import type {
 } from "../types.ts";
 import { OperationalExecutionError } from "../types.ts";
 
-/** Deterministic test harness. Never enabled without QE_ENABLE_TEST_PROVIDER=1. */
+/** Deterministic headless test harness. Never enabled without QE_ENABLE_TEST_PROVIDER=1. */
 export class FakeHarness implements AgentHarness {
   readonly kind = "fake";
   readonly displayName = "Test Harness";
@@ -26,6 +26,7 @@ export class FakeHarness implements AgentHarness {
   private readonly waiters = new Map<string, () => void>();
   private readonly listeners = new Map<string, (event: HarnessEvent) => void>();
   private nextFailure: Error | null = null;
+  recoveryCount = 0;
 
   constructor(
     private readonly outputs: Record<string, JsonValue> = {},
@@ -64,7 +65,7 @@ export class FakeHarness implements AgentHarness {
       displayName: this.displayName,
       strategy: this.integrationStrategy,
       integration: {
-        status: "ready" as const,
+        status: "ready",
         detail: "Deterministic test harness is enabled.",
         installed: true,
         authenticated: true,
@@ -86,17 +87,17 @@ export class FakeHarness implements AgentHarness {
   }
 
   async start(
-    dispatch: DispatchRecord,
+    _dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
-    return prepared(dispatch, lineage);
+    return headlessPreparedExecution(lineage);
   }
 
   async continue(
-    dispatch: DispatchRecord,
+    _dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
-    return prepared(dispatch, lineage);
+    return headlessPreparedExecution(lineage);
   }
 
   async sendInputAndCollect(
@@ -104,6 +105,7 @@ export class FakeHarness implements AgentHarness {
     execution: HarnessPreparedExecution,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
+    assertHeadlessHandle(execution.handle, execution.lineage);
     const lineageId = execution.lineage.lineageId;
     this.listeners.set(lineageId, onEvent);
     let existing = this.inspections.get(lineageId);
@@ -124,21 +126,14 @@ export class FakeHarness implements AgentHarness {
     if (existing?.attention) {
       onEvent({
         type: "running",
-        inspection: {
-          state: "running",
-          agent: { ...execution.agent, status: "working" },
-          attention: null,
-          intervention: null,
-          lastActivityAt: new Date().toISOString(),
-        },
+        inspection: runningInspection(execution.lineage),
       });
       onEvent({ type: "inspection", inspection: existing });
       await new Promise<void>((resolve) =>
         this.waiters.set(lineageId, resolve),
       );
     } else {
-      const inspection = this.running(execution.lineage, execution.agent);
-      onEvent({ type: "running", inspection });
+      onEvent({ type: "running", inspection: this.running(execution.lineage) });
     }
     if (this.delayMs) await Bun.sleep(this.delayMs);
     this.listeners.delete(lineageId);
@@ -156,22 +151,15 @@ export class FakeHarness implements AgentHarness {
     message = "Test harness needs input.",
   ): HarnessInspection {
     const inspection: HarnessInspection = {
-      state: "waiting_for_human",
-      agent: fakeAgent(lineage.lineageId, "blocked"),
+      ...baseInspection(lineage, "waiting_for_human", "blocked"),
       attention: {
         attentionId: crypto.randomUUID(),
         category,
         message,
         requestedAt: new Date().toISOString(),
       },
-      intervention: null,
-      lastActivityAt: new Date().toISOString(),
     };
-    this.inspections.set(lineage.lineageId, inspection);
-    this.listeners.get(lineage.lineageId)?.({
-      type: "inspection",
-      inspection,
-    });
+    this.publish(lineage, inspection);
     return inspection;
   }
 
@@ -182,8 +170,7 @@ export class FakeHarness implements AgentHarness {
     const requestedAt = new Date().toISOString();
     const attentionId = crypto.randomUUID();
     const inspection: HarnessInspection = {
-      state: "waiting_for_human",
-      agent: fakeAgent(lineage.lineageId, "blocked"),
+      ...baseInspection(lineage, "waiting_for_human", "blocked", requestedAt),
       attention: {
         attentionId,
         category: "needs_input",
@@ -201,36 +188,21 @@ export class FakeHarness implements AgentHarness {
         state: "intervention_pending",
         requestedAt,
       },
-      lastActivityAt: requestedAt,
     };
-    this.inspections.set(lineage.lineageId, inspection);
-    this.listeners.get(lineage.lineageId)?.({
-      type: "inspection",
-      inspection,
-    });
+    this.publish(lineage, inspection);
     return inspection;
   }
 
   provideInput(lineage: HarnessLineage): HarnessInspection {
-    const inspection = this.running(
-      lineage,
-      fakeAgent(lineage.lineageId, "working"),
-    );
-    this.listeners.get(lineage.lineageId)?.({
-      type: "inspection",
-      inspection,
-    });
-    this.waiters.get(lineage.lineageId)?.();
-    this.waiters.delete(lineage.lineageId);
+    const inspection = this.running(lineage);
+    this.listeners.get(lineage.lineageId)?.({ type: "inspection", inspection });
+    this.release(lineage.lineageId);
     return inspection;
   }
 
   resumeAutomation(lineage: HarnessLineage): HarnessInspection {
     const previous = this.inspections.get(lineage.lineageId)?.intervention;
-    const inspection = this.running(
-      lineage,
-      fakeAgent(lineage.lineageId, "working"),
-    );
+    const inspection = this.running(lineage);
     if (previous) {
       const resumedAt = new Date().toISOString();
       inspection.intervention = {
@@ -241,86 +213,81 @@ export class FakeHarness implements AgentHarness {
       };
       this.inspections.set(lineage.lineageId, inspection);
     }
-    this.listeners.get(lineage.lineageId)?.({
-      type: "inspection",
-      inspection,
-    });
-    this.waiters.get(lineage.lineageId)?.();
-    this.waiters.delete(lineage.lineageId);
+    this.listeners.get(lineage.lineageId)?.({ type: "inspection", inspection });
+    this.release(lineage.lineageId);
     return inspection;
   }
 
   emitOutput(lineage: HarnessLineage): void {
-    const inspection = this.running(
-      lineage,
-      fakeAgent(lineage.lineageId, "working"),
-    );
-    this.listeners.get(lineage.lineageId)?.({ type: "output", inspection });
+    this.listeners.get(lineage.lineageId)?.({
+      type: "output",
+      inspection: this.running(lineage),
+    });
   }
 
   failNext(message = "Fake harness failed."): void {
     this.nextFailure = new OperationalExecutionError(
       message,
       "operator_recovery_required",
+      "fake_execution_failed",
+      undefined,
+      { sideEffectCertainty: "ambiguous", phase: "execute" },
     );
   }
 
   failNextTransient(message = "Transient fake harness failure."): void {
-    this.nextFailure = new OperationalExecutionError(message, "auto_retryable");
+    this.nextFailure = new OperationalExecutionError(
+      message,
+      "auto_retryable",
+      "fake_execution_transient",
+      undefined,
+      { sideEffectCertainty: "not_submitted", phase: "execute" },
+    );
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
-    this.inspections.set(lineage.lineageId, {
-      state: "retained",
-      agent: fakeAgent(lineage.lineageId, "idle"),
-      attention: null,
-      intervention: null,
-      lastActivityAt: new Date().toISOString(),
-    });
-    this.waiters.get(lineage.lineageId)?.();
-    this.waiters.delete(lineage.lineageId);
+    this.inspections.set(
+      lineage.lineageId,
+      baseInspection(lineage, "retained", "idle"),
+    );
+    this.release(lineage.lineageId);
   }
 
   async inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
     return (
-      this.inspections.get(lineage.lineageId) ?? {
-        state: "recovering",
-        agent: fakeAgent(lineage.lineageId, "unknown"),
-        attention: lineage.attention,
-        intervention: lineage.intervention,
-        lastActivityAt: new Date().toISOString(),
-      }
+      this.inspections.get(lineage.lineageId) ??
+      baseInspection(lineage, "recovering", "unknown")
     );
   }
 
   async close(lineage: HarnessLineage): Promise<void> {
-    this.inspections.set(lineage.lineageId, {
-      state: "closed",
-      agent: null,
-      attention: null,
-      intervention: null,
-      lastActivityAt: new Date().toISOString(),
-    });
+    this.inspections.set(
+      lineage.lineageId,
+      baseInspection(lineage, "closed", "completed"),
+    );
   }
 
   async recover(lineage: HarnessLineage): Promise<HarnessRecoveredExecution> {
+    this.recoveryCount += 1;
     const inspection = await this.inspect(lineage);
-    return inspection.agent
-      ? {
+    return inspection.state === "closed"
+      ? { found: false, detail: "Fake harness session is closed." }
+      : {
           found: true,
-          agent: inspection.agent,
+          handle: headlessHandle(lineage),
+          inspection,
           detail: "Fake harness execution recovered.",
-        }
-      : { found: false, detail: "Fake harness session is closed." };
+        };
   }
 
   async waitAndCollect(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
-    agent: HostedAgent,
+    handle: HarnessExecutionHandle,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
-    onEvent({ type: "inspection", inspection: this.running(lineage, agent) });
+    assertHeadlessHandle(handle, lineage);
+    onEvent({ type: "inspection", inspection: this.running(lineage) });
     return outputsFor(dispatch, this.outputs);
   }
 
@@ -328,68 +295,78 @@ export class FakeHarness implements AgentHarness {
   async discoverAdoptionCandidates() {
     return [];
   }
-  attachment(lineage: HarnessLineage) {
-    return {
-      mode: "local_native_terminal" as const,
-      backendKind: "fake",
-      terminalSessionId: "fake",
-      localContextId: `sha256:${"0".repeat(64)}`,
-      paneId: `fake-${lineage.lineageId}`,
-      supportsObservation: false,
-      supportsTakeover: false,
-    };
-  }
   disconnect(): void {}
 
-  private running(
-    lineage: HarnessLineage,
-    agent: HostedAgent,
-  ): HarnessInspection {
-    const inspection: HarnessInspection = {
-      state: "running",
-      agent: { ...agent, status: "working" },
-      attention: null,
-      intervention: null,
-      lastActivityAt: new Date().toISOString(),
-    };
+  private running(lineage: HarnessLineage): HarnessInspection {
+    const inspection = runningInspection(lineage);
     this.inspections.set(lineage.lineageId, inspection);
     return inspection;
   }
+
+  private publish(
+    lineage: HarnessLineage,
+    inspection: HarnessInspection,
+  ): void {
+    this.inspections.set(lineage.lineageId, inspection);
+    this.listeners.get(lineage.lineageId)?.({ type: "inspection", inspection });
+  }
+
+  private release(lineageId: string): void {
+    this.waiters.get(lineageId)?.();
+    this.waiters.delete(lineageId);
+  }
 }
 
-function prepared(
-  _dispatch: DispatchRecord,
+function headlessPreparedExecution(
   lineage: HarnessLineage,
 ): HarnessPreparedExecution {
-  const agent = fakeAgent(lineage.lineageId, "idle");
+  const handle = headlessHandle(lineage);
+  return { lineage: { ...lineage, executionHandle: handle }, handle };
+}
+
+function headlessHandle(lineage: HarnessLineage): HarnessExecutionHandle {
   return {
-    lineage,
-    ref: {
-      sessionName: "fake",
-      workspaceId: "fake-workspace",
-      tabId: `fake-tab-${lineage.lineageId}`,
-      paneId: agent.paneId,
-      ...(agent.terminalId ? { terminalId: agent.terminalId } : {}),
-      agentName: agent.name as string,
-    },
-    agent,
+    schemaVersion: 1,
+    harnessKind: "fake",
+    executionId: lineage.lineageId,
+    ...(lineage.nativeSession ? { nativeSession: lineage.nativeSession } : {}),
   };
 }
-function fakeAgent(
-  lineageId = "recovered",
-  status: HostedAgent["status"] = "done",
-): HostedAgent {
+
+function assertHeadlessHandle(
+  handle: HarnessExecutionHandle,
+  lineage: HarnessLineage,
+): void {
+  if (
+    handle.harnessKind !== "fake" ||
+    handle.executionId !== lineage.lineageId ||
+    handle.transportBinding
+  )
+    throw new Error("Fake headless execution handle is invalid.");
+}
+
+function runningInspection(lineage: HarnessLineage): HarnessInspection {
+  return baseInspection(lineage, "running", "active");
+}
+
+function baseInspection(
+  lineage: HarnessLineage,
+  state: HarnessInspection["state"],
+  activity: HarnessInspection["activity"]["state"],
+  lastActivityAt = new Date().toISOString(),
+): HarnessInspection {
   return {
-    name: `fake-${lineageId}`,
-    agent: "fake",
-    status,
-    paneId: `fake-pane-${lineageId}`,
-    terminalId: `fake-terminal-${lineageId}`,
-    workspaceId: "fake-workspace",
-    tabId: `fake-tab-${lineageId}`,
-    interactiveReady: true,
+    state,
+    activity: { state: activity },
+    nativeSession: lineage.nativeSession,
+    health: state === "unavailable" ? "unavailable" : "healthy",
+    attention: null,
+    intervention: lineage.intervention,
+    lastActivityAt,
+    interactive: null,
   };
 }
+
 function humanEscalationReason(dispatch: DispatchRecord): string | null {
   const work = dispatch.action.execution.work;
   const combined =

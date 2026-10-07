@@ -4,7 +4,10 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
-import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import {
+  DispatchRegistry,
+  type HarnessLineage,
+} from "../src/dispatch/registry.ts";
 import {
   readControl,
   writeControlAtomic,
@@ -16,6 +19,7 @@ import {
   piPromptFor,
 } from "../src/harnesses/pi/adapter.ts";
 import { workspaceAccessAllows } from "../src/harnesses/pi/workspace-permission-extension.ts";
+import { terminalLineage } from "../src/harnesses/terminal-execution.ts";
 import type { HarnessEvent } from "../src/harnesses/types.ts";
 import type {
   HostedAgent,
@@ -26,7 +30,13 @@ import type {
   TerminalAttachmentDescriptor,
   TerminalSessionBackend,
 } from "../src/session-host/types.ts";
-import { action } from "./support.ts";
+import { action as supportAction } from "./support.ts";
+
+const action: typeof supportAction = (...args) => {
+  const value = supportAction(...args);
+  value.execution.configuration.harness_kind = "pi";
+  return value;
+};
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -915,7 +925,11 @@ test("Worker restart restores Herdr-only blocked attention from recovered state"
   });
   expect(await restartedProvider.recover(recoveredLineage)).toMatchObject({
     found: true,
-    agent: { status: "blocked" },
+    inspection: {
+      state: "waiting_for_human",
+      activity: { state: "blocked" },
+      interactive: { kind: "terminal", processIdentity: "verified" },
+    },
   });
   expect(await restartedProvider.inspect(recoveredLineage)).toMatchObject({
     state: "waiting_for_human",
@@ -1114,16 +1128,24 @@ test("known failed dispatch recovers exact pre-prompt orphan without a result co
     action: { action_id: dispatch.action.action_id },
     lineage: {
       lineageId: lineage.lineageId,
-      herdrSessionIncarnation: prepared.ref.sessionIncarnation,
-      paneId: prepared.ref.paneId,
-      agentName: prepared.ref.agentName,
+      transportBinding: { kind: "terminal", harnessKind: "pi" },
+      interactive: { kind: "terminal", processIdentity: "verified" },
     },
+  });
+  expect(
+    terminalLineage(candidates[0]?.lineage as HarnessLineage, "pi").ref,
+  ).toMatchObject({
+    sessionIncarnation: prepared.ref.sessionIncarnation,
+    paneId: prepared.ref.paneId,
+    agentName: prepared.ref.agentName,
   });
   expect(
     registry.adopt(candidates[0] as (typeof candidates)[number]),
   ).toMatchObject({ state: "failed" });
-  expect(registry.getLineage(lineage.lineageId)).toMatchObject({
-    herdrSessionIncarnation: prepared.ref.sessionIncarnation,
+  expect(
+    terminalLineage(registry.getLineage(lineage.lineageId), "pi").ref,
+  ).toMatchObject({
+    sessionIncarnation: prepared.ref.sessionIncarnation,
     paneId: prepared.ref.paneId,
     agentName: prepared.ref.agentName,
   });

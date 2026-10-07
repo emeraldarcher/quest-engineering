@@ -160,13 +160,18 @@ defmodule QuestEngineering.Server.OperationalRecovery do
   end
 
   def failure_policy(action_id, %{"classification" => classification})
-      when classification in ["operator_recovery_required", "terminal_not_recoverable"] do
+      when classification in [
+             "operator_recovery_required",
+             "terminal_not_recoverable",
+             "uncertain"
+           ] do
     attribution = Repo.get(OperationalAttemptAttribution, action_id)
     epoch = attribution && Repo.get(OperationalRecoveryEpoch, attribution.epoch_id)
 
     policy =
       case classification do
         "operator_recovery_required" -> :operator_recovery_required
+        "uncertain" -> :operator_recovery_required
         "terminal_not_recoverable" -> :terminal_not_recoverable
       end
 

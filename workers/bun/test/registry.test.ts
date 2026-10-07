@@ -3,6 +3,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DispatchRegistry, turnLifecycle } from "../src/dispatch/registry.ts";
+import {
+  terminalLineage,
+  terminalTransportBinding,
+} from "../src/harnesses/terminal-execution.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];
@@ -46,8 +50,8 @@ describe("durable dispatch registry", () => {
     `);
     legacy
       .query(`INSERT INTO provider_lineages
-        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,result_control_path,ownership_token,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?)`)
+        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,result_control_path,ownership_token,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(
         "legacy-lineage",
         "legacy-logical",
@@ -56,19 +60,41 @@ describe("durable dispatch registry", () => {
         "pi",
         join(root, "legacy-control.json"),
         "legacy-owner",
+        "legacy-herdr",
+        "legacy-workspace",
+        "legacy-tab",
+        "legacy-pane",
+        "legacy-terminal",
+        "legacy-agent",
         "2026-01-01T00:00:00.000Z",
         "2026-01-01T00:00:01.000Z",
       );
     legacy.close();
 
     const registry = new DispatchRegistry(database, root);
-    expect(registry.getLineage("legacy-lineage")).toMatchObject({
+    const lineage = registry.getLineage("legacy-lineage");
+    expect(lineage).toMatchObject({
       harnessKind: "pi",
       sessionState: "starting",
       startedAt: "2026-01-01T00:00:00.000Z",
       lastActivityAt: "2026-01-01T00:00:01.000Z",
       capabilities: { canResume: true },
-      herdrSessionIncarnation: null,
+      executionHandle: {
+        schemaVersion: 1,
+        harnessKind: "pi",
+        executionId: "legacy-lineage",
+        transportBinding: { kind: "terminal" },
+      },
+      transportBinding: { kind: "terminal" },
+      interactive: { kind: "terminal" },
+    });
+    expect(terminalLineage(lineage, "pi").ref).toEqual({
+      sessionName: "legacy-herdr",
+      workspaceId: "legacy-workspace",
+      tabId: "legacy-tab",
+      paneId: "legacy-pane",
+      terminalId: "legacy-terminal",
+      agentName: "legacy-agent",
     });
     registry.close();
     const migrated = new Database(database);
@@ -321,13 +347,16 @@ describe("durable dispatch registry", () => {
     registry.close();
 
     const restarted = new DispatchRegistry(database, root);
-    expect(restarted.getLineage(lineageId)).toMatchObject({
+    const restartedLineage = restarted.getLineage(lineageId);
+    expect(restartedLineage).toMatchObject({
       lineageId,
       sessionState: "waiting_for_human",
       attention,
       harnessKind: "fake",
-      herdrSession: "qe-worker-test",
-      herdrSessionIncarnation: "session-incarnation-1",
+    });
+    expect(terminalLineage(restartedLineage, "fake").ref).toMatchObject({
+      sessionName: "qe-worker-test",
+      sessionIncarnation: "session-incarnation-1",
     });
     expect(restarted.get(dispatch.action.action_id).lineageId).toBe(lineageId);
     restarted.close();
@@ -347,13 +376,28 @@ describe("durable dispatch registry", () => {
       action: dispatch.action,
       lineage: {
         ...lineage,
-        herdrSession: "qe-worker-test",
-        herdrSessionIncarnation: "incarnation-1",
-        workspaceId: "workspace-1",
-        tabId: "tab-1",
-        paneId: "pane-1",
-        terminalId: "terminal-1",
-        agentName: "agent-1",
+        transportBinding: terminalTransportBinding(
+          lineage.harnessKind,
+          "herdr",
+          {
+            sessionName: "qe-worker-test",
+            sessionIncarnation: "incarnation-1",
+            workspaceId: "workspace-1",
+            tabId: "tab-1",
+            paneId: "pane-1",
+            terminalId: "terminal-1",
+            agentName: "agent-1",
+          },
+          {
+            name: "agent-1",
+            agent: "fake",
+            status: "working",
+            workspaceId: "workspace-1",
+            tabId: "tab-1",
+            paneId: "pane-1",
+            terminalId: "terminal-1",
+          },
+        ),
       },
       state: "running",
       resultNonce: dispatch.resultNonce,
@@ -362,14 +406,16 @@ describe("durable dispatch registry", () => {
 
     expect(adopted.state).toBe("failed");
     expect(adopted.failure).toEqual({ reason: "launch_response_incomplete" });
-    expect(registry.getLineage(lineageId)).toMatchObject({
-      herdrSession: "qe-worker-test",
-      herdrSessionIncarnation: "incarnation-1",
+    expect(
+      terminalLineage(registry.getLineage(lineageId), "fake").ref,
+    ).toMatchObject({
+      sessionName: "qe-worker-test",
+      sessionIncarnation: "incarnation-1",
       workspaceId: "workspace-1",
       paneId: "pane-1",
       agentName: "agent-1",
-      activeActionId: null,
     });
+    expect(registry.getLineage(lineageId).activeActionId).toBeNull();
     registry.close();
   });
 

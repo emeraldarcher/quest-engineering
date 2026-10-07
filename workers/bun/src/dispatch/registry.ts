@@ -2,19 +2,32 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  type NativeSessionRef,
+  nativeSessionRef,
+  validateNativeSessionRef,
+} from "../harnesses/native-session.ts";
+import { terminalTransportBinding } from "../harnesses/terminal-execution.ts";
+import {
+  type HarnessTransportBinding,
+  parseTransportBinding,
+  serializeTransportBinding,
+} from "../harnesses/transport-binding.ts";
 import type {
   HarnessCapabilities,
+  HarnessExecutionHandle,
   HarnessSessionState,
   HumanAttention,
   HumanInterventionLifecycle,
+  InteractiveHarnessSession,
 } from "../harnesses/types.ts";
+import { validateHarnessExecutionHandle } from "../harnesses/types.ts";
 import type {
   ExecuteAction,
   JsonValue,
   LocalDispatchState,
   ReconcileDispatch,
 } from "../protocol/types.ts";
-import type { NativeSessionRef } from "../session-host/types.ts";
 
 export interface HarnessLineage {
   lineageId: string;
@@ -32,14 +45,13 @@ export interface HarnessLineage {
   resultControlPath: string;
   ownershipToken: string;
   activeActionId: string | null;
-  herdrSession: string | null;
-  herdrSessionIncarnation: string | null;
-  workspaceId: string | null;
-  tabId: string | null;
-  paneId: string | null;
-  terminalId: string | null;
-  agentName: string | null;
+  /** Durable provider-neutral execution identity. */
+  executionHandle: HarnessExecutionHandle | null;
   nativeSession: NativeSessionRef | null;
+  /** Adapter-owned durable state; generic orchestration never interprets it. */
+  transportBinding: HarnessTransportBinding | null;
+  /** Optional interactive capability. Headless lineages validly keep this null. */
+  interactive: InteractiveHarnessSession | null;
 }
 
 export interface StructuredCompletionRequirement {
@@ -89,12 +101,6 @@ export interface PhysicalProcessTransition {
   sourceLineageId: string;
   targetLineageId: string;
   mode: PhysicalProcessTransitionMode;
-  herdrSession: string | null;
-  herdrSessionIncarnation: string | null;
-  workspaceId: string | null;
-  paneId: string | null;
-  terminalId: string | null;
-  agentName: string | null;
   recordedAt: string;
 }
 
@@ -162,6 +168,8 @@ interface LineageRow {
   terminal_id: string | null;
   agent_name: string | null;
   native_session_json: string | null;
+  transport_binding_json: string | null;
+  execution_handle_json: string | null;
 }
 
 export class IncompatibleContinuationConfigurationError extends Error {
@@ -319,6 +327,21 @@ export class DispatchRegistry {
       .transaction(() => {
         const existing = this.row(input.action.action_id);
         const lineage = input.lineage;
+        const executionHandle = validateHarnessExecutionHandle(
+          lineage.executionHandle ?? {
+            schemaVersion: 1,
+            harnessKind: lineage.harnessKind,
+            executionId: lineage.lineageId,
+            ...(lineage.nativeSession
+              ? { nativeSession: lineage.nativeSession }
+              : {}),
+            ...(lineage.transportBinding
+              ? { transportBinding: lineage.transportBinding }
+              : {}),
+          },
+          lineage.harnessKind,
+          lineage.lineageId,
+        );
         if (existing) {
           const dispatch = mapDispatch(existing);
           const actionJson = canonicalJson(input.action);
@@ -336,38 +359,13 @@ export class DispatchRegistry {
             throw new Error(
               `Adopted lineage ${lineage.lineageId} has conflicting ownership.`,
             );
-          if (
-            !lineage.herdrSession ||
-            !lineage.herdrSessionIncarnation ||
-            !lineage.workspaceId ||
-            !lineage.paneId ||
-            !lineage.agentName
-          )
-            throw new Error(
-              `Adopted lineage ${lineage.lineageId} has incomplete physical identity.`,
-            );
-          this.recordHost(lineage.lineageId, {
-            herdrSession: lineage.herdrSession,
-            ...(lineage.herdrSessionIncarnation
-              ? {
-                  herdrSessionIncarnation: lineage.herdrSessionIncarnation,
-                }
-              : {}),
-            workspaceId: lineage.workspaceId,
-            ...(lineage.tabId ? { tabId: lineage.tabId } : {}),
-            paneId: lineage.paneId,
-            ...(lineage.terminalId ? { terminalId: lineage.terminalId } : {}),
-            agentName: lineage.agentName,
-            ...(lineage.nativeSession
-              ? { nativeSession: lineage.nativeSession }
-              : {}),
-          });
+          this.recordExecution(lineage.lineageId, executionHandle);
           return this.get(input.action.action_id);
         }
         this.db
           .query(`INSERT INTO provider_lineages
-        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(lineage_id) DO NOTHING`)
+        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,transport_binding_json,execution_handle_json,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(lineage_id) DO NOTHING`)
           .run(
             lineage.lineageId,
             lineage.logicalLineageId,
@@ -384,16 +382,22 @@ export class DispatchRegistry {
             lineage.resultControlPath,
             lineage.ownershipToken,
             input.action.action_id,
-            lineage.herdrSession,
-            lineage.herdrSessionIncarnation,
-            lineage.workspaceId,
-            lineage.tabId,
-            lineage.paneId,
-            lineage.terminalId,
-            lineage.agentName,
-            lineage.nativeSession
-              ? JSON.stringify(lineage.nativeSession)
-              : null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            serializeNativeSession(
+              executionHandle.nativeSession ?? null,
+              lineage.harnessKind,
+            ),
+            serializeTransportBinding(
+              executionHandle.transportBinding ?? null,
+              lineage.harnessKind,
+            ),
+            JSON.stringify(executionHandle),
             now(),
             now(),
           );
@@ -405,20 +409,19 @@ export class DispatchRegistry {
         }
         this.db
           .query(
-            `UPDATE provider_lineages SET active_action_id=?,herdr_session=?,herdr_session_incarnation=?,workspace_id=?,tab_id=?,pane_id=?,terminal_id=?,agent_name=?,native_session_json=?,updated_at=? WHERE lineage_id=?`,
+            `UPDATE provider_lineages SET active_action_id=?,native_session_json=?,transport_binding_json=?,execution_handle_json=?,updated_at=? WHERE lineage_id=?`,
           )
           .run(
             input.action.action_id,
-            lineage.herdrSession,
-            lineage.herdrSessionIncarnation,
-            lineage.workspaceId,
-            lineage.tabId,
-            lineage.paneId,
-            lineage.terminalId,
-            lineage.agentName,
-            lineage.nativeSession
-              ? JSON.stringify(lineage.nativeSession)
-              : null,
+            serializeNativeSession(
+              executionHandle.nativeSession ?? null,
+              lineage.harnessKind,
+            ),
+            serializeTransportBinding(
+              executionHandle.transportBinding ?? null,
+              lineage.harnessKind,
+            ),
+            JSON.stringify(executionHandle),
             now(),
             lineage.lineageId,
           );
@@ -538,6 +541,31 @@ export class DispatchRegistry {
       .immediate();
   }
 
+  recordExecution(lineageId: string, handle: HarnessExecutionHandle): void {
+    const lineage = this.getLineage(lineageId);
+    const valid = validateHarnessExecutionHandle(
+      handle,
+      lineage.harnessKind,
+      lineageId,
+    );
+    const binding = valid.transportBinding ?? null;
+    this.db
+      .query(`UPDATE provider_lineages SET
+      native_session_json=?,transport_binding_json=?,execution_handle_json=?,updated_at=?
+      WHERE lineage_id=?`)
+      .run(
+        serializeNativeSession(
+          valid.nativeSession ?? null,
+          lineage.harnessKind,
+        ),
+        serializeTransportBinding(binding, lineage.harnessKind),
+        JSON.stringify(valid),
+        now(),
+        lineageId,
+      );
+  }
+
+  /** Persistence-boundary compatibility for terminal adapter fixtures. */
   recordHost(
     lineageId: string,
     input: {
@@ -551,33 +579,60 @@ export class DispatchRegistry {
       nativeSession?: NativeSessionRef;
     },
   ): void {
-    this.db
-      .query(`UPDATE provider_lineages SET
-      herdr_session=?,herdr_session_incarnation=COALESCE(?,herdr_session_incarnation),workspace_id=?,tab_id=?,pane_id=?,terminal_id=?,agent_name=?,native_session_json=?,updated_at=?
-      WHERE lineage_id=?`)
-      .run(
-        input.herdrSession,
-        input.herdrSessionIncarnation ?? null,
-        input.workspaceId,
-        input.tabId ?? null,
-        input.paneId,
-        input.terminalId ?? null,
-        input.agentName,
-        input.nativeSession ? JSON.stringify(input.nativeSession) : null,
-        now(),
-        lineageId,
-      );
+    const lineage = this.getLineage(lineageId);
+    const ref = {
+      sessionName: input.herdrSession,
+      ...(input.herdrSessionIncarnation
+        ? { sessionIncarnation: input.herdrSessionIncarnation }
+        : {}),
+      workspaceId: input.workspaceId,
+      ...(input.tabId ? { tabId: input.tabId } : {}),
+      paneId: input.paneId,
+      ...(input.terminalId ? { terminalId: input.terminalId } : {}),
+      agentName: input.agentName,
+      ...(input.nativeSession ? { nativeSession: input.nativeSession } : {}),
+    };
+    const agent = {
+      name: input.agentName,
+      agent:
+        lineage.harnessKind === "antigravity" ? "agy" : lineage.harnessKind,
+      status: "unknown" as const,
+      paneId: input.paneId,
+      ...(input.terminalId ? { terminalId: input.terminalId } : {}),
+      workspaceId: input.workspaceId,
+      ...(input.tabId ? { tabId: input.tabId } : {}),
+      ...(input.nativeSession ? { nativeSession: input.nativeSession } : {}),
+    };
+    this.recordExecution(lineageId, {
+      schemaVersion: 1,
+      harnessKind: lineage.harnessKind,
+      executionId: lineageId,
+      ...(input.nativeSession ? { nativeSession: input.nativeSession } : {}),
+      transportBinding: terminalTransportBinding(
+        lineage.harnessKind,
+        "herdr",
+        ref,
+        agent,
+      ),
+    });
   }
 
   recordNativeSession(
     lineageId: string,
     nativeSession: NativeSessionRef,
   ): void {
+    const lineage = this.getLineage(lineageId);
+    const valid = validateNativeSessionRef(nativeSession, lineage.harnessKind);
+    if (lineage.executionHandle)
+      this.recordExecution(lineageId, {
+        ...lineage.executionHandle,
+        nativeSession: valid,
+      });
     this.db
       .query(
         "UPDATE provider_lineages SET native_session_json=?,last_activity_at=?,updated_at=? WHERE lineage_id=?",
       )
-      .run(JSON.stringify(nativeSession), now(), now(), lineageId);
+      .run(JSON.stringify(valid), now(), now(), lineageId);
   }
 
   updateSession(
@@ -852,12 +907,12 @@ export class DispatchRegistry {
         input.sourceLineage.lineageId,
         input.targetLineageId,
         input.mode,
-        input.sourceLineage.herdrSession,
-        input.sourceLineage.herdrSessionIncarnation,
-        input.sourceLineage.workspaceId,
-        input.sourceLineage.paneId,
-        input.sourceLineage.terminalId,
-        input.sourceLineage.agentName,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
         input.recordedAt,
       );
   }
@@ -1191,6 +1246,8 @@ export class DispatchRegistry {
         terminal_id TEXT,
         agent_name TEXT,
         native_session_json TEXT,
+        transport_binding_json TEXT,
+        execution_handle_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -1266,6 +1323,8 @@ export class DispatchRegistry {
     this.ensureColumn("provider_lineages", "attention_json", "TEXT");
     this.ensureColumn("provider_lineages", "intervention_json", "TEXT");
     this.ensureColumn("provider_lineages", "herdr_session_incarnation", "TEXT");
+    this.ensureColumn("provider_lineages", "transport_binding_json", "TEXT");
+    this.ensureColumn("provider_lineages", "execution_handle_json", "TEXT");
     this.ensureColumn("dispatches", "completion_requirement_json", "TEXT");
     this.ensureColumn("dispatches", "prompt_accepted_at", "TEXT");
     this.ensureColumn("dispatches", "native_activity_at", "TEXT");
@@ -1395,12 +1454,14 @@ export class DispatchRegistry {
         terminal_id TEXT,
         agent_name TEXT,
         native_session_json TEXT,
+        transport_binding_json TEXT,
+        execution_handle_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
       INSERT INTO provider_lineages
-        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at)
-      SELECT lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,created_at,updated_at
+        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,transport_binding_json,execution_handle_json,created_at,updated_at)
+      SELECT lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,herdr_session,herdr_session_incarnation,workspace_id,tab_id,pane_id,terminal_id,agent_name,native_session_json,transport_binding_json,execution_handle_json,created_at,updated_at
       FROM provider_lineages_pi_legacy;
       CREATE TABLE dispatches (
         action_id TEXT PRIMARY KEY,
@@ -1500,16 +1561,152 @@ function mapPhysicalProcessTransition(
     sourceLineageId: row.source_lineage_id,
     targetLineageId: row.target_lineage_id,
     mode: row.mode,
-    herdrSession: row.herdr_session,
-    herdrSessionIncarnation: row.herdr_session_incarnation,
-    workspaceId: row.workspace_id,
-    paneId: row.pane_id,
-    terminalId: row.terminal_id,
-    agentName: row.agent_name,
     recordedAt: row.recorded_at,
   };
 }
+function serializeNativeSession(
+  value: NativeSessionRef | null,
+  harnessKind: string,
+): string | null {
+  return value
+    ? JSON.stringify(validateNativeSessionRef(value, harnessKind))
+    : null;
+}
+
+function persistedNativeSession(
+  serialized: string | null,
+  harnessKind: string,
+): NativeSessionRef | null {
+  if (!serialized) return null;
+  const value = JSON.parse(serialized) as unknown;
+  try {
+    return validateNativeSessionRef(value, harnessKind);
+  } catch {
+    // Additive compatibility for pre-seam rows; all new writes use schema v1.
+    if (
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      "kind" in value &&
+      ((value as { kind?: unknown }).kind === "id" ||
+        (value as { kind?: unknown }).kind === "path") &&
+      "value" in value &&
+      typeof (value as { value?: unknown }).value === "string"
+    )
+      return nativeSessionRef(
+        harnessKind,
+        (value as { kind: "id" | "path" }).kind,
+        (value as { value: string }).value,
+      );
+    throw new Error("Persisted native session identity is invalid.");
+  }
+}
+
+function legacyTerminalBinding(
+  row: LineageRow,
+): HarnessTransportBinding | null {
+  if (
+    !row.herdr_session ||
+    !row.workspace_id ||
+    !row.pane_id ||
+    !row.agent_name
+  )
+    return null;
+  const nativeSession =
+    persistedNativeSession(row.native_session_json, row.harness_kind) ??
+    undefined;
+  return terminalTransportBinding(
+    row.harness_kind,
+    "herdr",
+    {
+      sessionName: row.herdr_session,
+      ...(row.herdr_session_incarnation
+        ? { sessionIncarnation: row.herdr_session_incarnation }
+        : {}),
+      workspaceId: row.workspace_id,
+      ...(row.tab_id ? { tabId: row.tab_id } : {}),
+      paneId: row.pane_id,
+      ...(row.terminal_id ? { terminalId: row.terminal_id } : {}),
+      agentName: row.agent_name,
+      ...(nativeSession ? { nativeSession } : {}),
+    },
+    {
+      name: row.agent_name,
+      agent: row.harness_kind === "antigravity" ? "agy" : row.harness_kind,
+      status: "unknown",
+      paneId: row.pane_id,
+      ...(row.terminal_id ? { terminalId: row.terminal_id } : {}),
+      workspaceId: row.workspace_id,
+      ...(row.tab_id ? { tabId: row.tab_id } : {}),
+      ...(nativeSession ? { nativeSession } : {}),
+    },
+  );
+}
+
+function persistedExecutionHandle(
+  row: LineageRow,
+  nativeSession: NativeSessionRef | null,
+  transportBinding: HarnessTransportBinding | null,
+): HarnessExecutionHandle | null {
+  if (row.execution_handle_json) {
+    const handle = validateHarnessExecutionHandle(
+      JSON.parse(row.execution_handle_json),
+      row.harness_kind,
+      row.lineage_id,
+    );
+    if (
+      nativeSession &&
+      canonicalJson(handle.nativeSession ?? null) !==
+        canonicalJson(nativeSession)
+    )
+      throw new Error(
+        "Persisted harness execution native identity is inconsistent.",
+      );
+    if (
+      transportBinding &&
+      canonicalJson(handle.transportBinding ?? null) !==
+        canonicalJson(transportBinding)
+    )
+      throw new Error("Persisted harness execution binding is inconsistent.");
+    return handle;
+  }
+  if (!nativeSession && !transportBinding) return null;
+  return validateHarnessExecutionHandle(
+    {
+      schemaVersion: 1,
+      harnessKind: row.harness_kind,
+      executionId: row.lineage_id,
+      ...(nativeSession ? { nativeSession } : {}),
+      ...(transportBinding ? { transportBinding } : {}),
+    },
+    row.harness_kind,
+    row.lineage_id,
+  );
+}
+
 function mapLineage(row: LineageRow): HarnessLineage {
+  const capabilities = {
+    ...defaultHarnessCapabilities(),
+    ...(JSON.parse(row.capabilities_json) as Partial<HarnessCapabilities>),
+  };
+  const persistedBinding = parseTransportBinding(
+    row.transport_binding_json,
+    row.harness_kind,
+  );
+  const legacyBinding = persistedBinding ? null : legacyTerminalBinding(row);
+  const persistedNative = persistedNativeSession(
+    row.native_session_json,
+    row.harness_kind,
+  );
+  const executionHandle = persistedExecutionHandle(
+    row,
+    persistedNative,
+    persistedBinding ?? legacyBinding,
+  );
+  const transportBinding =
+    executionHandle?.transportBinding ?? legacyBinding ?? null;
+  const nativeSession =
+    executionHandle?.nativeSession ?? persistedNative ?? null;
   return {
     lineageId: row.lineage_id,
     logicalLineageId: row.logical_lineage_id,
@@ -1517,10 +1714,7 @@ function mapLineage(row: LineageRow): HarnessLineage {
     provider: row.provider,
     harnessKind: row.harness_kind,
     sessionState: row.session_state,
-    capabilities: {
-      ...defaultHarnessCapabilities(),
-      ...(JSON.parse(row.capabilities_json) as Partial<HarnessCapabilities>),
-    },
+    capabilities,
     attention: row.attention_json
       ? (JSON.parse(row.attention_json) as HumanAttention)
       : null,
@@ -1532,16 +1726,24 @@ function mapLineage(row: LineageRow): HarnessLineage {
     resultControlPath: row.result_control_path,
     ownershipToken: row.ownership_token,
     activeActionId: row.active_action_id,
-    herdrSession: row.herdr_session,
-    herdrSessionIncarnation: row.herdr_session_incarnation,
-    workspaceId: row.workspace_id,
-    tabId: row.tab_id,
-    paneId: row.pane_id,
-    terminalId: row.terminal_id,
-    agentName: row.agent_name,
-    nativeSession: row.native_session_json
-      ? (JSON.parse(row.native_session_json) as NativeSessionRef)
-      : null,
+    executionHandle,
+    nativeSession,
+    transportBinding,
+    interactive:
+      transportBinding?.kind === "terminal"
+        ? {
+            kind: "terminal",
+            attachment: capabilities.canAttachTerminal
+              ? {
+                  available: true,
+                  supportsObservation: true,
+                  supportsTakeover: capabilities.conversationalTakeover,
+                }
+              : null,
+            literalInput: capabilities.canSendInput,
+            processIdentity: "verified",
+          }
+        : null,
   };
 }
 export type TurnLifecyclePhase =

@@ -24,7 +24,6 @@ import type {
   HarnessPreparedExecution,
 } from "../src/harnesses/types.ts";
 import type { JsonValue, ReconcileDispatch } from "../src/protocol/types.ts";
-import type { HostedAgent } from "../src/session-host/types.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];
@@ -208,7 +207,8 @@ test("long provider turn and delayed completion succeed without a transport life
   });
   expect(harness.finalInspection).toMatchObject({
     state: "retained",
-    agent: { status: "idle" },
+    activity: { state: "idle" },
+    interactive: null,
   });
 
   await controlServer.stop();
@@ -257,7 +257,7 @@ class DelayedStructuredHarness implements AgentHarness {
     retainedSessionRecovery: false,
     structuredAttention: false,
     nativeBlocking: false,
-    canAttachTerminal: true,
+    canAttachTerminal: false,
     canSendInput: true,
     canInterrupt: true,
     canDetectAttention: true,
@@ -322,19 +322,13 @@ class DelayedStructuredHarness implements AgentHarness {
     _dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
-    const agent = agentFor(lineage, "idle");
     return {
       lineage,
-      ref: {
-        sessionName: "fake-retained-session",
-        sessionIncarnation: "fake-incarnation",
-        workspaceId: agent.workspaceId,
-        tabId: agent.tabId as string,
-        paneId: agent.paneId,
-        terminalId: agent.terminalId as string,
-        agentName: agent.name as string,
+      handle: {
+        schemaVersion: 1,
+        harnessKind: this.kind,
+        executionId: lineage.lineageId,
       },
-      agent,
     };
   }
 
@@ -437,32 +431,19 @@ class DelayedStructuredHarness implements AgentHarness {
   disconnect(): void {}
 }
 
-function agentFor(
-  lineage: HarnessLineage,
-  status: HostedAgent["status"],
-): HostedAgent {
-  return {
-    name: `fake-${lineage.lineageId}`,
-    agent: "fake",
-    status,
-    paneId: `pane-${lineage.lineageId}`,
-    terminalId: `terminal-${lineage.lineageId}`,
-    workspaceId: "workspace",
-    tabId: "tab",
-    interactiveReady: true,
-  };
-}
-
 function activeInspection(
   lineage: HarnessLineage,
   observedAt = new Date().toISOString(),
 ): HarnessInspection {
   return {
     state: "running",
-    agent: agentFor(lineage, "working"),
+    activity: { state: "active" },
+    nativeSession: lineage.nativeSession,
+    health: "healthy",
     attention: null,
     intervention: null,
     lastActivityAt: observedAt,
+    interactive: null,
   };
 }
 
@@ -472,10 +453,13 @@ function idleInspection(
 ): HarnessInspection {
   return {
     state: "retained",
-    agent: agentFor(lineage, "idle"),
+    activity: { state: "idle" },
+    nativeSession: lineage.nativeSession,
+    health: "healthy",
     attention: null,
     intervention: null,
     lastActivityAt: observedAt,
+    interactive: null,
   };
 }
 

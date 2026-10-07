@@ -1,9 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import { FakeHarness } from "../src/harnesses/fake/adapter.ts";
-import type { HarnessEvent } from "../src/harnesses/types.ts";
+import {
+  type HarnessEvent,
+  OperationalExecutionError,
+} from "../src/harnesses/types.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];
@@ -11,6 +15,116 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
+});
+
+test("headless lifecycle and restart recovery matrix requires no terminal identity", async () => {
+  const parent = join(process.cwd(), ".pi", "tmp");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "headless-lifecycle-"));
+  roots.push(root);
+  const database = join(root, "state.sqlite");
+  const harness = new FakeHarness({ change_set: { recovered: true } });
+  let registry = new DispatchRegistry(
+    database,
+    root,
+    harness.kind,
+    harness.capabilities,
+  );
+  const dispatch = registry.accept(action()).dispatch;
+  const lineage = registry.getLineage(dispatch.lineageId as string);
+
+  const prepared = await harness.start(dispatch, lineage);
+  expect(prepared).toMatchObject({
+    handle: {
+      schemaVersion: 1,
+      harnessKind: "fake",
+      executionId: lineage.lineageId,
+    },
+  });
+  expect(prepared.interactive).toBeUndefined();
+  expect(prepared.handle.nativeSession).toBeUndefined();
+  expect(prepared.handle.transportBinding).toBeUndefined();
+  expect("attachment" in harness).toBe(false);
+  const executor = new DispatchExecutor(registry, harness, async () => true);
+  try {
+    executor.attachment(dispatch.action.action_id);
+    throw new Error("Expected headless attachment to be unavailable.");
+  } catch (error) {
+    expect(error).toBeInstanceOf(OperationalExecutionError);
+    expect(error).toMatchObject({
+      code: "attachment_unavailable",
+      capability: "interactive_attachment",
+    });
+  }
+  registry.recordExecution(lineage.lineageId, prepared.handle);
+  registry.close();
+
+  registry = new DispatchRegistry(
+    database,
+    root,
+    harness.kind,
+    harness.capabilities,
+  );
+  const persisted = registry.getLineage(lineage.lineageId);
+  expect(persisted).toMatchObject({
+    executionHandle: {
+      schemaVersion: 1,
+      harnessKind: "fake",
+      executionId: lineage.lineageId,
+    },
+    nativeSession: null,
+    transportBinding: null,
+    interactive: null,
+  });
+  const restartedExecutor = new DispatchExecutor(
+    registry,
+    harness,
+    async () => true,
+    async () => true,
+  );
+  await restartedExecutor.start(dispatch.action.action_id);
+  expect(harness.recoveryCount).toBe(1);
+  expect(registry.get(dispatch.action.action_id)).toMatchObject({
+    state: "completed",
+    outputs: { change_set: { recovered: true } },
+  });
+  expect(registry.getLineage(lineage.lineageId)).toMatchObject({
+    executionHandle: {
+      harnessKind: "fake",
+      executionId: lineage.lineageId,
+    },
+    nativeSession: null,
+    transportBinding: null,
+  });
+
+  const recovered = await harness.recover(persisted);
+  expect(recovered).toMatchObject({
+    found: true,
+    handle: {
+      harnessKind: "fake",
+      executionId: lineage.lineageId,
+    },
+    inspection: {
+      nativeSession: null,
+      interactive: null,
+      health: "healthy",
+    },
+  });
+  if (!recovered.found) throw new Error("Expected headless recovery.");
+  expect(
+    await harness.waitAndCollect(
+      dispatch,
+      persisted,
+      recovered.handle,
+      () => undefined,
+    ),
+  ).toEqual({ change_set: { recovered: true } });
+  await harness.close(persisted);
+  expect(await harness.recover(persisted)).toEqual({
+    found: false,
+    detail: "Fake harness session is closed.",
+  });
+  registry.close();
 });
 
 test("takeover-capable fake harness escalates a material missing human decision", async () => {

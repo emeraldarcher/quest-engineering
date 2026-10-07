@@ -501,6 +501,7 @@ test("terminal cancellation removes commands while retained observation remains"
     cancelled_at: "2026-09-23T00:00:01Z",
   };
   step.session.state = "retained";
+  if (!step.session.attachment) throw new Error("Expected terminal attachment");
   step.session.attachment.can_takeover = false;
   run.status = "cancelled";
   render(WorkYardWindow, {
@@ -712,6 +713,7 @@ test("an unavailable Worker is explicit without an attach action", () => {
   if (!step) throw new Error("Expected Step");
   step.session = harnessSession("session-offline", "unavailable", null);
   step.session.worker.state = "disconnected";
+  if (!step.session.attachment) throw new Error("Expected terminal attachment");
   step.session.attachment.available = false;
   step.session.attachment.reason = "worker_offline";
   const store = createAppStore(
@@ -726,6 +728,31 @@ test("an unavailable Worker is explicit without an attach action", () => {
   expect(document.body.textContent).toContain(
     "Session unavailable · Worker offline",
   );
+  expect(screen.queryByRole("button", { name: "Open Session" })).toBeNull();
+});
+
+test("headless harness sessions expose no terminal attachment affordance or Herdr error", () => {
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step) throw new Error("Expected Step");
+  step.session = harnessSession("session-headless", "running", null);
+  step.session.harness = { kind: "fake", display_name: "Test Harness" };
+  step.session.capabilities.can_attach_terminal = false;
+  step.session.attachment = null;
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(document.body.textContent).toContain(
+    "Headless execution · no interactive session",
+  );
+  expect(document.body.textContent).not.toContain("Herdr");
   expect(screen.queryByRole("button", { name: "Open Session" })).toBeNull();
 });
 
@@ -1033,6 +1060,7 @@ function operatorSetup() {
     requested_at: "2026-09-06T00:00:00Z",
   });
   step.session.native_identity.conversation_id = null;
+  if (!step.session.attachment) throw new Error("Expected terminal attachment");
   step.session.attachment.can_takeover = false;
   const api = new ApiClient({ httpBaseUrl: "http://fixture.invalid" });
   const store = createAppStore(api, "ws://fixture.invalid/socket", value);
@@ -1066,7 +1094,6 @@ function harnessSession(
     state,
     native_identity: {
       conversation_id: "conversation-1",
-      terminal_id: "terminal-1",
     },
     capabilities: {
       can_attach_terminal: true,

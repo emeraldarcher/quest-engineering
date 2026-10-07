@@ -18,6 +18,23 @@ Pi, Antigravity, Claude Code, Codex, and future coding harnesses keep ownership 
 - **`ExecutionEnvironmentBackend`** owns filesystem/HOME/Git/network/credential isolation and translates a guest command into an exact absolute host launcher. For production Pi, that launcher is the only process Herdr may execute.
 - **Native coding harnesses** remain the model clients and own their UX, tools, accounts, and provider access.
 
+## Semantic execution and optional interaction
+
+`AgentHarness` is a coding-agent lifecycle contract, not a terminal contract. Its durable identity is a provider-neutral `HarnessExecutionHandle`: schema version, owning harness kind, opaque execution ID, optional opaque native-session reference, and optional harness-owned transport binding. Start, continuation, inspection, collection, interruption, and recovery must work without a PTY, pane, terminal, attachment target, or Herdr session. A headless harness is therefore a complete implementation rather than a degraded terminal harness.
+
+Interactive access is an explicit optional capability. `InteractiveHarnessSession` describes whether an adapter currently has a terminal-like interaction surface and whether observation or takeover is supported. Product attachment is `null` when that capability is absent; this is ordinary headless execution, not a missing-Herdr error. Pi and Antigravity currently opt into the terminal capability through adapter-private helpers. Their exact session/workspace/tab/pane/terminal/agent topology remains mandatory for their transport and recovery fences, but those identities do not appear in the generic execution handle or inspection contract.
+
+Durable recovery state follows these rules:
+
+1. Generic orchestration persists and returns a versioned `HarnessTransportBinding` but does not inspect its payload.
+2. The binding is owned by exactly one `harnessKind`, is bounded to 32 KiB, contains only strict JSON, and is validated on every persistence and recovery boundary.
+3. Native-session references are also versioned and harness-owned. Their payload exposes only an identity shape (`id` or `path`) to the owning adapter; generic code may compare the complete opaque reference or project a safe public ID, but cannot infer provider or terminal topology.
+4. A terminal adapter may encode a `HostedExecutionRef` and `HostedAgent` inside its private binding. It must validate ownership, schema, internal topology consistency, and native-session consistency before use. A non-terminal adapter must not fabricate those values.
+5. Provider/backend failures crossing the generic lifecycle are represented as typed operational outcomes with classification, side-effect certainty, operation phase, and capability evidence where known. Generic APIs do not depend on provider exception classes.
+6. Protocol physical-transition projections carry only semantic Action/Attempt/lineage identity and mode. Product session attachment is projected separately and only when an interactive capability exists. Headless execution omits attachment, and Product projections never publish raw adapter bindings, pane IDs as native identity, or the Worker's internal turn ledger.
+
+Adapter authors should begin with semantic start/collect/inspect/recover behavior, add a stable execution ID, and declare capabilities conservatively. Add terminal transport only when the native harness actually requires it; keep topology parsing and fencing in the adapter/terminal backend, implement attachment only for a verified interactive surface, and include headless restart-recovery tests even if the first production adapter is interactive.
+
 ## Control and trust
 
 The bridge is a loopback-only Worker process service. Before each native execution, the Worker binds an opaque, random, short-lived control capability to the exact Worker controller generation, Action, Run, StepOccurrence, Attempt, physical lineage, and result nonce. The harness process receives only a mode-0600 descriptor path through its launch environment.
@@ -52,7 +69,7 @@ Structured bridge state is completion authority. Herdr terminal state remains au
 
 Antigravity readiness combines immutable guest runtime capability/provenance, profile-owned static MCP registration, guest MCP-child startup/liveness evidence, current mailbox/bridge binding, lineage-private hook configuration, native hook-manager discovery, guest log relay, environment attestation, and synthetic guest hook execution. `/mcp` and `/hooks` screens are optional corroboration only under Herdr 0.9.
 
-Physical continuation is adapter-specific and is valid only within the same harness kind and immutable physical configuration. Artifact handoff remains valid across harnesses because artifact identity and hash provenance are independent of native conversation identity. Recovery first adopts a surviving exact TUI, then may resume a verified native conversation in a new interactive process; inability to verify identity fails closed.
+Physical continuation is adapter-specific and is valid only within the same harness kind and immutable physical configuration. Artifact handoff remains valid across harnesses because artifact identity and hash provenance are independent of native conversation identity. A headless adapter recovers from its own validated execution handle/binding without terminal discovery. A terminal adapter first adopts its exact surviving process and may then resume a verified native conversation in a new interactive process; inability to verify its private identity or topology fails closed.
 
 ## Model support and account availability
 

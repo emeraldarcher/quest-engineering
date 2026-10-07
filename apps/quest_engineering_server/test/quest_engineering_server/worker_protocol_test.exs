@@ -18,12 +18,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 11
+  @protocol_version 12
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v11 logical Workspace bindings" do
+  test "accepts explicit protocol v12 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -205,10 +205,23 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
       "occurrence_id" => "occurrence",
       "attempt_id" => "attempt",
       "state" => "uncertain",
-      "failure" => %{"reason" => "ambiguous"}
+      "failure" => %{
+        "reason" => "ambiguous",
+        "classification" => "uncertain",
+        "operation_phase" => "prepare",
+        "side_effect_certainty" => "ambiguous"
+      }
     }
 
-    assert {:ok, %{state: :uncertain}} = WorkerProtocol.decode_worker_message(payload, @worker_id)
+    assert {:ok,
+            %{
+              state: :uncertain,
+              failure: %{
+                "classification" => "uncertain",
+                "operation_phase" => "prepare",
+                "side_effect_certainty" => "ambiguous"
+              }
+            }} = WorkerProtocol.decode_worker_message(payload, @worker_id)
   end
 
   test "normalizes classified failures and validates retained recovery requests" do
@@ -349,6 +362,26 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert turn["prompt_accepted_at"] == "2026-09-06T00:00:00.100Z"
     assert turn["provider_turn_settled_at"] == "2026-09-06T00:00:00.750Z"
     assert turn["completion"]["physical_export_required"]
+
+    physical_payload =
+      put_in(payload, ["session", "turn", "physical_process"], %{
+        "mode" => "prepared_process_adopted",
+        "source_action_id" => "source-action",
+        "source_attempt_id" => "source-attempt",
+        "target_action_id" => "action",
+        "target_attempt_id" => "attempt",
+        "source_lineage_id" => "source-lineage",
+        "target_lineage_id" => "target-lineage",
+        "herdr_session" => "must-not-project",
+        "pane_id" => "must-not-project",
+        "recorded_at" => "2026-09-06T00:00:00Z"
+      })
+
+    assert {:ok, %{session: %{turn: physical_turn}}} =
+             WorkerProtocol.decode_worker_message(physical_payload, @worker_id)
+
+    refute Map.has_key?(physical_turn["physical_process"], "herdr_session")
+    refute Map.has_key?(physical_turn["physical_process"], "pane_id")
 
     for {state, expected} <- [
           {"waiting_for_activity", :waiting_for_activity},

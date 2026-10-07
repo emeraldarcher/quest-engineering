@@ -40,6 +40,11 @@ import {
 import { QE_MCP_STARTUP_EVIDENCE_ENV } from "../src/harnesses/control/mcp-server.ts";
 import { writeControlAtomic } from "../src/harnesses/control/result-envelope.ts";
 import { HarnessControlServer } from "../src/harnesses/control/server.ts";
+import {
+  nativeSessionIdentity,
+  nativeSessionRef,
+} from "../src/harnesses/native-session.ts";
+import { terminalPreparedExecution } from "../src/harnesses/terminal-execution.ts";
 import type {
   HarnessCapabilities,
   HarnessEvent,
@@ -285,12 +290,11 @@ test("pre-authorization observation detects a native user turn without sending i
   expect(
     await value.harness.observePreAuthorizationActivity(value.lineage),
   ).toMatchObject({
-    nativeSession: {
-      source: "antigravity",
-      agent: "agy",
-      kind: "id",
-      value: "1d48881c-5f10-43a0-9b87-234344a2dd8e",
-    },
+    nativeSession: nativeSessionRef(
+      "antigravity",
+      "id",
+      "1d48881c-5f10-43a0-9b87-234344a2dd8e",
+    ),
     evidence: "native_user_message",
   });
   await value.close();
@@ -683,14 +687,9 @@ test("fresh lineage submits through the existing TUI and captures its native ide
     expect(staged?.startsWith("\u001b[200~")).toBe(true);
     expect(staged?.endsWith("\u001b[201~")).toBe(true);
     expect(
-      events.find((event) => event.type === "prompt_accepted")?.inspection.agent
-        ?.nativeSession,
-    ).toEqual({
-      source: "antigravity",
-      agent: "agy",
-      kind: "id",
-      value: INITIAL_CONVERSATION_ID,
-    });
+      events.find((event) => event.type === "prompt_accepted")?.inspection
+        .nativeSession,
+    ).toEqual(nativeSessionRef("antigravity", "id", INITIAL_CONVERSATION_ID));
   } finally {
     await value.close();
   }
@@ -734,12 +733,13 @@ test("retained conversation selects exact continuation prompt transport", async 
     const nativeSession = value.host.agent.nativeSession;
     if (!nativeSession) throw new Error("fixture conversation was not created");
     const lineage = { ...started.lineage, nativeSession };
-    const execution = {
-      ...started,
+    const execution = terminalPreparedExecution(
       lineage,
-      agent: value.host.agent,
-      ref: { ...started.ref, nativeSession },
-    };
+      value.host.backendKind,
+      { ...started.ref, nativeSession },
+      value.host.agent,
+      value.harness.capabilities,
+    );
     await value.harness.ready(value.dispatch, execution);
     await value.authority.bind(value.dispatch, lineage);
     value.host.onPrompt = async () => {
@@ -809,7 +809,7 @@ test("post-intent recovery keeps native interactive rejection explicit", async (
       value.harness.waitAndCollect(
         value.registry.get(value.dispatch.action.action_id),
         execution.lineage,
-        execution.agent,
+        execution.handle,
         () => undefined,
       ),
     ).rejects.toMatchObject({
@@ -828,19 +828,23 @@ test("retained conversation identity fails closed when stale or from another Phy
     stale.host.establishConversation(STALE_CONVERSATION_ID);
     const lineage = {
       ...started.lineage,
-      nativeSession: {
-        source: "antigravity" as const,
-        agent: "agy",
-        kind: "id" as const,
-        value: EXPECTED_CONVERSATION_ID,
-      },
+      nativeSession: nativeSessionRef(
+        "antigravity",
+        "id",
+        EXPECTED_CONVERSATION_ID,
+      ),
     };
     await expect(
-      stale.harness.ready(stale.dispatch, {
-        ...started,
-        lineage,
-        agent: stale.host.agent,
-      }),
+      stale.harness.ready(
+        stale.dispatch,
+        terminalPreparedExecution(
+          lineage,
+          stale.host.backendKind,
+          started.ref,
+          stale.host.agent,
+          stale.harness.capabilities,
+        ),
+      ),
     ).rejects.toMatchObject({
       code: "antigravity_conversation_identity_mismatch",
     });
@@ -918,7 +922,13 @@ test("stale pane, process, and endpoint generation fail before literal input", a
     await expect(
       stalePane.harness.sendInputAndCollect(
         authorizePrompt(stalePane),
-        { ...execution, ref: { ...execution.ref, paneId: "stale-pane" } },
+        terminalPreparedExecution(
+          execution.lineage,
+          stalePane.host.backendKind,
+          { ...execution.ref, paneId: "stale-pane" },
+          { ...execution.agent, paneId: "stale-pane" },
+          stalePane.harness.capabilities,
+        ),
         () => undefined,
       ),
     ).rejects.toMatchObject({ code: "antigravity_prompt_input_fence_failed" });
@@ -1474,7 +1484,17 @@ test("recovery adopts only the exact surviving SBX TUI and never host-relaunches
       await restartedHarness.recover(persisted, value.dispatch),
     ).toMatchObject({
       found: true,
-      agent: { name: execution.ref.agentName },
+      handle: {
+        harnessKind: "antigravity",
+        transportBinding: {
+          kind: "terminal",
+          payload: { ref: { agentName: execution.ref.agentName } },
+        },
+      },
+      inspection: {
+        activity: { state: "idle" },
+        interactive: { kind: "terminal", processIdentity: "verified" },
+      },
     });
     value.host.sessionIncarnationId = "replacement-session-incarnation";
     value.host.removeAgentOnSnapshot = true;
@@ -1514,8 +1534,21 @@ test("post-intent recovery reconstructs native conversation identity from the ap
     });
     expect(recovered).toMatchObject({
       found: true,
-      agent: {
-        nativeSession: { value: INITIAL_CONVERSATION_ID },
+      handle: {
+        harnessKind: "antigravity",
+        nativeSession: nativeSessionRef(
+          "antigravity",
+          "id",
+          INITIAL_CONVERSATION_ID,
+        ),
+      },
+      inspection: {
+        nativeSession: nativeSessionRef(
+          "antigravity",
+          "id",
+          INITIAL_CONVERSATION_ID,
+        ),
+        interactive: { kind: "terminal", processIdentity: "verified" },
       },
     });
   } finally {
@@ -1546,7 +1579,11 @@ test("a Worker restart can adopt exact active Antigravity terminal provenance", 
       action: { action_id: value.dispatch.action.action_id },
       lineage: {
         harnessKind: "antigravity",
-        nativeSession: { value: INITIAL_CONVERSATION_ID },
+        nativeSession: nativeSessionRef(
+          "antigravity",
+          "id",
+          INITIAL_CONVERSATION_ID,
+        ),
       },
     });
   } finally {
@@ -1919,7 +1956,9 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     this.submittedAuthorities.push(authority);
     this.agent.status = "working";
     if (this.agent.nativeSession)
-      await this.appendNativeAcceptance(this.agent.nativeSession.value);
+      await this.appendNativeAcceptance(
+        nativeSessionIdentity(this.agent.nativeSession, "antigravity").opaqueId,
+      );
     else if (this.autoNativeAcceptance) {
       this.establishConversation(INITIAL_CONVERSATION_ID);
       await this.appendNativeAcceptance(INITIAL_CONVERSATION_ID);
@@ -1928,12 +1967,7 @@ class FakeAntigravityHost implements TerminalSessionBackend {
     if (this.submitError) throw this.submitError;
   }
   establishConversation(id: string): void {
-    this.agent.nativeSession = {
-      source: "antigravity",
-      agent: "agy",
-      kind: "id",
-      value: id,
-    };
+    this.agent.nativeSession = nativeSessionRef("antigravity", "id", id);
   }
   async appendNativeAcceptance(id: string): Promise<void> {
     if (!this.logPath) throw new Error("fake Antigravity log is unavailable");

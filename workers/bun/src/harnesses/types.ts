@@ -5,12 +5,15 @@ import type {
   LocalDispatchState,
   ReasoningCapability,
 } from "../protocol/types.ts";
-import type {
-  HostedAgent,
-  HostedExecutionRef,
-  NativeSessionRef,
-  TerminalAttachmentDescriptor,
-} from "../session-host/types.ts";
+import type { TerminalAttachmentDescriptor } from "../session-host/types.ts";
+import {
+  type NativeSessionRef,
+  validateNativeSessionRef,
+} from "./native-session.ts";
+import {
+  type HarnessTransportBinding,
+  validateTransportBinding,
+} from "./transport-binding.ts";
 
 export type HarnessKind = "pi" | "antigravity" | "fake" | (string & {});
 export type AccountAvailability =
@@ -74,17 +77,142 @@ export const HUMAN_ESCALATION_POLICY = `Human escalation policy:
 export type OperationalFailureClassification =
   | "auto_retryable"
   | "operator_recovery_required"
-  | "terminal_not_recoverable";
+  | "terminal_not_recoverable"
+  | "uncertain";
+export type SideEffectCertainty =
+  | "not_submitted"
+  | "submitted"
+  | "ambiguous"
+  | "native_accepted";
+export type HarnessOperationPhase =
+  | "discovery"
+  | "prepare"
+  | "readiness"
+  | "execute"
+  | "observe"
+  | "recover"
+  | "interrupt"
+  | "retire";
 
 export class OperationalExecutionError extends Error {
+  readonly name = "OperationalExecutionError";
+
   constructor(
     message: string,
     readonly classification: OperationalFailureClassification,
     readonly code?: string,
     readonly evidence?: Record<string, JsonValue>,
+    readonly outcome?: {
+      sideEffectCertainty?: SideEffectCertainty;
+      phase?: HarnessOperationPhase;
+      capability?: string;
+    },
   ) {
     super(message);
   }
+
+  get sideEffectCertainty(): SideEffectCertainty | undefined {
+    return this.outcome?.sideEffectCertainty;
+  }
+
+  get phase(): HarnessOperationPhase | undefined {
+    return this.outcome?.phase;
+  }
+
+  get capability(): string | undefined {
+    return this.outcome?.capability;
+  }
+}
+
+/** Converts backend/provider exceptions before they cross AgentHarness orchestration. */
+export function operationalHarnessError(
+  error: unknown,
+  phase: HarnessOperationPhase,
+): OperationalExecutionError {
+  if (error instanceof OperationalExecutionError) {
+    if (error.phase && error.sideEffectCertainty) return error;
+    return new OperationalExecutionError(
+      error.message,
+      error.classification,
+      error.code,
+      error.evidence,
+      {
+        ...error.outcome,
+        phase: error.phase ?? phase,
+        sideEffectCertainty:
+          error.sideEffectCertainty ??
+          (error.classification === "uncertain"
+            ? "ambiguous"
+            : sideEffectCertainty(error.code, phase)),
+      },
+    );
+  }
+  const value = error as {
+    code?: unknown;
+    capability?: unknown;
+    message?: unknown;
+  };
+  const rawCode =
+    typeof value?.code === "string" && value.code ? value.code : null;
+  const code = rawCode ?? `harness_${phase}_failed`;
+  const transient = [
+    "timeout",
+    "wait_timeout",
+    "shell_not_ready",
+    "agent_not_ready",
+    "agent_pane_busy",
+    "backend_unavailable",
+    "controller_disconnected",
+    "stream_closed",
+  ].includes(code);
+  const nonRecoverable = [
+    "backend_incompatible",
+    "provenance_mismatch",
+    "ownership_mismatch",
+    "environment_launch_mismatch",
+    "environment_attestation_failed",
+    "agent_explicit_launch_failed",
+    "incompatible_continuation_configuration",
+    "harness_contract_violation",
+  ].includes(code);
+  const uncertain = [
+    "agent_launch_uncertain",
+    "agent_prompt_uncertain",
+  ].includes(code);
+  const classification: OperationalFailureClassification = uncertain
+    ? "uncertain"
+    : transient
+      ? "auto_retryable"
+      : nonRecoverable
+        ? "terminal_not_recoverable"
+        : "operator_recovery_required";
+  const certainty = sideEffectCertainty(code, phase);
+  const capability =
+    typeof value?.capability === "string" && value.capability
+      ? value.capability
+      : undefined;
+  return new OperationalExecutionError(
+    error instanceof Error ? error.message : `Harness ${phase} failed.`,
+    classification,
+    code,
+    undefined,
+    {
+      sideEffectCertainty: certainty,
+      phase,
+      ...(capability ? { capability } : {}),
+    },
+  );
+}
+
+function sideEffectCertainty(
+  code: string | undefined,
+  phase: HarnessOperationPhase,
+): SideEffectCertainty {
+  if (["agent_launch_uncertain", "agent_prompt_uncertain"].includes(code ?? ""))
+    return "ambiguous";
+  return ["execute", "observe", "interrupt", "retire"].includes(phase)
+    ? "ambiguous"
+    : "not_submitted";
 }
 
 export type HumanAttentionCategory =
@@ -150,12 +278,90 @@ export interface HarnessCapabilities {
   automationResume: boolean;
 }
 
+export interface InteractiveHarnessSession {
+  kind: "terminal" | (string & {});
+  attachment: {
+    available: boolean;
+    supportsObservation: boolean;
+    supportsTakeover: boolean;
+  } | null;
+  literalInput: boolean;
+  processIdentity: "verified" | "unverified" | "not_applicable";
+}
+
+export interface HarnessExecutionHandle {
+  schemaVersion: 1;
+  harnessKind: HarnessKind;
+  /** Harness-owned execution identity. It has no terminal-topology semantics. */
+  executionId: string;
+  nativeSession?: NativeSessionRef;
+  /** Opaque to Worker orchestration and owned by `harnessKind`. */
+  transportBinding?: HarnessTransportBinding;
+}
+
+export function validateHarnessExecutionHandle(
+  value: unknown,
+  expectedHarnessKind?: string,
+  expectedExecutionId?: string,
+): HarnessExecutionHandle {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Harness execution handle must be an object.");
+  const record = value as Record<string, unknown>;
+  const allowed = new Set([
+    "schemaVersion",
+    "harnessKind",
+    "executionId",
+    "nativeSession",
+    "transportBinding",
+  ]);
+  if (Object.keys(record).some((key) => !allowed.has(key)))
+    throw new Error("Harness execution handle has unexpected fields.");
+  if (
+    record.schemaVersion !== 1 ||
+    typeof record.harnessKind !== "string" ||
+    !/^[a-zA-Z0-9._:-]{1,128}$/.test(record.harnessKind) ||
+    (expectedHarnessKind && record.harnessKind !== expectedHarnessKind) ||
+    typeof record.executionId !== "string" ||
+    record.executionId.length === 0 ||
+    Buffer.byteLength(record.executionId, "utf8") > 8 * 1024 ||
+    (expectedExecutionId && record.executionId !== expectedExecutionId)
+  )
+    throw new Error("Harness execution handle ownership is invalid.");
+  const harnessKind = record.harnessKind;
+  const nativeSession =
+    record.nativeSession !== undefined
+      ? validateNativeSessionRef(record.nativeSession, harnessKind)
+      : undefined;
+  const transportBinding =
+    record.transportBinding !== undefined
+      ? validateTransportBinding(record.transportBinding, harnessKind)
+      : undefined;
+  return {
+    schemaVersion: 1,
+    harnessKind,
+    executionId: record.executionId,
+    ...(nativeSession ? { nativeSession } : {}),
+    ...(transportBinding ? { transportBinding } : {}),
+  };
+}
+
 export interface HarnessInspection {
   state: HarnessSessionState;
-  agent: HostedAgent | null;
+  activity: {
+    state: "idle" | "active" | "blocked" | "completed" | "unknown";
+    detail?: string;
+  };
+  nativeSession: NativeSessionRef | null;
+  health: "healthy" | "degraded" | "unavailable" | "unknown";
   attention: HumanAttention | null;
   intervention: HumanInterventionLifecycle | null;
   lastActivityAt: string;
+  interactive:
+    | (InteractiveHarnessSession & {
+        /** Adapter-private evidence retained for topology-fenced implementations. */
+        transportBinding?: HarnessTransportBinding;
+      })
+    | null;
 }
 
 export interface PreAuthorizationActivity {
@@ -211,17 +417,19 @@ export type HarnessEvent =
 
 export interface HarnessPreparedExecution {
   lineage: HarnessLineage;
-  ref: HostedExecutionRef;
-  agent: HostedAgent;
+  handle: HarnessExecutionHandle;
+  /** Absent for a valid headless/programmatic execution. */
+  interactive?: InteractiveHarnessSession;
 }
 
-export interface HarnessRecoveredExecution {
-  found: boolean;
-  agent?: HostedAgent;
-  /** Present when recovery created a new terminal/process incarnation. */
-  ref?: HostedExecutionRef;
-  detail: string;
-}
+export type HarnessRecoveredExecution =
+  | {
+      found: true;
+      handle: HarnessExecutionHandle;
+      inspection: HarnessInspection;
+      detail: string;
+    }
+  | { found: false; detail: string };
 
 export interface HarnessKnownDispatch {
   dispatch: DispatchRecord;
@@ -256,13 +464,13 @@ export interface AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution>;
-  /** Side-effect-free proof that a terminal pre-prompt process can change Attempt ownership. */
+  /** Side-effect-free proof that a prepared execution can change Attempt ownership. */
   provePreparedProcessAdoption?(
     source: DispatchRecord,
     target: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<void>;
-  /** Native readiness after interactive launch and before prompt intent. */
+  /** Harness readiness after preparation and before prompt intent. */
   ready?(
     dispatch: DispatchRecord,
     execution: HarnessPreparedExecution,
@@ -276,7 +484,7 @@ export interface AgentHarness {
     execution: HarnessPreparedExecution,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>>;
-  /** Noninteractive physical retirement used only by an authorized recovery transition. */
+  /** Execution retirement used only by an authorized recovery transition. */
   retire?(lineage: HarnessLineage): Promise<void>;
   interrupt?(lineage: HarnessLineage): Promise<void>;
   /** Side-effect-free, authoritative absence proof required before fresh retained-work recovery. */
@@ -291,7 +499,7 @@ export interface AgentHarness {
   waitAndCollect?(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
-    agent: HostedAgent,
+    handle: HarnessExecutionHandle,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>>;
   clearActiveMetadata(
@@ -301,6 +509,20 @@ export interface AgentHarness {
   discoverAdoptionCandidates(
     known?: readonly HarnessKnownDispatch[],
   ): Promise<HarnessAdoptionCandidate[]>;
-  attachment?(lineage: HarnessLineage): TerminalAttachmentDescriptor;
   disconnect(): void;
+}
+
+/** Optional terminal-facing capability, deliberately outside semantic AgentHarness. */
+export interface InteractiveAgentHarness extends AgentHarness {
+  attachment(lineage: HarnessLineage): TerminalAttachmentDescriptor;
+}
+
+export function supportsInteractiveAttachment(
+  harness: AgentHarness,
+): harness is InteractiveAgentHarness {
+  return (
+    harness.capabilities.canAttachTerminal &&
+    "attachment" in harness &&
+    typeof harness.attachment === "function"
+  );
 }
