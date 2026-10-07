@@ -195,6 +195,19 @@ export class FakeSbxClient implements SbxClient {
         "exec",
       ]);
     sandbox.status = "running";
+    const processProbe = command.environment?.QE_PID;
+    if (processProbe)
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          markerMatch: true,
+          exists: false,
+          state: "",
+          startIdentity: "",
+          observedExecutable: "",
+        }),
+        stderr: "",
+      };
     const transferPath = command.environment?.QE_PATH;
     const transferStaging = command.environment?.QE_STAGING;
     if (transferPath && transferStaging) {
@@ -291,6 +304,20 @@ export class FakeSbxClient implements SbxClient {
       ...command.args,
     ];
   }
+
+  streamLauncherArgs(
+    sandboxName: string,
+    command: EnvironmentCommand,
+  ): readonly string[] {
+    return [
+      "exec",
+      "-i",
+      sandboxName,
+      "--",
+      command.executable,
+      ...command.args,
+    ];
+  }
 }
 
 export class FakeSbxVerifier implements SbxEnvironmentVerifier {
@@ -352,6 +379,12 @@ function verified(record: DurableEnvironmentRecord): SbxVerifiedEnvironment {
       { kind: "environment_persistence", mode: "verified" },
       { kind: "network_policy", mode: "deny_all" },
       { kind: "pty_launcher", mode: "available" },
+      {
+        kind: "process.streamed",
+        mode: "attached_only",
+        detail:
+          "Process identity survives inspection; stdio attachment does not.",
+      },
     ],
     diagnostics: [],
   };

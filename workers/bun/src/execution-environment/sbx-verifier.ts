@@ -434,6 +434,12 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
         { kind: "ambient_mcp", mode: "unavailable" },
         { kind: "pty_launcher", mode: "available" },
         {
+          kind: "process.streamed",
+          mode: "attached_only",
+          detail:
+            "Guest PID/start identity is durable evidence; stdio is bound to one Worker attachment.",
+        },
+        {
           kind: "resource_limits",
           mode: "cpu_memory_private_docker_disk",
         },

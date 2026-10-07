@@ -1010,7 +1010,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     this.contexts.clear();
     this.store.close();
     this.privateGit.close();
-    this.backend.close?.();
+    await this.backend.close?.();
   }
 
   private async syncControl(context: RuntimeContext): Promise<void> {

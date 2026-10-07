@@ -106,6 +106,11 @@ export interface SbxClient {
     sandboxName: string,
     command: EnvironmentCommand,
   ): readonly string[];
+  /** Non-PTY attached exec with stdin kept open for the generic stream relay. */
+  streamLauncherArgs(
+    sandboxName: string,
+    command: EnvironmentCommand,
+  ): readonly string[];
 }
 
 export interface SbxSubprocessRequest {
@@ -394,6 +399,13 @@ export class CliSbxClient implements SbxClient {
     command: EnvironmentCommand,
   ): readonly string[] {
     return execArgs(sandboxName, command, { interactive: true, tty: true });
+  }
+
+  streamLauncherArgs(
+    sandboxName: string,
+    command: EnvironmentCommand,
+  ): readonly string[] {
+    return execArgs(sandboxName, command, { interactive: true, tty: false });
   }
 
   private async invoke(

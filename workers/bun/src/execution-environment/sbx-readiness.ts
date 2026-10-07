@@ -153,6 +153,12 @@ export async function inspectSbxReadiness(
       { kind: "ssh_agent_forwarding", mode: "disabled" },
       { kind: "ambient_mcp", mode: "unavailable" },
       { kind: "shared_skills", mode: "controllable" },
+      {
+        kind: "process.streamed",
+        mode: "attached_only",
+        detail:
+          "SBX exec supports attached non-PTY streams; stdio cannot be reattached after Worker loss.",
+      },
     ];
     if (compareVersions(installed, tested) > 0)
       diagnostics.push({

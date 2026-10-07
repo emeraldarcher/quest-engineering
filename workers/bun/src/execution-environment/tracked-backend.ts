@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve as resolvePath } from "node:path";
+import {
+  StreamedProcessManager,
+  type StreamedProcessSpawnContext,
+  type StreamedProcessTransport,
+  sameRef,
+} from "./streamed-process.ts";
 import type {
   EnvironmentBackendOperation,
   EnvironmentCapability,
@@ -17,6 +23,10 @@ import type {
   EnvironmentStopStatus,
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
+  StreamedProcessCommand,
+  StreamedProcessHandle,
+  StreamedProcessInfrastructureEvent,
+  StreamedProcessReconciliation,
 } from "./types.ts";
 import {
   EnvironmentBackendError,
@@ -50,8 +60,17 @@ export abstract class TrackedExecutionEnvironmentBackend
   private readonly currentByOwner = new Map<string, string>();
   private readonly generations = new Map<string, number>();
   private readonly ownerTails = new Map<string, Promise<void>>();
+  private readonly streamedProcesses: StreamedProcessManager;
 
-  protected constructor(readonly kind: string) {}
+  protected constructor(readonly kind: string) {
+    this.streamedProcesses = new StreamedProcessManager({
+      backendKind: kind,
+      validate: (ref, operation) =>
+        this.validateStreamedProcessOperation(ref, operation),
+      inspectDetached: (handle) => this.inspectDetachedStreamedProcess(handle),
+      onEvent: (event) => this.onStreamedProcessEvent(event),
+    });
+  }
 
   abstract readiness(): ReturnType<ExecutionEnvironmentBackend["readiness"]>;
 
@@ -149,6 +168,10 @@ export abstract class TrackedExecutionEnvironmentBackend
     };
   }
 
+  async retireStreamedProcesses(ref: EnvironmentRef): Promise<void> {
+    await this.streamedProcesses.retire(ref);
+  }
+
   async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
     await this.beforeOperation("stop");
     return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
@@ -159,6 +182,7 @@ export abstract class TrackedExecutionEnvironmentBackend
           `Environment ${binding.ref.environmentId} has been removed.`,
           "stop",
         );
+      await this.streamedProcesses.retire(binding.ref);
       binding.state = "stopped";
       binding.stopStatus = {
         state: "stopped",
@@ -187,7 +211,11 @@ export abstract class TrackedExecutionEnvironmentBackend
   async remove(ref: EnvironmentRef): Promise<void> {
     await this.beforeOperation("remove");
     await this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
-      this.resolve(ref, "remove").state = "removed";
+      const binding = this.resolve(ref, "remove");
+      if (binding.state !== "removed") {
+        await this.streamedProcesses.retire(binding.ref);
+        binding.state = "removed";
+      }
     });
   }
 
@@ -237,6 +265,32 @@ export abstract class TrackedExecutionEnvironmentBackend
     return this.execInEnvironment(binding, command);
   }
 
+  protected spawnStreamedInEnvironment(
+    _binding: Readonly<TrackedEnvironmentBinding>,
+    _context: StreamedProcessSpawnContext,
+  ): Promise<StreamedProcessTransport> {
+    throw new EnvironmentBackendError(
+      "streamed_process_unsupported",
+      `Backend ${this.kind} does not support streamed processes.`,
+      "spawn_streamed",
+    );
+  }
+
+  protected inspectDetachedStreamedProcess(
+    handle: StreamedProcessHandle,
+  ): Promise<StreamedProcessReconciliation> {
+    return Promise.resolve({
+      handle: structuredClone(handle),
+      process: "unavailable",
+      streamAttachment: "unavailable",
+      streamRecovery: "not_recoverable",
+    });
+  }
+
+  protected onStreamedProcessEvent(
+    _event: StreamedProcessInfrastructureEvent,
+  ): void {}
+
   protected abstract writeFileInEnvironment(
     binding: Readonly<TrackedEnvironmentBinding>,
     input: EnvironmentFileWrite,
@@ -271,6 +325,27 @@ export abstract class TrackedExecutionEnvironmentBackend
           current,
           copyCommand(validateCommand(command)),
         );
+      },
+      spawnStreamed: async (command, options = {}) => {
+        const current = this.resolve(ref, "spawn_streamed");
+        this.assertUsable(current, "spawn_streamed");
+        assertStreamedProcessCapability(current.capabilities);
+        return this.streamedProcesses.spawn(
+          ref,
+          current.paths,
+          copyStreamedCommand(command),
+          options,
+          (context) => this.spawnStreamedInEnvironment(current, context),
+        );
+      },
+      reconcileStreamedProcess: async (handle) => {
+        if (!sameRef(handle.environment, ref))
+          throw new EnvironmentBackendError(
+            "streamed_process_identity_mismatch",
+            "Streamed process handle belongs to another environment lease.",
+            "inspect_streamed",
+          );
+        return this.streamedProcesses.reconcile(handle);
       },
       workerExec: async (command) => {
         await this.beforeOperation("exec");
@@ -369,6 +444,16 @@ export abstract class TrackedExecutionEnvironmentBackend
         `Environment ${binding.ref.environmentId} is ${binding.state}.`,
         operation,
       );
+  }
+
+  private async validateStreamedProcessOperation(
+    ref: EnvironmentRef,
+    operation: EnvironmentBackendOperation,
+  ): Promise<void> {
+    await this.beforeOperation(operation);
+    const binding = this.resolve(ref, operation);
+    if (operation !== "inspect_streamed" && operation !== "retire_streamed")
+      this.assertUsable(binding, operation);
   }
 
   private async withOwner<T>(
@@ -602,6 +687,34 @@ function copyCommand(command: EnvironmentCommand): EnvironmentCommand {
     ...(command.environment ? { environment: { ...command.environment } } : {}),
     ...(command.timeoutMs ? { timeoutMs: command.timeoutMs } : {}),
   };
+}
+
+function copyStreamedCommand(
+  command: StreamedProcessCommand,
+): StreamedProcessCommand {
+  return {
+    executable: command.executable,
+    args: [...command.args],
+    cwd: command.cwd,
+    environment: { ...command.environment },
+  };
+}
+
+function assertStreamedProcessCapability(
+  capabilities: readonly EnvironmentCapability[],
+): void {
+  if (
+    !capabilities.some(
+      (capability) =>
+        capability.kind === "process.streamed" &&
+        capability.mode !== "unavailable",
+    )
+  )
+    throw new EnvironmentBackendError(
+      "streamed_process_unsupported",
+      "This environment does not advertise streamed process support.",
+      "spawn_streamed",
+    );
 }
 
 function canonicalJson(value: unknown): string {

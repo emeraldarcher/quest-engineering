@@ -26,6 +26,7 @@ import {
   inspectSbxReadiness,
   type SbxVersionPolicy,
 } from "./sbx-readiness.ts";
+import { SbxStreamedProcessTransport } from "./sbx-streamed-process.ts";
 import {
   LiveSbxEnvironmentVerifier,
   type SbxEnvironmentVerifier,
@@ -38,6 +39,12 @@ import {
   type DurableStopEventType,
   ExecutionEnvironmentStore,
 } from "./store.ts";
+import {
+  StreamedProcessManager,
+  type StreamedProcessSpawnContext,
+  type StreamedProcessTransport,
+  sameRef,
+} from "./streamed-process.ts";
 import { environmentSpecDigest } from "./tracked-backend.ts";
 import type {
   EnvironmentBackendOperation,
@@ -55,6 +62,9 @@ import type {
   EnvironmentStopStatus,
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
+  StreamedProcessHandle,
+  StreamedProcessInfrastructureEvent,
+  StreamedProcessReconciliation,
 } from "./types.ts";
 import {
   EnvironmentBackendError,
@@ -95,6 +105,12 @@ export interface SbxExecutionEnvironmentBackendOptions {
   backgroundStopWait?: (milliseconds: number) => Promise<void>;
   /** Structured lifecycle sink; defaults to the Worker's JSON event stream. */
   onStopEvent?: (event: DurableStopEvent) => void;
+  /** Safe streamed-process lifecycle sink; payload/environment bytes are omitted. */
+  onStreamedProcessEvent?: (event: StreamedProcessInfrastructureEvent) => void;
+  /** Deterministic transport seam. Production always uses native `sbx exec -i`. */
+  openStreamedProcess?: (
+    context: StreamedProcessSpawnContext & { sandboxName: string },
+  ) => Promise<StreamedProcessTransport>;
 }
 
 /** Durable Run-owned Docker Sandboxes lifecycle. Not wired to dispatch through Phase 3. */
@@ -115,6 +131,11 @@ export class SbxExecutionEnvironmentBackend
   private readonly instanceToken = randomUUID();
   private readonly ownerTails = new Map<string, Promise<void>>();
   private readonly launcherPath = resolve(import.meta.dir, "sbx-launcher.ts");
+  private readonly streamedProcessRelayPath = resolve(
+    import.meta.dir,
+    "sbx-streamed-process-relay.py",
+  );
+  private readonly streamedProcesses: StreamedProcessManager;
   private readonly reconciliationPollMs: number;
   private readonly reconciliationAttempts: number;
   private readonly ownerWaitAttempts: number;
@@ -200,6 +221,17 @@ export class SbxExecutionEnvironmentBackend
             ...event.details,
           }),
         ));
+    const onStreamedProcessEvent =
+      options.onStreamedProcessEvent ??
+      ((event: StreamedProcessInfrastructureEvent) =>
+        console.log(JSON.stringify(event)));
+    this.streamedProcesses = new StreamedProcessManager({
+      backendKind: this.kind,
+      validate: (ref, operation) =>
+        this.validateStreamedProcessOperation(ref, operation),
+      inspectDetached: (handle) => this.inspectDetachedStreamedProcess(handle),
+      onEvent: onStreamedProcessEvent,
+    });
     queueMicrotask(() => this.resumeDurableStopReconciliation());
   }
 
@@ -396,9 +428,14 @@ export class SbxExecutionEnvironmentBackend
     }
   }
 
+  async retireStreamedProcesses(ref: EnvironmentRef): Promise<void> {
+    await this.streamedProcesses.retire(ref);
+  }
+
   async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
     return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
       const record = this.requireCurrentRef(ref, "stop");
+      await this.streamedProcesses.retire(ref);
       const existing = this.store.latestStopAttempt(record.recordId);
       if (existing && !existing.reopened)
         return this.reconcileStopRecord(record, existing);
@@ -502,6 +539,7 @@ export class SbxExecutionEnvironmentBackend
         );
       }
       const record = this.requireCurrentRef(ref, "remove");
+      await this.streamedProcesses.retire(ref);
       const stop = this.store.latestStopAttempt(record.recordId);
       if (stop && !stop.reopened && !stop.confirmed)
         throw new EnvironmentBackendError(
@@ -562,13 +600,14 @@ export class SbxExecutionEnvironmentBackend
     });
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.closed = true;
     for (const [timer, resolve] of this.stopWaiters) {
       clearTimeout(timer);
       resolve();
     }
     this.stopWaiters.clear();
+    await this.streamedProcesses.shutdown();
     this.store.close();
   }
 
@@ -780,6 +819,54 @@ export class SbxExecutionEnvironmentBackend
           throw normalize(error, "exec");
         }
       },
+      spawnStreamed: async (command, options = {}) => {
+        const current = await this.requireUsableLease(record, "spawn_streamed");
+        assertStreamedProcessCapability(current.capabilities);
+        return this.streamedProcesses.spawn(
+          ref,
+          SBX_GUEST_PATHS,
+          command,
+          options,
+          async (context) => {
+            const exact = await this.requireUsableLease(
+              record,
+              "spawn_streamed",
+            );
+            if (!exact.markerDigest)
+              throw new EnvironmentBackendError(
+                "streamed_process_identity_mismatch",
+                "Verified SBX ownership marker evidence is absent.",
+                "spawn_streamed",
+              );
+            if (this.options.openStreamedProcess)
+              return this.options.openStreamedProcess({
+                ...context,
+                sandboxName: exact.displayName,
+              });
+            return SbxStreamedProcessTransport.open({
+              client: this.client,
+              sandboxName: exact.displayName,
+              command: context.command,
+              relaySource: await readFile(
+                this.streamedProcessRelayPath,
+                "utf8",
+              ),
+              markerPath: `${SBX_GUEST_PATHS.state}/environment-ownership.json`,
+              expectedMarkerSha256: exact.markerDigest,
+              acknowledgementTimeoutMs: context.acknowledgementTimeoutMs,
+            });
+          },
+        );
+      },
+      reconcileStreamedProcess: async (handle) => {
+        if (!sameRef(handle.environment, ref))
+          throw new EnvironmentBackendError(
+            "streamed_process_identity_mismatch",
+            "Streamed process handle belongs to another environment lease.",
+            "inspect_streamed",
+          );
+        return this.streamedProcesses.reconcile(handle);
+      },
       workerExec: async (command) => {
         validateCommand(command);
         const current = await this.requireUsableLease(record, "exec");
@@ -959,11 +1046,72 @@ export class SbxExecutionEnvironmentBackend
     return mkdtemp(join(root, "transfer-"));
   }
 
+  private async validateStreamedProcessOperation(
+    ref: EnvironmentRef,
+    operation: EnvironmentBackendOperation,
+  ): Promise<void> {
+    const current = this.requireCurrentRef(ref, operation);
+    if (operation === "retire_streamed") return;
+    await this.requireUsableLease(
+      current,
+      operation as Extract<
+        EnvironmentBackendOperation,
+        | "spawn_streamed"
+        | "inspect_streamed"
+        | "write_streamed"
+        | "cancel_streamed"
+      >,
+    );
+  }
+
+  private async inspectDetachedStreamedProcess(
+    handle: StreamedProcessHandle,
+  ): Promise<StreamedProcessReconciliation> {
+    const current = this.requireCurrentRef(
+      handle.environment,
+      "inspect_streamed",
+    );
+    if (!/^\d+$/.test(handle.backendProcessId))
+      return detachedReconciliation(handle, "identity_mismatch");
+    try {
+      const result = await this.client.exec(current.displayName, {
+        executable: "/usr/bin/python3",
+        args: [
+          "-c",
+          "import hashlib,json,os,pathlib,sys; marker=pathlib.Path('/qe/state/environment-ownership.json'); match=marker.is_file() and hashlib.sha256(marker.read_bytes()).hexdigest()==sys.argv[1]; pid=os.environ['QE_PID']; p=pathlib.Path('/proc')/pid; exists=match and p.is_dir(); start=''; exe=''; state='';\nif exists:\n s=(p/'stat').read_text(); c=s.rfind(')'); f=s[c+2:].split(); state=f[0]; start=f[19]; exe=os.readlink(p/'exe') if (p/'exe').exists() else ''\nprint(json.dumps({'markerMatch':match,'exists':exists,'state':state,'startIdentity':start,'observedExecutable':exe},separators=(',',':')))",
+          current.markerDigest ?? "marker-evidence-absent",
+        ],
+        environment: { QE_PID: handle.backendProcessId },
+        timeoutMs: 5_000,
+      });
+      const value = JSON.parse(result.stdout) as Record<string, unknown>;
+      if (value.markerMatch !== true)
+        return detachedReconciliation(handle, "identity_mismatch");
+      if (value.exists !== true || value.state === "Z")
+        return detachedReconciliation(handle, "gone");
+      if (
+        value.startIdentity !== handle.processStartIdentity ||
+        (handle.observedExecutable !== undefined &&
+          value.observedExecutable !== handle.observedExecutable)
+      )
+        return detachedReconciliation(handle, "identity_mismatch");
+      return detachedReconciliation(handle, "running");
+    } catch {
+      return detachedReconciliation(handle, "unavailable");
+    }
+  }
+
   private async requireUsableLease(
     leased: DurableEnvironmentRecord,
     operation: Extract<
       EnvironmentBackendOperation,
-      "launcher" | "exec" | "transfer"
+      | "launcher"
+      | "exec"
+      | "transfer"
+      | "spawn_streamed"
+      | "inspect_streamed"
+      | "write_streamed"
+      | "cancel_streamed"
     >,
   ): Promise<DurableEnvironmentRecord> {
     const ref = refFor(leased);
@@ -1824,6 +1972,35 @@ export function sbxEnvironmentName(workerId: string, runId: string): string {
 
 function ownerKey(workerId: string, runId: string): string {
   return `${workerId}\0${runId}`;
+}
+
+function detachedReconciliation(
+  handle: StreamedProcessHandle,
+  process: StreamedProcessReconciliation["process"],
+): StreamedProcessReconciliation {
+  return {
+    handle: structuredClone(handle),
+    process,
+    streamAttachment: "unavailable",
+    streamRecovery: "not_recoverable",
+  };
+}
+
+function assertStreamedProcessCapability(
+  capabilities: readonly EnvironmentCapability[],
+): void {
+  if (
+    !capabilities.some(
+      (capability) =>
+        capability.kind === "process.streamed" &&
+        capability.mode === "attached_only",
+    )
+  )
+    throw new EnvironmentBackendError(
+      "streamed_process_unsupported",
+      "Verified SBX environment does not support streamed processes.",
+      "spawn_streamed",
+    );
 }
 
 function withDefaultCwd(command: EnvironmentCommand): EnvironmentCommand {

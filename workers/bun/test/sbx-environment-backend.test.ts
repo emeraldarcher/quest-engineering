@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { FakeStreamedProcessTransport } from "../src/execution-environment/fake.ts";
 import {
   SbxExecutionEnvironmentBackend,
   sbxEnvironmentName,
@@ -34,7 +35,7 @@ import {
 const roots: string[] = [];
 const backends: SbxExecutionEnvironmentBackend[] = [];
 afterEach(async () => {
-  for (const backend of backends.splice(0)) backend.close();
+  for (const backend of backends.splice(0)) await backend.close();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
@@ -73,7 +74,7 @@ test("durable Worker restart adopts exact physical environment without duplicati
   const first = backend(root, state);
   const spec = sbxSpec("run-restart");
   const original = await first.ensure(spec);
-  first.close();
+  await first.close();
   backends.splice(backends.indexOf(first), 1);
 
   const restarted = backend(root, state);
@@ -84,6 +85,63 @@ test("durable Worker restart adopts exact physical environment without duplicati
   expect((await recovered.exec(sbxCommand("preserved"))).stdout).toBe(
     "preserved\n",
   );
+});
+
+test("SBX streamed process is non-PTY, fenced, Run-owned, and restart-classified without fake stdio recovery", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  let transport: FakeStreamedProcessTransport | null = null;
+  const first = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client: new FakeSbxClient(state),
+    verifier: new FakeSbxVerifier(state),
+    reconciliationPollMs: 2,
+    reconciliationAttempts: 100,
+    onStreamedProcessEvent: () => undefined,
+    openStreamedProcess: async (context) => {
+      transport = new FakeStreamedProcessTransport({
+        backendProcessId: "4321",
+        processStartIdentity: "987654",
+        observedExecutable: context.command.executable,
+      });
+      return transport;
+    },
+  });
+  backends.push(first);
+  const environmentSpec = sbxSpec("run-streamed-restart");
+  const lease = await first.ensure(environmentSpec);
+  expect(lease.capabilities).toContainEqual(
+    expect.objectContaining({
+      kind: "process.streamed",
+      mode: "attached_only",
+    }),
+  );
+  const process = await lease.spawnStreamed({
+    executable: "/usr/bin/python3",
+    args: ["-u", "-c", "; literal-not-shell"],
+    cwd: lease.paths.workspace,
+    environment: {},
+  });
+  const attached = transport as unknown as FakeStreamedProcessTransport;
+  expect(
+    await process.write(new TextEncoder().encode("request\n")),
+  ).toMatchObject({ certainty: "acknowledged" });
+  expect(attached.writes).toEqual([new TextEncoder().encode("request\n")]);
+  const handle = structuredClone(process.handle);
+
+  await first.close();
+  backends.splice(backends.indexOf(first), 1);
+  expect(attached.disconnected).toBe(true);
+
+  const restarted = backend(root, state);
+  const recovered = await restarted.recover(lease.ref, environmentSpec);
+  expect(await recovered.reconcileStreamedProcess(handle)).toEqual({
+    handle,
+    process: "gone",
+    streamAttachment: "unavailable",
+    streamRecovery: "not_recoverable",
+  });
 });
 
 test("creation disables ambient credential variables and carries only ownership identity", async () => {
@@ -571,7 +629,7 @@ test("Worker restart reconciles a pending stop without destructive replay", asyn
   const spec = sbxSpec("run-stop-restart-recovery");
   const lease = await first.ensure(spec);
   expect(await first.stop(lease.ref)).toMatchObject({ state: "stopping" });
-  first.close();
+  await first.close();
   backends.splice(backends.indexOf(first), 1);
 
   exactSandbox(state).status = "stopped";
