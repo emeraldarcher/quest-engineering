@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { nativeSessionRef } from "../src/harnesses/native-session.ts";
 import {
   errorProvesPromptSubmission,
   observeAntigravityNativeActivity,
@@ -86,11 +87,11 @@ test("Antigravity activity comes only from its post-baseline native conversation
     await observeAntigravityNativeActivity({ logPath: path, evidence }),
   ).toMatchObject({
     working: true,
-    nativeSession: {
-      source: "antigravity",
-      kind: "id",
-      value: "22222222-2222-4222-8222-222222222222",
-    },
+    nativeSession: nativeSessionRef(
+      "antigravity",
+      "id",
+      "22222222-2222-4222-8222-222222222222",
+    ),
   });
 });
 
@@ -103,12 +104,11 @@ test("Antigravity recovery selects the latest accepted native conversation", asy
       "Sending user message to conversation 22222222-2222-4222-8222-222222222222 (items=1, media=0)\n",
   );
   expect(await observeLatestAntigravityConversation({ logPath: path })).toEqual(
-    {
-      source: "antigravity",
-      agent: "agy",
-      kind: "id",
-      value: "22222222-2222-4222-8222-222222222222",
-    },
+    nativeSessionRef(
+      "antigravity",
+      "id",
+      "22222222-2222-4222-8222-222222222222",
+    ),
   );
 });
 

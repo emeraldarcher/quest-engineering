@@ -591,11 +591,11 @@ export function createAppStore(
     )
       return true;
     const session = liveSessionFor(target);
-    if (!session) {
+    if (!session?.attachment) {
       reportError(
         new ApiError(
           "stale_execution_session",
-          "The live-session action no longer matches the current Attempt and session.",
+          "The current harness execution has no interactive session attachment.",
         ),
       );
       return false;

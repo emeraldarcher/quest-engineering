@@ -34,7 +34,7 @@ The Worker contract advertises a harness kind, display name and independent capa
 
 Antigravity exposes its visible input loop before every prerequisite for a fresh native conversation is necessarily valid. QE therefore separates `tuiInputReady` from `freshConversationReady`. Fresh readiness requires the ordered native 1.2.7 startup sequence plus agent-writable lineage cache/project/conversation-store state, a resolved default native project and project configuration, exact workspace resolution, rendered empty prompt surface, default editor mode, no custom keybindings, and the native `prompt.submit` Enter binding. It still requires no native conversation and zero user-message/provider activity. Project-resolution errors or wrong focus/editor/binding state fail before authorization. Retained conversations remain allowed only through their existing exact native identity and physical-lineage fences.
 
-A future harness implements this contract, maps its own native events to the small operational states, supplies only capabilities it actually supports, and provides a terminal launch specification to a compatible backend. Human handoff is harness lifecycle—not a Pi command in the QE core contract: automation yields, a human owns the native harness session, explicit hand-back occurs, and automation resumes. Claude Code might use an interactive REPL lifecycle; Codex might use CLI/app-server approval and steering mechanisms. Neither is implemented here. Provider prose and private provider data must not leak into Product contracts.
+A future harness implements this contract, maps its own native events to the small operational states, and supplies only capabilities it actually supports. It does **not** need a terminal launch specification: a headless/native-RPC adapter can start, inspect, recover, and collect through its own provider-neutral execution handle and validated opaque binding. An adapter that supports human handoff may additionally expose an interactive session and terminal launch specification to a compatible backend. Human handoff is harness lifecycle—not a Pi command in the QE core contract: automation yields, a human owns the native harness session, explicit hand-back occurs, and automation resumes. Claude Code might use an interactive REPL lifecycle; Codex might use CLI/app-server approval and steering mechanisms. Neither is implemented here. Provider prose and private provider data must not leak into Product contracts.
 
 ## TerminalSessionBackend
 
@@ -57,22 +57,24 @@ The helper starts that locally resolved Herdr executable with `std::process::Com
 
 ## Identity and durability
 
-The Worker lineage ID represents a durable harness-session/physical-lineage lifetime. One lineage has an exact `harness_kind`, native conversation identity, and Herdr provenance, and may be used by several Attempts through same-harness continuation. Each dispatch retains its association with that lineage.
+The Worker lineage ID represents a durable harness-session/physical-lineage lifetime. One lineage has an exact `harness_kind` and provider-neutral execution identity and may be used by several Attempts through same-harness continuation. Native conversation identity and transport topology are optional, adapter-owned recovery data. Each dispatch retains its association with that lineage.
 
 Therefore:
 
 ```text
-Attempt --uses--> QE lineage / harness session --hosted by--> Herdr terminal/process incarnation
+Attempt --uses--> QE lineage / harness execution
+                         `-- optionally interactive --> terminal/process incarnation
 ```
 
 The relationships are not cardinality assumptions:
 
 - an Attempt does not own a terminal;
 - a Run does not own a terminal;
+- a valid harness execution may have no terminal at all;
 - continuation can reuse the same lineage/session;
 - a fresh operational retry can rotate lineage according to existing context rules.
 
-Worker SQLite adds harness kind, operational state, capability set, current attention, last Product-safe intervention lifecycle, and activity timestamps to `provider_lineages`. Existing Herdr/Pi IDs, native Pi session reference, workspace and active Action remain authoritative. Additive startup upgrades backfill old registries; already-running Pi processes do not gain capabilities for extension code they were not launched with. PostgreSQL stores the Product-safe session projection and links each `worker_dispatch` usage to it.
+Worker SQLite adds harness kind, operational state, capability set, current attention, last Product-safe intervention lifecycle, activity timestamps, a validated provider-neutral execution handle, versioned native-session identity, and a bounded opaque transport binding to `provider_lineages`. Legacy Herdr columns remain an additive migration input but are mapped into terminal-adapter bindings; generic orchestration no longer treats them as required execution identity. New writes validate binding schema and harness ownership. PostgreSQL stores the Product-safe session projection and links each `worker_dispatch` usage to it.
 
 The local conversational checkpoint is versioned and minimal. It stores the attention identity/reason, `requested | resuming | resolved`, Worker/lineage/Action/Run/occurrence/Attempt IDs, Pi session ID, and hand-back/resumed timestamps. The complete objective, Step instruction and continuation context remain authoritative in the existing nonce-bound result-control Action and are not duplicated. The checkpoint survives Worker restart. It never contains human chat.
 
@@ -117,7 +119,7 @@ Product cancellation is independent of both scheduling and prompt authorization.
 
 A failed operational Attempt is different. Its session may remain retained for postmortem conversation without occupying an execution slot. `/qe-retry` writes a durable local request that the Worker validates and sends through generation-fenced Worker Protocol; Phoenix appends a human recovery epoch and the scheduler reacquires normal resources for a new Attempt under the same StepOccurrence. Valid retained Pi lineage is preferred, but unavailable or unverifiable continuity is never silently replaced. See `docs/retry-and-remediation.md`.
 
-Worker restart loads the SQLite dispatch/lineage and attention record. For both production harnesses, startup reconciles every unfinished `sbx-run-executions.sqlite` record against the exact durable environment ref. Recovery re-verifies the immutable environment spec, frozen source, isolated host and guest repository/worktree identity, durable launch provenance, and current control descriptor before relaying anything. It then locates the exact surviving Herdr pane and rechecks guest attestation; an environment without the exact process, or a process without the exact environment, is not treated as continuity. A known wrong launcher is `environment_launch_mismatch`; guest mismatch is `environment_attestation_failed`; typed Herdr process failure is `agent_explicit_launch_failed`. These are deterministic non-recoverable infrastructure outcomes, not ambiguous prompt state. For either harness, `agent.get` inspection reconciles blocked/running state. Antigravity adopts only an exact surviving guest TUI during recovery. If it is absent, the adapter never host-launches a replacement; a separately authorized fresh SBX Attempt may start with a verified native conversation ID and must verify the returned identity. A currently blocked recovered agent restores HumanAttention. Worker Protocol v11 reports the same QE session ID under the new connection generation. Stale-generation projections cannot issue attachment descriptors.
+Worker restart loads the SQLite dispatch/lineage and attention record. A headless adapter recovers directly from its provider-neutral handle and validated harness-owned binding without terminal discovery. For both current production terminal adapters, startup reconciles every unfinished `sbx-run-executions.sqlite` record against the exact durable environment ref. Recovery re-verifies the immutable environment spec, frozen source, isolated host and guest repository/worktree identity, durable launch provenance, and current control descriptor before relaying anything. It then locates the exact surviving Herdr pane and rechecks guest attestation; an environment without the exact process, or a process without the exact environment, is not treated as continuity. A known wrong launcher is `environment_launch_mismatch`; guest mismatch is `environment_attestation_failed`; typed Herdr process failure is `agent_explicit_launch_failed`. These are deterministic non-recoverable infrastructure outcomes, not ambiguous prompt state. For either harness, `agent.get` inspection reconciles blocked/running state. Antigravity adopts only an exact surviving guest TUI during recovery. If it is absent, the adapter never host-launches a replacement; a separately authorized fresh SBX Attempt may start with a verified native conversation ID and must verify the returned identity. A currently blocked recovered agent restores HumanAttention. Worker Protocol v12 reports the same QE session ID under the new connection generation. Stale-generation projections cannot issue attachment descriptors.
 
 Worker registration is connectivity, not dispatch readiness. After current-generation dispatch, worktree, session, and workspace-binding reconciliation completes, the Worker publishes `worker_ready`. Phoenix stores readiness against that exact connection generation. Product exposes an execution option as available, and the scheduler may claim it, only when `ready_generation == connection_generation` and the selected binding belongs to that generation. A restart clears readiness immediately; stale-generation readiness reports are rejected and cannot make Product options visible.
 
@@ -131,7 +133,7 @@ The relay remains alive while structured completion is legitimately possible. Af
 
 ## Product projection and audit
 
-Ordinary Run projections include harness display identity, Worker display identity/liveness, operational state, advertised capabilities, attachment availability, attention, timestamps and small audit-event summaries. They exclude local paths, native session paths, environment, control data, credentials and terminal output.
+Ordinary Run projections include harness display identity, Worker display identity/liveness, operational state, advertised capabilities, optional attachment availability, attention, timestamps and small audit-event summaries. Headless sessions project `attachment: null`; physical transition detail carries no terminal topology. Projections exclude raw adapter bindings, Worker turn-ledger internals, local paths, native session paths, environment, control data, credentials and terminal output.
 
 Product-safe audit events are:
 

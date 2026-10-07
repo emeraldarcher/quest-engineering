@@ -1,4 +1,7 @@
 import type { HostLaunchDescriptor } from "../execution-environment/types.ts";
+import type { NativeSessionRef } from "../harnesses/native-session.ts";
+
+export type { NativeSessionRef } from "../harnesses/native-session.ts";
 
 export type HostedAgentStatus =
   | "idle"
@@ -6,12 +9,6 @@ export type HostedAgentStatus =
   | "blocked"
   | "done"
   | "unknown";
-export interface NativeSessionRef {
-  source: string;
-  agent: string;
-  kind: "id" | "path";
-  value: string;
-}
 export interface HostedAgent {
   name?: string;
   agent: string;

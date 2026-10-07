@@ -1449,7 +1449,10 @@ function decodeHarnessSession(value: unknown) {
   const harness = asRecord(session.harness, "harness identity");
   const worker = asRecord(session.worker, "session Worker");
   const capabilities = asRecord(session.capabilities, "session capabilities");
-  const attachment = asRecord(session.attachment, "session attachment");
+  const attachment =
+    session.attachment === null
+      ? null
+      : asRecord(session.attachment, "session attachment");
   const nativeIdentity = asRecord(
     session.native_identity,
     "session native identity",
@@ -1476,10 +1479,6 @@ function decodeHarnessSession(value: unknown) {
       conversation_id: nullableString(
         nativeIdentity.conversation_id,
         "native conversation identity",
-      ),
-      terminal_id: nullableString(
-        nativeIdentity.terminal_id,
-        "native terminal identity",
       ),
     },
     capabilities: {
@@ -1533,14 +1532,19 @@ function decodeHarnessSession(value: unknown) {
         "session capabilities",
       ),
     },
-    attachment: {
-      mode: "local_native_terminal" as const,
-      available: asBoolean(attachment.available, "session attachment"),
-      reason: nullableString(attachment.reason, "session attachment"),
-      can_observe: asBoolean(attachment.can_observe, "session attachment"),
-      can_takeover: asBoolean(attachment.can_takeover, "session attachment"),
-      can_recover: attachment.can_recover === true,
-    },
+    attachment: attachment
+      ? {
+          mode: "local_native_terminal" as const,
+          available: asBoolean(attachment.available, "session attachment"),
+          reason: nullableString(attachment.reason, "session attachment"),
+          can_observe: asBoolean(attachment.can_observe, "session attachment"),
+          can_takeover: asBoolean(
+            attachment.can_takeover,
+            "session attachment",
+          ),
+          can_recover: attachment.can_recover === true,
+        }
+      : null,
     attention: attention
       ? {
           attention_id: asString(attention.attention_id, "human attention"),

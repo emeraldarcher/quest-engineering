@@ -320,7 +320,6 @@ export interface HarnessSessionProjection {
   state: HarnessSessionState;
   native_identity: {
     conversation_id: string | null;
-    terminal_id: string | null;
   };
   capabilities: {
     can_attach_terminal: boolean;
@@ -344,7 +343,7 @@ export interface HarnessSessionProjection {
     can_observe: boolean;
     can_takeover: boolean;
     can_recover?: boolean;
-  };
+  } | null;
   attention: HumanAttention | null;
   started_at: string;
   last_activity_at: string;

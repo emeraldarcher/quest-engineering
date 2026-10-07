@@ -1160,7 +1160,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 11,
+                      "protocol_version" => 12,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -1977,8 +1977,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert projected.attempt.operational.source_attempt_id == first.execution.identity.attempt_id
     assert projected.attempt.operational.retained_lineage_id == lineage_id
 
-    assert projected.attempt.session.turn["physical_process"]["mode"] ==
-             "prepared_process_adopted"
+    refute Map.has_key?(projected.attempt.session, :turn)
 
     assert projected.recovery.can_authorize_prompt
     refute projected.recovery.can_recover_pre_prompt

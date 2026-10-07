@@ -316,7 +316,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
       with {:ok, projection} <- RunProjection.get(launched.run_id),
            [step] <- projection.steps do
         match?(
-          %{session: %{state: "unavailable", attachment: %{reason: "worker_offline"}}},
+          %{session: %{state: "unavailable", attachment: nil}},
           step
         )
       else

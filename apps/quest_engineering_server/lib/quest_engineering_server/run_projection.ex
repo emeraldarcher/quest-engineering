@@ -404,7 +404,7 @@ defmodule QuestEngineering.Server.RunProjection do
       inputs: artifact_refs(occurrence.input_artifact_ids, run),
       outputs: artifact_refs(occurrence.output_artifact_ids, run),
       issue: issue(state, dispatch),
-      recovery: recovery(state, dispatch, current_attempt)
+      recovery: recovery(state, dispatch, current_attempt, session)
     }
   end
 
@@ -416,10 +416,10 @@ defmodule QuestEngineering.Server.RunProjection do
            session: %{
              state: "waiting_for_human",
              native_identity: %{conversation_id: nil},
-             attention: %{"category" => "needs_confirmation"},
-             turn: %{"prompt_intent_at" => nil}
+             attention: %{"category" => "needs_confirmation"}
            }
-         }
+         },
+         %{turn: %{"prompt_intent_at" => nil}}
        )
        when recovery_kind in ["initial", "human"] do
     %{
@@ -434,7 +434,7 @@ defmodule QuestEngineering.Server.RunProjection do
     }
   end
 
-  defp recovery("uncertain", dispatch, _attempt) do
+  defp recovery("uncertain", dispatch, _attempt, _session) do
     retained_work_recovery =
       get_in(dispatch.failure || %{}, ["code"]) == "harness_contract_violation"
 
@@ -451,11 +451,11 @@ defmodule QuestEngineering.Server.RunProjection do
     }
   end
 
-  defp recovery("failed", dispatch, attempt) do
+  defp recovery("failed", dispatch, attempt, session) do
     failure = dispatch && dispatch.failure
     classification = get_in(failure, ["classification"])
     retained_available = retained_session_available?(attempt)
-    pre_prompt_retained = retained_available and pre_prompt?(attempt)
+    pre_prompt_retained = retained_available and pre_prompt?(session)
     contaminated = pre_authorization_contamination?(failure)
 
     pre_prompt_process =
@@ -479,10 +479,10 @@ defmodule QuestEngineering.Server.RunProjection do
     }
   end
 
-  defp recovery(_state, _dispatch, _attempt), do: nil
+  defp recovery(_state, _dispatch, _attempt, _session), do: nil
 
-  defp pre_prompt?(%{session: %{turn: %{"prompt_intent_at" => nil}}}), do: true
-  defp pre_prompt?(_attempt), do: false
+  defp pre_prompt?(%{turn: %{"prompt_intent_at" => nil}}), do: true
+  defp pre_prompt?(_session), do: false
 
   defp human_retry_available?(recoverable, retained, pre_prompt),
     do: recoverable and retained and not pre_prompt
@@ -716,13 +716,11 @@ defmodule QuestEngineering.Server.RunProjection do
       },
       state: session_state(session, worker, current_usage),
       native_identity: %{
-        conversation_id: session.native_session_id,
-        terminal_id: get_in(session.terminal || %{}, ["terminal_id"])
+        conversation_id: session.native_session_id
       },
       capabilities: capability_projection(session.capabilities),
       attachment: attachment_projection(session, worker, current_usage, available, dispatch),
       attention: if(current_usage, do: session.attention, else: nil),
-      turn: session.turn,
       started_at: iso(session.started_at),
       last_activity_at: iso(session.last_activity_at),
       events:
@@ -774,14 +772,18 @@ defmodule QuestEngineering.Server.RunProjection do
   defp session_state(_session, _worker, false), do: "retained"
 
   defp attachment_projection(session, worker, current_usage, available, dispatch) do
-    %{
-      mode: "local_native_terminal",
-      available: available,
-      reason: attachment_unavailable_reason(session, worker, available),
-      can_observe: available and get_in(session.terminal, ["supports_observation"]) == true,
-      can_takeover: takeover_available?(session, current_usage, available, dispatch),
-      can_recover: recovery_available?(session, current_usage, available, dispatch)
-    }
+    if get_in(session.capabilities, ["can_attach_terminal"]) == true do
+      %{
+        mode: "local_native_terminal",
+        available: available,
+        reason: attachment_unavailable_reason(session, worker, available),
+        can_observe: available and get_in(session.terminal, ["supports_observation"]) == true,
+        can_takeover: takeover_available?(session, current_usage, available, dispatch),
+        can_recover: recovery_available?(session, current_usage, available, dispatch)
+      }
+    else
+      nil
+    end
   end
 
   defp takeover_available?(session, current_usage, available, dispatch) do

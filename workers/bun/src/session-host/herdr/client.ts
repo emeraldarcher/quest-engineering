@@ -1,6 +1,10 @@
 import { createConnection, type Socket } from "node:net";
 import { isAbsolute } from "node:path";
 import type { HostLaunchDescriptor } from "../../execution-environment/types.ts";
+import {
+  nativeSessionIdentity,
+  nativeSessionRef,
+} from "../../harnesses/native-session.ts";
 import type {
   HostedAgent,
   HostedAgentStatus,
@@ -326,16 +330,21 @@ export class HerdrSocketClient implements HerdrControlClient {
     sequence: number;
     nativeSession?: NativeSessionRef;
   }): Promise<void> {
-    const session = input.nativeSession;
+    const session = input.nativeSession
+      ? nativeSessionIdentity(
+          input.nativeSession,
+          input.agent === "agy" ? "antigravity" : "pi",
+        )
+      : null;
     if (session)
       await this.request("pane.report_agent_session", {
         pane_id: input.paneId,
         source: input.source,
         agent: input.agent,
         seq: input.sequence * 2,
-        ...(session.kind === "path"
-          ? { agent_session_path: session.value }
-          : { agent_session_id: session.value }),
+        ...(session.identityKind === "path"
+          ? { agent_session_path: session.opaqueId }
+          : { agent_session_id: session.opaqueId }),
       });
     await this.request("pane.report_agent", {
       pane_id: input.paneId,
@@ -343,10 +352,10 @@ export class HerdrSocketClient implements HerdrControlClient {
       agent: input.agent,
       state: input.state,
       seq: input.sequence * 2 + 1,
-      ...(session?.kind === "path"
-        ? { agent_session_path: session.value }
+      ...(session?.identityKind === "path"
+        ? { agent_session_path: session.opaqueId }
         : session
-          ? { agent_session_id: session.value }
+          ? { agent_session_id: session.opaqueId }
           : {}),
     });
   }
@@ -1262,12 +1271,13 @@ function nativeSession(
       capability,
       "Herdr returned malformed native agent-session identity.",
     );
-  return {
-    source: value.source,
-    agent: value.agent,
-    kind: value.kind,
-    value: value.value,
-  };
+  return nativeSessionRef(
+    value.agent === "agy" || value.source.includes("antigravity")
+      ? "antigravity"
+      : "pi",
+    value.kind,
+    value.value,
+  );
 }
 function stringRecord(
   value: Record<string, unknown>,

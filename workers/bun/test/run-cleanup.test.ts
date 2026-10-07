@@ -34,11 +34,7 @@ const request: RunCleanupRequest = {
 const harnessTarget = {
   lineageId: "lineage-1",
   harnessKind: "fake",
-  herdrSession: "shared-herdr",
-  herdrSessionIncarnation: "herdr-incarnation",
-  paneId: "pane-1",
-  terminalId: "terminal-1",
-  agentName: "agent-1",
+  transportBinding: null,
   authorityDigest: "sha256:authority",
   nativeSessionDigest: "sha256:native-session",
 };

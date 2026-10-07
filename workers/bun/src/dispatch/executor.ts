@@ -1,13 +1,18 @@
 import { createHash } from "node:crypto";
 import type { HarnessControlAuthority } from "../harnesses/control/authority.ts";
+import { nativeSessionPublicId } from "../harnesses/native-session.ts";
 import { HarnessRegistry } from "../harnesses/registry.ts";
 import type {
   AgentHarness,
   HarnessEvent,
+  HarnessExecutionHandle,
   HarnessPreparedExecution,
   HarnessRecoveredExecution,
 } from "../harnesses/types.ts";
-import { OperationalExecutionError } from "../harnesses/types.ts";
+import {
+  OperationalExecutionError,
+  supportsInteractiveAttachment,
+} from "../harnesses/types.ts";
 import type {
   CancelDispatch,
   ExecuteAction,
@@ -15,10 +20,7 @@ import type {
   ReconcileDispatch,
 } from "../protocol/types.ts";
 import type { HarnessCleanupTarget } from "../run-cleanup-store.ts";
-import type {
-  HostedAgent,
-  TerminalAttachmentDescriptor,
-} from "../session-host/types.ts";
+import type { TerminalAttachmentDescriptor } from "../session-host/types.ts";
 import {
   type DispatchRecord,
   type DispatchRegistry,
@@ -416,9 +418,17 @@ export class DispatchExecutor {
       throw new Error(`Dispatch ${actionId} has no harness session.`);
     const lineage = this.registry.getLineage(dispatch.lineageId);
     const harness = this.harnessForLineage(lineage);
-    if (!harness.attachment)
-      throw new Error(
-        `Harness ${harness.kind} does not support terminal attachment.`,
+    if (!supportsInteractiveAttachment(harness))
+      throw new OperationalExecutionError(
+        `Harness ${harness.kind} has no interactive session attachment.`,
+        "operator_recovery_required",
+        "attachment_unavailable",
+        undefined,
+        {
+          sideEffectCertainty: "not_submitted",
+          phase: "observe",
+          capability: "interactive_attachment",
+        },
       );
     return harness.attachment(lineage);
   }
@@ -547,22 +557,7 @@ export class DispatchExecutor {
       if (!execution)
         throw new Error("Harness execution was not prepared before readiness.");
       if (harness.ready) await harness.ready(dispatch, execution);
-      this.registry.recordHost(lineage.lineageId, {
-        herdrSession: execution.ref.sessionName,
-        ...(execution.ref.sessionIncarnation
-          ? { herdrSessionIncarnation: execution.ref.sessionIncarnation }
-          : {}),
-        workspaceId: execution.ref.workspaceId,
-        ...(execution.ref.tabId ? { tabId: execution.ref.tabId } : {}),
-        paneId: execution.ref.paneId,
-        ...(execution.ref.terminalId
-          ? { terminalId: execution.ref.terminalId }
-          : {}),
-        agentName: execution.ref.agentName,
-        ...(execution.ref.nativeSession
-          ? { nativeSession: execution.ref.nativeSession }
-          : {}),
-      });
+      this.registry.recordExecution(lineage.lineageId, execution.handle);
       lineage = this.registry.updateSession(
         lineage.lineageId,
         "starting",
@@ -628,48 +623,33 @@ export class DispatchExecutor {
       const lineage = this.registry.getLineage(dispatch.lineageId);
       if (lineage.activeActionId === dispatch.action.action_id)
         await this.control?.bind(dispatch, lineage);
-      if (!lineage.agentName || !lineage.paneId) {
-        if (!dispatch.promptIntentAt) {
-          await this.execute(dispatch.action.action_id);
-          return;
-        }
-        throw new Error(
-          "Prompt may have been submitted but no agent reference was persisted.",
-        );
-      }
       const recovered = await this.recoverExecution(lineage, dispatch);
-      if (!recovered.found || !recovered.agent)
-        throw new Error(recovered.detail);
-      if (recovered.agent.nativeSession)
+      if (!recovered.found) throw new Error(recovered.detail);
+      const recoveredNativeSession =
+        recovered.inspection.nativeSession ?? recovered.handle.nativeSession;
+      if (recoveredNativeSession)
         this.registry.recordNativeSession(
           lineage.lineageId,
-          recovered.agent.nativeSession,
+          recoveredNativeSession,
         );
-      if (recovered.ref) {
-        this.registry.recordHost(lineage.lineageId, {
-          herdrSession: recovered.ref.sessionName,
-          ...(recovered.ref.sessionIncarnation
-            ? { herdrSessionIncarnation: recovered.ref.sessionIncarnation }
-            : {}),
-          workspaceId: recovered.ref.workspaceId,
-          ...(recovered.ref.tabId ? { tabId: recovered.ref.tabId } : {}),
-          paneId: recovered.ref.paneId,
-          ...(recovered.ref.terminalId
-            ? { terminalId: recovered.ref.terminalId }
-            : {}),
-          agentName: recovered.ref.agentName,
-          ...(recovered.ref.nativeSession
-            ? { nativeSession: recovered.ref.nativeSession }
+      this.registry.recordExecution(lineage.lineageId, {
+        ...recovered.handle,
+        ...(recoveredNativeSession
+          ? { nativeSession: recoveredNativeSession }
+          : {}),
+      });
+      if (harness.ready) {
+        await harness.ready(dispatch, {
+          lineage: this.registry.getLineage(lineage.lineageId),
+          handle: recovered.handle,
+          ...(recovered.inspection.interactive
+            ? { interactive: recovered.inspection.interactive }
             : {}),
         });
-        if (harness.ready) {
-          await harness.ready(dispatch, {
-            lineage,
-            ref: recovered.ref,
-            agent: recovered.agent,
-          });
-          await this.control?.bind(dispatch, lineage);
-        }
+        await this.control?.bind(
+          dispatch,
+          this.registry.getLineage(lineage.lineageId),
+        );
       }
       if (isRecoverableObservationUncertainty(dispatch))
         dispatch = this.registry.resumeObservationUncertainty(
@@ -687,8 +667,13 @@ export class DispatchExecutor {
           );
           return;
         }
-        const execution = await this.continueExecution(dispatch, lineage);
+        const recoveredLineage = this.registry.getLineage(lineage.lineageId);
+        const execution = await this.continueExecution(
+          dispatch,
+          recoveredLineage,
+        );
         this.registry.occupy(lineage.lineageId, dispatch.action.action_id);
+        this.registry.recordExecution(lineage.lineageId, execution.handle);
         if (harness.ready) {
           await harness.ready(dispatch, execution);
         }
@@ -732,7 +717,7 @@ export class DispatchExecutor {
       const outputs = await this.waitAndCollect(
         dispatch,
         lineage,
-        recovered.agent,
+        recovered.handle,
         (event) =>
           this.handleHarnessEvent(
             dispatch.action.action_id,
@@ -802,7 +787,7 @@ export class DispatchExecutor {
       return false;
     if (!dispatch.lineageId) return false;
     const lineage = this.registry.getLineage(dispatch.lineageId);
-    return Boolean(lineage.agentName && lineage.paneId);
+    return Boolean(lineage.executionHandle);
   }
 
   private async reportBackendSession(
@@ -1002,8 +987,12 @@ export class DispatchExecutor {
         {
           observed_at: activity.observedAt,
           evidence: activity.evidence,
-          ...(activity.nativeSession?.kind === "id"
-            ? { native_conversation_id: activity.nativeSession.value }
+          ...(nativeSessionPublicId(activity.nativeSession)
+            ? {
+                native_conversation_id: nativeSessionPublicId(
+                  activity.nativeSession,
+                ) as string,
+              }
             : {}),
           process_retired: retired,
         },
@@ -1054,7 +1043,7 @@ export class DispatchExecutor {
   private waitAndCollect(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
-    agent: HostedAgent,
+    handle: HarnessExecutionHandle,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
     const harness = this.harnessForLineage(lineage);
@@ -1062,7 +1051,7 @@ export class DispatchExecutor {
       throw new Error(
         `Harness ${harness.kind} cannot collect a recovered result.`,
       );
-    return harness.waitAndCollect(dispatch, lineage, agent, onEvent);
+    return harness.waitAndCollect(dispatch, lineage, handle, onEvent);
   }
 
   private harnessForDispatch(dispatch: DispatchRecord): AgentHarness {
@@ -1103,29 +1092,19 @@ export class DispatchExecutor {
       this.registry.markPromptAccepted(actionId, observedAt);
       this.registry.markNativeActivity(actionId, observedAt);
     }
-    const observedAgent = inspection.agent;
-    const persisted = this.registry.getLineage(lineageId);
-    if (
-      observedAgent?.name &&
-      persisted.herdrSession &&
-      persisted.herdrSessionIncarnation
-    )
-      this.registry.recordHost(lineageId, {
-        herdrSession: persisted.herdrSession,
-        herdrSessionIncarnation: persisted.herdrSessionIncarnation,
-        workspaceId: observedAgent.workspaceId,
-        ...(observedAgent.tabId ? { tabId: observedAgent.tabId } : {}),
-        paneId: observedAgent.paneId,
-        ...(observedAgent.terminalId
-          ? { terminalId: observedAgent.terminalId }
+    const observedBinding = inspection.interactive?.transportBinding;
+    if (observedBinding)
+      this.registry.recordExecution(lineageId, {
+        schemaVersion: 1,
+        harnessKind: this.registry.getLineage(lineageId).harnessKind,
+        executionId: lineageId,
+        ...(inspection.nativeSession
+          ? { nativeSession: inspection.nativeSession }
           : {}),
-        agentName: observedAgent.name,
-        ...(observedAgent.nativeSession
-          ? { nativeSession: observedAgent.nativeSession }
-          : {}),
+        transportBinding: observedBinding,
       });
-    if (observedAgent?.nativeSession)
-      this.registry.recordNativeSession(lineageId, observedAgent.nativeSession);
+    if (inspection.nativeSession)
+      this.registry.recordNativeSession(lineageId, inspection.nativeSession);
     const lineage = this.registry.updateSession(
       lineageId,
       inspection.state,
@@ -1249,11 +1228,7 @@ function cleanupTarget(lineage: HarnessLineage): HarnessCleanupTarget {
   return {
     lineageId: lineage.lineageId,
     harnessKind: lineage.harnessKind,
-    herdrSession: lineage.herdrSession,
-    herdrSessionIncarnation: lineage.herdrSessionIncarnation,
-    paneId: lineage.paneId,
-    terminalId: lineage.terminalId,
-    agentName: lineage.agentName,
+    transportBinding: lineage.transportBinding,
     authorityDigest: digest(lineage.ownershipToken),
     nativeSessionDigest: lineage.nativeSession
       ? digest(JSON.stringify(lineage.nativeSession))
@@ -1283,6 +1258,12 @@ function failureValue(error: unknown): Record<string, JsonValue> {
     ...(capability ? { capability } : {}),
     ...(error instanceof OperationalExecutionError && error.evidence
       ? error.evidence
+      : {}),
+    ...(error instanceof OperationalExecutionError && error.phase
+      ? { operation_phase: error.phase }
+      : {}),
+    ...(error instanceof OperationalExecutionError && error.sideEffectCertainty
+      ? { side_effect_certainty: error.sideEffectCertainty }
       : {}),
     classification: operationalFailureClassification(error),
     message: error instanceof Error ? error.message : String(error),
@@ -1325,7 +1306,9 @@ function isUncertain(dispatch: DispatchRecord, error: unknown): boolean {
       ? String((error as { code: unknown }).code)
       : null;
   return Boolean(
-    code === "agent_launch_uncertain" ||
+    (error instanceof OperationalExecutionError &&
+      error.classification === "uncertain") ||
+      code === "agent_launch_uncertain" ||
       code === "agent_prompt_uncertain" ||
       ((dispatch.promptAcceptedAt || dispatch.nativeActivityAt) &&
         [

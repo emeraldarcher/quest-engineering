@@ -35,7 +35,18 @@ import {
   readControl,
   writeControlAtomic,
 } from "../control/result-envelope.ts";
+import { nativeSessionIdentity } from "../native-session.ts";
 import { harnessPromptFor } from "../prompt.ts";
+import {
+  type TerminalHarnessPreparedExecution,
+  terminalBinding,
+  terminalExecution,
+  terminalInspection,
+  terminalInteractiveSession,
+  terminalLineage,
+  terminalPreparedExecution,
+  terminalTransportBinding,
+} from "../terminal-execution.ts";
 import {
   ambiguousPromptError,
   errorProvesPromptSubmission,
@@ -54,6 +65,7 @@ import type {
   HarnessAdoptionCandidate,
   HarnessCapabilities,
   HarnessEvent,
+  HarnessExecutionHandle,
   HarnessInspection,
   HarnessKnownDispatch,
   HarnessPreparedExecution,
@@ -238,14 +250,10 @@ export class PiHarness implements AgentHarness {
   async start(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
-  ): Promise<HarnessPreparedExecution> {
+  ): Promise<TerminalHarnessPreparedExecution> {
     this.assertIntegration();
     const sessionIncarnation = requireSessionIncarnation(this.host);
-    const physicalLineage = {
-      ...lineage,
-      herdrSession: this.host.sessionName,
-      herdrSessionIncarnation: sessionIncarnation,
-    };
+    const physicalLineage = lineage;
     const hostArtifacts = materializeExecutionArtifacts(this.config, dispatch);
     const sbx = this.executionManager
       ? await this.executionManager.prepare(
@@ -302,6 +310,7 @@ export class PiHarness implements AgentHarness {
       dispatch,
       physicalLineage,
       true,
+      { agentName, sessionIncarnation },
     );
     await writeControlAtomic(physicalLineage.resultControlPath, {
       protocolVersion: 1,
@@ -338,30 +347,24 @@ export class PiHarness implements AgentHarness {
     }
     if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
     assertCurrentSessionIncarnation(this.host, sessionIncarnation);
-    return {
-      lineage: physicalLineage,
-      ref: refFor(
-        this.host.sessionName,
-        sessionIncarnation,
-        agentName,
-        pane,
-        agent,
-      ),
+    return terminalPreparedExecution(
+      physicalLineage,
+      this.host.backendKind,
+      refFor(this.host.sessionName, sessionIncarnation, agentName, pane, agent),
       agent,
-    };
+      this.capabilities,
+    );
   }
 
   async continue(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
-  ): Promise<HarnessPreparedExecution> {
+  ): Promise<TerminalHarnessPreparedExecution> {
+    const { ref: retainedRef } = terminalLineage(lineage, this.kind);
     if (
-      !lineage.agentName ||
-      !lineage.paneId ||
-      !lineage.workspaceId ||
-      lineage.herdrSession !== this.host.sessionName ||
-      !lineage.herdrSessionIncarnation ||
-      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
+      retainedRef.sessionName !== this.host.sessionName ||
+      !retainedRef.sessionIncarnation ||
+      retainedRef.sessionIncarnation !== this.host.sessionIncarnation()
     ) {
       throw new Error(
         "Continuation lineage has no complete Herdr execution reference.",
@@ -384,7 +387,7 @@ export class PiHarness implements AgentHarness {
       await sbx?.awaitAttestation();
       if (sbx) this.sbxExecutionsByPane.set(agent.paneId, sbx);
     }
-    assertCurrentSessionIncarnation(this.host, lineage.herdrSessionIncarnation);
+    assertCurrentSessionIncarnation(this.host, retainedRef.sessionIncarnation);
     if (!agent) {
       throw new Error(
         "The exact continued Herdr/Pi execution is missing or has incompatible provenance.",
@@ -395,22 +398,24 @@ export class PiHarness implements AgentHarness {
       title: displayLabel(dispatch),
       tokens: provenance(this.config.workerId, dispatch, lineage, true),
     });
-    return {
+    return terminalPreparedExecution(
       lineage,
-      ref: refFor(
+      this.host.backendKind,
+      refFor(
         this.host.sessionName,
-        lineage.herdrSessionIncarnation,
-        lineage.agentName,
+        retainedRef.sessionIncarnation,
+        retainedRef.agentName,
         {
           workspaceId: agent.workspaceId,
           paneId: agent.paneId,
-          tabId: agent.tabId ?? lineage.tabId ?? "",
+          tabId: agent.tabId ?? retainedRef.tabId ?? "",
           ...(agent.terminalId ? { terminalId: agent.terminalId } : {}),
         },
         agent,
       ),
       agent,
-    };
+      this.capabilities,
+    );
   }
 
   async sendInputAndCollect(
@@ -418,6 +423,7 @@ export class PiHarness implements AgentHarness {
     execution: HarnessPreparedExecution,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
+    const terminal = terminalExecution(execution, this.kind);
     rmSync(recoveryControlPath(execution.lineage), { force: true });
     await writeControlAtomic(execution.lineage.resultControlPath, {
       protocolVersion: 1,
@@ -435,7 +441,7 @@ export class PiHarness implements AgentHarness {
         materializeExecutionArtifacts(this.config, dispatch),
     );
     const transcriptPath = piTranscriptPath(
-      execution.agent.nativeSession ?? execution.ref.nativeSession ?? undefined,
+      terminal.agent.nativeSession ?? terminal.ref.nativeSession ?? undefined,
     );
     const evidence = sbx
       ? {
@@ -452,13 +458,13 @@ export class PiHarness implements AgentHarness {
     onEvent({
       type: "prompt_baseline",
       evidence,
-      inspection: this.inspectionFor(execution.lineage, execution.agent),
+      inspection: this.inspectionFor(execution.lineage, terminal.agent),
     });
     return this.submitAndCollect(
       dispatch,
       execution.lineage,
-      execution.ref.paneId,
-      execution.agent,
+      terminal.ref.paneId,
+      terminal.agent,
       prompt,
       evidence,
       onEvent,
@@ -469,19 +475,23 @@ export class PiHarness implements AgentHarness {
     lineage: HarnessLineage,
     dispatch?: DispatchRecord,
   ): Promise<HarnessRecoveredExecution> {
+    let retained: ReturnType<typeof terminalLineage>;
+    try {
+      retained = terminalLineage(lineage, this.kind);
+    } catch {
+      return {
+        found: false,
+        detail: "The Pi lineage has no valid terminal transport binding.",
+      };
+    }
     if (
-      !lineage.herdrSessionIncarnation ||
-      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
+      !retained.ref.sessionIncarnation ||
+      retained.ref.sessionIncarnation !== this.host.sessionIncarnation()
     )
       return {
         found: false,
         detail:
           "The original Pi execution belongs to another Herdr session incarnation.",
-      };
-    if (!lineage.agentName || !lineage.paneId)
-      return {
-        found: false,
-        detail: "Lineage has no launched agent reference.",
       };
     const sbx =
       this.executionManager && dispatch
@@ -507,9 +517,20 @@ export class PiHarness implements AgentHarness {
         detail:
           "Herdr cannot verify the original Pi agent with its durable lineage provenance.",
       };
+    const prepared = terminalPreparedExecution(
+      lineage,
+      this.host.backendKind,
+      {
+        ...retained.ref,
+        ...(agent.nativeSession ? { nativeSession: agent.nativeSession } : {}),
+      },
+      agent,
+      this.capabilities,
+    );
     return {
       found: true,
-      agent,
+      handle: prepared.handle,
+      inspection: this.inspectionFor(lineage, agent),
       detail: `Herdr found the original Pi agent in ${agent.status} state.`,
     };
   }
@@ -517,11 +538,11 @@ export class PiHarness implements AgentHarness {
   async waitAndCollect(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
-    agent: HostedAgent,
+    handle: HarnessExecutionHandle,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
-    if (!lineage.paneId)
-      throw new Error("Recovered lineage has no agent pane.");
+    const terminal = terminalBinding(handle.transportBinding, this.kind);
+    const agent = terminal.agent;
     const sbx = this.sbxExecutions.get(lineage.lineageId);
     const prompt = piPromptFor(
       dispatch,
@@ -546,7 +567,7 @@ export class PiHarness implements AgentHarness {
     return this.collectPromptLifecycle(
       dispatch,
       lineage,
-      lineage.paneId,
+      terminal.ref.paneId,
       agent,
       prompt,
       evidence,
@@ -583,11 +604,16 @@ export class PiHarness implements AgentHarness {
           (item) =>
             item.lineage.lineageId === tokens.qe_lineage_id &&
             item.lineage.ownershipToken === tokens.qe_ownership_token &&
-            item.dispatch.resultNonce === tokens.qe_result_nonce &&
-            (!item.lineage.herdrSessionIncarnation ||
-              item.lineage.herdrSessionIncarnation ===
-                tokens.qe_session_incarnation),
+            item.dispatch.resultNonce === tokens.qe_result_nonce,
         );
+        const persistedRef = persisted?.lineage.transportBinding
+          ? terminalLineage(persisted.lineage, this.kind).ref
+          : null;
+        if (
+          persistedRef?.sessionIncarnation &&
+          persistedRef.sessionIncarnation !== tokens.qe_session_incarnation
+        )
+          continue;
         const control = existsSync(resultControlPath)
           ? await readControl(resultControlPath)
           : persisted
@@ -602,7 +628,7 @@ export class PiHarness implements AgentHarness {
         if (!control) continue;
         const expectedAgentName =
           tokens.qe_agent_name ??
-          persisted?.lineage.agentName ??
+          persistedRef?.agentName ??
           agentNameFor(control.lineageId, control.action.semantic_step_key);
         const agentNamePrefix = `qe-${createHash("sha256")
           .update(control.lineageId)
@@ -653,14 +679,26 @@ export class PiHarness implements AgentHarness {
             resultControlPath,
             ownershipToken: tokens.qe_ownership_token,
             activeActionId: control.action.action_id,
-            herdrSession: this.host.sessionName,
-            herdrSessionIncarnation: tokens.qe_session_incarnation,
-            workspaceId: agent.workspaceId,
-            tabId: agent.tabId ?? null,
-            paneId: agent.paneId,
-            terminalId: agent.terminalId ?? null,
-            agentName: expectedAgentName,
+            executionHandle: null,
             nativeSession: agent.nativeSession ?? null,
+            transportBinding: terminalTransportBinding(
+              this.kind,
+              this.host.backendKind,
+              {
+                sessionName: this.host.sessionName,
+                sessionIncarnation: tokens.qe_session_incarnation,
+                workspaceId: agent.workspaceId,
+                ...(agent.tabId ? { tabId: agent.tabId } : {}),
+                paneId: agent.paneId,
+                ...(agent.terminalId ? { terminalId: agent.terminalId } : {}),
+                agentName: expectedAgentName,
+                ...(agent.nativeSession
+                  ? { nativeSession: agent.nativeSession }
+                  : {}),
+              },
+              agent,
+            ),
+            interactive: terminalInteractiveSession(this.capabilities),
           },
         });
       } catch {
@@ -678,11 +716,16 @@ export class PiHarness implements AgentHarness {
     // Keep mailbox and lifecycle relaying alive through that bounded unwind.
     await this.sbxExecutions.get(lineage.lineageId)?.stopRelay(30_000);
     this.sbxExecutions.delete(lineage.lineageId);
-    if (lineage.paneId) this.sbxExecutionsByPane.delete(lineage.paneId);
-    if (!lineage.paneId) return;
+    let retained: ReturnType<typeof terminalLineage>;
+    try {
+      retained = terminalLineage(lineage, this.kind);
+    } catch {
+      return;
+    }
+    this.sbxExecutionsByPane.delete(retained.ref.paneId);
     try {
       await this.host.reportMetadata({
-        paneId: lineage.paneId,
+        paneId: retained.ref.paneId,
         title: displayLabel(dispatch),
         tokens: provenance(this.config.workerId, dispatch, lineage, false),
       });
@@ -692,21 +735,9 @@ export class PiHarness implements AgentHarness {
   }
 
   attachment(lineage: HarnessLineage) {
-    if (
-      !lineage.workspaceId ||
-      !lineage.paneId ||
-      !lineage.agentName ||
-      !lineage.herdrSession
-    ) {
-      throw new Error("Harness lineage has no attachable Herdr execution.");
-    }
+    const { ref } = terminalLineage(lineage, this.kind);
     return this.host.attachment({
-      sessionName: lineage.herdrSession,
-      workspaceId: lineage.workspaceId,
-      ...(lineage.tabId ? { tabId: lineage.tabId } : {}),
-      paneId: lineage.paneId,
-      ...(lineage.terminalId ? { terminalId: lineage.terminalId } : {}),
-      agentName: lineage.agentName,
+      ...ref,
       ...(lineage.nativeSession
         ? { nativeSession: lineage.nativeSession }
         : {}),
@@ -714,41 +745,28 @@ export class PiHarness implements AgentHarness {
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
-    if (!lineage.paneId)
-      throw new Error("Harness session has no live agent target.");
-    await this.host.sendKeys(lineage.paneId, ["esc"]);
+    const { ref } = terminalLineage(lineage, this.kind);
+    await this.host.sendKeys(ref.paneId, ["esc"]);
   }
 
   async inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
-    if (!lineage.paneId)
-      return {
-        state: "unavailable",
-        agent: null,
-        attention: lineage.attention,
-        intervention: lineage.intervention,
-        lastActivityAt: new Date().toISOString(),
-      };
     try {
+      const { ref } = terminalLineage(lineage, this.kind);
       return this.inspectionFor(
         lineage,
-        await this.host.inspectAgentState(lineage.paneId),
+        await this.host.inspectAgentState(ref.paneId),
       );
     } catch {
-      return {
-        state: "unavailable",
-        agent: null,
-        attention: lineage.attention,
-        intervention: lineage.intervention,
-        lastActivityAt: new Date().toISOString(),
-      };
+      return unavailableInspection(lineage, new Date().toISOString());
     }
   }
 
   async close(lineage: HarnessLineage): Promise<void> {
     await this.sbxExecutions.get(lineage.lineageId)?.stopRelay();
-    if (lineage.paneId) await this.host.closePane(lineage.paneId);
+    const { ref } = terminalLineage(lineage, this.kind);
+    await this.host.closePane(ref.paneId);
     this.sbxExecutions.delete(lineage.lineageId);
-    if (lineage.paneId) this.sbxExecutionsByPane.delete(lineage.paneId);
+    this.sbxExecutionsByPane.delete(ref.paneId);
   }
 
   disconnect(): void {
@@ -1065,32 +1083,36 @@ export class PiHarness implements AgentHarness {
   private async findExactLiveAgent(
     lineage: HarnessLineage,
   ): Promise<HostedAgent | null> {
+    let ref: HostedExecutionRef;
+    try {
+      ref = terminalLineage(lineage, this.kind).ref;
+    } catch {
+      return null;
+    }
     if (
-      !lineage.agentName ||
-      !lineage.paneId ||
-      !lineage.herdrSessionIncarnation ||
-      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation()
+      !ref.sessionIncarnation ||
+      ref.sessionIncarnation !== this.host.sessionIncarnation()
     )
       return null;
     let agent: HostedAgent;
     try {
-      agent = await this.host.inspectAgentState(lineage.paneId);
+      agent = await this.host.inspectAgentState(ref.paneId);
     } catch (error) {
       if (error instanceof HerdrApiError && error.code === "agent_not_found")
         return null;
       throw error;
     }
     if (
-      lineage.herdrSessionIncarnation !== this.host.sessionIncarnation() ||
+      ref.sessionIncarnation !== this.host.sessionIncarnation() ||
       agent.agent !== "pi" ||
-      agent.paneId !== lineage.paneId ||
-      (lineage.terminalId &&
+      agent.paneId !== ref.paneId ||
+      (ref.terminalId &&
         agent.terminalId !== undefined &&
-        agent.terminalId !== lineage.terminalId) ||
-      (agent.name !== undefined && agent.name !== lineage.agentName) ||
+        agent.terminalId !== ref.terminalId) ||
+      (agent.name !== undefined && agent.name !== ref.agentName) ||
       agent.tokens?.qe_lineage_id !== lineage.lineageId ||
       agent.tokens.qe_ownership_token !== lineage.ownershipToken ||
-      agent.tokens.qe_session_incarnation !== lineage.herdrSessionIncarnation
+      agent.tokens.qe_session_incarnation !== ref.sessionIncarnation
     )
       return null;
     return agent;
@@ -1244,13 +1266,15 @@ export class PiHarness implements AgentHarness {
           : agent.status === "unknown"
             ? "recovering"
             : "retained";
-    return {
-      state,
+    return terminalInspection({
+      lineage,
       agent,
+      state,
       attention,
       intervention: control.intervention ?? lineage.intervention,
       lastActivityAt: new Date().toISOString(),
-    };
+      capabilities: this.capabilities,
+    });
   }
 }
 
@@ -1395,18 +1419,28 @@ function provenance(
   dispatch: DispatchRecord,
   lineage: HarnessLineage,
   active: boolean,
+  prepared?: { agentName: string; sessionIncarnation: string },
 ): Record<string, string> {
+  let ref: HostedExecutionRef | null = null;
+  try {
+    ref = terminalLineage(lineage, "pi").ref;
+  } catch {
+    // A fresh launch has not persisted its terminal binding yet.
+  }
+  const agentName = prepared?.agentName ?? ref?.agentName;
+  const sessionIncarnation =
+    prepared?.sessionIncarnation ?? ref?.sessionIncarnation;
   return {
     qe_owner: "quest-engineering-worker/v1",
     qe_worker_id: workerId,
     qe_lineage_id: lineage.lineageId,
     qe_provider: "pi",
     qe_agent_name:
-      lineage.agentName ??
+      agentName ??
       agentNameFor(lineage.lineageId, dispatch.action.semantic_step_key),
     qe_ownership_token: lineage.ownershipToken,
-    ...(lineage.herdrSessionIncarnation
-      ? { qe_session_incarnation: lineage.herdrSessionIncarnation }
+    ...(sessionIncarnation
+      ? { qe_session_incarnation: sessionIncarnation }
       : {}),
     ...(active
       ? {
@@ -1488,9 +1522,25 @@ function samePath(left: string | undefined, right: string): boolean {
 function piTranscriptPath(
   session: NativeSessionRef | undefined,
 ): string | null {
-  return session?.source === "pi" && session.kind === "path"
-    ? session.value
-    : null;
+  if (!session) return null;
+  const identity = nativeSessionIdentity(session, "pi");
+  return identity.identityKind === "path" ? identity.opaqueId : null;
+}
+
+function unavailableInspection(
+  lineage: HarnessLineage,
+  lastActivityAt: string,
+): HarnessInspection {
+  return {
+    state: "unavailable",
+    activity: { state: "unknown" },
+    nativeSession: lineage.nativeSession,
+    health: "unavailable",
+    attention: lineage.attention,
+    intervention: lineage.intervention,
+    lastActivityAt,
+    interactive: lineage.interactive,
+  };
 }
 
 function waitingInspection(
@@ -1503,7 +1553,7 @@ function waitingInspection(
 function inspectionFingerprint(inspection: HarnessInspection): string {
   return [
     inspection.state,
-    inspection.agent?.status ?? "none",
+    inspection.activity.state,
     inspection.attention?.attentionId ?? "none",
     inspection.intervention?.state ?? "none",
   ].join(":");

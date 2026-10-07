@@ -34,6 +34,10 @@ import {
   HarnessControlClient,
   SBX_CONTROL_MAILBOX_ENV,
 } from "../harnesses/control/client.ts";
+import {
+  nativeSessionIdentity,
+  nativeSessionRef,
+} from "../harnesses/native-session.ts";
 import { mappedPiTools } from "../harnesses/pi/tools.ts";
 import type { HarnessModelCapability } from "../harnesses/types.ts";
 import type { JsonValue } from "../protocol/types.ts";
@@ -677,6 +681,10 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       workspace.paths.workspace,
       guestExecutable,
     );
+    const antigravityNativeSession =
+      harnessKind === "antigravity" && lineage.nativeSession
+        ? nativeSessionIdentity(lineage.nativeSession, "antigravity")
+        : null;
     const guestEnvironment: Record<string, string> = {
       HOME: guestHome,
       XDG_CACHE_HOME: posix.join(guestHome, ".cache"),
@@ -695,9 +703,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         ? { QE_ALLOWED_PI_TOOLS: mappedPiTools(dispatch).join(",") }
         : {
             QE_ANTIGRAVITY_EXPECTED_ARGV_JSON: JSON.stringify([
-              ...(lineage.nativeSession?.agent === "agy" &&
-              lineage.nativeSession.kind === "id"
-                ? ["--conversation", lineage.nativeSession.value]
+              ...(antigravityNativeSession?.identityKind === "id"
+                ? ["--conversation", antigravityNativeSession.opaqueId]
                 : []),
               "--model",
               dispatch.action.execution.configuration.model.model,
@@ -1953,12 +1960,11 @@ export class SbxControlMailboxRelay {
       (native.kind === "id" || native.kind === "path") &&
       typeof native.value === "string"
     )
-      nativeSession = {
-        source: reportedAgent === "agy" ? "antigravity" : "pi",
-        agent: reportedAgent,
-        kind: native.kind,
-        value: native.value,
-      };
+      nativeSession = nativeSessionRef(
+        reportedAgent === "agy" ? "antigravity" : "pi",
+        native.kind,
+        native.value,
+      );
     await this.host.reportAgentState?.({
       paneId: this.paneId,
       agent: reportedAgent,

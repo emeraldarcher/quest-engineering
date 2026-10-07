@@ -156,11 +156,7 @@ test("bounded whole-Run cleanup physically retires owned resources and preserves
       {
         lineageId: "physical-lineage-1",
         harnessKind: "physical-fixture",
-        herdrSession: "shared-herdr",
-        herdrSessionIncarnation: "shared-herdr-incarnation",
-        paneId: "physical-pane-1",
-        terminalId: "physical-terminal-1",
-        agentName: "physical-agent-1",
+        transportBinding: null,
         authorityDigest: "sha256:physical-authority",
         nativeSessionDigest: null,
       },

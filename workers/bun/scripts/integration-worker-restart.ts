@@ -5,6 +5,7 @@ import { resolveHerdrLocalContext, type WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
+import { terminalLineage } from "../src/harnesses/terminal-execution.ts";
 import {
   type ExecuteAction,
   WORKER_PROTOCOL_VERSION,
@@ -269,6 +270,8 @@ await restarted.recoverAll();
 await waitRegistry(registry, "completed", 600_000);
 const completed = registry.get("restart-action");
 const lineageAfter = registry.getLineage(completed.lineageId as string);
+const terminalBefore = terminalLineage(lineageBefore, "pi").ref;
+const terminalAfter = terminalLineage(lineageAfter, "pi").ref;
 const agentsAfter = (await inspectionHost.snapshot()).agents.filter(
   (agent) => agent.tokens?.qe_lineage_id === lineageBefore.lineageId,
 );
@@ -277,8 +280,8 @@ if (agentsAfter.length !== 1)
     `Worker restart produced ${agentsAfter.length} Pi agents for one Action.`,
   );
 if (
-  lineageAfter.agentName !== lineageBefore.agentName ||
-  lineageAfter.paneId !== lineageBefore.paneId
+  terminalAfter.agentName !== terminalBefore.agentName ||
+  terminalAfter.paneId !== terminalBefore.paneId
 )
   throw new Error(
     "Worker restart did not preserve the exact Herdr/Pi execution.",
@@ -295,8 +298,8 @@ const proof = {
   actionId: action.action_id,
   state: completed.state,
   sameLineage: lineageAfter.lineageId === lineageBefore.lineageId,
-  sameAgent: lineageAfter.agentName === lineageBefore.agentName,
-  samePane: lineageAfter.paneId === lineageBefore.paneId,
+  sameAgent: terminalAfter.agentName === terminalBefore.agentName,
+  samePane: terminalAfter.paneId === terminalBefore.paneId,
   agentsBefore: agentsBefore.length,
   agentsAfter: agentsAfter.length,
   outputs: completed.outputs,

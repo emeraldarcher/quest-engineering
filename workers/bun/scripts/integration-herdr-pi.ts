@@ -5,6 +5,7 @@ import { resolveHerdrLocalContext, type WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import { PiHarness } from "../src/harnesses/pi/adapter.ts";
+import { terminalLineage } from "../src/harnesses/terminal-execution.ts";
 import {
   type ExecuteAction,
   type JsonValue,
@@ -165,10 +166,12 @@ assertCompleted(registry, repair.action_id);
 const repairLineage = registry.getLineage(
   registry.get(repair.action_id).lineageId as string,
 );
+const implementTerminal = terminalLineage(implementLineage, "pi").ref;
+const repairTerminal = terminalLineage(repairLineage, "pi").ref;
 if (
   repairLineage.lineageId !== implementLineage.lineageId ||
   repairLineage.resultControlPath !== implementLineage.resultControlPath ||
-  repairLineage.agentName !== implementLineage.agentName
+  repairTerminal.agentName !== implementTerminal.agentName
 ) {
   throw new Error("Repair did not preserve the implementation Pi lineage.");
 }
@@ -195,6 +198,7 @@ assertCompleted(registry, review.action_id);
 const reviewLineage = registry.getLineage(
   registry.get(review.action_id).lineageId as string,
 );
+const reviewTerminal = terminalLineage(reviewLineage, "pi").ref;
 if (reviewLineage.lineageId === implementLineage.lineageId)
   throw new Error("Fresh Review reused the implementation context.");
 const verdict = registry.get(review.action_id).outputs?.verdict;
@@ -224,15 +228,15 @@ const proof = {
   attach: {
     implement: host.attachment({
       sessionName: config.herdrSession,
-      workspaceId: implementLineage.workspaceId as string,
-      paneId: implementLineage.paneId as string,
-      agentName: implementLineage.agentName as string,
+      workspaceId: implementTerminal.workspaceId,
+      paneId: implementTerminal.paneId,
+      agentName: implementTerminal.agentName,
     }),
     review: host.attachment({
       sessionName: config.herdrSession,
-      workspaceId: reviewLineage.workspaceId as string,
-      paneId: reviewLineage.paneId as string,
-      agentName: reviewLineage.agentName as string,
+      workspaceId: reviewTerminal.workspaceId,
+      paneId: reviewTerminal.paneId,
+      agentName: reviewTerminal.agentName,
     }),
   },
 };
@@ -370,8 +374,8 @@ function summary(subject: DispatchRegistry, actionId: string) {
     state: dispatch.state,
     outputs: dispatch.outputs,
     lineageId: lineage.lineageId,
-    agentName: lineage.agentName,
-    paneId: lineage.paneId,
+    agentName: terminalLineage(lineage, "pi").ref.agentName,
+    paneId: terminalLineage(lineage, "pi").ref.paneId,
     resultControlPath: lineage.resultControlPath,
   };
 }

@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 11 as const;
+export const WORKER_PROTOCOL_VERSION = 12 as const;
 
 export type JsonValue =
   | string
@@ -258,12 +258,6 @@ export interface ReconcileSession {
       target_attempt_id: string;
       source_lineage_id: string;
       target_lineage_id: string;
-      herdr_session: string | null;
-      herdr_session_incarnation: string | null;
-      workspace_id: string | null;
-      pane_id: string | null;
-      terminal_id: string | null;
-      agent_name: string | null;
       recorded_at: string;
     };
   };

@@ -729,19 +729,20 @@ function attemptOutput(attempt: RunAttempt): string {
                               {#if session.harness.kind === "pi"}<small>Use normal Pi chat for as many turns as needed. Return control with <code>{session.attention.interaction.resume_command ?? "/qe-resume"}</code>.</small>{:else}<small>Use the same live native {session.harness.display_name} terminal, then detach to let Worker observation resume.</small>{/if}
                             {/if}
                             {#if session.events.length}<details class="session-history"><summary>Session history</summary><ul>{#each session.events as event}<li>{sessionEventLabel(event)} · {formatLaunchTime(event.occurred_at)}</li>{/each}</ul></details>{/if}
-                            {#if session.worker.state === "disconnected" || session.attachment.reason === "worker_offline"}<small>Session unavailable · Worker offline</small>
+                            {#if !session.attachment}<small>Headless execution · no interactive session</small>
+                            {:else if session.worker.state === "disconnected" || session.attachment.reason === "worker_offline"}<small>Session unavailable · Worker offline</small>
                             {:else if !localAttachAvailable}<small>Live session available on {session.worker.display_name}. Browser attachment is unavailable.</small>
                             {:else if !session.attachment.available}<small>Session unavailable · {humanize(session.attachment.reason ?? "attachment unavailable")}</small>{/if}
                           </div>
                           <div class="session-actions">
                             {#if localObservationIsActive(step, localObservation)}
                               <button class="secondary" disabled={busy} on:click={() => detachSession(step)}>Detach Session</button>
-                            {:else if localAttachAvailable && session.attachment.available && session.attachment.can_observe}
+                            {:else if localAttachAvailable && session.attachment?.available && session.attachment.can_observe}
                               <button class="secondary" disabled={busy} on:click={() => openSession(step)}>{session.state === "retained" ? "Inspect Session" : "Open Session"}</button>
                             {/if}
-                            {#if localAttachAvailable && session.attachment.can_takeover}
+                            {#if localAttachAvailable && session.attachment?.can_takeover}
                               <button class="primary" disabled={busy} on:click={() => takeControl(step)}>Take Control</button>
-                            {:else if localAttachAvailable && session.attachment.can_recover && step.recovery?.can_human_retry}
+                            {:else if localAttachAvailable && session.attachment?.can_recover && step.recovery?.can_human_retry}
                               <button class="primary" disabled={busy} on:click={() => recoverSession(step)}>Help &amp; Retry</button>
                               <small>Discuss the failure, then run <code>/qe-retry</code>.</small>
                             {:else if step.recovery?.can_retry_fresh}
@@ -963,7 +964,7 @@ function attemptOutput(attempt: RunAttempt): string {
               <div><span>Harness cleanup</span><code>{humanize(run.cleanup.harness.state)}</code></div>
               <div><span>Execution environment cleanup</span><code>{humanize(run.cleanup.execution_environment.state)}</code></div>
               <div><span>Host Run repository cleanup</span><code>{humanize(run.cleanup.host_run_repository.state)}</code></div>
-              {#each sessionSteps as step}{#if step.session}<div><span>{step.session.harness.display_name} QE lineage</span><code>{step.session.id}</code></div>{#if step.session.native_identity.conversation_id}<div><span>Native conversation</span><code>{step.session.native_identity.conversation_id}</code></div>{/if}{#if step.session.native_identity.terminal_id}<div><span>Terminal/process incarnation</span><code>{step.session.native_identity.terminal_id}</code></div>{/if}{#if step.attempt?.execution}<div><span>Resolved QE capabilities</span><code>{step.attempt.execution.resolved_tool_profile.tools.join(", ") || "No capabilities"}</code></div>{/if}{/if}{/each}
+              {#each sessionSteps as step}{#if step.session}<div><span>{step.session.harness.display_name} QE lineage</span><code>{step.session.id}</code></div>{#if step.session.native_identity.conversation_id}<div><span>Native conversation</span><code>{step.session.native_identity.conversation_id}</code></div>{/if}{#if step.attempt?.execution}<div><span>Resolved QE capabilities</span><code>{step.attempt.execution.resolved_tool_profile.tools.join(", ") || "No capabilities"}</code></div>{/if}{/if}{/each}
             </div>
             {#if $errorStore}<div class="technical-code"><span>Last operation code</span><code>{$errorStore.code}</code></div>{/if}
             {#if run.delivery?.issue}<div class="technical-code"><span>Delivery issue code</span><code>{run.delivery.issue.code}</code></div>{/if}

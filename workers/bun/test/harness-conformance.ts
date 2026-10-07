@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import type { AgentHarness } from "../src/harnesses/types.ts";
+import {
+  type AgentHarness,
+  supportsInteractiveAttachment,
+} from "../src/harnesses/types.ts";
 
 /** Reusable contract checks. Each adapter is tested only for capabilities it claims. */
 export function harnessConformance(
@@ -36,7 +39,7 @@ export function harnessConformance(
       expect(harness.waitAndCollect).toBeFunction();
     }
     if (harness.capabilities.canAttachTerminal)
-      expect(harness.attachment).toBeFunction();
+      expect(supportsInteractiveAttachment(harness)).toBe(true);
     if (harness.capabilities.canInterrupt)
       expect(harness.interrupt).toBeFunction();
   });

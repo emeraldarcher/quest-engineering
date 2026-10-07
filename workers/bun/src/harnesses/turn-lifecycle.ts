@@ -3,7 +3,7 @@ import { readdir, stat } from "node:fs/promises";
 import type { WorkerConfig } from "../config.ts";
 import type { DispatchRecord } from "../dispatch/registry.ts";
 import { HerdrApiError } from "../session-host/herdr/client.ts";
-import type { NativeSessionRef } from "../session-host/types.ts";
+import { type NativeSessionRef, nativeSessionRef } from "./native-session.ts";
 import type { PromptEvidenceCursor } from "./types.ts";
 
 export interface NativeTurnActivity {
@@ -207,12 +207,7 @@ export async function observeAntigravityPromptDispatch(input: {
       return {
         state: "accepted",
         observedAt: new Date().toISOString(),
-        nativeSession: {
-          source: "antigravity",
-          agent: "agy",
-          kind: "id",
-          value: conversationId,
-        },
+        nativeSession: nativeSessionRef("antigravity", "id", conversationId),
       };
     }
     const rejectedMatch = line.match(ANTIGRAVITY_REJECTED_PROMPT);
@@ -236,12 +231,7 @@ export async function observeLatestAntigravityConversation(input: {
   for (const line of lines) {
     const match = line.match(ANTIGRAVITY_ACCEPTED_PROMPT);
     if (!match) continue;
-    nativeSession = {
-      source: "antigravity",
-      agent: "agy",
-      kind: "id",
-      value: match[1] as string,
-    };
+    nativeSession = nativeSessionRef("antigravity", "id", match[1] as string);
   }
   return nativeSession;
 }

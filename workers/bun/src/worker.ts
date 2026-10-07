@@ -27,6 +27,7 @@ import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
 import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
 import { HarnessControlServer } from "./harnesses/control/server.ts";
 import { FakeHarness } from "./harnesses/fake/adapter.ts";
+import { nativeSessionPublicId } from "./harnesses/native-session.ts";
 import { PiHarness } from "./harnesses/pi/adapter.ts";
 import { HarnessRegistry } from "./harnesses/registry.ts";
 import { structuredResultExists } from "./harnesses/turn-lifecycle.ts";
@@ -965,10 +966,7 @@ export class QuestEngineeringWorker {
           });
           continue;
         }
-        const nativeSession =
-          lineage.nativeSession?.kind === "id"
-            ? lineage.nativeSession.value
-            : null;
+        const nativeSession = nativeSessionPublicId(lineage.nativeSession);
         if (
           dispatch.state !== "failed" ||
           dispatch.lineageId !== lineage.lineageId ||
@@ -1679,8 +1677,7 @@ function harnessSessionPayload(
       automation_resume: capability.automationResume,
     },
     terminal,
-    native_session_id:
-      lineage.nativeSession?.kind === "id" ? lineage.nativeSession.value : null,
+    native_session_id: nativeSessionPublicId(lineage.nativeSession),
     attention: lineage.attention
       ? {
           attention_id: lineage.attention.attentionId,
@@ -1748,13 +1745,6 @@ function harnessSessionPayload(
               target_attempt_id: physicalProcess.targetAttemptId,
               source_lineage_id: physicalProcess.sourceLineageId,
               target_lineage_id: physicalProcess.targetLineageId,
-              herdr_session: physicalProcess.herdrSession,
-              herdr_session_incarnation:
-                physicalProcess.herdrSessionIncarnation,
-              workspace_id: physicalProcess.workspaceId,
-              pane_id: physicalProcess.paneId,
-              terminal_id: physicalProcess.terminalId,
-              agent_name: physicalProcess.agentName,
               recorded_at: physicalProcess.recordedAt,
             },
           }
