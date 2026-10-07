@@ -184,6 +184,10 @@ This preserves uncommitted work without `git stash`. Ignored output is intention
 
 Delivery receives this validated accepted export—not a sandbox path or model description. The Worker materializes exact objects and the result tree in the Run-owned isolated host repository; controlled Delivery code alone may use separately recorded publication authority. The configured source repository remains read-only authority and is never a Run branch/worktree or retained writable remote. The sandbox agent never receives the host repository, publication credentials, push authority, or PR API authority.
 
+Host Delivery inspection preserves the exported entry type. It validates Git-reported paths within the Run repository, classifies every leaf and parent with `lstat`, represents an untracked symlink as one logical added link, and fingerprints its stored link text with `readlink`; relative, absolute, dangling, and directory symlinks are never dereferenced or traversed. Git enumerates untracked directory children as separate leaves, so each nested entry is classified independently. Untracked regular-file numstat inspection is exact only through a 1 MiB limit and otherwise fails with structured attention instead of reporting truncated counts. Regular-file fingerprints stream through fixed-size buffers and use no-follow open plus metadata revalidation. The verified export policy prevents untracked FIFOs, sockets, and devices from reaching this workspace; if an unsupported type nevertheless appears at a Git-reported leaf, Delivery rejects it without opening it.
+
+The guest has no path to the isolated host Run repository, and Delivery begins only from the accepted frozen export after Run execution has settled. No agent-controlled host mutation can race inspection. Delivery nevertheless uses no-follow opens and before/after identity checks so a changed leaf fails closed rather than becoming a followed symlink.
+
 Physical sharing inside a Run does not change semantic Tactic handoff. Cross-harness context remains typed Artifacts. Seeing the same private filesystem is not an implicit semantic handoff.
 
 ## Validation

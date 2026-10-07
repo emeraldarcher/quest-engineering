@@ -1,8 +1,16 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { lstat, readFile, readlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { constants, mkdirSync, type Stats } from "node:fs";
+import { type FileHandle, lstat, open, readlink } from "node:fs/promises";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import type { WorkerConfig } from "../config.ts";
 import type {
   RunWorktreeRecord,
@@ -50,6 +58,22 @@ export interface DeliveryInspection {
   noChanges: boolean;
   record: RunWorktreeRecord;
 }
+export interface DeliveryInspectionHooks {
+  beforeRegularFileOpen?: (path: string) => void | Promise<void>;
+  regularFileOpened?: (path: string) => void;
+}
+
+export const DELIVERY_REGULAR_FILE_INSPECTION_LIMIT_BYTES = 1_048_576;
+const DELIVERY_READ_CHUNK_BYTES = 64 * 1024;
+
+type EntrySnapshot =
+  | { kind: "missing" }
+  | { kind: "regular"; metadata: Stats }
+  | { kind: "symlink"; metadata: Stats; linkText: string };
+interface InspectedChanges {
+  evidence: ChangeEvidence;
+  entries: Map<string, EntrySnapshot>;
+}
 
 export class RunDeliveryRegistry {
   private readonly db: Database;
@@ -57,6 +81,7 @@ export class RunDeliveryRegistry {
     private readonly config: WorkerConfig,
     private readonly worktrees: RunWorktreeRegistry,
     databasePath = join(config.dataRoot, "run-deliveries.sqlite"),
+    private readonly inspectionHooks: DeliveryInspectionHooks = {},
   ) {
     mkdirSync(dirname(databasePath), { recursive: true });
     this.db = new Database(databasePath, { create: true, strict: true });
@@ -75,16 +100,18 @@ export class RunDeliveryRegistry {
 
   async inspect(command: DeliveryCommand): Promise<DeliveryInspection> {
     const record = await this.validate(command);
-    const evidence = await inspectChanges(record);
+    const inspection = await inspectChanges(record, this.inspectionHooks);
     const fingerprint = await contentFingerprint(
       record.canonicalRoot,
-      evidence.files,
+      inspection.evidence.files,
+      inspection.entries,
+      this.inspectionHooks,
     );
     this.persist(command, fingerprint, "inspected", null);
     return {
       fingerprint,
-      evidence,
-      noChanges: evidence.files.length === 0,
+      evidence: inspection.evidence,
+      noChanges: inspection.evidence.files.length === 0,
       record,
     };
   }
@@ -98,10 +125,12 @@ export class RunDeliveryRegistry {
     record: RunWorktreeRecord;
   }> {
     const record = await this.validate(command);
-    const current = await inspectChanges(record);
+    const current = await inspectChanges(record, this.inspectionHooks);
     const fingerprint = await contentFingerprint(
       record.canonicalRoot,
-      current.files,
+      current.evidence.files,
+      current.entries,
+      this.inspectionHooks,
     );
     const local = this.get(command.delivery_id);
     const expected = command.expected_fingerprint ?? local?.fingerprint;
@@ -146,10 +175,12 @@ export class RunDeliveryRegistry {
         "delivery_worktree_not_clean",
         "Run workspace was not clean after finalization.",
       );
-    const finalEvidence = await inspectChanges(record);
+    const finalInspection = await inspectChanges(record, this.inspectionHooks);
     const finalFingerprint = await contentFingerprint(
       record.canonicalRoot,
-      finalEvidence.files,
+      finalInspection.evidence.files,
+      finalInspection.entries,
+      this.inspectionHooks,
     );
     if (finalFingerprint !== expected)
       throw coded(
@@ -322,7 +353,8 @@ export class RunDeliveryRegistry {
 
 async function inspectChanges(
   record: RunWorktreeRecord,
-): Promise<ChangeEvidence> {
+  hooks: DeliveryInspectionHooks,
+): Promise<InspectedChanges> {
   if (!record.baseRevision)
     throw coded("base_revision_unresolved", "Base revision is unavailable.");
   const trackedRaw = await gitBuffer(record.canonicalRoot, [
@@ -344,8 +376,12 @@ async function inspectChanges(
     Buffer.from(a).compare(Buffer.from(b)),
   );
   const files: ChangeFile[] = [];
+  const entries = new Map<string, EntrySnapshot>();
+  const untrackedPaths = new Set(untracked);
   for (const path of paths) {
-    const isUntracked = untracked.includes(path);
+    const isUntracked = untrackedPaths.has(path);
+    const entry = await inspectEntry(record.canonicalRoot, path, !isUntracked);
+    entries.set(path, entry);
     const statusRaw = isUntracked
       ? "A"
       : ((
@@ -358,7 +394,11 @@ async function inspectChanges(
           ])
         ).split(/\s+/)[0] ?? "M");
     const num = isUntracked
-      ? await untrackedNumstat(join(record.canonicalRoot, path))
+      ? await untrackedNumstat(
+          deliveryEntryPath(record.canonicalRoot, path),
+          entry,
+          hooks,
+        )
       : await git(record.canonicalRoot, [
           "diff",
           "--numstat",
@@ -381,48 +421,63 @@ async function inspectChanges(
     "--untracked-files=normal",
   ]);
   return {
-    version: 1,
-    base_revision: record.baseRevision,
-    head_before_finalize: await git(record.canonicalRoot, [
-      "rev-parse",
-      "HEAD",
-    ]),
-    working_tree: {
-      dirty: status.length > 0,
-      tracked_entries: tracked.length,
-      untracked_entries: untracked.length,
+    evidence: {
+      version: 1,
+      base_revision: record.baseRevision,
+      head_before_finalize: await git(record.canonicalRoot, [
+        "rev-parse",
+        "HEAD",
+      ]),
+      working_tree: {
+        dirty: status.length > 0,
+        tracked_entries: tracked.length,
+        untracked_entries: untracked.length,
+      },
+      summary: {
+        files_changed: files.length,
+        additions: files.reduce((n, f) => n + f.additions, 0),
+        deletions: files.reduce((n, f) => n + f.deletions, 0),
+      },
+      files,
+      source_dirty_changes_excluded: record.sourceDirtyExcluded,
+      inspected_at: new Date().toISOString(),
     },
-    summary: {
-      files_changed: files.length,
-      additions: files.reduce((n, f) => n + f.additions, 0),
-      deletions: files.reduce((n, f) => n + f.deletions, 0),
-    },
-    files,
-    source_dirty_changes_excluded: record.sourceDirtyExcluded,
-    inspected_at: new Date().toISOString(),
+    entries,
   };
 }
 async function contentFingerprint(
   root: string,
   files: ChangeFile[],
+  entries: Map<string, EntrySnapshot>,
+  hooks: DeliveryInspectionHooks,
 ): Promise<string> {
   const hash = createHash("sha256");
   for (const file of files) {
     hash.update(
       `${Buffer.byteLength(file.path)}:${file.path}\0${file.status}\0`,
     );
-    try {
-      const metadata = await lstat(join(root, file.path));
-      hash.update(
-        `${metadata.mode & 0o111 ? "x" : "-"}\0${metadata.isSymbolicLink() ? "l" : "f"}\0`,
+    const expected = entries.get(file.path);
+    if (!expected)
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
       );
+    const current = await inspectEntry(root, file.path, true);
+    assertSameEntry(expected, current);
+    if (current.kind === "missing") hash.update("deleted");
+    else {
       hash.update(
-        metadata.isSymbolicLink()
-          ? await readlink(join(root, file.path))
-          : await readFile(join(root, file.path)),
+        `${current.metadata.mode & 0o111 ? "x" : "-"}\0${current.kind === "symlink" ? "l" : "f"}\0`,
       );
-    } catch {
-      hash.update("deleted");
+      if (current.kind === "symlink") hash.update(current.linkText);
+      else
+        await readRegularFile(
+          deliveryEntryPath(root, file.path),
+          current,
+          undefined,
+          hooks,
+          (chunk) => hash.update(chunk),
+        );
     }
     hash.update("\0");
   }
@@ -483,10 +538,254 @@ function statusName(value: string): string {
   if (value.startsWith("R")) return "renamed";
   return "modified";
 }
-async function untrackedNumstat(path: string): Promise<string> {
-  const content = await readFile(path);
-  if (content.includes(0)) return "-\t-";
-  return `${content.toString("utf8").split("\n").length}\t0`;
+async function untrackedNumstat(
+  path: string,
+  entry: EntrySnapshot,
+  hooks: DeliveryInspectionHooks,
+): Promise<string> {
+  if (entry.kind === "missing")
+    throw coded(
+      "delivery_entry_changed",
+      "Filesystem entry changed during Delivery inspection.",
+    );
+  // A Git symlink is one logical added link. Its target text is fingerprinted,
+  // but target content is never opened or counted as Delivery evidence.
+  if (entry.kind === "symlink") return "1\t0";
+  let lines = 1;
+  let binary = false;
+  await readRegularFile(
+    path,
+    entry,
+    DELIVERY_REGULAR_FILE_INSPECTION_LIMIT_BYTES,
+    hooks,
+    (chunk) => {
+      if (chunk.includes(0)) binary = true;
+      for (const byte of chunk) if (byte === 10) lines += 1;
+    },
+  );
+  return binary ? "-\t-" : `${lines}\t0`;
+}
+
+async function inspectEntry(
+  root: string,
+  path: string,
+  allowMissing: boolean,
+): Promise<EntrySnapshot> {
+  const entryPath = deliveryEntryPath(root, path);
+  const parts = path.split("/");
+  let parent = resolve(root);
+  for (const part of parts.slice(0, -1)) {
+    parent = join(parent, part);
+    const metadata = await safeLstat(parent, allowMissing);
+    if (!metadata || !metadata.isDirectory()) {
+      if (allowMissing) return { kind: "missing" };
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
+      );
+    }
+  }
+  const metadata = await safeLstat(entryPath, allowMissing);
+  if (!metadata) return { kind: "missing" };
+  if (metadata.isFile()) return { kind: "regular", metadata };
+  if (metadata.isSymbolicLink()) {
+    let linkText: string;
+    try {
+      linkText = await readlink(entryPath);
+    } catch {
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
+      );
+    }
+    const after = await safeLstat(entryPath, false);
+    if (!after?.isSymbolicLink() || !sameMetadata(metadata, after))
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
+      );
+    return { kind: "symlink", metadata: after, linkText };
+  }
+  throw coded(
+    "delivery_entry_unsupported",
+    "Delivery cannot inspect this filesystem entry type safely.",
+  );
+}
+
+function deliveryEntryPath(root: string, path: string): string {
+  if (
+    path.length === 0 ||
+    path.includes("\0") ||
+    path.startsWith("/") ||
+    isAbsolute(path) ||
+    posix.normalize(path) !== path ||
+    path
+      .split("/")
+      .some(
+        (part) =>
+          part === "" ||
+          part === "." ||
+          part === ".." ||
+          part.toLowerCase() === ".git",
+      )
+  )
+    throw coded(
+      "delivery_path_unsafe",
+      "Git reported an unsafe Delivery repository path.",
+    );
+  const canonicalRoot = resolve(root);
+  const candidate = resolve(canonicalRoot, ...path.split("/"));
+  const fromRoot = relative(canonicalRoot, candidate);
+  if (
+    fromRoot === "" ||
+    fromRoot === ".." ||
+    fromRoot.startsWith(`..${sep}`) ||
+    isAbsolute(fromRoot)
+  )
+    throw coded(
+      "delivery_path_unsafe",
+      "Git reported an unsafe Delivery repository path.",
+    );
+  return candidate;
+}
+
+async function safeLstat(
+  path: string,
+  allowMissing: boolean,
+): Promise<Stats | null> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (allowMissing && errorCode(error) === "ENOENT") return null;
+    if (["ENOENT", "ENOTDIR"].includes(errorCode(error) ?? ""))
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
+      );
+    throw coded(
+      "delivery_entry_uninspectable",
+      "Delivery could not safely inspect a filesystem entry.",
+    );
+  }
+}
+
+async function readRegularFile(
+  path: string,
+  expected: Extract<EntrySnapshot, { kind: "regular" }>,
+  maxBytes: number | undefined,
+  hooks: DeliveryInspectionHooks,
+  consume: (chunk: Buffer) => void,
+): Promise<void> {
+  if (maxBytes !== undefined && expected.metadata.size > maxBytes)
+    throw coded(
+      "delivery_file_inspection_too_large",
+      `Untracked regular-file evidence is limited to ${maxBytes} bytes.`,
+    );
+  await hooks.beforeRegularFileOpen?.(path);
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (["ELOOP", "ENOENT", "ENOTDIR"].includes(errorCode(error) ?? ""))
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
+      );
+    throw coded(
+      "delivery_entry_uninspectable",
+      "Delivery could not safely open a regular filesystem entry.",
+    );
+  }
+  hooks.regularFileOpened?.(path);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || !sameMetadata(expected.metadata, before))
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
+      );
+    if (maxBytes !== undefined && before.size > maxBytes)
+      throw coded(
+        "delivery_file_inspection_too_large",
+        `Untracked regular-file evidence is limited to ${maxBytes} bytes.`,
+      );
+    const buffer = Buffer.allocUnsafe(DELIVERY_READ_CHUNK_BYTES);
+    let bytes = 0;
+    while (true) {
+      const length =
+        maxBytes === undefined
+          ? buffer.byteLength
+          : Math.min(buffer.byteLength, maxBytes - bytes + 1);
+      const result = await handle.read(buffer, 0, length, null);
+      if (result.bytesRead === 0) break;
+      bytes += result.bytesRead;
+      if (maxBytes !== undefined && bytes > maxBytes)
+        throw coded(
+          "delivery_file_inspection_too_large",
+          `Untracked regular-file evidence is limited to ${maxBytes} bytes.`,
+        );
+      consume(buffer.subarray(0, result.bytesRead));
+    }
+    const after = await handle.stat();
+    const current = await safeLstat(path, false);
+    if (
+      !current?.isFile() ||
+      bytes !== after.size ||
+      !sameMetadata(expected.metadata, after) ||
+      !sameMetadata(expected.metadata, current)
+    )
+      throw coded(
+        "delivery_entry_changed",
+        "Filesystem entry changed during Delivery inspection.",
+      );
+  } catch (error) {
+    if (error instanceof DeliveryError) throw error;
+    throw coded(
+      "delivery_entry_uninspectable",
+      "Delivery could not safely read a regular filesystem entry.",
+    );
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+function assertSameEntry(
+  expected: EntrySnapshot,
+  current: EntrySnapshot,
+): void {
+  if (
+    expected.kind !== current.kind ||
+    (expected.kind !== "missing" &&
+      current.kind !== "missing" &&
+      !sameMetadata(expected.metadata, current.metadata)) ||
+    (expected.kind === "symlink" &&
+      current.kind === "symlink" &&
+      expected.linkText !== current.linkText)
+  )
+    throw coded(
+      "delivery_entry_changed",
+      "Filesystem entry changed during Delivery inspection.",
+    );
+}
+
+function sameMetadata(left: Stats, right: Stats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function errorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object" || !("code" in error)) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
 }
 function nulStrings(value: Uint8Array): string[] {
   return Buffer.from(value).toString("utf8").split("\0").filter(Boolean);
