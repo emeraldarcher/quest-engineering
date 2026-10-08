@@ -15,7 +15,7 @@ import {
   DispatchRegistry,
 } from "../src/dispatch/registry.ts";
 import type {
-  PreparedSbxPiExecution,
+  PreparedSbxHarnessExecution,
   SbxRunExecutionManager,
 } from "../src/execution-environment/sbx-run.ts";
 import type { HostLaunchDescriptor } from "../src/execution-environment/types.ts";
@@ -64,7 +64,7 @@ import type {
   TerminalAttachmentDescriptor,
   TerminalSessionBackend,
 } from "../src/session-host/types.ts";
-import { action } from "./support.ts";
+import { action, recordTerminalExecution } from "./support.ts";
 
 const roots: string[] = [];
 const INITIAL_CONVERSATION_ID = "11111111-1111-4111-8111-111111111111";
@@ -171,7 +171,7 @@ async function fixture(
     prepare: async (
       _dispatch: unknown,
       preparedLineage: typeof current,
-      artifacts: PreparedSbxPiExecution["materializedArtifacts"],
+      artifacts: PreparedSbxHarnessExecution["materializedArtifacts"],
     ) => {
       const controlRoot = dirname(preparedLineage.resultControlPath);
       const prepared = {
@@ -233,7 +233,7 @@ async function fixture(
         awaitAttestation: async () => undefined,
         stopRelay: async () => undefined,
       };
-      return prepared as unknown as PreparedSbxPiExecution;
+      return prepared as unknown as PreparedSbxHarnessExecution;
     },
   } as unknown as SbxRunExecutionManager;
   const harness = new AntigravityHarness(host, config, {
@@ -559,7 +559,7 @@ test("interactive launch pins model and effort, proves readiness, and keeps the 
     );
     await value.harness.ready(value.dispatch, execution);
     await value.authority.bind(value.dispatch, value.lineage);
-    value.registry.recordHost(value.lineage.lineageId, {
+    recordTerminalExecution(value.registry, value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
       herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,
@@ -1103,7 +1103,7 @@ test("prepared pre-prompt Antigravity adoption requires exact idle conversation-
     await value.harness.ready(value.dispatch, execution);
     delete value.host.agent.nativeSession;
     value.host.agent.cwd = value.workspace;
-    value.registry.recordHost(value.lineage.lineageId, {
+    recordTerminalExecution(value.registry, value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
       herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,
@@ -1424,7 +1424,7 @@ test("native blocked state projects stable HumanAttention and takeover identity"
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
-    value.registry.recordHost(value.lineage.lineageId, {
+    recordTerminalExecution(value.registry, value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
       herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,
@@ -1462,7 +1462,7 @@ test("recovery adopts only the exact surviving SBX TUI and never host-relaunches
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
-    value.registry.recordHost(value.lineage.lineageId, {
+    recordTerminalExecution(value.registry, value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
       herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,
@@ -1514,7 +1514,7 @@ test("post-intent recovery reconstructs native conversation identity from the ap
   const value = await fixture();
   try {
     const execution = await value.harness.start(value.dispatch, value.lineage);
-    value.registry.recordHost(value.lineage.lineageId, {
+    recordTerminalExecution(value.registry, value.lineage.lineageId, {
       herdrSession: execution.ref.sessionName,
       herdrSessionIncarnation: execution.ref.sessionIncarnation as string,
       workspaceId: execution.ref.workspaceId,

@@ -229,9 +229,6 @@ export interface PreparedSbxHarnessExecution {
   stopRelay(awaitNativeIdleMs?: number): Promise<void>;
 }
 
-/** Compatibility name for the accepted Pi adapter; the boundary is mixed. */
-export type PreparedSbxPiExecution = PreparedSbxHarnessExecution;
-
 interface ExtensionBundle {
   name: string;
   bytes: Uint8Array;

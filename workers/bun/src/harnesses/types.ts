@@ -289,8 +289,64 @@ export interface InteractiveHarnessSession {
   processIdentity: "verified" | "unverified" | "not_applicable";
 }
 
+export function validateInteractiveHarnessSession(
+  value: unknown,
+): InteractiveHarnessSession {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Interactive harness session must be an object.");
+  const record = value as Record<string, unknown>;
+  if (
+    !hasExactKeys(record, [
+      "kind",
+      "attachment",
+      "literalInput",
+      "processIdentity",
+    ]) ||
+    typeof record.kind !== "string" ||
+    !/^[a-zA-Z0-9._:-]{1,128}$/.test(record.kind) ||
+    typeof record.literalInput !== "boolean" ||
+    !["verified", "unverified", "not_applicable"].includes(
+      String(record.processIdentity),
+    )
+  )
+    throw new Error("Interactive harness session is invalid.");
+  let attachment: InteractiveHarnessSession["attachment"] = null;
+  if (record.attachment !== null) {
+    if (!record.attachment || typeof record.attachment !== "object")
+      throw new Error("Interactive harness attachment is invalid.");
+    const candidate = record.attachment as Record<string, unknown>;
+    if (
+      !hasExactKeys(candidate, [
+        "available",
+        "supportsObservation",
+        "supportsTakeover",
+      ]) ||
+      typeof candidate.available !== "boolean" ||
+      typeof candidate.supportsObservation !== "boolean" ||
+      typeof candidate.supportsTakeover !== "boolean"
+    )
+      throw new Error("Interactive harness attachment is invalid.");
+    attachment = {
+      available: candidate.available,
+      supportsObservation: candidate.supportsObservation,
+      supportsTakeover: candidate.supportsTakeover,
+    };
+  }
+  return {
+    kind: record.kind,
+    attachment,
+    literalInput: record.literalInput,
+    processIdentity:
+      record.processIdentity as InteractiveHarnessSession["processIdentity"],
+  };
+}
+
+export const HARNESS_EXECUTION_HANDLE_SCHEMA_VERSION = 1 as const;
+export const MAX_HARNESS_EXECUTION_HANDLE_BYTES = 48 * 1024;
+export const MAX_PERSISTED_HARNESS_EXECUTION_HANDLE_BYTES = 12 * 1024;
+
 export interface HarnessExecutionHandle {
-  schemaVersion: 1;
+  schemaVersion: typeof HARNESS_EXECUTION_HANDLE_SCHEMA_VERSION;
   harnessKind: HarnessKind;
   /** Harness-owned execution identity. It has no terminal-topology semantics. */
   executionId: string;
@@ -336,13 +392,85 @@ export function validateHarnessExecutionHandle(
     record.transportBinding !== undefined
       ? validateTransportBinding(record.transportBinding, harnessKind)
       : undefined;
+  if (
+    Buffer.byteLength(JSON.stringify(record), "utf8") >
+    MAX_HARNESS_EXECUTION_HANDLE_BYTES
+  )
+    throw new Error("Harness execution handle exceeds the durable size limit.");
   return {
-    schemaVersion: 1,
+    schemaVersion: HARNESS_EXECUTION_HANDLE_SCHEMA_VERSION,
     harnessKind,
     executionId: record.executionId,
     ...(nativeSession ? { nativeSession } : {}),
     ...(transportBinding ? { transportBinding } : {}),
   };
+}
+
+/** Persists only generic execution identity; recovery facets have dedicated columns. */
+export function serializeHarnessExecutionHandle(
+  handle: HarnessExecutionHandle,
+  expectedHarnessKind: string,
+  expectedExecutionId: string,
+): string {
+  const valid = validateHarnessExecutionHandle(
+    handle,
+    expectedHarnessKind,
+    expectedExecutionId,
+  );
+  return JSON.stringify({
+    schemaVersion: valid.schemaVersion,
+    harnessKind: valid.harnessKind,
+    executionId: valid.executionId,
+  });
+}
+
+export function parseHarnessExecutionHandle(
+  serialized: string,
+  expectedHarnessKind: string,
+  expectedExecutionId: string,
+): HarnessExecutionHandle {
+  if (
+    Buffer.byteLength(serialized, "utf8") >
+    MAX_PERSISTED_HARNESS_EXECUTION_HANDLE_BYTES
+  )
+    throw new Error(
+      "Persisted harness execution handle exceeds the size limit.",
+    );
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized);
+  } catch {
+    throw new Error("Persisted harness execution handle is malformed.");
+  }
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !hasExactKeys(value as Record<string, unknown>, [
+      "schemaVersion",
+      "harnessKind",
+      "executionId",
+    ])
+  )
+    throw new Error(
+      "Persisted harness execution handle has unexpected fields.",
+    );
+  return validateHarnessExecutionHandle(
+    value,
+    expectedHarnessKind,
+    expectedExecutionId,
+  );
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value).sort();
+  return (
+    keys.length === expected.length &&
+    [...expected].sort().every((key, index) => keys[index] === key)
+  );
 }
 
 export interface HarnessInspection {

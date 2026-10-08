@@ -30,7 +30,7 @@ import type {
   TerminalAttachmentDescriptor,
   TerminalSessionBackend,
 } from "../src/session-host/types.ts";
-import { action as supportAction } from "./support.ts";
+import { recordTerminalExecution, action as supportAction } from "./support.ts";
 
 const action: typeof supportAction = (...args) => {
   const value = supportAction(...args);
@@ -317,7 +317,7 @@ test("ordinary Pi prose is never classified as human attention", async () => {
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -339,7 +339,7 @@ test("Herdr-only blocked creates one safe provider-neutral attention", async () 
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -375,7 +375,7 @@ test("only actual Herdr blocked state creates generic attention", async () => {
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -403,7 +403,7 @@ test("Herdr blocked to working clears a terminal-derived attention", async () =>
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -441,7 +441,7 @@ test("structured assistance enriches and deduplicates the current Herdr blocked 
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -489,7 +489,7 @@ test("structured assistance can lead Herdr blocked without creating another epis
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -527,7 +527,7 @@ test("Pi inspection reads explicit structured attention and clears on resolution
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -578,7 +578,7 @@ test("conversational checkpoint survives restart and resolves only after explici
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -670,7 +670,7 @@ test("agent settlement while intervention is pending does not collect or release
   const lineage = registry.getLineage(dispatch.lineageId as string);
   registry.occupy(lineage.lineageId, dispatch.action.action_id);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -904,7 +904,7 @@ test("Worker restart restores Herdr-only blocked attention from recovered state"
     resultExtensionPath: extension,
   });
   const prepared = await initialProvider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -946,7 +946,7 @@ test("Pi never adopts an execution from a deleted Herdr session incarnation", as
   const dispatch = registry.accept(action()).dispatch;
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const prepared = await provider.start(dispatch, lineage);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -983,7 +983,7 @@ test("two Herdr sessions keep terminal state and attention independent", async (
     [firstLineage, firstPrepared],
     [secondLineage, secondPrepared],
   ] as const)
-    registry.recordHost(lineage.lineageId, {
+    recordTerminalExecution(registry, lineage.lineageId, {
       herdrSession: prepared.ref.sessionName,
       herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
       workspaceId: prepared.ref.workspaceId,
@@ -1038,7 +1038,7 @@ test("adopts safe legacy Herdr provenance with truncated IDs and omitted persist
   expect(launchTokens.qe_action_hash).toMatch(/^[a-f0-9]{64}$/);
   expect(launchTokens.qe_occurrence_hash).toMatch(/^[a-f0-9]{64}$/);
   expect(launchTokens.qe_attempt_hash).toMatch(/^[a-f0-9]{64}$/);
-  registry.recordHost(lineage.lineageId, {
+  recordTerminalExecution(registry, lineage.lineageId, {
     herdrSession: prepared.ref.sessionName,
     herdrSessionIncarnation: prepared.ref.sessionIncarnation as string,
     workspaceId: prepared.ref.workspaceId,
@@ -1157,7 +1157,7 @@ test("fresh Actions create distinct Pi agents while continuation reuses the orig
   const first = registry.accept(action()).dispatch;
   const firstLineage = registry.getLineage(first.lineageId as string);
   const started = await provider.start(first, firstLineage);
-  registry.recordHost(firstLineage.lineageId, {
+  recordTerminalExecution(registry, firstLineage.lineageId, {
     herdrSession: started.ref.sessionName,
     herdrSessionIncarnation: started.ref.sessionIncarnation as string,
     workspaceId: started.ref.workspaceId,

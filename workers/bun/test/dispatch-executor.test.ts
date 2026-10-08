@@ -24,7 +24,7 @@ import {
   WORKER_PROTOCOL_VERSION,
 } from "../src/protocol/types.ts";
 import { HerdrApiError } from "../src/session-host/herdr/client.ts";
-import { action } from "./support.ts";
+import { action, recordTerminalExecution } from "./support.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -1531,7 +1531,7 @@ function preparedProcessRecovery(registry: DispatchRegistry) {
   sourceAction.execution.configuration.harness_kind = "antigravity";
   const source = registry.accept(sourceAction).dispatch;
   const lineageId = source.lineageId as string;
-  registry.recordHost(lineageId, {
+  recordTerminalExecution(registry, lineageId, {
     herdrSession: "qe-worker-test",
     herdrSessionIncarnation: "session-incarnation-1",
     workspaceId: "workspace-prepared",

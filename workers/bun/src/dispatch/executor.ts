@@ -557,7 +557,11 @@ export class DispatchExecutor {
       if (!execution)
         throw new Error("Harness execution was not prepared before readiness.");
       if (harness.ready) await harness.ready(dispatch, execution);
-      this.registry.recordExecution(lineage.lineageId, execution.handle);
+      this.registry.recordExecution(
+        lineage.lineageId,
+        execution.handle,
+        execution.interactive ?? null,
+      );
       lineage = this.registry.updateSession(
         lineage.lineageId,
         "starting",
@@ -632,12 +636,23 @@ export class DispatchExecutor {
           lineage.lineageId,
           recoveredNativeSession,
         );
-      this.registry.recordExecution(lineage.lineageId, {
-        ...recovered.handle,
-        ...(recoveredNativeSession
-          ? { nativeSession: recoveredNativeSession }
-          : {}),
-      });
+      this.registry.recordExecution(
+        lineage.lineageId,
+        {
+          ...recovered.handle,
+          ...(recoveredNativeSession
+            ? { nativeSession: recoveredNativeSession }
+            : {}),
+        },
+        recovered.inspection.interactive
+          ? {
+              kind: recovered.inspection.interactive.kind,
+              attachment: recovered.inspection.interactive.attachment,
+              literalInput: recovered.inspection.interactive.literalInput,
+              processIdentity: recovered.inspection.interactive.processIdentity,
+            }
+          : null,
+      );
       if (harness.ready) {
         await harness.ready(dispatch, {
           lineage: this.registry.getLineage(lineage.lineageId),
@@ -673,7 +688,11 @@ export class DispatchExecutor {
           recoveredLineage,
         );
         this.registry.occupy(lineage.lineageId, dispatch.action.action_id);
-        this.registry.recordExecution(lineage.lineageId, execution.handle);
+        this.registry.recordExecution(
+          lineage.lineageId,
+          execution.handle,
+          execution.interactive ?? null,
+        );
         if (harness.ready) {
           await harness.ready(dispatch, execution);
         }
@@ -1094,15 +1113,26 @@ export class DispatchExecutor {
     }
     const observedBinding = inspection.interactive?.transportBinding;
     if (observedBinding)
-      this.registry.recordExecution(lineageId, {
-        schemaVersion: 1,
-        harnessKind: this.registry.getLineage(lineageId).harnessKind,
-        executionId: lineageId,
-        ...(inspection.nativeSession
-          ? { nativeSession: inspection.nativeSession }
-          : {}),
-        transportBinding: observedBinding,
-      });
+      this.registry.recordExecution(
+        lineageId,
+        {
+          schemaVersion: 1,
+          harnessKind: this.registry.getLineage(lineageId).harnessKind,
+          executionId: lineageId,
+          ...(inspection.nativeSession
+            ? { nativeSession: inspection.nativeSession }
+            : {}),
+          transportBinding: observedBinding,
+        },
+        inspection.interactive
+          ? {
+              kind: inspection.interactive.kind,
+              attachment: inspection.interactive.attachment,
+              literalInput: inspection.interactive.literalInput,
+              processIdentity: inspection.interactive.processIdentity,
+            }
+          : null,
+      );
     if (inspection.nativeSession)
       this.registry.recordNativeSession(lineageId, inspection.nativeSession);
     const lineage = this.registry.updateSession(

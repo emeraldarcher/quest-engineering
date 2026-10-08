@@ -8,7 +8,7 @@ import {
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
 import type {
-  PreparedSbxPiExecution,
+  PreparedSbxHarnessExecution,
   ProviderEligibilityFailure,
   SbxRunExecutionManager,
 } from "../../execution-environment/sbx-run.ts";
@@ -112,10 +112,13 @@ export class PiHarness implements AgentHarness {
   private readonly attentionCorrelator = new HumanAttentionCorrelator();
   private readonly discoverModels: typeof discoverPiModels;
   private readonly executionManager: SbxRunExecutionManager | undefined;
-  private readonly sbxExecutions = new Map<string, PreparedSbxPiExecution>();
+  private readonly sbxExecutions = new Map<
+    string,
+    PreparedSbxHarnessExecution
+  >();
   private readonly sbxExecutionsByPane = new Map<
     string,
-    PreparedSbxPiExecution
+    PreparedSbxHarnessExecution
   >();
   private stopped = false;
 
@@ -1187,7 +1190,7 @@ export class PiHarness implements AgentHarness {
   private piArgs(
     dispatch: DispatchRecord,
     agentName: string,
-    sbx?: PreparedSbxPiExecution | null,
+    sbx?: PreparedSbxHarnessExecution | null,
   ): string[] {
     const configuration = dispatch.action.execution.configuration;
     if (
