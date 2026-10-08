@@ -55,6 +55,11 @@ export class HostNativeExecutionEnvironmentBackend extends TrackedExecutionEnvir
         { kind: "git_metadata", mode: "host_shared" },
         { kind: "container_runtime", mode: "unavailable" },
         { kind: "pty_launcher", mode: "host_native" },
+        {
+          kind: "process.streamed",
+          mode: "unavailable",
+          detail: "HostNative is not a production streamed-process fallback.",
+        },
       ],
     );
   }

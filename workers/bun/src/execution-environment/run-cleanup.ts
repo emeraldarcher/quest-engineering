@@ -31,6 +31,9 @@ export async function cleanupExecutionEnvironment(
   target: EnvironmentRef,
 ): Promise<RunEnvironmentCleanupOutcome> {
   try {
+    // Stream transport belongs to the environment lifecycle owner. Retire all
+    // current-generation attachments before any stop/remove boundary.
+    await backend.retireStreamedProcesses(target);
     const inspection = await backend.inspect(target);
     const stop = await advanceStop(backend, target, inspection.stop?.intent);
     if (stop.state !== "stopped") return stopOutcome(stop);

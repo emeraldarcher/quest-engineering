@@ -319,6 +319,30 @@ test("CLI launcher arguments preserve structured guest cwd and environment", () 
   ]);
 });
 
+test("CLI streamed arguments use attached non-PTY exec and preserve literal argv", () => {
+  const client = new CliSbxClient("/fake/sbx");
+  expect(
+    client.streamLauncherArgs("qe-test", {
+      executable: "/usr/bin/python3",
+      args: ["-c", "; echo never-interpreted"],
+      cwd: "/qe/workspace",
+      environment: { VALUE: "explicit" },
+    }),
+  ).toEqual([
+    "exec",
+    "--interactive",
+    "--workdir",
+    "/qe/workspace",
+    "--env",
+    "VALUE=explicit",
+    "qe-test",
+    "--",
+    "/usr/bin/python3",
+    "-c",
+    "; echo never-interpreted",
+  ]);
+});
+
 function versionClient(stdout: string): CliSbxClient {
   return new CliSbxClient("/fake/sbx", async () => ({
     exitCode: 0,

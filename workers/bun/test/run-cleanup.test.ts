@@ -53,6 +53,7 @@ interface BackendState {
   stopCalls: number;
   reconcileCalls: number;
   removeCalls: number;
+  retireStreamedCalls: number;
   removed: boolean;
 }
 
@@ -99,6 +100,10 @@ class ScriptedBackend implements ExecutionEnvironmentBackend {
       capabilities: [],
       ...(this.state.stopIntent ? { stop: status } : {}),
     };
+  }
+  async retireStreamedProcesses(ref: EnvironmentRef): Promise<void> {
+    this.assertCurrent(ref);
+    this.state.retireStreamedCalls += 1;
   }
   async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
     this.assertCurrent(ref);
@@ -191,6 +196,7 @@ async function fixture(
       stopCalls: 0,
       reconcileCalls: 0,
       removeCalls: 0,
+      retireStreamedCalls: 0,
       removed: false,
     } satisfies BackendState);
   const backend = new ScriptedBackend(state);
@@ -280,6 +286,7 @@ test("terminal Run cleanup stops once, removes environment, then removes host re
   await value.coordinator.request(request, false);
 
   expect(value.state.stopCalls).toBe(1);
+  expect(value.state.retireStreamedCalls).toBe(1);
   expect(value.store.get(request.runId)).toMatchObject({
     harness: { state: "retired" },
     executionEnvironment: { state: "stopping" },

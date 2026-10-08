@@ -114,7 +114,7 @@ test.skipIf(!live)(
       });
       await backend.stop(ref);
 
-      backend.close();
+      await backend.close();
       backend = createBackend();
       expect(await backend.inspect(ref)).toMatchObject({
         state: "stopped",
@@ -137,7 +137,7 @@ test.skipIf(!live)(
       await backend.stop(ref);
     } finally {
       if (ref) await backend.remove(ref).catch(() => undefined);
-      backend.close();
+      await backend.close();
       await rm(root, { recursive: true, force: true });
     }
   },

@@ -8,7 +8,12 @@ export type EnvironmentBackendOperation =
   | "remove"
   | "launcher"
   | "exec"
-  | "transfer";
+  | "transfer"
+  | "spawn_streamed"
+  | "inspect_streamed"
+  | "write_streamed"
+  | "cancel_streamed"
+  | "retire_streamed";
 
 export interface EnvironmentProfileIdentity {
   /** Stable, versioned profile name, for example qe-execution-v1. */
@@ -118,6 +123,133 @@ export interface EnvironmentCommandResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+/** Shell-free, byte-streamed process launch inside one exact environment. */
+export interface StreamedProcessCommand {
+  /** Absolute executable in the environment namespace. PATH lookup is forbidden. */
+  executable: string;
+  /** Literal argv; no command-string parsing or interpolation is performed. */
+  args: readonly string[];
+  /** Explicit absolute cwd below one lease path-map root. */
+  cwd: string;
+  /** Explicit bounded overlay. Values are never emitted in infrastructure events. */
+  environment: Readonly<Record<string, string>>;
+}
+
+export interface StreamedProcessOptions {
+  /** Per-stream in-memory byte bound. Producers backpressure at this bound. */
+  bufferBytes?: number;
+  /** Bound for guest acknowledgement of stdin/cancellation requests. */
+  acknowledgementTimeoutMs?: number;
+}
+
+/** Durable provider-neutral process identity; never a harness session identity. */
+export interface StreamedProcessHandle {
+  contractVersion: 1;
+  backendKind: string;
+  environment: EnvironmentRef;
+  /** Backend process identity (a guest PID for SBX). */
+  backendProcessId: string;
+  /** Backend start identity that detects PID reuse. */
+  processStartIdentity: string;
+  /** Unique QE generation for this one physical spawn. */
+  processGeneration: string;
+  /** Exact requested executable provenance. */
+  executable: string;
+  /** Strongest observed executable identity exposed by the backend, when available. */
+  observedExecutable?: string;
+}
+
+export type StreamedProcessStreamEvent =
+  | {
+      kind: "data";
+      sequence: number;
+      data: Uint8Array;
+    }
+  | {
+      kind: "eof";
+      sequence: number;
+    }
+  | {
+      kind: "transport_error";
+      sequence: number;
+      errorCode: EnvironmentBackendErrorCode;
+    };
+
+export type StreamedProcessExit =
+  | { kind: "exited"; exitCode: 0 }
+  | { kind: "exited_nonzero"; exitCode: number }
+  | { kind: "signaled"; signal: string }
+  | {
+      kind: "observation_unavailable";
+      errorCode: EnvironmentBackendErrorCode;
+    }
+  | { kind: "identity_mismatch" };
+
+export interface StreamedProcessWriteReceipt {
+  certainty: "acknowledged";
+  writeId: string;
+  byteLength: number;
+}
+
+export interface StreamedProcessCancellationReceipt {
+  certainty: "acknowledged";
+  cancellationId: string;
+}
+
+export interface StreamedProcessReconciliation {
+  handle: StreamedProcessHandle;
+  process: "running" | "exited" | "gone" | "unavailable" | "identity_mismatch";
+  streamAttachment: "attached" | "unavailable";
+  /** This contract never fabricates stdio reattachment. */
+  streamRecovery: "current_worker_only" | "not_recoverable";
+}
+
+export interface StreamedProcess {
+  readonly handle: StreamedProcessHandle;
+  /** Ordered bytes plus explicit EOF/error for the target's stdout. */
+  readonly stdout: AsyncIterable<StreamedProcessStreamEvent>;
+  /** Ordered bytes plus explicit EOF/error for the target's stderr. */
+  readonly stderr: AsyncIterable<StreamedProcessStreamEvent>;
+  /** Terminal process evidence, distinct from either stream's EOF. */
+  readonly exit: Promise<StreamedProcessExit>;
+  /** Resolves only after guest acknowledgement; uncertain writes are never replayed. */
+  write(data: Uint8Array): Promise<StreamedProcessWriteReceipt>;
+  closeStdin(): Promise<StreamedProcessWriteReceipt>;
+  /** Requests one physical termination action without signal escalation. */
+  cancel(): Promise<StreamedProcessCancellationReceipt>;
+  inspect(): Promise<StreamedProcessReconciliation>;
+  /** Abandons transport and fail-closed terminates the attached process. */
+  disconnect(): Promise<void>;
+}
+
+export interface StreamedProcessInfrastructureEvent {
+  event:
+    | "streamed_process_spawn_requested"
+    | "streamed_process_spawned"
+    | "stream_connected"
+    | "stdin_write_requested"
+    | "stdin_write_acknowledged"
+    | "stdin_write_ambiguous"
+    | "process_exit_observed"
+    | "process_cancel_requested"
+    | "process_cancelled"
+    | "stream_transport_unavailable";
+  observedAt: string;
+  backendKind: string;
+  workerId: string;
+  runId: string;
+  environmentId: string;
+  incarnation: string;
+  processGeneration?: string;
+  backendProcessId?: string;
+  operationId?: string;
+  byteLength?: number;
+  outcome?: string;
+  exitCode?: number;
+  signal?: string;
+  errorCode?: EnvironmentBackendErrorCode;
 }
 
 export const MAX_ENVIRONMENT_FILE_BYTES = 512 * 1024 * 1024;
@@ -274,6 +406,15 @@ export interface EnvironmentLease {
   launcher(command: EnvironmentCommand): Promise<HostLaunchDescriptor>;
   /** Worker-controlled noninteractive execution as the environment user. */
   exec(command: EnvironmentCommand): Promise<EnvironmentCommandResult>;
+  /** Long-lived, non-PTY, shell-free process with bounded byte streams. */
+  spawnStreamed(
+    command: StreamedProcessCommand,
+    options?: StreamedProcessOptions,
+  ): Promise<StreamedProcess>;
+  /** Reconcile process existence separately from Worker-local stream attachment. */
+  reconcileStreamedProcess(
+    handle: StreamedProcessHandle,
+  ): Promise<StreamedProcessReconciliation>;
   /** Privileged control-plane execution. Never exposed as an agent tool. */
   workerExec(command: EnvironmentCommand): Promise<EnvironmentCommandResult>;
   /** Bounded, incarnation-fenced Worker-to-environment transfer. */
@@ -300,6 +441,8 @@ export interface ExecutionEnvironmentBackend {
     spec: EnvironmentSpec,
   ): Promise<EnvironmentLease>;
   inspect(ref: EnvironmentRef): Promise<EnvironmentInspection>;
+  /** Retire all attached streamed processes for this exact Run incarnation. */
+  retireStreamedProcesses(ref: EnvironmentRef): Promise<void>;
   /** Record intent, invoke the destructive provider operation at most once, then read back once. */
   stop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
   /** Reconcile the exact incarnation using read-only provider operations only. */
@@ -326,6 +469,14 @@ export type EnvironmentBackendErrorCode =
   | "environment_not_usable"
   | "environment_removed"
   | "environment_operation_failed"
+  | "streamed_process_unsupported"
+  | "streamed_process_spawn_failed"
+  | "streamed_process_stream_unavailable"
+  | "streamed_process_write_rejected"
+  | "streamed_process_write_uncertain"
+  | "streamed_process_gone"
+  | "streamed_process_cancellation_uncertain"
+  | "streamed_process_identity_mismatch"
   | "injected_failure";
 
 export class EnvironmentBackendError extends Error {
