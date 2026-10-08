@@ -64,7 +64,16 @@ import {
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
   SBX_ANTIGRAVITY_EXECUTABLE,
-  SBX_CODING_EXECUTION_PROFILE_V1,
+  SBX_CLAUDE_AGENT_SDK_VERSION,
+  SBX_CLAUDE_CODE_VERSION,
+  SBX_CLAUDE_LINUX_ARM64_SHA256,
+  SBX_CLAUDE_LINUX_X64_SHA256,
+  SBX_CLAUDE_SDK_MODULE,
+  SBX_CLAUDE_SDK_PACKAGE_JSON,
+  SBX_CLAUDE_WRAPPER,
+  SBX_CLAUDE_WRAPPER_VERSION,
+  SBX_CLAUDE_ZOD_MODULE,
+  SBX_CODING_EXECUTION_PROFILE_V2,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_DISCOVERY_SCRIPT,
@@ -188,7 +197,7 @@ export type ProviderEligibilityFailure = Extract<
 export interface PreparedSbxHarnessExecution {
   lease: EnvironmentLease;
   workspace: PrivateLineageWorkspace;
-  harnessKind: "pi" | "antigravity";
+  harnessKind: "pi" | "antigravity" | "claude_agent_sdk";
   guestExecutable: string;
   guestHome: string;
   guestLogPath: string | null;
@@ -198,6 +207,18 @@ export interface PreparedSbxHarnessExecution {
   guestEnvironment: Record<string, string>;
   extensionPaths: string[];
   materializedArtifacts: Record<string, MaterializedArtifact>;
+  claude: {
+    runtimeExecutable: string;
+    runtimeSha256: string;
+    sdkModule: string;
+    sdkPackageJson: string;
+    zodModule: string;
+    sdkVersion: string;
+    claudeCodeVersion: string;
+    wrapperVersion: string;
+    configDirectory: string;
+    controlDescriptor: string;
+  } | null;
   /** Bind exact harness argv to the environment-owned host launcher. */
   launchDescriptor(args: readonly string[]): Promise<HostLaunchDescriptor>;
   syncControl(): Promise<void>;
@@ -249,8 +270,9 @@ interface RuntimeContext {
 
 /**
  * Production mixed-harness execution boundary. There is intentionally no
- * HostNative branch: every Pi or Antigravity execution has the Run's exact SBX
- * lease and a PhysicalLineage private-Git workspace before Herdr can launch it.
+ * HostNative branch: every Pi, Antigravity, or Claude execution has the Run's
+ * exact SBX lease and a PhysicalLineage private-Git workspace. Claude is
+ * headless and never launches Herdr.
  */
 export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   private readonly backend: ExecutionEnvironmentBackend & {
@@ -329,8 +351,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       const context: AccountAvailabilityContext = {
         accountScope: discovered.accountScope,
         authGeneration: discovered.authGeneration,
-        profileId: SBX_CODING_EXECUTION_PROFILE_V1.id,
-        profileDigest: SBX_CODING_EXECUTION_PROFILE_V1.digest,
+        profileId: SBX_CODING_EXECUTION_PROFILE_V2.id,
+        profileDigest: SBX_CODING_EXECUTION_PROFILE_V2.digest,
       };
       discovered.models = await this.accountAvailability.annotate(
         discovered.models,
@@ -346,6 +368,87 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     } finally {
       if (lease) await this.backend.remove(lease.ref).catch(() => undefined);
     }
+  }
+
+  async discoverClaude(): Promise<{
+    installed: true;
+    authenticated: false;
+    setupAvailable: true;
+    models: HarnessModelCapability[];
+    diagnostics: string[];
+  }> {
+    const runId = `claude-discovery-${randomUUID()}`;
+    const spec = this.spec({
+      runId,
+      workspaceId: `discovery-${randomUUID()}`,
+      access: "none",
+      sourceIdentity: "repository-owned-mixed-coding-profile",
+      frozenBase: "none",
+      materialization: "disposable_fixture",
+    });
+    let lease: EnvironmentLease | null = null;
+    try {
+      lease = await this.backend.ensure(spec);
+      const streamed = lease.capabilities.some(
+        (capability) =>
+          capability.kind === "process.streamed" &&
+          capability.mode === "attached_only",
+      );
+      const runtime = lease.capabilities.find(
+        (capability) =>
+          capability.kind === "harness_runtime" &&
+          capability.mode === "claude_agent_sdk_headless_v1",
+      );
+      if (!streamed || !runtime)
+        throw new Error(
+          "The Claude Agent SDK profile is missing attached-only streamed-process or runtime provenance.",
+        );
+      const models = (this.config.executorModels ?? [])
+        .filter((model) => model.provider === "anthropic")
+        .map((model) => ({
+          provider: model.provider,
+          model: model.model,
+          displayName: `${model.provider}/${model.model}`,
+          accountAvailability: "unknown" as const,
+          reasoningCapability: {
+            kind: "enumerated" as const,
+            values: [...(this.config.reasoningLevels ?? ["low", "medium", "high"])],
+          },
+        }));
+      return {
+        installed: true,
+        authenticated: false,
+        setupAvailable: true,
+        models,
+        diagnostics: [
+          runtime.detail ?? "Pinned Claude Agent SDK artifacts verified.",
+          "Authentication is intentionally Run-private and absent from disposable discovery; an explicit human setup action is required before scheduling.",
+          "No Claude authentication or provider request was performed by discovery.",
+        ],
+      };
+    } finally {
+      if (lease) await this.backend.remove(lease.ref).catch(() => undefined);
+    }
+  }
+
+  async retireStreamedProcesses(ref: EnvironmentRef): Promise<void> {
+    await this.backend.retireStreamedProcesses(ref);
+  }
+
+  async prepareAndReconcileStreamedProcess(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+    hostArtifacts: Record<string, MaterializedArtifact>,
+    handle: import("./types.ts").StreamedProcessHandle,
+  ): Promise<{
+    prepared: PreparedSbxHarnessExecution;
+    reconciliation: import("./types.ts").StreamedProcessReconciliation;
+  }> {
+    const prepared = await this.prepare(dispatch, lineage, hostArtifacts);
+    return {
+      prepared,
+      reconciliation: await prepared.lease.reconcileStreamedProcess(handle),
+    };
   }
 
   async discoverAntigravity(): Promise<AntigravityDiscoveryResult> {
@@ -395,8 +498,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       discovered.compatible =
         discovered.compatible &&
         mcpReady &&
-        lease.ref.profile.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
-        lease.ref.profile.digest === SBX_CODING_EXECUTION_PROFILE_V1.digest;
+        lease.ref.profile.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
+        lease.ref.profile.digest === SBX_CODING_EXECUTION_PROFILE_V2.digest;
       discovered.diagnostics.push(
         mcpReady
           ? "The profile-owned qe stdio MCP registration is enabled."
@@ -419,8 +522,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         {
           accountScope: evidence.accountScope,
           authGeneration: evidence.authGeneration,
-          profileId: SBX_CODING_EXECUTION_PROFILE_V1.id,
-          profileDigest: SBX_CODING_EXECUTION_PROFILE_V1.digest,
+          profileId: SBX_CODING_EXECUTION_PROFILE_V2.id,
+          profileDigest: SBX_CODING_EXECUTION_PROFILE_V2.digest,
         },
         { provider: evidence.provider, model: evidence.model },
         evidence.state,
@@ -546,7 +649,11 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       });
     }
     const harnessKind = dispatch.action.execution.configuration.harness_kind;
-    if (harnessKind !== "pi" && harnessKind !== "antigravity")
+    if (
+      harnessKind !== "pi" &&
+      harnessKind !== "antigravity" &&
+      harnessKind !== "claude_agent_sdk"
+    )
       throw new Error(
         `The mixed coding profile cannot launch harness ${harnessKind}.`,
       );
@@ -563,11 +670,20 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
             digest(lineage.lineageId).slice(0, 32),
             "home",
           )
-        : lease.paths.home;
+        : harnessKind === "claude_agent_sdk"
+          ? posix.join(
+              lease.paths.state,
+              "claude-lineages",
+              digest(lineage.lineageId).slice(0, 32),
+              "config",
+            )
+          : lease.paths.home;
     const guestExecutable =
       harnessKind === "antigravity"
         ? SBX_ANTIGRAVITY_EXECUTABLE
-        : SBX_PI_EXECUTABLE;
+        : harnessKind === "claude_agent_sdk"
+          ? SBX_CLAUDE_WRAPPER
+          : SBX_PI_EXECUTABLE;
     const guestLogPath =
       harnessKind === "antigravity"
         ? posix.join(controlRoot, "antigravity.log")
@@ -579,10 +695,16 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     const extensions =
       harnessKind === "antigravity"
         ? await this.bundledAntigravityControl()
-        : await this.bundledExtensions();
+        : harnessKind === "claude_agent_sdk"
+          ? { digest: digest("claude-headless-wrapper-v1"), bundles: [] }
+          : await this.bundledExtensions();
     const extensionRoot = posix.join(
       lease.paths.state,
-      harnessKind === "antigravity" ? "antigravity-control" : "pi-extensions",
+      harnessKind === "antigravity"
+        ? "antigravity-control"
+        : harnessKind === "claude_agent_sdk"
+          ? "claude-headless-control"
+          : "pi-extensions",
     );
     await lease.workerExec({
       executable: "/usr/bin/install",
@@ -629,6 +751,10 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       hostArtifacts,
     );
     const guestPaths = guestControlPaths(controlRoot);
+    const claude =
+      harnessKind === "claude_agent_sdk"
+        ? await this.claudeRuntimeConfiguration(lease, guestHome, guestPaths.descriptor)
+        : null;
     const attestation = {
       schemaVersion: 1,
       workerId: lease.ref.workerId,
@@ -667,6 +793,14 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       guestHome,
       controlRoot,
       guestPaths.mailbox,
+      ...(claude
+        ? [
+            claude.runtimeExecutable,
+            claude.sdkModule,
+            claude.sdkPackageJson,
+            claude.zodModule,
+          ]
+        : []),
       ...extensionPaths,
     ];
     await this.validateGuestLaunchPaths(
@@ -698,8 +832,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       QE_WORKSPACE_ROOT: workspace.paths.workspace,
       ...(harnessKind === "pi"
         ? { QE_ALLOWED_PI_TOOLS: mappedPiTools(dispatch).join(",") }
-        : {
-            QE_ANTIGRAVITY_EXPECTED_ARGV_JSON: JSON.stringify([
+        : harnessKind === "antigravity"
+          ? {
+              QE_ANTIGRAVITY_EXPECTED_ARGV_JSON: JSON.stringify([
               ...(antigravityNativeSession?.identityKind === "id"
                 ? ["--conversation", antigravityNativeSession.opaqueId]
                 : []),
@@ -716,7 +851,15 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
               "--log-file",
               guestLogPath as string,
             ]),
-          }),
+          }
+          : {
+              CLAUDE_CONFIG_DIR: guestHome,
+              CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+              DISABLE_AUTOUPDATER: "1",
+              DISABLE_TELEMETRY: "1",
+              DISABLE_ERROR_REPORTING: "1",
+            }),
       QE_ARTIFACT_ROOT: posix.join(lease.paths.state, "execution-artifacts"),
       QE_SBX_ATTESTATION_JSON: JSON.stringify(attestation),
       QE_SBX_OWNERSHIP_MARKER_PATH: ownershipMarkerPath,
@@ -770,7 +913,13 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       guestEnvironment,
       extensionPaths,
       materializedArtifacts,
+      claude,
       launchDescriptor: async (args) => {
+        if (harnessKind === "claude_agent_sdk")
+          throw environmentLaunchFailure(
+            "environment_launch_mismatch",
+            "Claude Agent SDK is headless and cannot use a terminal launcher.",
+          );
         const guestArgvSha256 = digest(JSON.stringify([...args]));
         if (launchArgvDigest && launchArgvDigest !== guestArgvSha256)
           throw environmentLaunchFailure(
@@ -1438,6 +1587,47 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     };
   }
 
+  private async claudeRuntimeConfiguration(
+    lease: EnvironmentLease,
+    configDirectory: string,
+    controlDescriptor: string,
+  ): Promise<NonNullable<PreparedSbxHarnessExecution["claude"]>> {
+    const architecture = await lease.workerExec({
+      executable: "/usr/bin/uname",
+      args: ["-m"],
+      timeoutMs: 30_000,
+    });
+    if (architecture.exitCode !== 0)
+      throw environmentLaunchFailure(
+        "runtime_incompatible",
+        "The SBX architecture could not be identified for Claude Code.",
+      );
+    const normalized = architecture.stdout.trim();
+    const arm = normalized === "aarch64" || normalized === "arm64";
+    const x64 = normalized === "x86_64" || normalized === "amd64";
+    if (!arm && !x64)
+      throw environmentLaunchFailure(
+        "runtime_incompatible",
+        `Claude Code has no pinned runtime for SBX architecture ${normalized || "unknown"}.`,
+      );
+    return {
+      runtimeExecutable: arm
+        ? "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude"
+        : "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",
+      runtimeSha256: arm
+        ? SBX_CLAUDE_LINUX_ARM64_SHA256
+        : SBX_CLAUDE_LINUX_X64_SHA256,
+      sdkModule: SBX_CLAUDE_SDK_MODULE,
+      sdkPackageJson: SBX_CLAUDE_SDK_PACKAGE_JSON,
+      zodModule: SBX_CLAUDE_ZOD_MODULE,
+      sdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
+      claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
+      wrapperVersion: SBX_CLAUDE_WRAPPER_VERSION,
+      configDirectory,
+      controlDescriptor,
+    };
+  }
+
   private async validateGuestLaunchPaths(
     lease: EnvironmentLease,
     attestation: Record<string, string | number>,
@@ -1599,7 +1789,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           frozenBase: { kind: "git_commit", value: input.frozenBase },
         },
       },
-      profile: SBX_CODING_EXECUTION_PROFILE_V1,
+      profile: SBX_CODING_EXECUTION_PROFILE_V2,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
       networkRequirements: [
         {
@@ -1629,6 +1819,14 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         {
           kind: "harness_runtime",
           mode: "antigravity_capability_contract_v1",
+        },
+        {
+          kind: "harness_runtime",
+          mode: "claude_agent_sdk_headless_v1",
+        },
+        {
+          kind: "process.streamed",
+          mode: "attached_only",
         },
         {
           kind: "credentials",

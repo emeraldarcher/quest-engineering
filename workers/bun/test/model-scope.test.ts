@@ -125,6 +125,25 @@ test("Herdr local context digest has a cross-runtime stable vector", () => {
   );
 });
 
+test("Claude-only production configuration has no Herdr dependency and remains opt-in", async () => {
+  const configured = await environment({
+    QE_WORKER_HARNESSES: "claude_agent_sdk",
+  });
+  delete configured.QE_HERDR_BIN;
+  delete configured.XDG_CONFIG_HOME;
+  delete configured.HERDR_CONFIG_PATH;
+  configured.HOME = `/${"herdr-independent".repeat(40)}`;
+  const claudeOnly = loadConfig(configured);
+  expect(claudeOnly.enabledHarnesses).toEqual(["claude_agent_sdk"]);
+  expect(claudeOnly.herdrBin).toBeUndefined();
+  expect(claudeOnly.herdrLocalContextId).toBeUndefined();
+
+  const defaultEnvironment = await environment();
+  delete defaultEnvironment.QE_WORKER_HARNESSES;
+  const defaults = loadConfig(defaultEnvironment);
+  expect(defaults.enabledHarnesses).toEqual(["pi", "antigravity"]);
+});
+
 test("production Herdr context rejects implicit or nonexistent paths", async () => {
   const configured = await environment();
   const missingHome = { ...configured };
@@ -142,12 +161,13 @@ test("dispatch availability defaults active and supports generic maintenance reg
   expect(activeCapabilities.dispatch_availability).toBe("active");
   expect(activeCapabilities.executors[0]?.execution_environment).toMatchObject({
     backend_kind: "sbx",
-    profile: { id: "qe-coding-execution-v1" },
+    profile: { id: "qe-coding-execution-v2" },
     capabilities: expect.arrayContaining([
       { kind: "filesystem_namespace", mode: "isolated" },
       { kind: "host_filesystem", mode: "unexposed" },
       { kind: "environment_exec", mode: "available" },
       { kind: "pty_launcher", mode: "available" },
+      { kind: "process.streamed", mode: "attached_only" },
     ]),
   });
 

@@ -2,6 +2,7 @@ import {
   type ArtifactInstance,
   type CancelDispatch,
   type ExecuteAction,
+  type HumanAttentionResponseCommand,
   isJsonValue,
   type ResolvedExecution,
   WORKER_PROTOCOL_VERSION,
@@ -51,6 +52,50 @@ export function decodeCancelDispatch(
         cancellation.requested_at,
         "cancellation.requested_at",
       ),
+    },
+  };
+}
+
+export function decodeHumanAttentionResponse(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): HumanAttentionResponseCommand {
+  const payload = record(value, "message");
+  exact(payload.type, "respond_human_attention", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  const response = record(payload.response, "response");
+  if (typeof response.approved !== "boolean")
+    throw new ProtocolDecodeError("response.approved", "must be a boolean");
+  if (!isJsonValue(response.value))
+    throw new ProtocolDecodeError("response.value", "must be JSON");
+  const respondedAt = string(response.responded_at, "response.responded_at");
+  if (!Number.isFinite(Date.parse(respondedAt)))
+    throw new ProtocolDecodeError(
+      "response.responded_at",
+      "must be an ISO-8601 timestamp",
+    );
+  return {
+    type: "respond_human_attention",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    action_id: string(payload.action_id, "action_id"),
+    run_id: string(payload.run_id, "run_id"),
+    occurrence_id: string(payload.occurrence_id, "occurrence_id"),
+    attempt_id: string(payload.attempt_id, "attempt_id"),
+    response: {
+      request_id: string(response.request_id, "response.request_id"),
+      attention_id: string(response.attention_id, "response.attention_id"),
+      approved: response.approved,
+      value: response.value,
+      responded_at: respondedAt,
     },
   };
 }

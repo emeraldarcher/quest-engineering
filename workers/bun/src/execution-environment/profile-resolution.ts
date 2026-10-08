@@ -1,10 +1,14 @@
 import {
   SBX_CODING_EXECUTION_PROFILE_V1,
+  SBX_CODING_EXECUTION_PROFILE_V2,
   SBX_CODING_PROFILE,
   type SbxExecutionProfile,
 } from "./sbx-profile.ts";
 
-export type CodingHarnessCapability = "pi" | "antigravity";
+export type CodingHarnessCapability =
+  | "pi"
+  | "antigravity"
+  | "claude_agent_sdk";
 
 export interface ResolvedRunExecutionProfile {
   profile: SbxExecutionProfile;
@@ -13,8 +17,8 @@ export interface ResolvedRunExecutionProfile {
 
 /**
  * Resolve one immutable Run environment before physical creation. The first
- * composed profile deliberately contains both current coding harnesses, so a
- * later Step never switches/recreates the VM or installs a floating runtime.
+ * composed profile deliberately contains every production coding harness, so
+ * a later Step never switches/recreates the VM or installs a floating runtime.
  */
 export function resolveRunExecutionProfile(
   requiredHarnesses: readonly string[],
@@ -23,7 +27,8 @@ export function resolveRunExecutionProfile(
   if (requested.length === 0)
     throw new Error("A coding Run must require at least one harness runtime.");
   const unsupported = requested.filter(
-    (kind) => kind !== "pi" && kind !== "antigravity",
+    (kind) =>
+      kind !== "pi" && kind !== "antigravity" && kind !== "claude_agent_sdk",
   );
   if (unsupported.length > 0)
     throw new Error(
@@ -31,7 +36,7 @@ export function resolveRunExecutionProfile(
     );
   return {
     profile: SBX_CODING_PROFILE,
-    harnesses: ["antigravity", "pi"],
+    harnesses: ["antigravity", "claude_agent_sdk", "pi"],
   };
 }
 
@@ -40,7 +45,11 @@ export function profileSupportsHarness(
   harness: string,
 ): boolean {
   return (
-    profileId === SBX_CODING_EXECUTION_PROFILE_V1.id &&
-    (harness === "pi" || harness === "antigravity")
+    (profileId === SBX_CODING_EXECUTION_PROFILE_V1.id &&
+      (harness === "pi" || harness === "antigravity")) ||
+    (profileId === SBX_CODING_EXECUTION_PROFILE_V2.id &&
+      (harness === "pi" ||
+        harness === "antigravity" ||
+        harness === "claude_agent_sdk"))
   );
 }

@@ -78,6 +78,11 @@ export class HumanAttentionCorrelator {
             : base?.interaction
               ? { interaction: base.interaction }
               : {}),
+          ...(structured.responseSchema !== undefined
+            ? { responseSchema: structuredClone(structured.responseSchema) }
+            : base?.responseSchema !== undefined
+              ? { responseSchema: structuredClone(base.responseSchema) }
+              : {}),
         }
       : (base ?? {
           attentionId: crypto.randomUUID(),

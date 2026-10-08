@@ -14,6 +14,13 @@ import {
   SBX_ANTIGRAVITY_LINUX_ARM64_BINARY_SHA256,
   SBX_ANTIGRAVITY_RUNTIME_PROBE,
   SBX_ANTIGRAVITY_VERSION,
+  SBX_CLAUDE_AGENT_SDK_VERSION,
+  SBX_CLAUDE_CODE_VERSION,
+  SBX_CLAUDE_LINUX_ARM64_SHA256,
+  SBX_CLAUDE_LINUX_X64_SHA256,
+  SBX_CLAUDE_SDK_PACKAGE_JSON,
+  SBX_CLAUDE_WRAPPER,
+  SBX_CLAUDE_WRAPPER_VERSION,
   SBX_GUEST_PATHS,
   SBX_MIXED_INSTALL_NETWORK_TARGETS,
   SBX_MIXED_RUNTIME_NETWORK_TARGETS,
@@ -664,7 +671,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
   private async mixedCapabilities(
     sandboxName: string,
   ): Promise<EnvironmentCapability[]> {
-    const [pi, result, modelCatalog] = await Promise.all([
+    const [pi, result, modelCatalog, claudeProvenance] = await Promise.all([
       this.piCapabilities(sandboxName),
       this.client.exec(sandboxName, {
         executable: "/usr/bin/node",
@@ -677,9 +684,40 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
         environment: { HOME: SBX_GUEST_PATHS.home, BROWSER: "/bin/false" },
         timeoutMs: 60_000,
       }),
+      this.client.exec(sandboxName, {
+        executable: "/usr/bin/node",
+        args: [
+          "-e",
+          "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const x=`/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-${a}/claude`; const w=fs.statSync(process.env.W); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime:x,sha256:c.createHash('sha256').update(fs.readFileSync(x)).digest('hex'),wrapperExecutable:w.isFile()&&(w.mode&0o111)!==0}));",
+        ],
+        environment: {
+          P: SBX_CLAUDE_SDK_PACKAGE_JSON,
+          W: SBX_CLAUDE_WRAPPER,
+        },
+        timeoutMs: 60_000,
+      }),
     ]);
     const contract = decodeAntigravityCapabilityContractV1(result.stdout);
     const provenance = contract.provenance;
+    const claude = parseObject(
+      claudeProvenance.stdout,
+      "Claude Agent SDK artifact provenance",
+    );
+    const expectedClaudeDigest =
+      claude.arch === "arm64"
+        ? SBX_CLAUDE_LINUX_ARM64_SHA256
+        : claude.arch === "x64"
+          ? SBX_CLAUDE_LINUX_X64_SHA256
+          : null;
+    if (
+      claude.sdk !== SBX_CLAUDE_AGENT_SDK_VERSION ||
+      claude.code !== SBX_CLAUDE_CODE_VERSION ||
+      claude.wrapperExecutable !== true ||
+      claude.sha256 !== expectedClaudeDigest
+    )
+      throw unhealthy(
+        "The immutable Claude Agent SDK/runtime/wrapper artifacts do not match profile provenance.",
+      );
     if (
       modelCatalog.stdout
         .split("\n")
@@ -709,6 +747,11 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
         kind: "harness_runtime",
         mode: "antigravity_capability_contract_v1",
         detail: `agy ${provenance.version}; ${provenance.platform}; sha256:${provenance.artifactSha256}`,
+      },
+      {
+        kind: "harness_runtime",
+        mode: "claude_agent_sdk_headless_v1",
+        detail: `sdk ${SBX_CLAUDE_AGENT_SDK_VERSION}; claude ${SBX_CLAUDE_CODE_VERSION}; wrapper ${SBX_CLAUDE_WRAPPER_VERSION}; ${String(claude.arch)}; sha256:${String(claude.sha256)}`,
       },
     ];
   }

@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   decodeCancelDispatch,
   decodeExecuteAction,
+  decodeHumanAttentionResponse,
   ProtocolDecodeError,
 } from "../src/protocol/codec.ts";
 import {
   type CancelDispatch,
+  type HumanAttentionResponseCommand,
   WORKER_PROTOCOL_VERSION,
 } from "../src/protocol/types.ts";
 import { action } from "./support.ts";
@@ -39,6 +41,43 @@ describe("Worker Protocol v12 ResolvedExecution codec", () => {
     ).toThrow(ProtocolDecodeError);
     expect(() =>
       decodeCancelDispatch({ ...command, attempt_id: "" }, "worker-test", 7),
+    ).toThrow(ProtocolDecodeError);
+  });
+
+  test("decodes an exact generation-fenced structured HumanAttention response", () => {
+    const command = {
+      type: "respond_human_attention",
+      protocol_version: WORKER_PROTOCOL_VERSION,
+      worker_id: "worker-test",
+      connection_generation: 7,
+      action_id: "action-1",
+      run_id: "run-1",
+      occurrence_id: "occurrence-1",
+      attempt_id: "attempt-1",
+      response: {
+        request_id: "response-1",
+        attention_id: "attention-1",
+        approved: true,
+        value: { answers: { Choice: "A" } },
+        responded_at: "2026-09-17T12:00:00Z",
+      },
+    } satisfies HumanAttentionResponseCommand;
+    expect(decodeHumanAttentionResponse(command, "worker-test", 7)).toEqual(
+      command,
+    );
+    expect(() =>
+      decodeHumanAttentionResponse(
+        { ...command, connection_generation: 6 },
+        "worker-test",
+        7,
+      ),
+    ).toThrow(ProtocolDecodeError);
+    expect(() =>
+      decodeHumanAttentionResponse(
+        { ...command, response: { ...command.response, value: undefined } },
+        "worker-test",
+        7,
+      ),
     ).toThrow(ProtocolDecodeError);
   });
 

@@ -133,6 +133,24 @@ export interface ExecuteAction {
   operational_recovery?: OperationalRecoveryExecution;
 }
 
+export interface HumanAttentionResponseCommand {
+  type: "respond_human_attention";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  action_id: string;
+  run_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  response: {
+    request_id: string;
+    attention_id: string;
+    approved: boolean;
+    value: JsonValue;
+    responded_at: string;
+  };
+}
+
 export interface CancelDispatch {
   type: "cancel_dispatch";
   protocol_version: typeof WORKER_PROTOCOL_VERSION;
@@ -224,6 +242,7 @@ export interface ReconcileSession {
       control_state: string;
       resume_command?: string;
     };
+    response_schema?: JsonValue;
   } | null;
   intervention: {
     attention_id: string;

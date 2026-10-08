@@ -245,6 +245,8 @@ export interface HumanAttention {
     controlState: HumanControlState;
     resumeCommand?: string;
   };
+  /** Bounded provider-neutral rendering data for a structured response. */
+  responseSchema?: JsonValue;
 }
 
 export interface HumanInterventionLifecycle {
@@ -484,6 +486,8 @@ export interface HarnessInspection {
   attention: HumanAttention | null;
   intervention: HumanInterventionLifecycle | null;
   lastActivityAt: string;
+  /** Adapter-private durable transport evidence; valid for headless harnesses. */
+  transportBinding?: HarnessTransportBinding;
   interactive:
     | (InteractiveHarnessSession & {
         /** Adapter-private evidence retained for topology-fenced implementations. */
@@ -499,7 +503,11 @@ export interface PreAuthorizationActivity {
 }
 
 export interface PromptEvidenceCursor {
-  kind: "pi_transcript" | "pi_runtime_state" | "antigravity_log";
+  kind:
+    | "pi_transcript"
+    | "pi_runtime_state"
+    | "antigravity_log"
+    | "claude_stream";
   cursor: number;
   /** Guest-native provider completion baseline; present only for Pi/SBX. */
   providerTurnCursor?: number;
@@ -615,6 +623,15 @@ export interface AgentHarness {
   /** Execution retirement used only by an authorized recovery transition. */
   retire?(lineage: HarnessLineage): Promise<void>;
   interrupt?(lineage: HarnessLineage): Promise<void>;
+  /** Resolve one exact Product-correlated native blocking request. */
+  respondToAttention?(
+    lineage: HarnessLineage,
+    input: {
+      attentionId: string;
+      approved: boolean;
+      value: JsonValue;
+    },
+  ): Promise<void>;
   /** Side-effect-free, authoritative absence proof required before fresh retained-work recovery. */
   proveInactiveForFreshRecovery?(lineage: HarnessLineage): Promise<boolean>;
   inspect(lineage: HarnessLineage): Promise<HarnessInspection>;

@@ -22,7 +22,13 @@ export type HarnessControlOperation =
       type: "request_human_assistance";
       category: HumanAttentionCategory;
       message: string;
-      interaction?: "confirmation" | "conversational_intervention";
+      interaction?:
+        | "confirmation"
+        | "text"
+        | "choice"
+        | "multiline_response"
+        | "conversational_intervention";
+      responseSchema?: JsonValue;
     }
   | {
       type: "resolve_human_assistance";

@@ -66,14 +66,22 @@ export const SBX_ANTIGRAVITY_RUNTIME_NETWORK_TARGETS = Object.freeze([
   "www.googleapis.com",
   "lh3.googleusercontent.com",
 ]);
+export const SBX_CLAUDE_RUNTIME_NETWORK_TARGETS = Object.freeze([
+  "api.anthropic.com",
+  "claude.ai",
+]);
 export const SBX_PI_INSTALL_NETWORK_TARGET = "registry.npmjs.org";
 export const SBX_ANTIGRAVITY_INSTALL_NETWORK_TARGETS = Object.freeze([
   "github.com",
   "release-assets.githubusercontent.com",
 ]);
-export const SBX_MIXED_RUNTIME_NETWORK_TARGETS = Object.freeze([
+export const SBX_MIXED_RUNTIME_NETWORK_TARGETS_V1 = Object.freeze([
   ...SBX_PI_RUNTIME_NETWORK_TARGETS,
   ...SBX_ANTIGRAVITY_RUNTIME_NETWORK_TARGETS,
+]);
+export const SBX_MIXED_RUNTIME_NETWORK_TARGETS = Object.freeze([
+  ...SBX_MIXED_RUNTIME_NETWORK_TARGETS_V1,
+  ...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
 ]);
 export const SBX_MIXED_INSTALL_NETWORK_TARGETS = Object.freeze([
   SBX_PI_INSTALL_NETWORK_TARGET,
@@ -81,6 +89,19 @@ export const SBX_MIXED_INSTALL_NETWORK_TARGETS = Object.freeze([
 ]);
 export const SBX_PI_EXECUTABLE = "/opt/qe/pi/node_modules/.bin/pi";
 export const SBX_ANTIGRAVITY_EXECUTABLE = "/opt/qe/antigravity/agy";
+export const SBX_CLAUDE_WRAPPER = "/opt/qe/claude/wrapper.mjs";
+export const SBX_CLAUDE_SDK_MODULE =
+  "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs";
+export const SBX_CLAUDE_SDK_PACKAGE_JSON =
+  "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk/package.json";
+export const SBX_CLAUDE_ZOD_MODULE = "/opt/qe/pi/node_modules/zod/index.js";
+export const SBX_CLAUDE_AGENT_SDK_VERSION = "0.3.292";
+export const SBX_CLAUDE_CODE_VERSION = "2.1.292";
+export const SBX_CLAUDE_WRAPPER_VERSION = "1.0.0";
+export const SBX_CLAUDE_LINUX_ARM64_SHA256 =
+  "24caa9e6ff13bf227049a2626f1c816fc895023050f0ec3b12dbf14d897367e0";
+export const SBX_CLAUDE_LINUX_X64_SHA256 =
+  "a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3";
 export const SBX_PI_DISCOVERY_SCRIPT =
   "/home/agent/.qe-profile/discover-models.mjs";
 export const SBX_PI_RUNTIME_PROBE = "/home/agent/.qe-profile/probe-runtime.mjs";
@@ -201,7 +222,7 @@ export const SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION = Object.freeze({
     "host_antigravity_oauth_dynamic_proxy",
   ]),
   network: Object.freeze({
-    runtimeAllow: SBX_MIXED_RUNTIME_NETWORK_TARGETS,
+    runtimeAllow: SBX_MIXED_RUNTIME_NETWORK_TARGETS_V1,
     postInstallDeny: SBX_MIXED_INSTALL_NETWORK_TARGETS,
   }),
   sshAgentForwarding: "required_disabled",
@@ -218,6 +239,63 @@ export const SBX_CODING_EXECUTION_PROFILE_V1: EnvironmentProfileIdentity =
   Object.freeze({
     id: SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION.id,
     digest: digest(SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION),
+  });
+
+const SBX_CODING_V2_PROFILE_ASSETS = Object.freeze({
+  "spec.yaml": "917a0773ff9672b5ed22a8b83d607ecdb9329ef272a26b45ae9c43f949adc779",
+  "files/home/.qe-profile/package.json":
+    "7f843d96c5203103c226833f18e74a75c9b79dbadd68d7201348de15e658f3cd",
+  "files/home/.qe-profile/package-lock.json":
+    "e9bcc4c2159bee2b54da57ef91972d087b32cb3a2f1d98a2204c46211b08a324",
+  "files/home/.qe-profile/claude-wrapper.mjs":
+    "c25e087b0855812d320f9385078cb3e6c11c85ecbee51913f325db2fceb4dafb",
+  "files/home/.qe-profile/codex-model-eligibility.mjs":
+    "e8fbc8b2ed437ebaec0214a5c7ab1b61a6562438b9cc863235b8a2a1a0016972",
+  "files/home/.qe-profile/discover-models.mjs":
+    "bac7e4929fc881e76539c3220be632938ce418ff865297d656fe0164cc270e93",
+  "files/home/.qe-profile/probe-runtime.mjs":
+    "3ffa1e4c1034f7ffd1a0a75aaa96d7cd917b958adb5824af361bad3f0c1e122b",
+  "files/home/.qe-profile/probe-resource.mjs":
+    "514354d2aef1334886578e8e9733af7dbdfdd030495000977b88c9d049e1e41c",
+  "files/home/.qe-profile/probe-antigravity-runtime.mjs":
+    "e631ef482a9b046f586841ea9a1a00fb39550a3f273ce5cbaf6053395984ab2f",
+  "files/home/.gemini/antigravity-cli/cache/onboarding.json":
+    SBX_ANTIGRAVITY_ONBOARDING_STATE_SHA256,
+  "files/home/.gemini/config/mcp_config.json":
+    "29f1bd0a818cc1824d34953d1dafb97831be0ae6ea477b88c9298a2cdbd45b79",
+});
+
+export const SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION = Object.freeze({
+  ...SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION,
+  schemaVersion: 2,
+  id: "qe-coding-execution-v2",
+  kitName: "qe-coding-execution-v2",
+  harnesses: Object.freeze({
+    ...SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION.harnesses,
+    claude_agent_sdk: Object.freeze({
+      sdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
+      claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
+      wrapperVersion: SBX_CLAUDE_WRAPPER_VERSION,
+      linuxArm64Sha256: SBX_CLAUDE_LINUX_ARM64_SHA256,
+      linuxX64Sha256: SBX_CLAUDE_LINUX_X64_SHA256,
+    }),
+  }),
+  assets: SBX_CODING_V2_PROFILE_ASSETS,
+  credentials: Object.freeze([
+    ...SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION.credentials,
+    "run_private_claude_subscription_state",
+  ]),
+  network: Object.freeze({
+    runtimeAllow: SBX_MIXED_RUNTIME_NETWORK_TARGETS,
+    postInstallDeny: SBX_MIXED_INSTALL_NETWORK_TARGETS,
+  }),
+  processStreaming: "attached_only",
+});
+
+export const SBX_CODING_EXECUTION_PROFILE_V2: EnvironmentProfileIdentity =
+  Object.freeze({
+    id: SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION.id,
+    digest: digest(SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION),
   });
 
 export interface SbxExecutionProfile {
@@ -255,15 +333,19 @@ export const SBX_PI_PROFILE: SbxExecutionProfile = Object.freeze({
   postCreateNetworkDenies: Object.freeze([SBX_PI_INSTALL_NETWORK_TARGET]),
 });
 
-export const SBX_CODING_PROFILE_ROOT = resolve(
+export const SBX_CODING_PROFILE_V1_ROOT = resolve(
   import.meta.dir,
   "../../profiles/qe-coding-execution-v1",
 );
+export const SBX_CODING_PROFILE_ROOT = resolve(
+  import.meta.dir,
+  "../../profiles/qe-coding-execution-v2",
+);
 
 export const SBX_CODING_PROFILE: SbxExecutionProfile = Object.freeze({
-  identity: SBX_CODING_EXECUTION_PROFILE_V1,
+  identity: SBX_CODING_EXECUTION_PROFILE_V2,
   agentReference: SBX_CODING_PROFILE_ROOT,
-  nativeAgent: "qe-coding-execution-v1",
+  nativeAgent: "qe-coding-execution-v2",
   networkMode: "mixed_subscriptions",
   credentialMode: "host_mixed_oauth_dynamic_proxies",
   postCreateNetworkDenies: SBX_MIXED_INSTALL_NETWORK_TARGETS,
@@ -280,14 +362,21 @@ export async function verifySbxProfileAssets(
           assets: SBX_PI_PROFILE_ASSETS,
           label: "Pi",
         }
-      : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
-          profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V1.digest
+      : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
+          profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V2.digest
         ? {
             root: SBX_CODING_PROFILE_ROOT,
-            assets: SBX_CODING_PROFILE_ASSETS,
-            label: "mixed coding",
+            assets: SBX_CODING_V2_PROFILE_ASSETS,
+            label: "mixed coding v2",
           }
-        : null;
+        : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
+            profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V1.digest
+          ? {
+              root: SBX_CODING_PROFILE_V1_ROOT,
+              assets: SBX_CODING_PROFILE_ASSETS,
+              label: "mixed coding v1",
+            }
+          : null;
   if (!expected) return;
   if (resolve(profile.agentReference) !== expected.root)
     throw new Error(
