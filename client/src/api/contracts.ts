@@ -308,6 +308,7 @@ export interface HumanAttention {
       | "resuming_automation";
     resume_command?: string;
   };
+  response_schema?: JsonValue;
 }
 export interface HarnessSessionProjection {
   id: string;

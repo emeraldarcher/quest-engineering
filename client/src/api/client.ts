@@ -191,6 +191,27 @@ export class ApiClient {
       { occurrence_id: occurrenceId, request_id: requestId },
       (value) => decodeRun(asRecord(value, "run").run),
     );
+  respondToExecutionAttention = (
+    runId: string,
+    attemptId: string,
+    sessionId: string,
+    attentionId: string,
+    requestId: string,
+    approved: boolean,
+    value: JsonValue,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/sessions/${encodeURIComponent(sessionId)}/respond-attention`,
+      {
+        attention_id: attentionId,
+        request_id: requestId,
+        approved,
+        value,
+      },
+      (response) => decodeRun(asRecord(response, "attention response").run),
+      undefined,
+      true,
+    );
   cancelExecutionAttempt = (
     runId: string,
     occurrenceId: string,
@@ -1556,6 +1577,9 @@ function decodeHarnessSession(value: unknown) {
             : {
                 interaction: decodeHumanInteraction(attention.interaction),
               }),
+          ...(attention.response_schema === undefined
+            ? {}
+            : { response_schema: attention.response_schema as JsonValue }),
         }
       : null,
     started_at: asString(session.started_at, "harness session"),

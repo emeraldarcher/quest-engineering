@@ -192,6 +192,55 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
   expect(takeover).toHaveBeenCalledTimes(1);
 });
 
+test("submits exact headless structured HumanAttention without terminal takeover", async () => {
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step?.attempt) throw new Error("Expected an active Step attempt");
+  step.session = harnessSession("session-claude", "waiting_for_human", {
+    attention_id: "attention-confirm",
+    category: "needs_confirmation",
+    message: "Approve this exact action?",
+    requested_at: "2026-09-06T00:00:00Z",
+    interaction: {
+      kind: "confirmation",
+      control_state: "intervention_pending",
+    },
+  });
+  step.session.harness = {
+    kind: "claude_agent_sdk",
+    display_name: "Claude Agent SDK",
+  };
+  step.session.attachment = null;
+  step.session.capabilities.structured_confirmation = true;
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  const respond = vi.spyOn(store, "respondToAttention").mockResolvedValue(true);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(
+    screen.getByText("Headless execution · no interactive session"),
+  ).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  expect(respond).toHaveBeenCalledWith(
+    {
+      runId: run.id,
+      occurrenceId: step.occurrence_id,
+      attemptId: step.attempt.id,
+      sessionId: "session-claude",
+    },
+    "attention-confirm",
+    true,
+    true,
+  );
+  expect(screen.queryByRole("button", { name: "Take Control" })).toBeNull();
+});
+
 test("an already-open empty Work Yard selects the first realtime Run and keeps observation eligible", async () => {
   const { value, run, step } = operatorSetup();
   const populatedProduct = value.product;
