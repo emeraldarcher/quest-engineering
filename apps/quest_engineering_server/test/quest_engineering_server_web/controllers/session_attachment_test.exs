@@ -47,6 +47,30 @@ defmodule QuestEngineering.ServerWeb.SessionAttachmentTest do
 
     assert json_response(conn, 404)["error"]["code"] == "session_not_found"
 
+    response_path =
+      "/api/v1/runs/run/attempts/attempt/sessions/session/respond-attention"
+
+    response_body = %{
+      attention_id: "attention",
+      request_id: "response",
+      approved: true,
+      value: "answer"
+    }
+
+    response_unauthorized =
+      %{build_conn() | host: "127.0.0.1"}
+      |> post(response_path, response_body)
+
+    assert json_response(response_unauthorized, 409)["error"]["code"] ==
+             "local_session_attachment_disabled"
+
+    response_authorized =
+      %{build_conn() | host: "127.0.0.1"}
+      |> put_req_header("x-quest-engineering-local-client", "tauri")
+      |> post(response_path, response_body)
+
+    assert json_response(response_authorized, 404)["error"]["code"] == "session_not_found"
+
     cancellation_path = "/api/v1/runs/run/attempts/attempt/cancel"
     cancellation_body = %{occurrence_id: "occurrence", request_id: "request"}
 

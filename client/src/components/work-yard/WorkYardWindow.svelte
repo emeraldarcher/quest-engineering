@@ -3,6 +3,8 @@ import { onMount, tick } from "svelte";
 import type {
   ArtifactDetail,
   ArtifactSummary,
+  HumanAttention,
+  JsonValue,
   Quest,
   RunAttempt,
   RunProjection,
@@ -445,6 +447,80 @@ async function recoverSession(step: RunStep) {
   await runSessionAction(step, store.recoverSession);
 }
 
+type ChoiceQuestion = {
+  header: string;
+  question: string;
+  multi_select: boolean;
+  options: Array<{ label: string; description: string }>;
+};
+
+function choiceQuestions(attention: HumanAttention): ChoiceQuestion[] {
+  const schema = attention.response_schema;
+  if (!schema || Array.isArray(schema) || typeof schema !== "object") return [];
+  if (schema.kind !== "choice_form_v1" || !Array.isArray(schema.questions))
+    return [];
+  return schema.questions.filter((question): question is ChoiceQuestion => {
+    if (!question || Array.isArray(question) || typeof question !== "object")
+      return false;
+    return (
+      typeof question.header === "string" &&
+      typeof question.question === "string" &&
+      typeof question.multi_select === "boolean" &&
+      Array.isArray(question.options) &&
+      question.options.every(
+        (option) =>
+          option !== null &&
+          !Array.isArray(option) &&
+          typeof option === "object" &&
+          typeof option.label === "string" &&
+          typeof option.description === "string",
+      )
+    );
+  }) as ChoiceQuestion[];
+}
+
+async function respondToAttention(
+  step: RunStep,
+  approved: boolean,
+  value: JsonValue,
+) {
+  const target = liveSessionTarget(step);
+  const attention = step.session?.attention;
+  if (!target || !attention || busy) return;
+  busy = true;
+  try {
+    await store.respondToAttention(
+      target,
+      attention.attention_id,
+      approved,
+      value,
+    );
+  } finally {
+    busy = false;
+  }
+}
+
+async function submitTextAttention(event: SubmitEvent, step: RunStep) {
+  event.preventDefault();
+  const value = new FormData(event.currentTarget as HTMLFormElement).get("response");
+  if (typeof value === "string" && value.trim())
+    await respondToAttention(step, true, value);
+}
+
+async function submitChoiceAttention(event: SubmitEvent, step: RunStep) {
+  event.preventDefault();
+  const attention = step.session?.attention;
+  if (!attention) return;
+  const data = new FormData(event.currentTarget as HTMLFormElement);
+  const answers: Record<string, string | string[]> = {};
+  for (const question of choiceQuestions(attention)) {
+    const values = data.getAll(question.header).filter((value): value is string => typeof value === "string");
+    if (!values.length) return;
+    answers[question.header] = question.multi_select ? values : (values[0] as string);
+  }
+  await respondToAttention(step, true, { answers });
+}
+
 async function retryFresh(step: RunStep) {
   if (!run || busy || !step.recovery?.can_retry_fresh) return;
   busy = true;
@@ -725,6 +801,43 @@ function attemptOutput(attempt: RunAttempt): string {
                             <p><strong>{sessionControlLabel(step)}</strong> · {session.worker.display_name}</p>
                             {#if step.attempt?.execution}<small>{step.attempt.execution.model.provider}/{step.attempt.execution.model.model} · {effortLabel(step.attempt.execution)} · {toolPolicyLabel(step.attempt.execution)} · {humanize(step.attempt.execution.workspace_permission)}</small>{/if}
                             {#if session.attention}<blockquote>“{session.attention.message}”</blockquote>{/if}
+                            {#if session.attention && !session.attention.attention_id.startsWith("qe-prompt-authorization-")}
+                              {@const interaction = session.attention.interaction?.kind}
+                              {#if interaction === "confirmation" && session.capabilities.structured_confirmation}
+                                <div class="attention-response-actions">
+                                  <button class="primary" disabled={busy} on:click={() => respondToAttention(step, true, true)}>Approve</button>
+                                  <button class="secondary" disabled={busy} on:click={() => respondToAttention(step, false, null)}>Decline</button>
+                                </div>
+                              {:else if (interaction === "text" && session.capabilities.structured_text_response) || (interaction === "multiline_response" && session.capabilities.structured_multiline_response)}
+                                <form class="attention-response-form" on:submit={(event) => submitTextAttention(event, step)}>
+                                  {#if interaction === "multiline_response"}
+                                    <textarea name="response" required maxlength="65536" aria-label="Response"></textarea>
+                                  {:else}
+                                    <input name="response" required maxlength="16384" aria-label="Response" />
+                                  {/if}
+                                  <div class="attention-response-actions">
+                                    <button class="primary" type="submit" disabled={busy}>Send response</button>
+                                    <button class="secondary" type="button" disabled={busy} on:click={() => respondToAttention(step, false, null)}>Decline</button>
+                                  </div>
+                                </form>
+                              {:else if interaction === "choice" && session.capabilities.structured_choice_response && choiceQuestions(session.attention).length}
+                                <form class="attention-response-form" on:submit={(event) => submitChoiceAttention(event, step)}>
+                                  {#each choiceQuestions(session.attention) as question (question.header)}
+                                    <label>{question.question}
+                                      <select name={question.header} multiple={question.multi_select} required>
+                                        {#each question.options as option (option.label)}
+                                          <option value={option.label}>{option.label}{option.description ? ` — ${option.description}` : ""}</option>
+                                        {/each}
+                                      </select>
+                                    </label>
+                                  {/each}
+                                  <div class="attention-response-actions">
+                                    <button class="primary" type="submit" disabled={busy}>Send response</button>
+                                    <button class="secondary" type="button" disabled={busy} on:click={() => respondToAttention(step, false, null)}>Decline</button>
+                                  </div>
+                                </form>
+                              {/if}
+                            {/if}
                             {#if session.attention?.interaction?.kind === "conversational_intervention"}
                               {#if session.harness.kind === "pi"}<small>Use normal Pi chat for as many turns as needed. Return control with <code>{session.attention.interaction.resume_command ?? "/qe-resume"}</code>.</small>{:else}<small>Use the same live native {session.harness.display_name} terminal, then detach to let Worker observation resume.</small>{/if}
                             {/if}
@@ -1066,6 +1179,11 @@ function attemptOutput(attempt: RunAttempt): string {
   .session-history summary { cursor:pointer; color:var(--app-teal-dark); font-weight:750; }
   .session-history ul { margin:.25rem 0 0; padding-left:1rem; }
   .session-copy blockquote { color:#7b443b; font-style:italic; }
+  .attention-response-form { display:grid; gap:.45rem; max-width:34rem; margin-top:.5rem; }
+  .attention-response-form label { display:grid; gap:.2rem; color:var(--app-ink); font-size:.78rem; font-weight:750; }
+  .attention-response-form input,.attention-response-form textarea,.attention-response-form select { width:100%; padding:.45rem; color:var(--app-ink); background:#fffdf7; border:1px solid #bca77f; border-radius:5px; font:inherit; }
+  .attention-response-form textarea { min-height:5rem; resize:vertical; }
+  .attention-response-actions { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.4rem; }
   .session-actions { display:flex; max-width:18rem; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
   .session-actions .command-status { flex-basis:100%; color:var(--app-teal-dark); text-align:right; }
   .command-error { display:grid; flex-basis:100%; grid-template-columns:minmax(0,1fr) auto; gap:.15rem .45rem; padding:.5rem; color:#783f3b; background:#f8ded5; border:1px solid #d69b88; border-radius:6px; font-size:.75rem; text-align:left; }

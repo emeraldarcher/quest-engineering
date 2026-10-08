@@ -195,6 +195,61 @@ test("prompt authorization targets one exact Attempt and preserves its request i
   });
 });
 
+test("structured HumanAttention responses are local-only and preserve exact correlation", async () => {
+  const web = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+  await expect(
+    web.respondToExecutionAttention(
+      "run",
+      "attempt",
+      "session",
+      "attention",
+      "request",
+      true,
+      "answer",
+    ),
+  ).rejects.toMatchObject({ code: "local_session_attachment_unavailable" });
+
+  const fixture = createFixture("work-yard-running");
+  if (!fixture || !fixture.selectedRunId)
+    throw new Error("Expected a running fixture.");
+  const run = fixture.runs[fixture.selectedRunId];
+  if (!run) throw new Error("Expected a selected fixture Run.");
+  let requestPath = "";
+  let request: RequestInit | undefined;
+  globalThis.fetch = mock(async (input, init) => {
+    requestPath = String(input);
+    request = init;
+    return new Response(JSON.stringify({ run }));
+  }) as unknown as typeof fetch;
+  const desktop = new ApiClient({
+    httpBaseUrl: "http://example.test/api/v1",
+    localTauriClient: true,
+  });
+  await desktop.respondToExecutionAttention(
+    "run-1",
+    "attempt-1",
+    "session-1",
+    "attention-1",
+    "response-1",
+    true,
+    { answers: { Choice: "A" } },
+  );
+  expect(requestPath).toEndWith(
+    "/runs/run-1/attempts/attempt-1/sessions/session-1/respond-attention",
+  );
+  expect(
+    (request?.headers as Record<string, string>)[
+      "x-quest-engineering-local-client"
+    ],
+  ).toBe("tauri");
+  expect(JSON.parse(String(request?.body))).toEqual({
+    attention_id: "attention-1",
+    request_id: "response-1",
+    approved: true,
+    value: { answers: { Choice: "A" } },
+  });
+});
+
 test("Product cancellation is local-only and preserves its exact request identity", async () => {
   const web = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
   await expect(

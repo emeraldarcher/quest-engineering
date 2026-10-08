@@ -1,5 +1,5 @@
 import { createServer, type Server, type Socket } from "node:net";
-import type { JsonValue } from "../../protocol/types.ts";
+import { isJsonValue, type JsonValue } from "../../protocol/types.ts";
 import type { HarnessControlAuthority } from "./authority.ts";
 import {
   HARNESS_CONTROL_PROTOCOL_VERSION,
@@ -155,7 +155,8 @@ function decodeOperation(
           "interactive_prompt",
           "unknown_interactive_block",
         ].includes(String(raw.category)) ||
-        typeof raw.message !== "string"
+        typeof raw.message !== "string" ||
+        (raw.responseSchema !== undefined && !isJsonValue(raw.responseSchema))
       )
         throw new HarnessControlError(
           "invalid_request",
@@ -168,9 +169,24 @@ function decodeOperation(
           { type: "request_human_assistance" }
         >["category"],
         message: raw.message,
-        ...(raw.interaction === "confirmation" ||
-        raw.interaction === "conversational_intervention"
-          ? { interaction: raw.interaction }
+        ...([
+          "confirmation",
+          "text",
+          "choice",
+          "multiline_response",
+          "conversational_intervention",
+        ].includes(String(raw.interaction))
+          ? {
+              interaction: raw.interaction as NonNullable<
+                Extract<
+                  HarnessControlOperation,
+                  { type: "request_human_assistance" }
+                >["interaction"]
+              >,
+            }
+          : {}),
+        ...(raw.responseSchema !== undefined && isJsonValue(raw.responseSchema)
+          ? { responseSchema: raw.responseSchema }
           : {}),
       };
     case "resolve_human_assistance":

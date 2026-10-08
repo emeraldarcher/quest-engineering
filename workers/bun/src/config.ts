@@ -73,7 +73,9 @@ export interface WorkerConfig {
   /** Nonterminal liveness threshold; crossing it never authorizes a retry. */
   promptActivityStallMs?: number;
   provider: "pi" | "fake";
-  enabledHarnesses?: Array<"pi" | "antigravity" | "fake">;
+  enabledHarnesses?: Array<
+    "pi" | "antigravity" | "claude_agent_sdk" | "fake"
+  >;
   fakeOutputs: Record<string, JsonValue>;
   fakeDelayMs: number;
   gitAuthorName?: string;
@@ -143,15 +145,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     "QE_PROMPT_ACTIVITY_STALL_MS",
   );
   const provider = env.QE_WORKER_PROVIDER === "fake" ? "fake" : "pi";
+  const enabledHarnesses =
+    provider === "fake"
+      ? (["fake"] as const)
+      : harnesses(
+          env.QE_WORKER_HARNESSES ?? "pi,antigravity",
+        );
+  const terminalHarnessEnabled = enabledHarnesses.some(
+    (kind) => kind === "pi" || kind === "antigravity",
+  );
   const herdrBin = env.QE_HERDR_BIN?.trim()
     ? exactExecutable(env.QE_HERDR_BIN, "QE_HERDR_BIN")
     : undefined;
-  if (provider !== "fake" && !herdrBin)
+  if (provider !== "fake" && terminalHarnessEnabled && !herdrBin)
     throw new Error(
-      "QE_HERDR_BIN is required and must name the exact absolute Herdr executable.",
+      "QE_HERDR_BIN is required and must name the exact absolute Herdr executable when Pi or Antigravity is enabled.",
     );
   const herdrContext =
-    provider === "fake"
+    provider === "fake" || !terminalHarnessEnabled
       ? undefined
       : resolveHerdrLocalContext(env, herdrBin as string);
   const herdrNamingConfigHome =
@@ -161,13 +172,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       : join(env.HOME?.trim() || homedir(), ".config"));
   const herdrSession = validateHerdrSessionName(
     env.QE_HERDR_SESSION?.trim() ||
-      defaultHerdrSessionName(workerId, herdrNamingConfigHome),
+      (terminalHarnessEnabled || provider === "fake"
+        ? defaultHerdrSessionName(workerId, herdrNamingConfigHome)
+        : "qe-headless-unused"),
   );
-  assertHerdrDefaultSocketPathSafe(herdrSession, herdrNamingConfigHome);
-  const enabledHarnesses =
-    provider === "fake"
-      ? (["fake"] as const)
-      : harnesses(env.QE_WORKER_HARNESSES ?? "pi,antigravity");
+  if (terminalHarnessEnabled || provider === "fake")
+    assertHerdrDefaultSocketPathSafe(herdrSession, herdrNamingConfigHome);
   const executorModels = models(
     env.QE_EXECUTOR_MODELS !== undefined
       ? env.QE_EXECUTOR_MODELS
@@ -571,14 +581,23 @@ function models(
     };
   });
 }
-function harnesses(value: string): Array<"pi" | "antigravity"> {
+function harnesses(
+  value: string,
+): Array<"pi" | "antigravity" | "claude_agent_sdk"> {
   const values = csv(value);
   if (
     values.length === 0 ||
-    !values.every((item) => item === "pi" || item === "antigravity")
+    !values.every(
+      (item) =>
+        item === "pi" ||
+        item === "antigravity" ||
+        item === "claude_agent_sdk",
+    )
   )
-    throw new Error("QE_WORKER_HARNESSES must contain pi and/or antigravity.");
-  return values as Array<"pi" | "antigravity">;
+    throw new Error(
+      "QE_WORKER_HARNESSES must contain pi, antigravity, and/or claude_agent_sdk.",
+    );
+  return values as Array<"pi" | "antigravity" | "claude_agent_sdk">;
 }
 function reasoning(value: string): Reasoning[] {
   return csv(value);

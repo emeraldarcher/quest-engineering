@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import type { JsonValue } from "../../protocol/types.ts";
+import { isJsonValue, type JsonValue } from "../../protocol/types.ts";
 import { HarnessControlClient } from "./client.ts";
 import { HarnessControlError, type HarnessControlOperation } from "./types.ts";
 
@@ -76,9 +76,24 @@ function decodeOperation(value: unknown): HarnessControlOperation {
         { type: "request_human_assistance" }
       >["category"],
       message: String(input.message ?? ""),
-      ...(input.interaction === "confirmation" ||
-      input.interaction === "conversational_intervention"
-        ? { interaction: input.interaction }
+      ...([
+        "confirmation",
+        "text",
+        "choice",
+        "multiline_response",
+        "conversational_intervention",
+      ].includes(String(input.interaction))
+        ? {
+            interaction: input.interaction as NonNullable<
+              Extract<
+                HarnessControlOperation,
+                { type: "request_human_assistance" }
+              >["interaction"]
+            >,
+          }
+        : {}),
+      ...(input.responseSchema !== undefined && isJsonValue(input.responseSchema)
+        ? { responseSchema: input.responseSchema }
         : {}),
     };
   throw new Error("Unsupported local-control operation.");

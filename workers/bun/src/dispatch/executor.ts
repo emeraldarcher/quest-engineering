@@ -16,6 +16,7 @@ import {
 import type {
   CancelDispatch,
   ExecuteAction,
+  HumanAttentionResponseCommand,
   JsonValue,
   ReconcileDispatch,
 } from "../protocol/types.ts";
@@ -49,6 +50,10 @@ export class DispatchExecutor {
   private readonly cancellationOperations = new Map<
     string,
     { requestId: string; operation: Promise<void> }
+  >();
+  private readonly attentionResponseOperations = new Map<
+    string,
+    { requestId: string; fingerprint: string; operation: Promise<void> }
   >();
   private readonly harnesses: HarnessRegistry;
 
@@ -174,6 +179,76 @@ export class DispatchExecutor {
       );
     }
     await this.start(actionId);
+  }
+
+  respondToAttention(
+    command: HumanAttentionResponseCommand,
+  ): Promise<void> {
+    const fingerprint = JSON.stringify({
+      approved: command.response.approved,
+      value: command.response.value,
+    });
+    const existing = this.attentionResponseOperations.get(
+      command.response.attention_id,
+    );
+    if (existing) {
+      if (
+        existing.requestId !== command.response.request_id ||
+        existing.fingerprint !== fingerprint
+      )
+        throw new Error(
+          "HumanAttention already has a different response operation.",
+        );
+      return existing.operation;
+    }
+    if (this.attentionResponseOperations.size >= 4_096)
+      throw new Error("HumanAttention response ledger is exhausted.");
+    const operation = this.respondToAttentionOnce(command);
+    this.attentionResponseOperations.set(command.response.attention_id, {
+      requestId: command.response.request_id,
+      fingerprint,
+      operation,
+    });
+    return operation;
+  }
+
+  private async respondToAttentionOnce(
+    command: HumanAttentionResponseCommand,
+  ): Promise<void> {
+    const dispatch = this.registry.get(command.action_id);
+    if (
+      dispatch.action.worker_id !== command.worker_id ||
+      dispatch.action.run_id !== command.run_id ||
+      dispatch.action.occurrence_id !== command.occurrence_id ||
+      dispatch.action.attempt_id !== command.attempt_id ||
+      !dispatch.lineageId ||
+      !["accepted", "running"].includes(dispatch.state)
+    )
+      throw new Error("HumanAttention response identity is stale.");
+    const lineage = this.registry.getLineage(dispatch.lineageId);
+    if (lineage.attention?.attentionId !== command.response.attention_id)
+      throw new Error("HumanAttention response does not match the pending request.");
+    const harness = this.harnessForLineage(lineage);
+    if (!harness.respondToAttention)
+      throw new Error(
+        `Harness ${harness.kind} cannot accept structured HumanAttention responses.`,
+      );
+    await harness.respondToAttention(lineage, {
+      attentionId: command.response.attention_id,
+      approved: command.response.approved,
+      value: command.response.value,
+    });
+    const inspection = await harness.inspect(
+      this.registry.getLineage(lineage.lineageId),
+    );
+    const updated = this.registry.updateSession(
+      lineage.lineageId,
+      inspection.state,
+      inspection.attention,
+      inspection.lastActivityAt,
+      inspection.intervention,
+    );
+    await this.reportSession(dispatch, updated);
   }
 
   cleanupTargets(runId: string): HarnessCleanupTarget[] {
@@ -343,10 +418,12 @@ export class DispatchExecutor {
       current.failure.cancellation_request_id ===
         command.cancellation.request_id;
 
-    if (!alreadyCancelled && !["completed", "failed"].includes(current.state))
-      await harness.interrupt?.(lineage);
-
+    const shouldInterrupt =
+      !alreadyCancelled && !["completed", "failed"].includes(current.state);
     const cancelledAt = new Date().toISOString();
+    // Persist cancellation authority before asking any native runtime to stop.
+    // Late completion is therefore stale even if transport acknowledgement is
+    // lost or the Worker crashes during interruption.
     const cancellation = this.registry.cancel(command.action_id, {
       reason: "execution_cancelled",
       code: "execution_cancelled",
@@ -361,7 +438,16 @@ export class DispatchExecutor {
       cancelled_at: cancelledAt,
     });
 
+    let interruptFailure: unknown;
+    if (shouldInterrupt) {
+      try {
+        await harness.interrupt?.(lineage);
+      } catch (error) {
+        interruptFailure = error;
+      }
+    }
     await this.reportFailure(cancellation.dispatch);
+    if (interruptFailure) throw interruptFailure;
   }
 
   async acknowledgeTerminal(actionId: string): Promise<void> {
@@ -1111,7 +1197,8 @@ export class DispatchExecutor {
       this.registry.markPromptAccepted(actionId, observedAt);
       this.registry.markNativeActivity(actionId, observedAt);
     }
-    const observedBinding = inspection.interactive?.transportBinding;
+    const observedBinding =
+      inspection.transportBinding ?? inspection.interactive?.transportBinding;
     if (observedBinding)
       this.registry.recordExecution(
         lineageId,

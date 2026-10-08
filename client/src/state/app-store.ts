@@ -5,6 +5,7 @@ import {
   type ArtifactDetail,
   type ClassDefinition,
   type ExecutionOption,
+  type JsonValue,
   type Loadout,
   type Quest,
   type RunProjection,
@@ -748,6 +749,53 @@ export function createAppStore(
     }
   }
 
+  async function respondToAttention(
+    target: LiveSessionActionTarget,
+    attentionId: string,
+    approved: boolean,
+    value: JsonValue,
+  ) {
+    const projection = get(selectedRun);
+    const step = projection?.steps.find(
+      (item) =>
+        item.occurrence_id === target.occurrenceId &&
+        item.attempt?.id === target.attemptId &&
+        item.session?.id === target.sessionId,
+    );
+    if (
+      !projection ||
+      projection.id !== target.runId ||
+      step?.session?.attention?.attention_id !== attentionId
+    ) {
+      reportError(
+        new ApiError(
+          "stale_human_attention",
+          "The HumanAttention request changed before the response was sent.",
+        ),
+      );
+      return false;
+    }
+    try {
+      const updated = await api.respondToExecutionAttention(
+        target.runId,
+        target.attemptId,
+        target.sessionId,
+        attentionId,
+        crypto.randomUUID(),
+        approved,
+        value,
+      );
+      if (!acceptExecutionProjection(updated, projection))
+        await reconcileExecutionProjection(target.runId);
+      error.set(null);
+      return true;
+    } catch (cause) {
+      reportError(cause);
+      await reconcileExecutionProjection(target.runId);
+      return false;
+    }
+  }
+
   async function openSession(target: LiveSessionActionTarget) {
     await focusAttention(target);
     return attachLiveSession(target, "observe");
@@ -1072,6 +1120,7 @@ export function createAppStore(
     recoverSession,
     focusAttention,
     dismissAttention,
+    respondToAttention,
     authorizePrompt,
     cancelExecution,
     clearExecutionCommand,

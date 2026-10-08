@@ -460,19 +460,23 @@ export class HarnessControlAuthority {
     const attentionId = crypto.randomUUID();
     const conversational =
       operation.interaction === "conversational_intervention";
+    const interaction = operation.interaction;
     const attention: HumanAttention = {
       attentionId,
       category: operation.category,
       message,
       requestedAt,
-      ...(conversational
+      ...(interaction
         ? {
             interaction: {
-              kind: "conversational_intervention",
+              kind: interaction,
               controlState: "intervention_pending",
-              resumeCommand: "/qe-resume",
+              ...(conversational ? { resumeCommand: "/qe-resume" } : {}),
             },
           }
+        : {}),
+      ...(operation.responseSchema !== undefined
+        ? { responseSchema: structuredClone(operation.responseSchema) }
         : {}),
     };
     const intervention: HumanInterventionLifecycle | null = conversational

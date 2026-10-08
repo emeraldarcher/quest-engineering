@@ -24,6 +24,7 @@ import {
 } from "./dispatch/registry.ts";
 import { SbxRunExecutionManager } from "./execution-environment/sbx-run.ts";
 import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
+import { ClaudeAgentSdkAdapter } from "./harnesses/claude-agent-sdk/adapter.ts";
 import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
 import { HarnessControlServer } from "./harnesses/control/server.ts";
 import { FakeHarness } from "./harnesses/fake/adapter.ts";
@@ -32,7 +33,11 @@ import { PiHarness } from "./harnesses/pi/adapter.ts";
 import { HarnessRegistry } from "./harnesses/registry.ts";
 import { structuredResultExists } from "./harnesses/turn-lifecycle.ts";
 import type { AgentHarness } from "./harnesses/types.ts";
-import { decodeCancelDispatch, decodeExecuteAction } from "./protocol/codec.ts";
+import {
+  decodeCancelDispatch,
+  decodeExecuteAction,
+  decodeHumanAttentionResponse,
+} from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
   JsonValue,
@@ -130,8 +135,11 @@ export class QuestEngineeringWorker {
     this.worktrees = new RunWorktreeRegistry(config);
     this.deliveries = new RunDeliveryRegistry(config, this.worktrees);
     this.cleanups = new RunCleanupStore(config.dataRoot);
+    const terminalHarnessEnabled = (
+      config.enabledHarnesses ?? ["pi", "antigravity"]
+    ).some((kind) => kind === "pi" || kind === "antigravity");
     const provider =
-      config.provider === "fake"
+      config.provider === "fake" || !terminalHarnessEnabled
         ? null
         : (dependencies.infrastructure ??
           new LocalHerdrConnectionProvider(config.herdrSession, {
@@ -158,7 +166,10 @@ export class QuestEngineeringWorker {
       config.provider !== "fake" &&
       !dependencies.harnesses &&
       (config.enabledHarnesses ?? ["pi", "antigravity"]).some(
-        (kind) => kind === "pi" || kind === "antigravity",
+        (kind) =>
+          kind === "pi" ||
+          kind === "antigravity" ||
+          kind === "claude_agent_sdk",
       )
         ? new SbxRunExecutionManager(config, this.worktrees)
         : null;
@@ -167,6 +178,16 @@ export class QuestEngineeringWorker {
       (config.provider === "fake"
         ? [new FakeHarness(config.fakeOutputs, config.fakeDelayMs)]
         : (config.enabledHarnesses ?? ["pi", "antigravity"]).map((kind) => {
+            if (kind === "claude_agent_sdk") {
+              if (!this.sbxExecutionManager)
+                throw new Error(
+                  "Claude Agent SDK requires the SBX execution manager.",
+                );
+              return new ClaudeAgentSdkAdapter(
+                config,
+                this.sbxExecutionManager,
+              );
+            }
             const host = new HerdrTerminalBackend(
               provider as LocalHerdrConnectionProvider,
               kind,
@@ -555,6 +576,15 @@ export class QuestEngineeringWorker {
         cancellationServerGeneration(this.channel, generation),
       );
       await this.executor.cancel(cancellation);
+      return;
+    }
+    if (message.type === "respond_human_attention") {
+      const response = decodeHumanAttentionResponse(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.executor.respondToAttention(response);
       return;
     }
     if (message.type === "authorize_dispatch_prompt") {
@@ -1659,7 +1689,9 @@ function harnessSessionPayload(
         ? "Pi"
         : lineage.harnessKind === "antigravity"
           ? "Antigravity"
-          : "Test Harness",
+          : lineage.harnessKind === "claude_agent_sdk"
+            ? "Claude Agent SDK"
+            : "Test Harness",
     state: lineage.sessionState,
     capabilities: {
       can_attach_terminal: capability.canAttachTerminal,
@@ -1696,6 +1728,13 @@ function harnessSessionPayload(
                       }
                     : {}),
                 },
+              }
+            : {}),
+          ...(lineage.attention.responseSchema !== undefined
+            ? {
+                response_schema: structuredClone(
+                  lineage.attention.responseSchema,
+                ),
               }
             : {}),
         }

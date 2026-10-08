@@ -143,6 +143,38 @@ defmodule QuestEngineering.ServerWeb.RunController do
         details: %{fields: ["occurrence_id", "attempt_id", "request_id"]}
       })
 
+  def respond_execution_attention(
+        conn,
+        %{
+          "id" => run_id,
+          "attempt_id" => attempt_id,
+          "session_id" => session_id,
+          "attention_id" => attention_id,
+          "request_id" => request_id,
+          "approved" => approved,
+          "value" => value
+        }
+      )
+      when is_binary(attention_id) and attention_id != "" and
+             is_binary(request_id) and request_id != "" and is_boolean(approved) do
+    with :ok <- require_local_tauri(conn),
+         {:ok, response} <-
+           ExecutionSessionStore.respond_to_attention(run_id, attempt_id, session_id, %{
+             attention_id: attention_id,
+             request_id: request_id,
+             approved: approved,
+             value: value
+           }),
+         {:ok, run} <- RunProjection.get(run_id) do
+      json(conn, %{attention_response: response, run: run})
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def respond_execution_attention(conn, _params),
+    do: Api.render_error(conn, :invalid_attention_response)
+
   def cancel_execution_attempt(
         conn,
         %{

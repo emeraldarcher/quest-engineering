@@ -282,6 +282,26 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     }
   end
 
+  def respond_human_attention(worker_id, generation, action, response) do
+    %{
+      "type" => "respond_human_attention",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "action_id" => action.id,
+      "run_id" => action.run_id,
+      "occurrence_id" => action.occurrence_id,
+      "attempt_id" => action.attempt_id,
+      "response" => %{
+        "request_id" => response.request_id,
+        "attention_id" => response.attention_id,
+        "approved" => response.approved,
+        "value" => response.value,
+        "responded_at" => DateTime.to_iso8601(response.responded_at)
+      }
+    }
+  end
+
   def authorize_dispatch_prompt(worker_id, action_id) do
     %{
       "type" => "authorize_dispatch_prompt",
@@ -791,7 +811,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        when is_binary(id) and id != "" and category in @attention_categories and
               is_binary(message) and byte_size(message) > 0 and byte_size(message) <= 240 do
     with {:ok, timestamp} <- timestamp(requested_at, "session.attention.requested_at"),
-         {:ok, interaction} <- decode_interaction(value["interaction"]) do
+         {:ok, interaction} <- decode_interaction(value["interaction"]),
+         {:ok, response_schema} <- decode_response_schema(value["response_schema"]) do
       {:ok,
        %{
          "attention_id" => id,
@@ -799,11 +820,39 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "message" => message,
          "requested_at" => DateTime.to_iso8601(timestamp)
        }
-       |> maybe_put("interaction", interaction)}
+       |> maybe_put("interaction", interaction)
+       |> maybe_put("response_schema", response_schema)}
     end
   end
 
   defp decode_attention(_), do: error(:invalid_field, "session.attention")
+
+  defp decode_response_schema(nil), do: {:ok, nil}
+
+  defp decode_response_schema(value) do
+    if json_value?(value, 0),
+      do: {:ok, value},
+      else: error(:invalid_field, "session.attention.response_schema")
+  end
+
+  defp json_value?(_value, depth) when depth > 16, do: false
+
+  defp json_value?(value, _depth) when is_nil(value) or is_binary(value) or is_boolean(value),
+    do: true
+
+  defp json_value?(value, _depth) when is_number(value), do: true
+
+  defp json_value?(value, depth) when is_list(value),
+    do: length(value) <= 512 and Enum.all?(value, &json_value?(&1, depth + 1))
+
+  defp json_value?(value, depth) when is_map(value),
+    do:
+      map_size(value) <= 128 and
+        Enum.all?(value, fn {key, nested} ->
+          is_binary(key) and key != "" and json_value?(nested, depth + 1)
+        end)
+
+  defp json_value?(_value, _depth), do: false
 
   defp decode_interaction(nil), do: {:ok, nil}
 

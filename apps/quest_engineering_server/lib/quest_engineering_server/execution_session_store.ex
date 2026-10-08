@@ -11,7 +11,9 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunChangeNotifier
+  alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerError
+  alias QuestEngineering.Server.WorkerProtocol
   alias QuestEngineering.ServerWeb.Endpoint
 
   @attachment_salt "local-live-session-attachment-v1"
@@ -202,6 +204,35 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
 
   def record_opened(_token, _mode), do: {:error, :invalid_attachment_descriptor}
 
+  def respond_to_attention(run_id, attempt_id, session_id, response) do
+    with {:ok, %{session: session, worker: worker, action: action, dispatch: dispatch}} <-
+           lookup_usage(run_id, attempt_id, session_id),
+         :ok <- response_available(session, worker, action, dispatch, response),
+         :ok <-
+           WorkerConnections.send_protocol(
+             worker.id,
+             worker.connection_generation,
+             WorkerProtocol.respond_human_attention(
+               worker.id,
+               worker.connection_generation,
+               action,
+               Map.put(
+                 response,
+                 :responded_at,
+                 DateTime.utc_now() |> DateTime.truncate(:microsecond)
+               )
+             )
+           ) do
+      {:ok,
+       %{
+         request_id: response.request_id,
+         attention_id: response.attention_id,
+         session_id: session.id,
+         delivered: true
+       }}
+    end
+  end
+
   def notify_worker_runs(worker_id) do
     Repo.all(
       from session in ExecutionSession,
@@ -250,6 +281,95 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
       _ -> nil
     end
   end
+
+  defp response_available(session, worker, action, dispatch, response) do
+    interaction = get_in(session.attention || %{}, ["interaction", "kind"])
+
+    capability =
+      case interaction do
+        "confirmation" -> "structured_confirmation"
+        "text" -> "structured_text_response"
+        "choice" -> "structured_choice_response"
+        "multiline_response" -> "structured_multiline_response"
+        _ -> nil
+      end
+
+    cond do
+      worker.status != "connected" ->
+        {:error, :worker_offline}
+
+      session.last_connection_generation != worker.connection_generation ->
+        {:error, :stale_attention}
+
+      session.current_action_id != action.id or not is_nil(dispatch.cancellation_requested_at) ->
+        {:error, :stale_attention}
+
+      session.state != "waiting_for_human" or
+          get_in(session.attention || %{}, ["attention_id"]) != response.attention_id ->
+        {:error, :stale_attention}
+
+      is_nil(capability) or get_in(session.capabilities, [capability]) != true ->
+        {:error, :attention_response_unavailable}
+
+      not valid_attention_value?(
+        interaction,
+        response.approved,
+        response.value,
+        session.attention
+      ) ->
+        {:error, :invalid_attention_response}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp valid_attention_value?(_interaction, false, value, _attention),
+    do: is_nil(value)
+
+  defp valid_attention_value?("confirmation", true, value, _attention),
+    do: value in [true, nil]
+
+  defp valid_attention_value?("text", true, value, _attention),
+    do: is_binary(value) and byte_size(value) > 0 and byte_size(value) <= 16_384
+
+  defp valid_attention_value?("multiline_response", true, value, _attention),
+    do: is_binary(value) and byte_size(value) > 0 and byte_size(value) <= 65_536
+
+  defp valid_attention_value?("choice", true, value, attention) do
+    schema = attention["response_schema"]
+
+    with %{"kind" => "choice_form_v1", "questions" => questions} when is_list(questions) <- schema,
+         %{"answers" => answers} when is_map(answers) <- value,
+         true <- map_size(value) == 1 and map_size(answers) == length(questions) do
+      Enum.all?(questions, fn
+        %{
+          "header" => header,
+          "multi_select" => multi_select,
+          "options" => options
+        }
+        when is_binary(header) and is_boolean(multi_select) and is_list(options) ->
+          labels =
+            Enum.flat_map(options, fn
+              %{"label" => label} when is_binary(label) -> [label]
+              _ -> []
+            end)
+
+          answer = answers[header]
+
+          if multi_select,
+            do: is_list(answer) and answer != [] and Enum.all?(answer, &(&1 in labels)),
+            else: is_binary(answer) and answer in labels
+
+        _ ->
+          false
+      end)
+    else
+      _ -> false
+    end
+  end
+
+  defp valid_attention_value?(_interaction, _approved, _value, _attention), do: false
 
   defp available_for_attachment(session, worker) do
     cond do

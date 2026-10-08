@@ -65,6 +65,11 @@ defmodule QuestEngineering.ServerWeb.Router do
          :recover_pre_prompt_process
 
     post "/runs/:id/execution/authorize-prompt", RunController, :authorize_execution_prompt
+
+    post "/runs/:id/attempts/:attempt_id/sessions/:session_id/respond-attention",
+         RunController,
+         :respond_execution_attention
+
     post "/runs/:id/attempts/:attempt_id/cancel", RunController, :cancel_execution_attempt
     post "/runs/:id/execution/mark-failed", RunController, :mark_execution_failed
     post "/runs/:id/delivery/retry", RunController, :retry_delivery

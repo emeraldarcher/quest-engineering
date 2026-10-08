@@ -448,6 +448,47 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
            }
   end
 
+  test "encodes exact generation-fenced structured HumanAttention responses" do
+    responded_at = ~U[2026-09-17 12:00:00.000000Z]
+
+    encoded =
+      WorkerProtocol.respond_human_attention(
+        "worker-1",
+        7,
+        %{
+          id: "action-1",
+          run_id: "run-1",
+          occurrence_id: "occurrence-1",
+          attempt_id: "attempt-1"
+        },
+        %{
+          request_id: "response-1",
+          attention_id: "attention-1",
+          approved: true,
+          value: %{"answers" => %{"Choice" => "A"}},
+          responded_at: responded_at
+        }
+      )
+
+    assert encoded == %{
+             "type" => "respond_human_attention",
+             "protocol_version" => @protocol_version,
+             "worker_id" => "worker-1",
+             "connection_generation" => 7,
+             "action_id" => "action-1",
+             "run_id" => "run-1",
+             "occurrence_id" => "occurrence-1",
+             "attempt_id" => "attempt-1",
+             "response" => %{
+               "request_id" => "response-1",
+               "attention_id" => "attention-1",
+               "approved" => true,
+               "value" => %{"answers" => %{"Choice" => "A"}},
+               "responded_at" => "2026-09-17T12:00:00.000000Z"
+             }
+           }
+  end
+
   test "encodes generic Run cleanup and validates structured resource outcomes" do
     command =
       WorkerProtocol.cleanup_run_resources(@worker_id, %{
