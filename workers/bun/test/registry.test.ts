@@ -2,12 +2,19 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { DispatchRegistry, turnLifecycle } from "../src/dispatch/registry.ts";
 import {
+  DISPATCH_REGISTRY_SCHEMA_VERSION,
+  DispatchRegistry,
+  IncompatibleWorkerDatabaseError,
+  turnLifecycle,
+} from "../src/dispatch/registry.ts";
+import { nativeSessionRef } from "../src/harnesses/native-session.ts";
+import {
+  terminalInteractiveSession,
   terminalLineage,
   terminalTransportBinding,
 } from "../src/harnesses/terminal-execution.ts";
-import { action } from "./support.ts";
+import { action, recordTerminalExecution } from "./support.ts";
 
 const roots: string[] = [];
 async function fixture() {
@@ -24,87 +31,192 @@ afterEach(async () => {
 });
 
 describe("durable dispatch registry", () => {
-  test("upgrades a legacy Pi lineage registry additively", async () => {
+  test("bootstraps only the current harness-lineage schema", async () => {
     const { root, database } = await fixture();
-    const legacy = new Database(database, { create: true });
-    legacy.exec(`
+    const registry = new DispatchRegistry(database, root);
+    registry.close();
+
+    const current = new Database(database);
+    expect(
+      (
+        current.query("PRAGMA user_version").get() as {
+          user_version: number;
+        }
+      ).user_version,
+    ).toBe(DISPATCH_REGISTRY_SCHEMA_VERSION);
+    expect(
+      (
+        current
+          .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+          )
+          .all() as Array<{ name: string }>
+      ).map((row) => row.name),
+    ).toEqual([
+      "dispatches",
+      "harness_lineages",
+      "physical_process_transitions",
+    ]);
+    const lineageColumns = (
+      current.query("PRAGMA table_info(harness_lineages)").all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name);
+    expect(lineageColumns).toContain("execution_handle_json");
+    expect(lineageColumns).toContain("transport_binding_json");
+    expect(lineageColumns).toContain("native_session_json");
+    expect(lineageColumns).toContain("interactive_json");
+    expect(lineageColumns).not.toContain("herdr_session");
+    expect(lineageColumns).not.toContain("workspace_id");
+    expect(lineageColumns).not.toContain("tab_id");
+    expect(lineageColumns).not.toContain("pane_id");
+    expect(lineageColumns).not.toContain("terminal_id");
+    expect(lineageColumns).not.toContain("agent_name");
+    const transitionColumns = (
+      current
+        .query("PRAGMA table_info(physical_process_transitions)")
+        .all() as Array<{ name: string }>
+    ).map((column) => column.name);
+    expect(transitionColumns).toEqual([
+      "target_action_id",
+      "source_action_id",
+      "source_attempt_id",
+      "target_attempt_id",
+      "source_lineage_id",
+      "target_lineage_id",
+      "mode",
+      "recorded_at",
+    ]);
+    current.close();
+  });
+
+  test("rejects an obsolete development registry without converting it", async () => {
+    const { root, database } = await fixture();
+    const obsolete = new Database(database, { create: true });
+    obsolete.exec(`
       CREATE TABLE provider_lineages (
         lineage_id TEXT PRIMARY KEY,
-        logical_lineage_id TEXT NOT NULL UNIQUE,
-        configuration_json TEXT NOT NULL,
-        configuration_hash TEXT NOT NULL,
-        provider TEXT NOT NULL CHECK(provider='pi'),
-        result_control_path TEXT NOT NULL UNIQUE,
-        ownership_token TEXT NOT NULL UNIQUE,
-        active_action_id TEXT,
         herdr_session TEXT,
-        workspace_id TEXT,
-        tab_id TEXT,
-        pane_id TEXT,
-        terminal_id TEXT,
-        agent_name TEXT,
-        native_session_json TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        pane_id TEXT
       );
+      INSERT INTO provider_lineages (lineage_id, herdr_session, pane_id)
+      VALUES ('obsolete-lineage', 'obsolete-herdr', 'obsolete-pane');
     `);
-    legacy
-      .query(`INSERT INTO provider_lineages
-        (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,result_control_path,ownership_token,herdr_session,workspace_id,tab_id,pane_id,terminal_id,agent_name,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(
-        "legacy-lineage",
-        "legacy-logical",
-        "{}",
-        "hash",
-        "pi",
-        join(root, "legacy-control.json"),
-        "legacy-owner",
-        "legacy-herdr",
-        "legacy-workspace",
-        "legacy-tab",
-        "legacy-pane",
-        "legacy-terminal",
-        "legacy-agent",
-        "2026-01-01T00:00:00.000Z",
-        "2026-01-01T00:00:01.000Z",
-      );
-    legacy.close();
+    obsolete.close();
 
-    const registry = new DispatchRegistry(database, root);
-    const lineage = registry.getLineage("legacy-lineage");
-    expect(lineage).toMatchObject({
-      harnessKind: "pi",
-      sessionState: "starting",
-      startedAt: "2026-01-01T00:00:00.000Z",
-      lastActivityAt: "2026-01-01T00:00:01.000Z",
-      capabilities: { canResume: true },
+    expect(() => new DispatchRegistry(database, root)).toThrow(
+      IncompatibleWorkerDatabaseError,
+    );
+    expect(() => new DispatchRegistry(database, root)).toThrow(
+      "Reset this greenfield development database",
+    );
+
+    const unchanged = new Database(database);
+    expect(
+      unchanged
+        .query(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='harness_lineages'",
+        )
+        .get(),
+    ).toBeNull();
+    expect(
+      unchanged.query("SELECT lineage_id FROM provider_lineages").get(),
+    ).toEqual({ lineage_id: "obsolete-lineage" });
+    unchanged.close();
+  });
+
+  test("rejects malformed, wrong-owner, and oversized persisted bindings", async () => {
+    const { root } = await fixture();
+    const cases = [
+      {
+        name: "malformed",
+        serialized: "{",
+        message: "malformed",
+      },
+      {
+        name: "wrong-owner",
+        serialized: JSON.stringify({
+          schemaVersion: 1,
+          harnessKind: "pi",
+          kind: "terminal",
+          payload: {},
+        }),
+        message: "belongs to another harness",
+      },
+      {
+        name: "oversized",
+        serialized: JSON.stringify({
+          schemaVersion: 1,
+          harnessKind: "fake",
+          kind: "headless-process",
+          payload: { opaque: "x".repeat(33 * 1024) },
+        }),
+        message: "exceeds the size limit",
+      },
+    ];
+    for (const item of cases) {
+      const database = join(root, `${item.name}.sqlite`);
+      const registry = new DispatchRegistry(database, root);
+      const dispatch = registry.accept(action()).dispatch;
+      registry.recordExecution(dispatch.lineageId as string, {
+        schemaVersion: 1,
+        harnessKind: "fake",
+        executionId: dispatch.lineageId as string,
+      });
+      registry.close();
+      const corrupt = new Database(database);
+      corrupt
+        .query(
+          "UPDATE harness_lineages SET transport_binding_json=? WHERE lineage_id=?",
+        )
+        .run(item.serialized, dispatch.lineageId);
+      corrupt.close();
+      expect(() => new DispatchRegistry(database, root)).toThrow(item.message);
+    }
+  });
+
+  test("headless binding and native identity persist without terminal state", async () => {
+    const { root, database } = await fixture();
+    let registry = new DispatchRegistry(database, root, "fake");
+    const dispatch = registry.accept(action()).dispatch;
+    const lineageId = dispatch.lineageId as string;
+    const nativeSession = nativeSessionRef("fake", "id", "fake-session-1");
+    const transportBinding = {
+      schemaVersion: 1 as const,
+      harnessKind: "fake",
+      kind: "streamed-process",
+      payload: {
+        environmentId: "environment-1",
+        processId: "process-1",
+        generation: 3,
+      },
+    };
+    registry.recordExecution(
+      lineageId,
+      {
+        schemaVersion: 1,
+        harnessKind: "fake",
+        executionId: lineageId,
+        nativeSession,
+        transportBinding,
+      },
+      null,
+    );
+    registry.close();
+
+    registry = new DispatchRegistry(database, root, "fake");
+    expect(registry.getLineage(lineageId)).toMatchObject({
+      lineageId,
       executionHandle: {
         schemaVersion: 1,
-        harnessKind: "pi",
-        executionId: "legacy-lineage",
-        transportBinding: { kind: "terminal" },
+        harnessKind: "fake",
+        executionId: lineageId,
       },
-      transportBinding: { kind: "terminal" },
-      interactive: { kind: "terminal" },
-    });
-    expect(terminalLineage(lineage, "pi").ref).toEqual({
-      sessionName: "legacy-herdr",
-      workspaceId: "legacy-workspace",
-      tabId: "legacy-tab",
-      paneId: "legacy-pane",
-      terminalId: "legacy-terminal",
-      agentName: "legacy-agent",
+      nativeSession,
+      transportBinding,
+      interactive: null,
     });
     registry.close();
-    const migrated = new Database(database);
-    const schema = migrated
-      .query(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='provider_lineages'",
-      )
-      .get() as { sql: string };
-    expect(schema.sql).not.toContain("CHECK(provider='pi')");
-    migrated.close();
   });
 
   test("durably accepts one Action ID and deduplicates identical delivery", async () => {
@@ -320,46 +432,110 @@ describe("durable dispatch registry", () => {
     registry.close();
   });
 
-  test("harness session identity and attention survive Worker restart", async () => {
-    const { root, database } = await fixture();
-    const registry = new DispatchRegistry(database, root);
-    const dispatch = registry.accept(action()).dispatch;
-    const lineageId = dispatch.lineageId as string;
-    const attention = {
-      attentionId: "attention-1",
-      category: "needs_input" as const,
-      message: "Choose an option.",
-      requestedAt: "2026-09-06T00:00:00.000Z",
-    };
-    registry.recordHost(lineageId, {
-      herdrSession: "qe-worker-test",
-      herdrSessionIncarnation: "session-incarnation-1",
-      workspaceId: "workspace-1",
-      paneId: "pane-1",
-      agentName: "agent-1",
-    });
-    registry.updateSession(
-      lineageId,
-      "waiting_for_human",
-      attention,
-      "2026-09-06T00:00:01.000Z",
-    );
-    registry.close();
+  test("Pi and Antigravity terminal bindings remain validated and fenced after restart", async () => {
+    const { root } = await fixture();
+    for (const harnessKind of ["pi", "antigravity"] as const) {
+      const database = join(root, `${harnessKind}.sqlite`);
+      const registry = new DispatchRegistry(database, root, harnessKind);
+      const execute = action();
+      execute.execution.configuration.harness_kind = harnessKind;
+      execute.execution.configuration.model = {
+        provider: harnessKind,
+        model: `${harnessKind}-test`,
+      };
+      const dispatch = registry.accept(execute).dispatch;
+      const lineageId = dispatch.lineageId as string;
+      const nativeSession = nativeSessionRef(
+        harnessKind,
+        "id",
+        `${harnessKind}-native-session`,
+      );
+      recordTerminalExecution(registry, lineageId, {
+        herdrSession: `qe-${harnessKind}-worker-test`,
+        herdrSessionIncarnation: `${harnessKind}-session-incarnation-1`,
+        workspaceId: `${harnessKind}-workspace-1`,
+        tabId: `${harnessKind}-tab-1`,
+        paneId: `${harnessKind}-pane-1`,
+        terminalId: `${harnessKind}-terminal-1`,
+        agentName: `${harnessKind}-agent-1`,
+        nativeSession,
+      });
+      registry.close();
 
-    const restarted = new DispatchRegistry(database, root);
-    const restartedLineage = restarted.getLineage(lineageId);
-    expect(restartedLineage).toMatchObject({
-      lineageId,
-      sessionState: "waiting_for_human",
-      attention,
-      harnessKind: "fake",
-    });
-    expect(terminalLineage(restartedLineage, "fake").ref).toMatchObject({
-      sessionName: "qe-worker-test",
-      sessionIncarnation: "session-incarnation-1",
-    });
-    expect(restarted.get(dispatch.action.action_id).lineageId).toBe(lineageId);
-    restarted.close();
+      const durable = new Database(database);
+      const persistedJson = durable
+        .query(
+          "SELECT execution_handle_json,transport_binding_json,native_session_json FROM harness_lineages WHERE lineage_id=?",
+        )
+        .get(lineageId) as {
+        execution_handle_json: string;
+        transport_binding_json: string;
+        native_session_json: string;
+      };
+      expect(JSON.parse(persistedJson.execution_handle_json)).toEqual({
+        schemaVersion: 1,
+        harnessKind,
+        executionId: lineageId,
+      });
+      expect(JSON.parse(persistedJson.transport_binding_json)).toMatchObject({
+        schemaVersion: 1,
+        harnessKind,
+        kind: "terminal",
+      });
+      expect(JSON.parse(persistedJson.native_session_json)).toEqual(
+        nativeSession,
+      );
+      durable.close();
+
+      const restarted = new DispatchRegistry(database, root, harnessKind);
+      const restartedLineage = restarted.getLineage(lineageId);
+      expect(restartedLineage).toMatchObject({
+        lineageId,
+        harnessKind,
+        nativeSession,
+        executionHandle: {
+          schemaVersion: 1,
+          harnessKind,
+          executionId: lineageId,
+        },
+        transportBinding: {
+          schemaVersion: 1,
+          harnessKind,
+          kind: "terminal",
+        },
+        interactive: {
+          kind: "terminal",
+          processIdentity: "verified",
+        },
+      });
+      expect(terminalLineage(restartedLineage, harnessKind).ref).toMatchObject({
+        sessionName: `qe-${harnessKind}-worker-test`,
+        sessionIncarnation: `${harnessKind}-session-incarnation-1`,
+        workspaceId: `${harnessKind}-workspace-1`,
+        tabId: `${harnessKind}-tab-1`,
+        paneId: `${harnessKind}-pane-1`,
+        terminalId: `${harnessKind}-terminal-1`,
+        agentName: `${harnessKind}-agent-1`,
+        nativeSession,
+      });
+      expect(() =>
+        terminalLineage(restartedLineage, "another-harness"),
+      ).toThrow("belongs to another harness");
+      const inconsistentBinding = structuredClone(
+        restartedLineage.transportBinding,
+      );
+      if (!inconsistentBinding)
+        throw new Error("Expected persisted terminal binding.");
+      (inconsistentBinding.payload.agent as Record<string, unknown>).paneId =
+        "replacement-pane";
+      expect(() =>
+        terminalLineage(
+          { ...restartedLineage, transportBinding: inconsistentBinding },
+          harnessKind,
+        ),
+      ).toThrow("topology is internally inconsistent");
+      restarted.close();
+    }
   });
 
   test("exact orphan adoption backfills physical identity without rewriting failed history", async () => {
@@ -398,6 +574,7 @@ describe("durable dispatch registry", () => {
             terminalId: "terminal-1",
           },
         ),
+        interactive: terminalInteractiveSession(lineage.capabilities),
       },
       state: "running",
       resultNonce: dispatch.resultNonce,

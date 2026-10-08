@@ -1,4 +1,5 @@
 export const NATIVE_SESSION_SCHEMA_VERSION = 1 as const;
+export const MAX_NATIVE_SESSION_REF_BYTES = 12 * 1024;
 const MAX_NATIVE_SESSION_ID_BYTES = 8 * 1024;
 
 /**
@@ -53,6 +54,32 @@ export function validateNativeSessionRef(
   )
     throw new Error("Native session identity payload is invalid.");
   return value as unknown as NativeSessionRef;
+}
+
+export function serializeNativeSessionRef(
+  value: NativeSessionRef | null,
+  expectedHarnessKind: string,
+): string | null {
+  if (!value) return null;
+  return JSON.stringify(validateNativeSessionRef(value, expectedHarnessKind));
+}
+
+export function parseNativeSessionRef(
+  serialized: string | null,
+  expectedHarnessKind: string,
+): NativeSessionRef | null {
+  if (!serialized) return null;
+  if (Buffer.byteLength(serialized, "utf8") > MAX_NATIVE_SESSION_REF_BYTES)
+    throw new Error(
+      "Persisted native session identity exceeds the size limit.",
+    );
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized);
+  } catch {
+    throw new Error("Persisted native session identity is malformed.");
+  }
+  return validateNativeSessionRef(value, expectedHarnessKind);
 }
 
 export function nativeSessionIdentity(

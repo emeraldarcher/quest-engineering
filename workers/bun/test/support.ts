@@ -1,3 +1,9 @@
+import type { DispatchRegistry } from "../src/dispatch/registry.ts";
+import type { NativeSessionRef } from "../src/harnesses/native-session.ts";
+import {
+  terminalExecutionHandle,
+  terminalInteractiveSession,
+} from "../src/harnesses/terminal-execution.ts";
 import {
   type ExecuteAction,
   WORKER_PROTOCOL_VERSION,
@@ -122,4 +128,55 @@ export function action(overrides: Partial<ExecuteAction> = {}): ExecuteAction {
       overrides.execution.context.source_occurrence_id;
   }
   return merged;
+}
+
+/** Builds the current adapter-owned terminal binding without legacy columns. */
+export function recordTerminalExecution(
+  registry: DispatchRegistry,
+  lineageId: string,
+  input: {
+    herdrSession: string;
+    herdrSessionIncarnation?: string;
+    workspaceId: string;
+    tabId?: string;
+    paneId: string;
+    terminalId?: string;
+    agentName: string;
+    nativeSession?: NativeSessionRef;
+  },
+): void {
+  const lineage = registry.getLineage(lineageId);
+  const ref = {
+    sessionName: input.herdrSession,
+    ...(input.herdrSessionIncarnation
+      ? { sessionIncarnation: input.herdrSessionIncarnation }
+      : {}),
+    workspaceId: input.workspaceId,
+    ...(input.tabId ? { tabId: input.tabId } : {}),
+    paneId: input.paneId,
+    ...(input.terminalId ? { terminalId: input.terminalId } : {}),
+    agentName: input.agentName,
+    ...(input.nativeSession ? { nativeSession: input.nativeSession } : {}),
+  };
+  const agent = {
+    name: input.agentName,
+    agent: lineage.harnessKind === "antigravity" ? "agy" : lineage.harnessKind,
+    status: "unknown" as const,
+    paneId: input.paneId,
+    ...(input.terminalId ? { terminalId: input.terminalId } : {}),
+    workspaceId: input.workspaceId,
+    ...(input.tabId ? { tabId: input.tabId } : {}),
+    ...(input.nativeSession ? { nativeSession: input.nativeSession } : {}),
+  };
+  registry.recordExecution(
+    lineageId,
+    terminalExecutionHandle(
+      lineage.harnessKind,
+      lineageId,
+      "herdr",
+      ref,
+      agent,
+    ),
+    terminalInteractiveSession(lineage.capabilities),
+  );
 }

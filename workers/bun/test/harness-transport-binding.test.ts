@@ -11,6 +11,8 @@ import {
 import {
   OperationalExecutionError,
   operationalHarnessError,
+  parseHarnessExecutionHandle,
+  serializeHarnessExecutionHandle,
   validateHarnessExecutionHandle,
 } from "../src/harnesses/types.ts";
 
@@ -48,6 +50,44 @@ test("provider-neutral execution handles validate identity without requiring tra
   ).toThrow("ownership is invalid");
   expect(() =>
     validateHarnessExecutionHandle({ ...handle, paneId: "not-generic" }),
+  ).toThrow("unexpected fields");
+});
+
+test("persisted execution handles contain only generic identity", () => {
+  const handle = {
+    schemaVersion: 1 as const,
+    harnessKind: "example-headless",
+    executionId: "remote-execution-1",
+    transportBinding: binding,
+    nativeSession: nativeSessionRef("example-headless", "id", "native-job-1"),
+  };
+  const serialized = serializeHarnessExecutionHandle(
+    handle,
+    "example-headless",
+    "remote-execution-1",
+  );
+  expect(JSON.parse(serialized)).toEqual({
+    schemaVersion: 1,
+    harnessKind: "example-headless",
+    executionId: "remote-execution-1",
+  });
+  expect(
+    parseHarnessExecutionHandle(
+      serialized,
+      "example-headless",
+      "remote-execution-1",
+    ),
+  ).toEqual({
+    schemaVersion: 1,
+    harnessKind: "example-headless",
+    executionId: "remote-execution-1",
+  });
+  expect(() =>
+    parseHarnessExecutionHandle(
+      JSON.stringify(handle),
+      "example-headless",
+      "remote-execution-1",
+    ),
   ).toThrow("unexpected fields");
 });
 
