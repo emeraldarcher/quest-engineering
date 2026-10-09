@@ -1,6 +1,6 @@
 # Quest Engineering Server — Reusable Tactic Composition v0.9
 
-The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding path-free launch snapshots to the pure Core Runtime and Worker Protocol v12.
+The server resolves mutable reusable Product Tactic Definitions into immutable plain semantic Tactics before binding path-free launch snapshots to the pure Core Runtime and Worker Protocol v13.
 
 ```text
 Quest + Squad + Classes + Loadouts
@@ -9,7 +9,7 @@ quest_launches + runtime_runs + ordered runtime_outbox
               ↓ atomic scheduling
 Member binding + logical context binding + Worker slot
               ↓
-ResolvedExecution → Worker Protocol v12
+ResolvedExecution → Worker Protocol v13
 ```
 
 A Worker remains infrastructure. It is not a Squad Member, Class, Loadout, semantic performer, or logical context.
@@ -62,9 +62,11 @@ Pi and Antigravity advertise:
 
 Unknown/custom capabilities are valid Product data but cause `waiting_for_worker` until an executor advertises them.
 
-## Worker Protocol v12
+## Worker Protocol v13
 
-Only protocol version 12 is accepted. `execute_action` carries a provider-neutral immutable `ResolvedExecution` with separate identity, performer, work, configuration, and logical context sections. It carries no unresolved performer/context requirement and no Pi/Herdr lineage ID. Version 12 retains generation-fenced `worker_ready`: registration establishes connectivity, while Product execution-option availability and scheduler claims wait until the Worker has reconciled durable local state and Phoenix records readiness for the current connection generation. Registration and disconnect clear readiness, and stale generations cannot restore it. Durable Product cancellation remains generation-fenced: Phoenix accepts one exact local-operator intent, sends `cancel_dispatch`, and terminalizes only after the Worker returns the matching `execution_cancelled` fact. Pending commands reconcile after disconnect without authorizing prompt work or creating recovery Attempts. Version 12 retains generation-fenced `cleanup_run_resources` / `run_cleanup_state`: harness retirement, exact execution-environment stop/removal, and host Run-repository removal project independently, while Runtime, Delivery, Change Set, Quest, and session history remain unchanged.
+Only protocol version 13 is accepted. `execute_action` carries a provider-neutral immutable `ResolvedExecution` with separate identity, performer, work, configuration, and logical context sections. It carries no unresolved performer/context requirement and no Pi/Herdr lineage ID. Version 13 retains generation-fenced `worker_ready`: registration establishes connectivity, while Product execution-option availability and scheduler claims wait until the Worker has reconciled durable local state and Phoenix records readiness for the current connection generation. Registration and disconnect clear readiness, and stale generations cannot restore it. Durable Product cancellation remains generation-fenced: Phoenix accepts one exact local-operator intent, sends `cancel_dispatch`, and terminalizes only after the Worker returns the matching `execution_cancelled` fact. Pending commands reconcile after disconnect without authorizing prompt work or creating recovery Attempts. Version 13 retains generation-fenced `cleanup_run_resources` / `run_cleanup_state`: harness retirement, exact execution-environment stop/removal, and host Run-repository removal project independently, while Runtime, Delivery, Change Set, Quest, and session history remain unchanged.
+
+Version 13 also adds provider-neutral Run-bound harness setup. `harness_setups` advertises setup ability separately from execution-ready `executors`. Local-only Product authorization creates durable `harness_setup_contexts` and `harness_setup_authorizations` before the Worker receives `prepare_harness_setup`; no Runtime Attempt exists yet. Worker state reports are fenced by setup ID/generation plus Worker generation. Only exact ready environment/profile/config evidence forms the contextual scheduler overlay and `execute_action` setup binding. A compatible continuation may reuse its source lineage, while unrelated Actions and Runs remain unschedulable. Official provider interaction output is held only in a bounded expiring in-memory relay; PostgreSQL stores attention identity and safe lifecycle metadata, never interaction bytes or provider credentials.
 
 Each advertised model carries `account_availability`: `verified_available`, `verified_unavailable`, or `unknown`. Unknown is schedulable; verified unavailable remains visible in execution diagnostics but cannot match a Loadout. This state is independent of runtime model support and optional QE scope.
 
@@ -90,4 +92,4 @@ PostgreSQL reconstructs launch, binding, occupancy, and Worker-slot state after 
 
 ## Live execution sessions
 
-Worker Protocol v12 reconciles Product-safe harness session and HumanAttention state under the existing connection-generation fence. PostgreSQL links each dispatch usage to a durable session while continuation may reuse that session across Attempts. Local attachment is disabled unless `QE_LOCAL_SESSION_ATTACH_ENABLED=true`; even then the endpoint requires loopback Tauri requests and returns only a 60-second exact-session descriptor. See [`../../docs/live-execution-sessions.md`](../../docs/live-execution-sessions.md).
+Worker Protocol v13 reconciles Product-safe harness session and HumanAttention state under the existing connection-generation fence. PostgreSQL links each dispatch usage to a durable session while continuation may reuse that session across Attempts. Local attachment is disabled unless `QE_LOCAL_SESSION_ATTACH_ENABLED=true`; even then the endpoint requires loopback Tauri requests and returns only a 60-second exact-session descriptor. See [`../../docs/live-execution-sessions.md`](../../docs/live-execution-sessions.md).
