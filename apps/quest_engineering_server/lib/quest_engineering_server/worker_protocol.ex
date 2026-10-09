@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 12
+  @version 13
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -43,6 +43,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @harness_cleanup_states ~w(retained retiring retired unavailable)
   @environment_cleanup_states ~w(cleanup_requested stopping stopped removed uncertain failed)
   @host_cleanup_states ~w(retained cleanup_requested removed failed)
+  @setup_states ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required cancellation_requested ready failed uncertain cancelled invalidated)
+  @setup_invocation_states ~w(not_requested requested acknowledged settled uncertain)
 
   defmodule Message do
     @moduledoc false
@@ -65,7 +67,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             session: map() | nil,
             sessions: [map()] | nil,
             recovery: map() | nil,
-            cleanup: map() | nil
+            cleanup: map() | nil,
+            setup: map() | nil,
+            ephemeral: String.t() | nil
           }
 
     defstruct [
@@ -85,7 +89,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :session,
       :sessions,
       :recovery,
-      :cleanup
+      :cleanup,
+      :setup,
+      :ephemeral
     ]
   end
 
@@ -98,7 +104,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 12
+  @spec version() :: 13
   def version, do: @version
 
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
@@ -282,6 +288,64 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     }
   end
 
+  def prepare_harness_setup(worker, context, authorization) do
+    configuration = context.resolved_configuration
+
+    %{
+      "type" => "prepare_harness_setup",
+      "protocol_version" => @version,
+      "worker_id" => worker.id,
+      "connection_generation" => worker.connection_generation,
+      "setup" => %{
+        "setup_id" => context.id,
+        "setup_generation" => context.setup_generation,
+        "authorization_id" => authorization.id,
+        "authorization_kind" => authorization.kind,
+        "authorized_at" => DateTime.to_iso8601(authorization.authorized_at),
+        "action_id" => context.action_id,
+        "run_id" => context.run_id,
+        "occurrence_id" => context.occurrence_id,
+        "member_key" => context.member_key,
+        "harness_kind" => context.harness_kind,
+        "physical_lineage_id" => context.physical_lineage_id,
+        "logical_lineage_id" => context.logical_lineage_id,
+        "workspace_id" => context.workspace_id,
+        "worktree_id" => context.worktree_id,
+        "workspace_binding_id" => context.workspace_binding_id,
+        "canonical_root" => context.canonical_root,
+        "workspace_access" => context.workspace_access,
+        "profile" => %{"id" => context.profile_id, "digest" => context.profile_digest},
+        "configuration" => configuration
+      }
+    }
+  end
+
+  def cancel_harness_setup(worker_id, generation, context, request_id) do
+    %{
+      "type" => "cancel_harness_setup",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "setup_id" => context.id,
+      "setup_generation" => context.setup_generation,
+      "request_id" => request_id
+    }
+  end
+
+  def respond_harness_setup(worker_id, generation, context, attention_id, request_id, value) do
+    %{
+      "type" => "respond_harness_setup",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "setup_id" => context.id,
+      "setup_generation" => context.setup_generation,
+      "attention_id" => attention_id,
+      "request_id" => request_id,
+      "value" => value
+    }
+  end
+
   def respond_human_attention(worker_id, generation, action, response) do
     %{
       "type" => "respond_human_attention",
@@ -311,7 +375,12 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     }
   end
 
-  def execute_action(worker_id, %ResolvedExecution{} = execution, operational_recovery \\ nil) do
+  def execute_action(
+        worker_id,
+        %ResolvedExecution{} = execution,
+        operational_recovery \\ nil,
+        harness_setup \\ nil
+      ) do
     %{
       "type" => "execute_action",
       "protocol_version" => @version,
@@ -319,6 +388,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "execution" => execution(execution)
     }
     |> maybe_put("operational_recovery", encode_operational_recovery(operational_recovery))
+    |> maybe_put("harness_setup", harness_setup)
   end
 
   def protocol_error(%Error{} = protocol_error) do
@@ -358,6 +428,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp decode_message("workspace_binding_ready", worker_id, %{"binding" => binding}) do
     with {:ok, decoded} <- decode_workspace_binding(binding) do
       {:ok, %Message{type: :workspace_binding_ready, worker_id: worker_id, binding: decoded}}
+    end
+  end
+
+  defp decode_message("harness_setup_state", worker_id, payload) do
+    with {:ok, setup} <- decode_harness_setup_state(payload) do
+      {:ok,
+       %Message{
+         type: :harness_setup_state,
+         worker_id: worker_id,
+         setup: setup,
+         ephemeral: Map.get(payload, "ephemeral_output")
+       }}
     end
   end
 
@@ -1313,6 +1395,114 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp match_worker(received, expected),
     do: error(:worker_id_mismatch, "worker_id", %{received: received, expected: expected})
 
+  defp decode_harness_setup_state(payload) do
+    with {:ok, setup_id} <- required_string(payload, "setup_id"),
+         {:ok, action_id} <- required_string(payload, "action_id"),
+         {:ok, run_id} <- required_string(payload, "run_id"),
+         {:ok, occurrence_id} <- required_string(payload, "occurrence_id"),
+         {:ok, physical_lineage_id} <- required_string(payload, "physical_lineage_id"),
+         generation when is_integer(generation) and generation > 0 <- payload["setup_generation"],
+         state when state in @setup_states <- payload["state"],
+         invocation when invocation in @setup_invocation_states <- payload["invocation_state"],
+         :ok <- validate_optional_setup_inspection(payload["inspection"]),
+         :ok <- validate_optional_setup_attention(payload["attention"]),
+         :ok <- validate_optional_setup_failure(payload["failure"]),
+         :ok <- validate_ephemeral_setup_output(payload["ephemeral_output"]) do
+      {:ok,
+       %{
+         setup_id: setup_id,
+         setup_generation: generation,
+         action_id: action_id,
+         run_id: run_id,
+         occurrence_id: occurrence_id,
+         physical_lineage_id: physical_lineage_id,
+         state: setup_atom(state),
+         invocation_state: setup_atom(invocation),
+         inspection: payload["inspection"],
+         attention: payload["attention"],
+         failure: payload["failure"]
+       }}
+    else
+      _ -> error(:invalid_field, "harness_setup_state")
+    end
+  end
+
+  defp setup_atom("authorized"), do: :authorized
+  defp setup_atom("preparing"), do: :preparing
+  defp setup_atom("invocation_requested"), do: :invocation_requested
+  defp setup_atom("invocation_acknowledged"), do: :invocation_acknowledged
+  defp setup_atom("human_interaction_required"), do: :human_interaction_required
+  defp setup_atom("cancellation_requested"), do: :cancellation_requested
+  defp setup_atom("ready"), do: :ready
+  defp setup_atom("failed"), do: :failed
+  defp setup_atom("uncertain"), do: :uncertain
+  defp setup_atom("cancelled"), do: :cancelled
+  defp setup_atom("invalidated"), do: :invalidated
+  defp setup_atom("not_requested"), do: :not_requested
+  defp setup_atom("requested"), do: :requested
+  defp setup_atom("acknowledged"), do: :acknowledged
+  defp setup_atom("settled"), do: :settled
+
+  defp validate_optional_setup_inspection(nil), do: :ok
+
+  defp validate_optional_setup_inspection(%{
+         "state" => state,
+         "authenticated" => authenticated,
+         "detail" => detail,
+         "environment" => environment,
+         "config_identity" => config_identity
+       })
+       when state in ~w(preparing human_interaction_required ready failed uncertain cancelled) and
+              is_boolean(authenticated) and is_binary(detail) and byte_size(detail) <= 2_048 and
+              (is_nil(config_identity) or
+                 (is_binary(config_identity) and byte_size(config_identity) <= 256)) do
+    if is_nil(environment) or valid_setup_environment?(environment), do: :ok, else: :error
+  end
+
+  defp validate_optional_setup_inspection(_), do: :error
+
+  defp valid_setup_environment?(%{
+         "environment_id" => environment_id,
+         "incarnation" => incarnation,
+         "profile" => %{"id" => profile_id, "digest" => profile_digest}
+       }),
+       do: Enum.all?([environment_id, incarnation, profile_id, profile_digest], &non_blank?/1)
+
+  defp valid_setup_environment?(_), do: false
+
+  defp validate_optional_setup_attention(nil), do: :ok
+
+  defp validate_optional_setup_attention(%{
+         "attention_id" => attention_id,
+         "kind" => "provider_authentication",
+         "message" => message
+       })
+       when is_binary(attention_id) and attention_id != "" and is_binary(message) and
+              byte_size(message) <= 2_048,
+       do: :ok
+
+  defp validate_optional_setup_attention(_), do: :error
+
+  defp validate_optional_setup_failure(nil), do: :ok
+
+  defp validate_optional_setup_failure(%{"code" => code, "message" => message})
+       when is_binary(code) and code != "" and is_binary(message) and byte_size(message) <= 4_096,
+       do: :ok
+
+  defp validate_optional_setup_failure(_), do: :error
+
+  defp validate_ephemeral_setup_output(nil), do: :ok
+
+  defp validate_ephemeral_setup_output(value)
+       when is_binary(value) and byte_size(value) <= 16_384, do: :ok
+
+  defp validate_ephemeral_setup_output(_), do: :error
+
+  defp validate_capabilities(capabilities)
+       when is_map(capabilities) and not is_map_key(capabilities, "harness_setups") do
+    validate_capabilities(Map.put(capabilities, "harness_setups", []))
+  end
+
   defp validate_capabilities(
          %{
            "os" => os,
@@ -1320,18 +1510,21 @@ defmodule QuestEngineering.Server.WorkerProtocol do
            "max_concurrency" => max_concurrency,
            "tags" => tags,
            "executors" => executors,
+           "harness_setups" => harness_setups,
            "workspace_bindings" => workspace_bindings
          } = capabilities
        )
        when is_binary(os) and os != "" and is_binary(arch) and arch != "" and
               is_integer(max_concurrency) and max_concurrency > 0 and max_concurrency <= 1024 and
-              is_list(executors) and executors != [] do
+              is_list(executors) and is_list(harness_setups) and
+              (executors != [] or harness_setups != []) do
     with :ok <- string_list(tags, "capabilities.tags"),
          {:ok, dispatch_availability} <-
            validate_dispatch_availability(
              Map.get(capabilities, "dispatch_availability", "active")
            ),
          {:ok, executors} <- validate_executors(executors),
+         {:ok, harness_setups} <- validate_harness_setups(harness_setups),
          :ok <- validate_workspace_bindings(workspace_bindings),
          features = Map.get(capabilities, "features", []),
          :ok <- string_list(features, "capabilities.features") do
@@ -1343,6 +1536,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          "dispatch_availability" => dispatch_availability,
          "tags" => Enum.uniq(tags),
          "executors" => executors,
+         "harness_setups" => harness_setups,
          "workspace_bindings" => Enum.uniq(workspace_bindings),
          "features" => Enum.uniq(features)
        }}
@@ -1363,6 +1557,34 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       case validate_executor(executor) do
         {:ok, value} -> {:cont, {:ok, validated ++ [value]}}
         {:error, _error} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_harness_setups(setups) do
+    Enum.reduce_while(setups, {:ok, []}, fn setup, {:ok, validated} ->
+      case setup do
+        %{
+          "setup_kind" => "provider_authentication",
+          "setup_available" => true,
+          "authentication" => "context_required"
+        } ->
+          case validate_executor(setup) do
+            {:ok, executor} ->
+              value =
+                executor
+                |> Map.put("setup_kind", "provider_authentication")
+                |> Map.put("setup_available", true)
+                |> Map.put("authentication", "context_required")
+
+              {:cont, {:ok, validated ++ [value]}}
+
+            error ->
+              {:halt, error}
+          end
+
+        _ ->
+          {:halt, error(:invalid_capabilities, "capabilities.harness_setups")}
       end
     end)
   end

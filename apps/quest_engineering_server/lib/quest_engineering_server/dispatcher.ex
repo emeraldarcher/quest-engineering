@@ -28,7 +28,8 @@ defmodule QuestEngineering.Server.Dispatcher do
                dispatch.worker_id,
                generation,
                dispatch.execution,
-               dispatch.operational_recovery
+               dispatch.operational_recovery,
+               dispatch.harness_setup
              ) do
         DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation)
       end
@@ -61,9 +62,11 @@ defmodule QuestEngineering.Server.Dispatcher do
           %{
             scheduled: scheduled,
             execution: execution,
-            operational_recovery: operational_recovery
+            operational_recovery: operational_recovery,
+            harness_setup: harness_setup
           }} <- SchedulingStore.fetch_execution(dispatch.action_id),
-         :ok <- send_execute(worker_id, generation, execution, operational_recovery),
+         :ok <-
+           send_execute(worker_id, generation, execution, operational_recovery, harness_setup),
          {:ok, updated} <-
            DispatchStore.mark_dispatched(dispatch.action_id, dispatch.claim_token, generation) do
       RunChangeNotifier.notify(scheduled.run_id)
@@ -78,8 +81,16 @@ defmodule QuestEngineering.Server.Dispatcher do
     end
   end
 
-  defp send_execute(worker_id, generation, execution, operational_recovery) do
-    message = WorkerProtocol.execute_action(worker_id, execution, operational_recovery)
+  defp send_execute(
+         worker_id,
+         generation,
+         execution,
+         operational_recovery,
+         harness_setup
+       ) do
+    message =
+      WorkerProtocol.execute_action(worker_id, execution, operational_recovery, harness_setup)
+
     WorkerConnections.send_protocol(worker_id, generation, message)
   end
 end

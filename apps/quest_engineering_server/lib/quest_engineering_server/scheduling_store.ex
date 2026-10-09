@@ -11,6 +11,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
   alias QuestEngineering.Core.Tactics.PerformerRequirement
   alias QuestEngineering.Server.CapabilityMatcher
   alias QuestEngineering.Server.ExecutionShellAuthority
+  alias QuestEngineering.Server.HarnessSetupStore
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
@@ -81,12 +82,19 @@ defmodule QuestEngineering.Server.SchedulingStore do
              scheduled.resolved_execution,
              scheduled.resolved_execution_version
            ) do
-      {:ok,
-       %{
-         scheduled: scheduled,
-         execution: execution,
-         operational_recovery: OperationalRecovery.execution_metadata(action_id)
-       }}
+      harness_setup = setup_binding(action_id, execution)
+
+      if execution.configuration.harness_kind == "claude_agent_sdk" and is_nil(harness_setup) do
+        {:error, invariant(:harness_setup_not_ready, %{action_id: action_id})}
+      else
+        {:ok,
+         %{
+           scheduled: scheduled,
+           execution: execution,
+           operational_recovery: OperationalRecovery.execution_metadata(action_id),
+           harness_setup: harness_setup
+         }}
+      end
     else
       nil -> {:error, invariant(:scheduled_execution_not_found, %{action_id: action_id})}
       {:error, error} -> {:error, invariant(:invalid_resolved_execution, %{error: error})}
@@ -134,7 +142,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
       workspace_access: member.loadout.workspace_access
     }
 
-    with {:ok, worker, slot, resolution} <-
+    with {:ok, worker, slot, resolution, harness_setup} <-
            select_worker(requested, assignment, action, context) do
       execution =
         Builder.build(
@@ -158,7 +166,8 @@ defmodule QuestEngineering.Server.SchedulingStore do
          context: context,
          execution: execution,
          worker: worker,
-         slot: slot
+         slot: slot,
+         harness_setup: harness_setup
        }}
     end
   end
@@ -330,11 +339,11 @@ defmodule QuestEngineering.Server.SchedulingStore do
     required_worker_id = assignment.worker_id
 
     ensure_continuation_worker!(continuation_worker_id, required_worker_id, action)
-    workers = compatible_workers(requested, assignment)
+    workers = compatible_workers(requested, assignment, action, context)
 
     case Enum.find_value(workers, &available_worker/1) do
-      {worker, slot, resolution} ->
-        {:ok, worker, slot, resolution}
+      {worker, slot, resolution, harness_setup} ->
+        {:ok, worker, slot, resolution, harness_setup}
 
       nil when workers == [] ->
         {:waiting,
@@ -343,7 +352,8 @@ defmodule QuestEngineering.Server.SchedulingStore do
       nil ->
         {:waiting,
          waiting(:waiting_for_capacity, action, %{
-           compatible_worker_ids: Enum.map(workers, fn {worker, _resolution} -> worker.id end)
+           compatible_worker_ids:
+             Enum.map(workers, fn {worker, _resolution, _setup} -> worker.id end)
          })}
     end
   end
@@ -354,7 +364,7 @@ defmodule QuestEngineering.Server.SchedulingStore do
   defp ensure_continuation_worker!(_continuation_worker_id, _required_worker_id, action),
     do: Repo.rollback(invariant(:continuation_run_worker_mismatch, %{run_id: action.run_id}))
 
-  defp compatible_workers(requested, assignment) do
+  defp compatible_workers(requested, assignment, action, context) do
     binding = Repo.get(WorkerWorkspaceBinding, assignment.workspace_binding_id)
 
     Repo.all(
@@ -366,17 +376,39 @@ defmodule QuestEngineering.Server.SchedulingStore do
         lock: "FOR UPDATE"
     )
     |> Enum.flat_map(fn worker ->
-      case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
-        {:ok, resolution}
+      resolution =
+        if requested.harness_kind == "claude_agent_sdk" do
+          contextual_setup_resolution(action, requested, assignment, worker, context)
+        else
+          case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
+            {:ok, value} ->
+              {:ok, value, nil}
+
+            :error ->
+              contextual_setup_resolution(action, requested, assignment, worker, context)
+          end
+        end
+
+      case resolution do
+        {:ok, value, harness_setup}
         when worker.id == assignment.worker_id and not is_nil(binding) and
                binding.worker_id == worker.id and binding.status == "available" and
                binding.last_seen_generation == worker.connection_generation ->
-          if shell_authorized?(resolution, binding), do: [{worker, resolution}], else: []
+          if shell_authorized?(value, binding),
+            do: [{worker, value, harness_setup}],
+            else: []
 
         _other ->
           []
       end
     end)
+  end
+
+  defp contextual_setup_resolution(action, requested, assignment, worker, context) do
+    case HarnessSetupStore.ready_resolution(action, requested, assignment, worker, context) do
+      {:ok, value, setup} -> {:ok, value, setup}
+      :error -> :error
+    end
   end
 
   defp shell_authorized?(%{resolved_tool_profile: %{tools: tools}} = resolution, binding) do
@@ -389,9 +421,9 @@ defmodule QuestEngineering.Server.SchedulingStore do
 
   defp shell_authorized?(_resolution, _binding), do: false
 
-  defp available_worker({worker, resolution}) do
+  defp available_worker({worker, resolution, harness_setup}) do
     case worker_with_free_slot(worker) do
-      {worker, slot} -> {worker, slot, resolution}
+      {worker, slot} -> {worker, slot, resolution, harness_setup}
       nil -> nil
     end
   end
@@ -515,7 +547,8 @@ defmodule QuestEngineering.Server.SchedulingStore do
       state: :claimed,
       claim_token: dispatch.claim_token,
       execution: resolved.execution,
-      operational_recovery: OperationalRecovery.execution_metadata(action.id)
+      operational_recovery: OperationalRecovery.execution_metadata(action.id),
+      harness_setup: resolved.harness_setup
     }
   end
 
@@ -656,6 +689,9 @@ defmodule QuestEngineering.Server.SchedulingStore do
     }
 
   defp invariant(code, details), do: %Error{code: code, temporary: false, details: details}
+
+  defp setup_binding(action_id, execution),
+    do: HarnessSetupStore.binding_for_execution(action_id, execution)
 
   defp payload_hash(payload) do
     :sha256 |> :crypto.hash(Jason.encode!(payload)) |> Base.encode16(case: :lower)

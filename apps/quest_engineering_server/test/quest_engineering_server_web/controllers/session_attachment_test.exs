@@ -71,6 +71,25 @@ defmodule QuestEngineering.ServerWeb.SessionAttachmentTest do
 
     assert json_response(response_authorized, 404)["error"]["code"] == "session_not_found"
 
+    setup_path = "/api/v1/runs/run/occurrences/occurrence/harness-setup"
+    setup_body = %{request_id: "setup-request", confirmed: true}
+    Application.put_env(:quest_engineering_server, :local_session_attach_enabled, false)
+
+    setup_unauthorized =
+      %{build_conn() | host: "127.0.0.1"}
+      |> post(setup_path, setup_body)
+
+    assert json_response(setup_unauthorized, 409)["error"]["code"] ==
+             "local_harness_setup_unavailable"
+
+    setup_authorized =
+      %{build_conn() | host: "127.0.0.1"}
+      |> put_req_header("x-quest-engineering-local-client", "tauri")
+      |> post(setup_path, setup_body)
+
+    assert json_response(setup_authorized, 404)["error"]["code"] == "not_found"
+
+    Application.put_env(:quest_engineering_server, :local_session_attach_enabled, true)
     cancellation_path = "/api/v1/runs/run/attempts/attempt/cancel"
     cancellation_body = %{occurrence_id: "occurrence", request_id: "request"}
 

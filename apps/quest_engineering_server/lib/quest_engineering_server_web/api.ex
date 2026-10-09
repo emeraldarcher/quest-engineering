@@ -137,6 +137,24 @@ defmodule QuestEngineering.ServerWeb.Api do
     {status, to_string(code), "Local live-session attachment is unavailable.", [], %{}}
   end
 
+  defp error_view(code)
+       when code in [
+              :invalid_harness_setup_authorization,
+              :invalid_harness_setup_response,
+              :invalid_harness_setup_cancellation
+            ],
+       do: {400, to_string(code), "The harness setup request is malformed.", [], %{}}
+
+  defp error_view(:setup_interaction_unavailable),
+    do:
+      {409, "setup_interaction_unavailable",
+       "The ephemeral provider setup interaction is no longer available.", [], %{}}
+
+  defp error_view(:local_harness_setup_unavailable),
+    do:
+      {409, "local_harness_setup_unavailable",
+       "Harness setup is available only to a direct loopback desktop client.", [], %{}}
+
   defp error_view(:worker_upgrade_required),
     do:
       {409, "worker_upgrade_required",

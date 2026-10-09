@@ -16,6 +16,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionOptions
   alias QuestEngineering.Server.ExecutionSessionStore
+  alias QuestEngineering.Server.HarnessSetupStore
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.ExecutionSession
@@ -1160,7 +1161,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 12,
+                      "protocol_version" => 13,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -2727,6 +2728,320 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     end)
   end
 
+  test "Run-bound harness setup creates no Attempt and gates one exact contextual handoff",
+       context do
+    tactic =
+      sequence([
+        step("setup-build",
+          name: "Setup Build",
+          performer: class("builder"),
+          context: fresh(),
+          instruction: "Build after setup."
+        ),
+        step("setup-review",
+          name: "Setup Review",
+          performer: class("reviewer"),
+          context: continue_from("setup-build"),
+          instruction: "Continue in the authenticated context."
+        )
+      ])
+
+    fixture = product_fixture(tactic: tactic)
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("worker-harness-setup", context.workspace_root,
+        setup_only: true,
+        execution_environment: execution_environment("sbx")
+      )
+
+    insert_binding(worker, fixture.quest.workspace_id, context.workspace_root, false)
+
+    assert Enum.any?(ExecutionOptions.list(), fn option ->
+             option.harness == "fake" and option.setup_available and not option.available
+           end)
+
+    assert {:provision, assignment} = RunWorkspaceStore.ensure_assignment(launched.run_id)
+    ready_assignment(assignment)
+
+    assert {:waiting, [%{code: :waiting_for_worker}]} =
+             SchedulingStore.schedule_next(launched.run_id)
+
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 0
+
+    start_supervised!(WorkerConnections)
+
+    :ok =
+      WorkerConnections.activate(
+        worker.id,
+        worker.connection_id,
+        worker.connection_generation,
+        self()
+      )
+
+    [action] = launched.actions
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, %{context: setup, idempotent?: false}} =
+             HarnessSetupStore.authorize(launched.run_id, action.occurrence_id, request_id)
+
+    assert :ok = HarnessSetupStore.deliver(setup)
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_harness_setup",
+                      "protocol_version" => 13,
+                      "setup" => %{
+                        "setup_id" => setup_id,
+                        "action_id" => action_id,
+                        "physical_lineage_id" => physical_lineage_id,
+                        "authorization_kind" => "human_harness_setup"
+                      }
+                    }}
+
+    assert setup_id == setup.id
+    assert action_id == action.id
+    assert physical_lineage_id == setup.physical_lineage_id
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+
+    assert {:ok, %{context: replay, idempotent?: true}} =
+             HarnessSetupStore.authorize(launched.run_id, action.occurrence_id, request_id)
+
+    assert replay.id == setup.id
+
+    assert {:ok, failed_setup} =
+             HarnessSetupStore.record(worker.id, worker.connection_generation, %{
+               setup_id: setup.id,
+               setup_generation: setup.setup_generation,
+               action_id: setup.action_id,
+               run_id: setup.run_id,
+               occurrence_id: setup.occurrence_id,
+               physical_lineage_id: setup.physical_lineage_id,
+               state: :failed,
+               invocation_state: :not_requested,
+               inspection: nil,
+               attention: nil,
+               failure: %{
+                 "code" => "setup_invocation_not_started",
+                 "message" => "The setup invocation was proven not submitted."
+               }
+             })
+
+    assert failed_setup.state == "failed"
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+
+    assert {:ok, %{context: retry_setup, idempotent?: false}} =
+             HarnessSetupStore.authorize(
+               launched.run_id,
+               action.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert retry_setup.id != setup.id
+    assert retry_setup.setup_generation == setup.setup_generation + 1
+    assert retry_setup.physical_lineage_id == setup.physical_lineage_id
+    assert :ok = HarnessSetupStore.deliver(retry_setup)
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_harness_setup",
+                      "setup" => %{
+                        "setup_id" => retry_setup_id,
+                        "setup_generation" => 2,
+                        "physical_lineage_id" => ^physical_lineage_id
+                      }
+                    }}
+
+    assert retry_setup_id == retry_setup.id
+
+    cancelled_environment = %{
+      "environment_id" => "environment-cancelled",
+      "incarnation" => "incarnation-cancelled",
+      "profile" => %{
+        "id" => retry_setup.profile_id,
+        "digest" => retry_setup.profile_digest
+      }
+    }
+
+    assert {:ok, cancellation_requested} =
+             HarnessSetupStore.cancel(
+               launched.run_id,
+               action.occurrence_id,
+               retry_setup.id,
+               Ecto.UUID.generate()
+             )
+
+    assert cancellation_requested.state == "cancellation_requested"
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "cancel_harness_setup",
+                      "setup_id" => cancelled_setup_id,
+                      "setup_generation" => 2
+                    }}
+
+    assert cancelled_setup_id == retry_setup.id
+
+    assert {:error,
+            %HarnessSetupStore.Error{
+              code: :stale_harness_setup_report
+            }} =
+             HarnessSetupStore.record(worker.id, worker.connection_generation, %{
+               setup_id: retry_setup.id,
+               setup_generation: retry_setup.setup_generation,
+               action_id: retry_setup.action_id,
+               run_id: retry_setup.run_id,
+               occurrence_id: retry_setup.occurrence_id,
+               physical_lineage_id: retry_setup.physical_lineage_id,
+               state: :ready,
+               invocation_state: :settled,
+               inspection: %{
+                 "state" => "ready",
+                 "authenticated" => true,
+                 "detail" => "Late readiness must lose to cancellation.",
+                 "environment" => cancelled_environment,
+                 "config_identity" => "cancelled-config"
+               },
+               attention: nil,
+               failure: nil
+             })
+
+    assert {:ok, cancelled_setup} =
+             HarnessSetupStore.record(worker.id, worker.connection_generation, %{
+               setup_id: retry_setup.id,
+               setup_generation: retry_setup.setup_generation,
+               action_id: retry_setup.action_id,
+               run_id: retry_setup.run_id,
+               occurrence_id: retry_setup.occurrence_id,
+               physical_lineage_id: retry_setup.physical_lineage_id,
+               state: :cancelled,
+               invocation_state: :not_requested,
+               inspection: nil,
+               attention: nil,
+               failure: %{
+                 "code" => "setup_cancelled",
+                 "message" => "Setup was cancelled before invocation."
+               }
+             })
+
+    assert HarnessSetupStore.retryable?(cancelled_setup)
+
+    assert {:ok, %{context: final_setup, idempotent?: false}} =
+             HarnessSetupStore.authorize(
+               launched.run_id,
+               action.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert final_setup.setup_generation == 3
+    assert final_setup.physical_lineage_id == setup.physical_lineage_id
+    assert :ok = HarnessSetupStore.deliver(final_setup)
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_harness_setup",
+                      "setup" => %{
+                        "setup_id" => final_setup_id,
+                        "setup_generation" => 3,
+                        "physical_lineage_id" => ^physical_lineage_id
+                      }
+                    }}
+
+    assert final_setup_id == final_setup.id
+    setup = final_setup
+
+    environment = %{
+      "environment_id" => "environment-1",
+      "incarnation" => "incarnation-1",
+      "profile" => %{"id" => setup.profile_id, "digest" => setup.profile_digest}
+    }
+
+    report = %{
+      setup_id: setup.id,
+      setup_generation: setup.setup_generation,
+      action_id: setup.action_id,
+      run_id: setup.run_id,
+      occurrence_id: setup.occurrence_id,
+      physical_lineage_id: setup.physical_lineage_id,
+      state: :invocation_acknowledged,
+      invocation_state: :acknowledged,
+      inspection: %{
+        "state" => "preparing",
+        "authenticated" => false,
+        "detail" => "Fake setup is preparing.",
+        "environment" => environment,
+        "config_identity" => "config-1"
+      },
+      attention: nil,
+      failure: nil
+    }
+
+    assert {:ok, acknowledged} =
+             HarnessSetupStore.record(worker.id, worker.connection_generation, report)
+
+    assert acknowledged.state == "invocation_acknowledged"
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+
+    assert {:error,
+            %HarnessSetupStore.Error{
+              code: :stale_harness_setup_report
+            }} =
+             HarnessSetupStore.record(
+               worker.id,
+               worker.connection_generation,
+               %{
+                 report
+                 | state: :failed,
+                   invocation_state: :not_requested,
+                   failure: %{
+                     "code" => "invalid_certainty_regression",
+                     "message" => "Acknowledged invocation cannot become not requested."
+                   }
+               }
+             )
+
+    ready = %{
+      report
+      | state: :ready,
+        invocation_state: :settled,
+        inspection: %{
+          "state" => "ready",
+          "authenticated" => true,
+          "detail" => "Fake setup is ready.",
+          "environment" => environment,
+          "config_identity" => "config-1"
+        }
+    }
+
+    assert {:ok, ready_context} =
+             HarnessSetupStore.record(worker.id, worker.connection_generation, ready)
+
+    assert ready_context.state == "ready"
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+    assert dispatch.harness_setup.setup_id == setup.id
+    assert dispatch.harness_setup.physical_lineage_id == setup.physical_lineage_id
+    assert dispatch.harness_setup.environment.environment_id == "environment-1"
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 1
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 1
+
+    complete(worker, dispatch)
+    assert {:ok, continuation} = SchedulingStore.schedule_next(launched.run_id)
+    assert continuation.harness_setup.setup_id == setup.id
+    assert continuation.harness_setup.physical_lineage_id == setup.physical_lineage_id
+
+    assert continuation.execution.context.logical_lineage_id ==
+             dispatch.execution.context.logical_lineage_id
+
+    assert continuation.execution.context.source_occurrence_id ==
+             dispatch.execution.identity.occurrence_id
+
+    assert {:ok, %{harness_setup: recovered_binding}} =
+             SchedulingStore.fetch_execution(continuation.action_id)
+
+    assert recovered_binding.setup_id == setup.id
+  end
+
   defp product_fixture(options \\ []) do
     builder =
       create_class("builder", "Build from the immutable snapshot.")
@@ -2884,12 +3199,24 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
         environment -> Map.put(executor, "execution_environment", environment)
       end
 
+    setup_only? = Keyword.get(options, :setup_only, false)
+
     capabilities = %{
       "os" => "test",
       "arch" => "test",
       "max_concurrency" => Keyword.get(options, :max_concurrency, 1),
       "tags" => [],
-      "executors" => [executor]
+      "executors" => if(setup_only?, do: [], else: [executor]),
+      "harness_setups" =>
+        if(setup_only?,
+          do: [
+            executor
+            |> Map.put("setup_kind", "provider_authentication")
+            |> Map.put("setup_available", true)
+            |> Map.put("authentication", "context_required")
+          ],
+          else: []
+        )
     }
 
     {:ok, worker} = WorkerStore.register(id, capabilities, Ecto.UUID.generate())

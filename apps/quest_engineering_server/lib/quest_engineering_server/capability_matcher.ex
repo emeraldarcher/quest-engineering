@@ -25,6 +25,21 @@ defmodule QuestEngineering.Server.CapabilityMatcher do
 
   def resolve_executor(_capabilities, _requested), do: :error
 
+  def resolve_setup(%{"dispatch_availability" => "maintenance"}, _requested), do: :error
+
+  def resolve_setup(%{"harness_setups" => setups}, requested)
+      when is_list(setups) and is_map(requested) do
+    Enum.find_value(setups, :error, fn setup ->
+      if setup["setup_available"] == true and
+           setup["authentication"] == "context_required" and
+           setup["setup_kind"] == "provider_authentication",
+         do: resolve_profile(setup, requested),
+         else: nil
+    end)
+  end
+
+  def resolve_setup(_capabilities, _requested), do: :error
+
   defp resolve_profile(executor, requested) when is_map(executor) do
     with true <- executor["harness_kind"] == requested.harness_kind,
          {:ok, reasoning_capability} <-
