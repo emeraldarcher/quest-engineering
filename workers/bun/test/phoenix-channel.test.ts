@@ -39,6 +39,7 @@ const capabilities = {
   max_concurrency: 1,
   tags: [],
   executors: [],
+  harness_setups: [],
   workspace_bindings: [],
 } satisfies WorkerCapabilities;
 

@@ -168,6 +168,7 @@ async function setup(
     max_concurrency: 1,
     tags: [],
     executors: [],
+    harness_setups: [],
     workspace_bindings: [...config.workspaceBindings],
   };
   return { root, source, config, capabilities };

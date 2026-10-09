@@ -1,10 +1,13 @@
 import {
   type ArtifactInstance,
   type CancelDispatch,
+  type CancelHarnessSetupCommand,
   type ExecuteAction,
   type HumanAttentionResponseCommand,
   isJsonValue,
+  type PrepareHarnessSetupCommand,
   type ResolvedExecution,
+  type RespondHarnessSetupCommand,
   WORKER_PROTOCOL_VERSION,
   type WorkspaceAccess,
 } from "./types.ts";
@@ -100,6 +103,195 @@ export function decodeHumanAttentionResponse(
   };
 }
 
+export function decodePrepareHarnessSetup(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): PrepareHarnessSetupCommand {
+  const payload = record(value, "message");
+  exact(payload.type, "prepare_harness_setup", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  const setup = record(payload.setup, "setup");
+  exact(
+    setup.authorization_kind,
+    "human_harness_setup",
+    "setup.authorization_kind",
+  );
+  const authorizedAt = timestamp(setup.authorized_at, "setup.authorized_at");
+  const profile = record(setup.profile, "setup.profile");
+  const configuration = record(setup.configuration, "setup.configuration");
+  const model = record(configuration.model, "setup.configuration.model");
+  const reasoning = nullableString(
+    configuration.reasoning,
+    "setup.configuration.reasoning",
+  );
+  const reasoningCapability = decodeReasoningCapability(
+    configuration.reasoning_capability,
+    "setup.configuration.reasoning_capability",
+  );
+  if (
+    (reasoningCapability.kind === "unsupported") !== (reasoning === null) ||
+    (reasoningCapability.kind === "enumerated" &&
+      (reasoning === null || !reasoningCapability.values.includes(reasoning)))
+  )
+    throw new ProtocolDecodeError(
+      "setup.configuration.reasoning",
+      "must exactly match the resolved reasoning capability",
+    );
+  const toolPolicy = decodeToolPolicy(
+    configuration.tool_policy,
+    "setup.configuration.tool_policy",
+  );
+  const toolEnforcement = oneOf(
+    configuration.tool_enforcement,
+    ["exact", "native_permissions"] as const,
+    "setup.configuration.tool_enforcement",
+  );
+  const resolved = record(
+    configuration.resolved_tool_profile,
+    "setup.configuration.resolved_tool_profile",
+  );
+  const resolvedTools = uniqueStrings(
+    resolved.tools,
+    "setup.configuration.resolved_tool_profile.tools",
+  );
+  if (
+    toolPolicy.kind !== "exact" ||
+    toolEnforcement !== "exact" ||
+    !sameStringSet(toolPolicy.tools, resolvedTools)
+  )
+    throw new ProtocolDecodeError(
+      "setup.configuration.tool_policy",
+      "setup requires one exact tool policy",
+    );
+  return {
+    type: "prepare_harness_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    setup: {
+      setup_id: string(setup.setup_id, "setup.setup_id"),
+      setup_generation: positiveInteger(
+        setup.setup_generation,
+        "setup.setup_generation",
+      ),
+      authorization_id: string(
+        setup.authorization_id,
+        "setup.authorization_id",
+      ),
+      authorization_kind: "human_harness_setup",
+      authorized_at: authorizedAt,
+      action_id: string(setup.action_id, "setup.action_id"),
+      run_id: string(setup.run_id, "setup.run_id"),
+      occurrence_id: string(setup.occurrence_id, "setup.occurrence_id"),
+      member_key: string(setup.member_key, "setup.member_key"),
+      harness_kind: string(setup.harness_kind, "setup.harness_kind"),
+      physical_lineage_id: string(
+        setup.physical_lineage_id,
+        "setup.physical_lineage_id",
+      ),
+      logical_lineage_id: string(
+        setup.logical_lineage_id,
+        "setup.logical_lineage_id",
+      ),
+      workspace_id: string(setup.workspace_id, "setup.workspace_id"),
+      worktree_id: string(setup.worktree_id, "setup.worktree_id"),
+      workspace_binding_id: string(
+        setup.workspace_binding_id,
+        "setup.workspace_binding_id",
+      ),
+      canonical_root: string(setup.canonical_root, "setup.canonical_root"),
+      workspace_access: oneOf(
+        setup.workspace_access,
+        ["none", "read_only", "read_write"] as const,
+        "setup.workspace_access",
+      ),
+      profile: {
+        id: string(profile.id, "setup.profile.id"),
+        digest: string(profile.digest, "setup.profile.digest"),
+      },
+      configuration: {
+        model: {
+          provider: string(
+            model.provider,
+            "setup.configuration.model.provider",
+          ),
+          model: string(model.model, "setup.configuration.model.model"),
+        },
+        reasoning,
+        reasoning_capability: reasoningCapability,
+        tool_policy: toolPolicy,
+        tool_enforcement: toolEnforcement,
+        resolved_tool_profile: { tools: resolvedTools },
+      },
+    },
+  };
+}
+
+export function decodeCancelHarnessSetup(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): CancelHarnessSetupCommand {
+  const payload = record(value, "message");
+  exact(payload.type, "cancel_harness_setup", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  return {
+    type: "cancel_harness_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    setup_id: string(payload.setup_id, "setup_id"),
+    setup_generation: positiveInteger(
+      payload.setup_generation,
+      "setup_generation",
+    ),
+    request_id: string(payload.request_id, "request_id"),
+  };
+}
+
+export function decodeRespondHarnessSetup(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): RespondHarnessSetupCommand {
+  const payload = record(value, "message");
+  exact(payload.type, "respond_harness_setup", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  return {
+    type: "respond_harness_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    setup_id: string(payload.setup_id, "setup_id"),
+    setup_generation: positiveInteger(
+      payload.setup_generation,
+      "setup_generation",
+    ),
+    attention_id: string(payload.attention_id, "attention_id"),
+    request_id: string(payload.request_id, "request_id"),
+    value: boundedText(payload.value, "value", 8_192),
+  };
+}
+
 export function decodeExecuteAction(
   value: unknown,
   expectedWorkerId: string,
@@ -133,6 +325,9 @@ export function decodeExecuteAction(
             payload.operational_recovery,
           ),
         }),
+    ...(payload.harness_setup === undefined
+      ? {}
+      : { harness_setup: decodeHarnessSetupBinding(payload.harness_setup) }),
   };
 }
 
@@ -412,6 +607,49 @@ function decodeOperationalRecovery(
   };
 }
 
+function decodeHarnessSetupBinding(
+  value: unknown,
+): NonNullable<ExecuteAction["harness_setup"]> {
+  const setup = record(value, "harness_setup");
+  const environment = record(setup.environment, "harness_setup.environment");
+  const profile = record(
+    environment.profile,
+    "harness_setup.environment.profile",
+  );
+  return {
+    setup_id: string(setup.setup_id, "harness_setup.setup_id"),
+    setup_generation: positiveInteger(
+      setup.setup_generation,
+      "harness_setup.setup_generation",
+    ),
+    physical_lineage_id: string(
+      setup.physical_lineage_id,
+      "harness_setup.physical_lineage_id",
+    ),
+    environment: {
+      environment_id: string(
+        environment.environment_id,
+        "harness_setup.environment.environment_id",
+      ),
+      incarnation: string(
+        environment.incarnation,
+        "harness_setup.environment.incarnation",
+      ),
+      profile: {
+        id: string(profile.id, "harness_setup.environment.profile.id"),
+        digest: string(
+          profile.digest,
+          "harness_setup.environment.profile.digest",
+        ),
+      },
+    },
+    config_identity: string(
+      setup.config_identity,
+      "harness_setup.config_identity",
+    ),
+  };
+}
+
 function decodeArtifact(value: unknown, field: string): ArtifactInstance {
   const artifact = record(value, field);
   if (!isJsonValue(artifact.value))
@@ -455,6 +693,27 @@ function string(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0)
     throw new ProtocolDecodeError(field, "must be a non-empty string");
   return value;
+}
+function boundedText(
+  value: unknown,
+  field: string,
+  maximumBytes: number,
+): string {
+  if (
+    typeof value !== "string" ||
+    Buffer.byteLength(value, "utf8") > maximumBytes
+  )
+    throw new ProtocolDecodeError(
+      field,
+      `must be a string no larger than ${maximumBytes} bytes`,
+    );
+  return value;
+}
+function timestamp(value: unknown, field: string): string {
+  const result = string(value, field);
+  if (!Number.isFinite(Date.parse(result)))
+    throw new ProtocolDecodeError(field, "must be an ISO-8601 timestamp");
+  return result;
 }
 function nullableString(value: unknown, field: string): string | null {
   if (value === null) return null;
