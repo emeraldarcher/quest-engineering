@@ -972,6 +972,136 @@ export function createAppStore(
     });
   }
 
+  async function authorizeHarnessSetup(runId: string, occurrenceId: string) {
+    const projection = get(selectedRun);
+    const step = projection?.steps.find(
+      (item) => item.occurrence_id === occurrenceId,
+    );
+    if (
+      !projection ||
+      projection.id !== runId ||
+      step?.attempt != null ||
+      step?.can_authorize_harness_setup !== true
+    ) {
+      reportError(
+        new ApiError(
+          "stale_harness_setup",
+          "This Step is no longer waiting for harness setup.",
+        ),
+      );
+      return false;
+    }
+    try {
+      const updated = await api.authorizeHarnessSetup(
+        runId,
+        occurrenceId,
+        crypto.randomUUID(),
+      );
+      if (!acceptExecutionProjection(updated, projection))
+        await reconcileExecutionProjection(runId);
+      error.set(null);
+      return true;
+    } catch (cause) {
+      reportError(cause);
+      await reconcileExecutionProjection(runId);
+      return false;
+    }
+  }
+
+  async function getHarnessSetupInteraction(
+    runId: string,
+    occurrenceId: string,
+    setupId: string,
+    generation: number,
+    attentionId: string,
+  ) {
+    try {
+      const interaction = await api.getHarnessSetupInteraction(
+        runId,
+        occurrenceId,
+        setupId,
+        generation,
+        attentionId,
+      );
+      error.set(null);
+      return interaction;
+    } catch (cause) {
+      reportError(cause);
+      await reconcileExecutionProjection(runId);
+      return null;
+    }
+  }
+
+  async function respondHarnessSetup(
+    runId: string,
+    occurrenceId: string,
+    setupId: string,
+    generation: number,
+    attentionId: string,
+    value: string,
+  ) {
+    const projection = get(selectedRun);
+    const current = projection?.steps.find(
+      (item) => item.occurrence_id === occurrenceId,
+    )?.harness_setup;
+    if (
+      !projection ||
+      projection.id !== runId ||
+      current?.id !== setupId ||
+      current.generation !== generation ||
+      current.attention?.attention_id !== attentionId
+    )
+      return false;
+    try {
+      const updated = await api.respondHarnessSetup(
+        runId,
+        occurrenceId,
+        setupId,
+        generation,
+        attentionId,
+        crypto.randomUUID(),
+        value,
+      );
+      if (!acceptExecutionProjection(updated, projection))
+        await reconcileExecutionProjection(runId);
+      error.set(null);
+      return true;
+    } catch (cause) {
+      reportError(cause);
+      await reconcileExecutionProjection(runId);
+      return false;
+    }
+  }
+
+  async function cancelHarnessSetup(
+    runId: string,
+    occurrenceId: string,
+    setupId: string,
+  ) {
+    const projection = get(selectedRun);
+    const current = projection?.steps.find(
+      (item) => item.occurrence_id === occurrenceId,
+    )?.harness_setup;
+    if (!projection || projection.id !== runId || current?.id !== setupId)
+      return false;
+    try {
+      const updated = await api.cancelHarnessSetup(
+        runId,
+        occurrenceId,
+        setupId,
+        crypto.randomUUID(),
+      );
+      if (!acceptExecutionProjection(updated, projection))
+        await reconcileExecutionProjection(runId);
+      error.set(null);
+      return true;
+    } catch (cause) {
+      reportError(cause);
+      await reconcileExecutionProjection(runId);
+      return false;
+    }
+  }
+
   async function authorizePrompt(identity: ExecutionAttemptIdentity) {
     const started = beginExecutionCommand("authorize", identity);
     if (!started) return false;
@@ -1121,6 +1251,10 @@ export function createAppStore(
     focusAttention,
     dismissAttention,
     respondToAttention,
+    authorizeHarnessSetup,
+    getHarnessSetupInteraction,
+    respondHarnessSetup,
+    cancelHarnessSetup,
     authorizePrompt,
     cancelExecution,
     clearExecutionCommand,

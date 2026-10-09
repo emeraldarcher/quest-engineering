@@ -250,6 +250,97 @@ test("structured HumanAttention responses are local-only and preserve exact corr
   });
 });
 
+test("Run-bound harness setup is local-only and keeps setup authority distinct from inference", async () => {
+  const web = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
+  await expect(
+    web.authorizeHarnessSetup("run-1", "occurrence-1", "setup-request-1"),
+  ).rejects.toMatchObject({ code: "local_session_attachment_unavailable" });
+
+  const fixture = createFixture("work-yard-running");
+  if (!fixture?.selectedRunId) throw new Error("Expected running fixture");
+  const run = fixture.runs[fixture.selectedRunId];
+  if (!run) throw new Error("Expected selected Run");
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  globalThis.fetch = mock(async (input, init) => {
+    const path = String(input);
+    requests.push({ path, init });
+    if (init?.method === "GET")
+      return new Response(
+        JSON.stringify({
+          interaction: {
+            output: "official provider output",
+            expires_at: "2026-10-09T00:00:00Z",
+          },
+        }),
+      );
+    return new Response(JSON.stringify({ run }));
+  }) as unknown as typeof fetch;
+  const desktop = new ApiClient({
+    httpBaseUrl: "http://example.test/api/v1",
+    localTauriClient: true,
+  });
+
+  await desktop.authorizeHarnessSetup(
+    "run-1",
+    "occurrence-1",
+    "setup-request-1",
+  );
+  const interaction = await desktop.getHarnessSetupInteraction(
+    "run-1",
+    "occurrence-1",
+    "setup-1",
+    3,
+    "attention-1",
+  );
+  await desktop.respondHarnessSetup(
+    "run-1",
+    "occurrence-1",
+    "setup-1",
+    3,
+    "attention-1",
+    "response-1",
+    "continue",
+  );
+  await desktop.cancelHarnessSetup(
+    "run-1",
+    "occurrence-1",
+    "setup-1",
+    "cancel-1",
+  );
+
+  expect(interaction.output).toBe("official provider output");
+  expect(requests[0]?.path).toEndWith(
+    "/runs/run-1/occurrences/occurrence-1/harness-setup",
+  );
+  expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({
+    request_id: "setup-request-1",
+    confirmed: true,
+  });
+  expect(requests[1]?.path).toContain(
+    "/harness-setup/setup-1/interactions/attention-1?generation=3",
+  );
+  expect(requests[1]?.init?.headers).toEqual({
+    "x-quest-engineering-local-client": "tauri",
+  });
+  expect(JSON.parse(String(requests[2]?.init?.body))).toEqual({
+    generation: 3,
+    attention_id: "attention-1",
+    request_id: "response-1",
+    value: "continue",
+  });
+  expect(JSON.parse(String(requests[3]?.init?.body))).toEqual({
+    request_id: "cancel-1",
+  });
+  expect(
+    requests.every(
+      ({ init }) =>
+        (init?.headers as Record<string, string> | undefined)?.[
+          "x-quest-engineering-local-client"
+        ] === "tauri",
+    ),
+  ).toBe(true);
+});
+
 test("Product cancellation is local-only and preserves its exact request identity", async () => {
   const web = new ApiClient({ httpBaseUrl: "http://example.test/api/v1" });
   await expect(

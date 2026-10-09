@@ -160,6 +160,77 @@ export class ApiClient {
       (value) => decodeRun(asRecord(value, "run").run),
       signal,
     );
+  authorizeHarnessSetup = (
+    runId: string,
+    occurrenceId: string,
+    requestId: string,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/occurrences/${encodeURIComponent(occurrenceId)}/harness-setup`,
+      { request_id: requestId, confirmed: true },
+      (value) => decodeRun(asRecord(value, "harness setup").run),
+      undefined,
+      true,
+    );
+  getHarnessSetupInteraction = (
+    runId: string,
+    occurrenceId: string,
+    setupId: string,
+    generation: number,
+    attentionId: string,
+  ) =>
+    this.get(
+      `/runs/${encodeURIComponent(runId)}/occurrences/${encodeURIComponent(occurrenceId)}/harness-setup/${encodeURIComponent(setupId)}/interactions/${encodeURIComponent(attentionId)}?generation=${generation}`,
+      (value) => {
+        const interaction = asRecord(
+          asRecord(value, "harness setup interaction").interaction,
+          "harness setup interaction",
+        );
+        return {
+          output: asString(interaction.output, "harness setup interaction"),
+          expires_at: asString(
+            interaction.expires_at,
+            "harness setup interaction",
+          ),
+        };
+      },
+      undefined,
+      true,
+    );
+  respondHarnessSetup = (
+    runId: string,
+    occurrenceId: string,
+    setupId: string,
+    generation: number,
+    attentionId: string,
+    requestId: string,
+    value: string,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/occurrences/${encodeURIComponent(occurrenceId)}/harness-setup/${encodeURIComponent(setupId)}/respond`,
+      {
+        generation,
+        attention_id: attentionId,
+        request_id: requestId,
+        value,
+      },
+      (response) => decodeRun(asRecord(response, "harness setup").run),
+      undefined,
+      true,
+    );
+  cancelHarnessSetup = (
+    runId: string,
+    occurrenceId: string,
+    setupId: string,
+    requestId: string,
+  ) =>
+    this.post(
+      `/runs/${encodeURIComponent(runId)}/occurrences/${encodeURIComponent(occurrenceId)}/harness-setup/${encodeURIComponent(setupId)}/cancel`,
+      { request_id: requestId },
+      (response) => decodeRun(asRecord(response, "harness setup").run),
+      undefined,
+      true,
+    );
   retryExecution = (runId: string, occurrenceId: string) =>
     this.post(
       `/runs/${encodeURIComponent(runId)}/execution/retry`,
@@ -394,10 +465,22 @@ export class ApiClient {
     path: string,
     decode: (value: unknown) => T,
     signal?: AbortSignal,
+    localOnly = false,
   ): Promise<T> {
+    if (localOnly && !this.config.localTauriClient)
+      throw new ApiError(
+        "local_harness_setup_unavailable",
+        "Harness setup is only available from the local desktop app.",
+      );
     return this.request(
       path,
-      signal ? { method: "GET", signal } : { method: "GET" },
+      {
+        method: "GET",
+        ...(signal ? { signal } : {}),
+        ...(localOnly
+          ? { headers: { "x-quest-engineering-local-client": "tauri" } }
+          : {}),
+      },
       decode,
     );
   }
@@ -779,6 +862,7 @@ function decodeExecutionOption(value: unknown): ExecutionOption {
       };
     }),
     available: asBoolean(x.available, "availability"),
+    setup_available: x.setup_available === true,
   };
 }
 function decodeDelivery(value: unknown): DeliveryProjection {
@@ -1205,6 +1289,79 @@ function decodeSemanticRemediation(value: unknown) {
   };
 }
 
+function decodeHarnessSetup(value: unknown) {
+  const setup = asRecord(value, "harness setup");
+  const attention =
+    setup.attention == null
+      ? null
+      : (() => {
+          const item = asRecord(setup.attention, "harness setup attention");
+          return {
+            attention_id: asString(
+              item.attention_id,
+              "harness setup attention",
+            ),
+            kind: asString(
+              item.kind,
+              "harness setup attention",
+            ) as "provider_authentication",
+            message: asString(item.message, "harness setup attention"),
+          };
+        })();
+  const failure =
+    setup.failure == null
+      ? null
+      : (() => {
+          const item = asRecord(setup.failure, "harness setup failure");
+          return {
+            code: asString(item.code, "harness setup failure"),
+            message: asString(item.message, "harness setup failure"),
+          };
+        })();
+  const environment =
+    setup.environment == null
+      ? null
+      : (() => {
+          const item = asRecord(setup.environment, "harness setup environment");
+          const profile = asRecord(item.profile, "harness setup profile");
+          return {
+            environment_id: asString(
+              item.environment_id,
+              "harness setup environment",
+            ),
+            incarnation: asString(
+              item.incarnation,
+              "harness setup environment",
+            ),
+            profile: {
+              id: asString(profile.id, "harness setup profile"),
+              digest: asString(profile.digest, "harness setup profile"),
+            },
+          };
+        })();
+  return {
+    id: asString(setup.id, "harness setup"),
+    generation: asNumber(setup.generation, "harness setup"),
+    harness_kind: asString(setup.harness_kind, "harness setup"),
+    state: asString(setup.state, "harness setup") as NonNullable<
+      RunProjection["steps"][number]["harness_setup"]
+    >["state"],
+    invocation_state: asString(
+      setup.invocation_state,
+      "harness setup",
+    ) as NonNullable<
+      RunProjection["steps"][number]["harness_setup"]
+    >["invocation_state"],
+    setup_required: asBoolean(setup.setup_required, "harness setup"),
+    authenticated: asBoolean(setup.authenticated, "harness setup"),
+    authorized_at: nullableString(setup.authorized_at, "harness setup"),
+    attention,
+    failure,
+    physical_lineage_id: asString(setup.physical_lineage_id, "harness setup"),
+    environment,
+  };
+}
+
 function decodeRunStep(value: unknown) {
   const x = asRecord(value, "run step");
   const performer = asRecord(x.performer, "performer");
@@ -1226,6 +1383,9 @@ function decodeRunStep(value: unknown) {
     attempt: x.attempt === null ? null : decodeRunAttempt(x.attempt),
     attempts: asArray(x.attempts, "step attempts").map(decodeRunAttempt),
     session: x.session == null ? null : decodeHarnessSession(x.session),
+    harness_setup:
+      x.harness_setup == null ? null : decodeHarnessSetup(x.harness_setup),
+    can_authorize_harness_setup: x.can_authorize_harness_setup === true,
     member: x.member === null ? null : decodeSnapshotMember(x.member),
     performer: {
       selector: nullable(performer.selector, "performer"),
