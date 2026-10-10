@@ -1,14 +1,10 @@
 import {
-  SBX_CODING_EXECUTION_PROFILE_V1,
-  SBX_CODING_EXECUTION_PROFILE_V2,
+  SBX_CODING_EXECUTION_PROFILE_V3,
   SBX_CODING_PROFILE,
   type SbxExecutionProfile,
 } from "./sbx-profile.ts";
 
-export type CodingHarnessCapability =
-  | "pi"
-  | "antigravity"
-  | "claude_agent_sdk";
+export type CodingHarnessCapability = "pi" | "antigravity" | "claude_agent_sdk";
 
 export interface ResolvedRunExecutionProfile {
   profile: SbxExecutionProfile;
@@ -16,7 +12,7 @@ export interface ResolvedRunExecutionProfile {
 }
 
 /**
- * Resolve one immutable Run environment before physical creation. The first
+ * Resolve one immutable Run environment before physical creation. The current
  * composed profile deliberately contains every production coding harness, so
  * a later Step never switches/recreates the VM or installs a floating runtime.
  */
@@ -45,11 +41,9 @@ export function profileSupportsHarness(
   harness: string,
 ): boolean {
   return (
-    (profileId === SBX_CODING_EXECUTION_PROFILE_V1.id &&
-      (harness === "pi" || harness === "antigravity")) ||
-    (profileId === SBX_CODING_EXECUTION_PROFILE_V2.id &&
-      (harness === "pi" ||
-        harness === "antigravity" ||
-        harness === "claude_agent_sdk"))
+    profileId === SBX_CODING_EXECUTION_PROFILE_V3.id &&
+    (harness === "pi" ||
+      harness === "antigravity" ||
+      harness === "claude_agent_sdk")
   );
 }

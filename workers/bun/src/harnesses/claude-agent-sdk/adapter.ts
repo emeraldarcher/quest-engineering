@@ -203,6 +203,15 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
           "prepare",
           "native_accepted",
         );
+      const settledRetainedSession =
+        retained.binding.query.state === "acknowledged" &&
+        retained.binding.submission.state === "settled" &&
+        Boolean(lineage.nativeSession);
+      const preparedZeroQueryGate =
+        retained.binding.query.state === "not_invoked" &&
+        retained.binding.submission.state === "not_submitted";
+      if (!settledRetainedSession && !preparedZeroQueryGate)
+        throw recoveryError(retained.binding.submission.state);
       this.validateBindingConfiguration(retained.binding, dispatch);
       retained.prepared = await this.executionManager.prepare(
         dispatch,
@@ -213,10 +222,11 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       retained.control = new HarnessControlClient(
         controlDescriptorPath(lineage),
       );
-      retained.binding.submission = {
-        ...emptySubmission(),
-        eventCursor: retained.binding.submission.eventCursor,
-      };
+      if (settledRetainedSession)
+        retained.binding.submission = {
+          ...emptySubmission(),
+          eventCursor: retained.binding.submission.eventCursor,
+        };
       retained.cancellation = deferred<void>();
       retained.inspection = this.inspection(retained, "starting", "idle");
       return preparedExecution(lineage, retained);
@@ -259,8 +269,17 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>> {
     const active = this.required(execution.lineage.lineageId);
+    this.assertAuthorizedExecution(dispatch, execution, active);
     active.activeDispatch = dispatch;
     if (active.binding.submission.state === "not_submitted") {
+      if (!["not_invoked", "acknowledged"].includes(active.binding.query.state))
+        throw claudeError(
+          "query_start_uncertain",
+          "Claude query-start state is not eligible for another execution command.",
+          "operator_recovery_required",
+          "execute",
+          "ambiguous",
+        );
       const prompt = harnessPromptFor(
         dispatch,
         active.prepared.materializedArtifacts,
@@ -282,13 +301,16 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         },
         inspection: this.inspection(active, "waiting_for_activity", "idle"),
       });
-      await active.client.send({
-        type: "execute_turn",
-        request_id: requestId,
-        turn_id: turnId,
-        prompt,
-        continuation: false,
-      });
+      // Persist query-start intent and prompt submission certainty before the
+      // command can cross the streamed-process side-effect boundary.
+      const startsQuery = active.binding.query.state === "not_invoked";
+      if (startsQuery) {
+        active.binding.query = {
+          state: "requested",
+          requestId,
+          invocationCount: 0,
+        };
+      }
       active.binding.submission = {
         state: "submitted",
         requestId,
@@ -302,6 +324,28 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         "unknown",
       );
       onEvent({ type: "inspection", inspection: active.inspection });
+      try {
+        await active.client.send({
+          type: "execute_turn",
+          request_id: requestId,
+          turn_id: turnId,
+          prompt,
+          continuation: Boolean(execution.lineage.nativeSession),
+        });
+      } catch (error) {
+        if (startsQuery) active.binding.query.state = "uncertain";
+        active.inspection = this.inspection(active, "unavailable", "unknown");
+        onEvent({ type: "inspection", inspection: active.inspection });
+        throw claudeError(
+          startsQuery ? "query_start_uncertain" : "submission_uncertain",
+          error instanceof Error
+            ? error.message
+            : "Claude execution command outcome is uncertain.",
+          "uncertain",
+          "execute",
+          "ambiguous",
+        );
+      }
     }
     return this.collect(dispatch, active, onEvent);
   }
@@ -315,6 +359,11 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     if (await structuredResultExists(dispatch.resultDirectory))
       return (await collectStepResult(dispatch)).envelope.outputs;
     const active = this.required(lineage.lineageId);
+    this.assertAuthorizedExecution(
+      dispatch,
+      { lineage, handle: _handle },
+      active,
+    );
     active.activeDispatch = dispatch;
     return this.collect(dispatch, active, onEvent);
   }
@@ -553,7 +602,16 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         detail:
           "Authoritative QE completion exists; wrapper/provider settlement is no longer required for replay.",
       };
-    if (["submitted", "native_accepted"].includes(binding.submission.state)) {
+    const retainedPreQueryContinuation =
+      binding.query.state === "acknowledged" &&
+      binding.submission.state === "not_submitted" &&
+      Boolean(lineage.nativeSession);
+    if (
+      binding.submission.state !== "settled" &&
+      !retainedPreQueryContinuation &&
+      (binding.query.state !== "not_invoked" ||
+        ["submitted", "native_accepted"].includes(binding.submission.state))
+    ) {
       if (dispatch) {
         const recovered =
           await this.executionManager.prepareAndReconcileStreamedProcess(
@@ -573,13 +631,17 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
           );
       }
       throw claudeError(
-        "submission_uncertain",
-        "The Worker lost Claude stdio after submission without provider-settlement evidence; automatic replay is forbidden.",
+        ["requested", "uncertain"].includes(binding.query.state)
+          ? "query_start_uncertain"
+          : "submission_uncertain",
+        "The Worker lost Claude stdio after query-start or prompt intent without settlement evidence; automatic replay is forbidden.",
         "operator_recovery_required",
         "recover",
         binding.submission.state === "native_accepted"
           ? "native_accepted"
-          : "submitted",
+          : binding.query.state === "acknowledged"
+            ? "submitted"
+            : "ambiguous",
       );
     }
     if (["cancelled", "terminal"].includes(binding.submission.state))
@@ -743,6 +805,16 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       model: dispatch.action.execution.configuration.model.model,
       effort: requiredEffort(dispatch),
       toolPolicyDigest: toolPolicyDigest(dispatch),
+      query:
+        recoveryBinding?.submission.state === "settled"
+          ? {
+              state: "not_invoked",
+              requestId: null,
+              invocationCount: 0,
+            }
+          : recoveryBinding?.query.state === "not_invoked"
+            ? { ...recoveryBinding.query }
+            : emptyQuery(),
       submission:
         recoveryBinding?.submission.state === "settled"
           ? {
@@ -752,7 +824,8 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
               continuationCount: recoveryBinding.submission.continuationCount,
               eventCursor: recoveryBinding.submission.eventCursor,
             }
-          : recoveryBinding?.submission.state === "not_submitted"
+          : recoveryBinding?.submission.state === "not_submitted" &&
+              recoveryBinding.query.state === "not_invoked"
             ? {
                 ...emptySubmission(),
                 continuationCount: recoveryBinding.submission.continuationCount,
@@ -797,14 +870,127 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       }
       // Provider turns have no transport lifetime deadline. Process exit,
       // cancellation, or an explicit protocol event settles this wait.
-      const event = await active.client.next(null);
+      let event: ClaudeWrapperEvent;
+      try {
+        event = await active.client.next(null);
+      } catch (error) {
+        const queryStartAmbiguous = active.binding.query.state === "requested";
+        if (queryStartAmbiguous) active.binding.query.state = "uncertain";
+        active.inspection = this.inspection(active, "unavailable", "unknown");
+        onEvent({ type: "inspection", inspection: active.inspection });
+        throw claudeError(
+          queryStartAmbiguous
+            ? "query_start_uncertain"
+            : "submission_uncertain",
+          error instanceof Error
+            ? error.message
+            : "Claude stream observation ended without query or prompt settlement evidence.",
+          "operator_recovery_required",
+          "observe",
+          active.binding.query.state === "acknowledged"
+            ? "submitted"
+            : "ambiguous",
+        );
+      }
       active.binding.submission.eventCursor += 1;
-      if (event.type === "fatal_error") throw eventError(event, "observe");
+      if (event.type === "fatal_error") {
+        if (
+          active.binding.submission.requestId &&
+          event.request_id !== active.binding.submission.requestId
+        ) {
+          if (active.binding.query.state === "requested")
+            active.binding.query.state = "uncertain";
+          active.inspection = this.inspection(active, "unavailable", "unknown");
+          onEvent({ type: "inspection", inspection: active.inspection });
+          throw claudeError(
+            active.binding.query.state === "acknowledged"
+              ? "submission_uncertain"
+              : "query_start_uncertain",
+            "Claude fatal evidence did not match the active query request.",
+            "operator_recovery_required",
+            "observe",
+            "ambiguous",
+          );
+        }
+        if (active.binding.query.state === "requested") {
+          if (
+            event.query_state === "not_invoked" &&
+            event.query_invocation_count === 0
+          ) {
+            active.binding.query = emptyQuery();
+            active.binding.submission = {
+              ...emptySubmission(),
+              eventCursor: active.binding.submission.eventCursor,
+            };
+          } else if (
+            event.query_state === "acknowledged" &&
+            event.query_invocation_count === 1
+          ) {
+            active.binding.query = {
+              state: "acknowledged",
+              requestId: event.request_id,
+              invocationCount: 1,
+            };
+          } else {
+            active.binding.query = {
+              state: "uncertain",
+              requestId: active.binding.query.requestId,
+              invocationCount: event.query_invocation_count,
+            };
+          }
+        } else if (
+          active.binding.query.state === "acknowledged" &&
+          (event.query_state !== "acknowledged" ||
+            event.query_invocation_count !== 1)
+        ) {
+          active.inspection = this.inspection(active, "unavailable", "unknown");
+          onEvent({ type: "inspection", inspection: active.inspection });
+          throw claudeError(
+            "submission_uncertain",
+            "Claude fatal evidence conflicted with an acknowledged query start.",
+            "operator_recovery_required",
+            "observe",
+            "ambiguous",
+          );
+        }
+        active.inspection = this.inspection(
+          active,
+          event.query_state === "not_invoked" ? "starting" : "unavailable",
+          "unknown",
+        );
+        onEvent({ type: "inspection", inspection: active.inspection });
+        throw eventError(event, "observe");
+      }
       if (event.type === "shutdown" || event.type === "ready")
         throw runtimeError(
           "Claude wrapper emitted an out-of-order lifecycle event.",
         );
       this.assertTurnCorrelation(event, active);
+      if (event.type === "query_started") {
+        if (
+          active.binding.query.state !== "requested" ||
+          event.query_invocation_count !== 1
+        )
+          throw claudeError(
+            "query_start_uncertain",
+            "Claude query-start acknowledgement conflicts with durable query intent.",
+            "uncertain",
+            "observe",
+            "ambiguous",
+          );
+        active.binding.query = {
+          state: "acknowledged",
+          requestId: event.request_id,
+          invocationCount: event.query_invocation_count,
+        };
+        active.inspection = this.inspection(
+          active,
+          "waiting_for_activity",
+          "unknown",
+        );
+        onEvent({ type: "inspection", inspection: active.inspection });
+        continue;
+      }
       if (event.type === "native_session") {
         active.inspection.nativeSession = nativeSessionRef(
           this.kind,
@@ -947,13 +1133,14 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       );
     const requestId = randomUUID();
     const turnId = randomUUID();
-    await active.client.send({
-      type: "execute_turn",
-      request_id: requestId,
-      turn_id: turnId,
-      continuation: true,
-      prompt: `Quest Engineering completion correction: ${decision.nativeStop.reason} Call qe_complete_step exactly once with the already-declared output keys.`,
-    });
+    const startsQuery = active.binding.query.state === "not_invoked";
+    if (startsQuery) {
+      active.binding.query = {
+        state: "requested",
+        requestId,
+        invocationCount: 0,
+      };
+    }
     active.binding.submission = {
       state: "submitted",
       requestId,
@@ -967,6 +1154,28 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       "unknown",
     );
     onEvent({ type: "inspection", inspection: active.inspection });
+    try {
+      await active.client.send({
+        type: "execute_turn",
+        request_id: requestId,
+        turn_id: turnId,
+        continuation: true,
+        prompt: `Quest Engineering completion correction: ${decision.nativeStop.reason} Call qe_complete_step exactly once with the already-declared output keys.`,
+      });
+    } catch (error) {
+      if (startsQuery) active.binding.query.state = "uncertain";
+      active.inspection = this.inspection(active, "unavailable", "unknown");
+      onEvent({ type: "inspection", inspection: active.inspection });
+      throw claudeError(
+        startsQuery ? "query_start_uncertain" : "submission_uncertain",
+        error instanceof Error
+          ? error.message
+          : "Claude corrective query command outcome is uncertain.",
+        "operator_recovery_required",
+        "execute",
+        "ambiguous",
+      );
+    }
     return null;
   }
 
@@ -1038,7 +1247,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     attention: HumanAttention | null = null,
   ): HarnessInspection {
     const detail = [
-      `Claude ${active.binding.submission.state}`,
+      `Claude query=${active.binding.query.state} turn=${active.binding.submission.state}`,
       active.lastUsage,
     ]
       .filter(Boolean)
@@ -1113,7 +1322,9 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       event.claude_code_version !== claude.claudeCodeVersion ||
       event.runtime_sha256 !==
         (this.options.fake?.runtimeSha256 ?? claude.runtimeSha256) ||
-      event.streamed_process !== "attached_only"
+      event.streamed_process !== "attached_only" ||
+      event.query_state !== "not_invoked" ||
+      event.query_invocation_count !== 0
     )
       throw runtimeError(
         "Claude wrapper/runtime provenance does not match the immutable profile.",
@@ -1282,6 +1493,78 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         "observe",
         "native_accepted",
       );
+  }
+
+  private assertAuthorizedExecution(
+    dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+    active: ActiveClaudeExecution,
+  ): void {
+    const supplied = parseClaudeTransportBinding(
+      execution.handle.transportBinding ?? null,
+    );
+    const environment = active.binding.process.environment;
+    const currentEnvironment = active.prepared.lease.ref;
+    if (!dispatch.promptAuthorizedAt || !dispatch.promptIntentAt)
+      throw claudeError(
+        "permission_denied",
+        "Claude query start requires committed Product inference authorization and durable prompt intent.",
+        "terminal_not_recoverable",
+        "execute",
+        "not_submitted",
+      );
+    if (
+      !supplied ||
+      supplied.wrapperGeneration !== active.binding.wrapperGeneration ||
+      supplied.profileId !== active.binding.profileId ||
+      supplied.profileDigest !== active.binding.profileDigest ||
+      supplied.workspaceIdentity !== active.binding.workspaceIdentity ||
+      supplied.configurationIdentity !== active.binding.configurationIdentity ||
+      supplied.wrapperExecutable !== active.binding.wrapperExecutable ||
+      supplied.wrapperVersion !== active.binding.wrapperVersion ||
+      supplied.sdkVersion !== active.binding.sdkVersion ||
+      supplied.claudeCodeVersion !== active.binding.claudeCodeVersion ||
+      supplied.runtimeSha256 !== active.binding.runtimeSha256 ||
+      supplied.model !== active.binding.model ||
+      supplied.effort !== active.binding.effort ||
+      supplied.toolPolicyDigest !== active.binding.toolPolicyDigest ||
+      supplied.process.backendKind !== active.binding.process.backendKind ||
+      supplied.process.backendProcessId !==
+        active.binding.process.backendProcessId ||
+      supplied.process.processStartIdentity !==
+        active.binding.process.processStartIdentity ||
+      supplied.process.processGeneration !==
+        active.binding.process.processGeneration ||
+      supplied.process.executable !== active.binding.process.executable ||
+      supplied.process.observedExecutable !==
+        active.binding.process.observedExecutable ||
+      supplied.process.environment.workerId !== environment.workerId ||
+      supplied.process.environment.runId !== environment.runId ||
+      supplied.process.environment.environmentId !==
+        environment.environmentId ||
+      supplied.process.environment.incarnation !== environment.incarnation ||
+      supplied.process.environment.profile.id !== environment.profile.id ||
+      supplied.process.environment.profile.digest !==
+        environment.profile.digest ||
+      execution.lineage.lineageId !== execution.handle.executionId ||
+      execution.lineage.activeActionId !== dispatch.action.action_id ||
+      active.binding.configurationIdentity !==
+        configurationIdentity(dispatch) ||
+      environment.workerId !== this.config.workerId ||
+      environment.runId !== dispatch.action.run_id ||
+      environment.environmentId !== currentEnvironment.environmentId ||
+      environment.incarnation !== currentEnvironment.incarnation ||
+      environment.profile.id !== currentEnvironment.profile.id ||
+      environment.profile.digest !== currentEnvironment.profile.digest
+    )
+      throw claudeError(
+        "stale_generation",
+        "Claude query start failed current Action, wrapper, environment, profile, or lineage fencing.",
+        "terminal_not_recoverable",
+        "execute",
+        "not_submitted",
+      );
+    this.validateBindingConfiguration(active.binding, dispatch);
   }
 
   private assertDispatch(
@@ -1516,7 +1799,31 @@ function toolPolicyDigest(dispatch: DispatchRecord): string {
   return hash(JSON.stringify(semanticTools(dispatch)));
 }
 function configurationIdentity(dispatch: DispatchRecord): string {
-  return hash(physicalConfiguration(dispatch.action));
+  const setup = dispatch.action.harness_setup;
+  return hash(
+    JSON.stringify({
+      physicalConfiguration: physicalConfiguration(dispatch.action),
+      harnessSetup: setup
+        ? [
+            setup.setup_id,
+            setup.setup_generation,
+            setup.physical_lineage_id,
+            setup.environment.environment_id,
+            setup.environment.incarnation,
+            setup.environment.profile.id,
+            setup.environment.profile.digest,
+            setup.config_identity,
+          ]
+        : null,
+    }),
+  );
+}
+function emptyQuery(): ClaudeTransportState["query"] {
+  return {
+    state: "not_invoked",
+    requestId: null,
+    invocationCount: 0,
+  };
 }
 function emptySubmission(): ClaudeTransportState["submission"] {
   return {
@@ -1564,7 +1871,10 @@ function persistedInspection(
 ): HarnessInspection {
   return {
     state,
-    activity: { state: activity, detail: `Claude ${binding.submission.state}` },
+    activity: {
+      state: activity,
+      detail: `Claude query=${binding.query.state} turn=${binding.submission.state}`,
+    },
     nativeSession: lineage.nativeSession,
     health: state === "unavailable" ? "unavailable" : "unknown",
     attention: lineage.attention,
@@ -1610,6 +1920,7 @@ function eventError(
     event.code === "provider_unavailable"
       ? "auto_retryable"
       : event.code === "submission_uncertain" ||
+          event.code === "query_start_uncertain" ||
           event.side_effect_certainty === "ambiguous"
         ? "uncertain"
         : terminal

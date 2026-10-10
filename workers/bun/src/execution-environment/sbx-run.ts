@@ -76,7 +76,7 @@ import {
   SBX_CLAUDE_WRAPPER,
   SBX_CLAUDE_WRAPPER_VERSION,
   SBX_CLAUDE_ZOD_MODULE,
-  SBX_CODING_EXECUTION_PROFILE_V2,
+  SBX_CODING_EXECUTION_PROFILE_V3,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_DISCOVERY_SCRIPT,
@@ -361,8 +361,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       const context: AccountAvailabilityContext = {
         accountScope: discovered.accountScope,
         authGeneration: discovered.authGeneration,
-        profileId: SBX_CODING_EXECUTION_PROFILE_V2.id,
-        profileDigest: SBX_CODING_EXECUTION_PROFILE_V2.digest,
+        profileId: SBX_CODING_EXECUTION_PROFILE_V3.id,
+        profileDigest: SBX_CODING_EXECUTION_PROFILE_V3.digest,
       };
       discovered.models = await this.accountAvailability.annotate(
         discovered.models,
@@ -452,8 +452,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   ): Promise<PreparedSbxHarnessSetup> {
     if (
       context.harnessKind !== "claude_agent_sdk" ||
-      context.profile.id !== SBX_CODING_EXECUTION_PROFILE_V2.id ||
-      context.profile.digest !== SBX_CODING_EXECUTION_PROFILE_V2.digest
+      context.profile.id !== SBX_CODING_EXECUTION_PROFILE_V3.id ||
+      context.profile.digest !== SBX_CODING_EXECUTION_PROFILE_V3.digest
     )
       throw new Error(
         "Harness setup identity does not match the Claude execution profile.",
@@ -674,8 +674,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       discovered.compatible =
         discovered.compatible &&
         mcpReady &&
-        lease.ref.profile.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
-        lease.ref.profile.digest === SBX_CODING_EXECUTION_PROFILE_V2.digest;
+        lease.ref.profile.id === SBX_CODING_EXECUTION_PROFILE_V3.id &&
+        lease.ref.profile.digest === SBX_CODING_EXECUTION_PROFILE_V3.digest;
       discovered.diagnostics.push(
         mcpReady
           ? "The profile-owned qe stdio MCP registration is enabled."
@@ -698,8 +698,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         {
           accountScope: evidence.accountScope,
           authGeneration: evidence.authGeneration,
-          profileId: SBX_CODING_EXECUTION_PROFILE_V2.id,
-          profileDigest: SBX_CODING_EXECUTION_PROFILE_V2.digest,
+          profileId: SBX_CODING_EXECUTION_PROFILE_V3.id,
+          profileDigest: SBX_CODING_EXECUTION_PROFILE_V3.digest,
         },
         { provider: evidence.provider, model: evidence.model },
         evidence.state,
@@ -1999,7 +1999,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           frozenBase: { kind: "git_commit", value: input.frozenBase },
         },
       },
-      profile: SBX_CODING_EXECUTION_PROFILE_V2,
+      profile: SBX_CODING_EXECUTION_PROFILE_V3,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
       networkRequirements: [
         {

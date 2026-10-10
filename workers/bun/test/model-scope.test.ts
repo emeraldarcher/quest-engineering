@@ -161,7 +161,7 @@ test("dispatch availability defaults active and supports generic maintenance reg
   expect(activeCapabilities.dispatch_availability).toBe("active");
   expect(activeCapabilities.executors[0]?.execution_environment).toMatchObject({
     backend_kind: "sbx",
-    profile: { id: "qe-coding-execution-v2" },
+    profile: { id: "qe-coding-execution-v3" },
     capabilities: expect.arrayContaining([
       { kind: "filesystem_namespace", mode: "isolated" },
       { kind: "host_filesystem", mode: "unexposed" },
