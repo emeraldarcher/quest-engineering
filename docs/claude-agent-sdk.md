@@ -45,13 +45,25 @@ No new generic terminal topology or Claude-specific registry columns were added.
 
 Discovery verifies installed profile artifacts and `process.streamed`, but reports `auth_required` and does not advertise a schedulable executor. Disposable discovery intentionally has no Claude credential state.
 
-The only future setup operation is:
+The only provider-authentication setup operation is:
 
 ```text
 /opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-<arch>/claude auth login
 ```
 
-It may be launched only after an explicit current human setup authorization, inside the exact Run-owned SBX, with Run/lineage-private `HOME` and `CLAUDE_CONFIG_DIR`. The command is unmodified. Setup output remains on the bounded private stream and is not copied into diagnostics.
+It may be launched only after an explicit current human setup authorization, inside the exact Run-owned SBX, with Run/lineage-private `HOME` and `CLAUDE_CONFIG_DIR`. The command is unmodified. Setup output remains on a bounded ephemeral local-only relay and is never written to PostgreSQL, Worker SQLite, diagnostics, or protocol-result logs.
+
+Worker Protocol v13 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
+
+1. Global disposable discovery verifies only immutable artifacts and publishes a `harness_setups` capability with `authentication: context_required`; it never publishes a globally ready Claude executor.
+2. The normal Run workspace lifecycle first selects one setup-capable Worker and provisions the durable Run worktree. Work Yard then offers a separate “Set up subscription” action for the pending occurrence.
+3. A local-desktop human confirmation records `human_harness_setup` authority, pre-binds the exact Member and logical lineage, and creates a setup generation containing Worker generation, Run/action/occurrence, worktree/binding/root, profile digest, physical lineage, and resolved model/effort/tool contract. This authority cannot authorize Product inference.
+4. The Worker reserves that exact physical lineage, creates or adopts the exact Run SBX and private-Git worktree, creates `/qe/state/claude-lineages/<lineage-hash>/config`, checks `claude auth status`, and only then may invoke the command above once for that generation.
+5. `requested`, `acknowledged`, HumanAttention, ready, failed, uncertain, and cancelled state is durable. A known pre-invocation failure can be explicitly retried. An acknowledged or ambiguous invocation is never replayed automatically after restart. Cancellation is persisted before process interruption and fences late completion.
+6. Ready evidence is contextual: environment UUID/incarnation, profile ID/digest, config identity, physical/logical lineage, Worker generation, workspace identity, and exact resolved configuration must all still match. The scheduler overlays that evidence only for the owning Action or a compatible `continue_from` lineage. Unrelated Actions/Runs remain unschedulable and never inherit credentials.
+7. Normal scheduling then creates the first `ExecutionAttempt` and sends the setup binding with `execute_action`. The Worker rejects stale, cross-generation, cross-Run, cross-action, incompatible-continuation, replaced-environment, or mismatched-config evidence before SDK execution.
+
+Work Yard's setup confirmation explicitly states that the user reviewed the decision notice and independently chose whether to proceed under Anthropic's terms. QE neither accepts terms nor infers consent. Official provider interaction bytes are retrieved only on demand from an in-memory five-minute relay; refresh, expiry, restart, cancellation, and Run cleanup can make them unavailable without weakening the durable setup outcome.
 
 QE does not:
 

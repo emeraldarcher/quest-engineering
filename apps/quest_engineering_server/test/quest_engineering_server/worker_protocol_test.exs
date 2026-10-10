@@ -18,12 +18,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 12
+  @protocol_version 13
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v12 logical Workspace bindings" do
+  test "accepts explicit protocol v13 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -487,6 +487,58 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                "responded_at" => "2026-09-17T12:00:00.000000Z"
              }
            }
+  end
+
+  test "decodes generation-bound harness setup state without persisting interaction output" do
+    payload = %{
+      "type" => "harness_setup_state",
+      "protocol_version" => @protocol_version,
+      "worker_id" => @worker_id,
+      "setup_id" => "setup-1",
+      "setup_generation" => 2,
+      "action_id" => "action-1",
+      "run_id" => "run-1",
+      "occurrence_id" => "occurrence-1",
+      "physical_lineage_id" => "lineage-1",
+      "state" => "human_interaction_required",
+      "invocation_state" => "acknowledged",
+      "inspection" => %{
+        "state" => "human_interaction_required",
+        "authenticated" => false,
+        "detail" => "Complete the official provider flow.",
+        "environment" => %{
+          "environment_id" => "environment-1",
+          "incarnation" => "incarnation-1",
+          "profile" => %{"id" => "profile-1", "digest" => "sha256:profile-1"}
+        },
+        "config_identity" => "config-1"
+      },
+      "attention" => %{
+        "attention_id" => "attention-1",
+        "kind" => "provider_authentication",
+        "message" => "Complete the official provider flow."
+      },
+      "failure" => nil,
+      "ephemeral_output" => "official interactive output"
+    }
+
+    assert {:ok,
+            %{
+              type: :harness_setup_state,
+              setup: %{
+                setup_id: "setup-1",
+                setup_generation: 2,
+                state: :human_interaction_required,
+                invocation_state: :acknowledged
+              },
+              ephemeral: "official interactive output"
+            }} = WorkerProtocol.decode_worker_message(payload, @worker_id)
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             payload
+             |> Map.put("setup_generation", 1)
+             |> put_in(["inspection", "environment", "profile", "digest"], nil)
+             |> WorkerProtocol.decode_worker_message(@worker_id)
   end
 
   test "encodes generic Run cleanup and validates structured resource outcomes" do

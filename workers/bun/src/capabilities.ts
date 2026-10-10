@@ -5,6 +5,7 @@ import type {
   ExecuteAction,
   ExecutorCapability,
   ExecutorExecutionEnvironment,
+  HarnessSetupCapability,
   WorkerCapabilities,
 } from "./protocol/types.ts";
 
@@ -59,6 +60,54 @@ export function executorCapabilities(
     tool_enforcement: "exact",
     tool_profile: { tools: [...QE_TOOL_CAPABILITIES] },
   };
+}
+
+export function discoveredHarnessSetupCapabilities(
+  discoveries: HarnessDiscovery[],
+  executionEnvironment?: ExecutorExecutionEnvironment,
+): HarnessSetupCapability[] {
+  return discoveries
+    .filter(
+      (discovery) =>
+        discovery.integration.status === "auth_required" &&
+        discovery.integration.installed &&
+        discovery.integration.setupAvailable === true &&
+        discovery.models.length > 0,
+    )
+    .map((discovery) => ({
+      harness_kind: discovery.kind,
+      setup_kind: "provider_authentication" as const,
+      setup_available: true as const,
+      authentication: "context_required" as const,
+      ...(executionEnvironment
+        ? {
+            execution_environment:
+              cloneExecutionEnvironment(executionEnvironment),
+          }
+        : {}),
+      models: discovery.models
+        .filter(
+          (
+            model,
+          ): model is typeof model & {
+            reasoningCapability: Exclude<
+              typeof model.reasoningCapability,
+              { kind: "unknown" }
+            >;
+          } => model.reasoningCapability.kind !== "unknown",
+        )
+        .map((model) => ({
+          provider: model.provider,
+          model: model.model,
+          display_name: model.displayName,
+          account_availability: model.accountAvailability,
+          reasoning_capability: model.reasoningCapability,
+        })),
+      supported_tool_policies: ["exact" as const],
+      tool_enforcement: "exact" as const,
+      tool_profile: { tools: [...QE_TOOL_CAPABILITIES] },
+    }))
+    .filter((setup) => setup.models.length > 0);
 }
 
 export function discoveredExecutorCapabilities(
@@ -128,12 +177,16 @@ export function workerCapabilities(
     executors: discoveries
       ? discoveredExecutorCapabilities(discoveries, executionEnvironment)
       : [executorCapabilities(config, executionEnvironment)],
+    harness_setups: discoveries
+      ? discoveredHarnessSetupCapabilities(discoveries, executionEnvironment)
+      : [],
     features: [
       "run_delivery_v1",
       "run_worktree_retention_v1",
       "run_resource_cleanup_v1",
       "workspace_binding_status_v1",
       "live_execution_sessions_v1",
+      "run_bound_harness_setup_v1",
     ],
     workspace_bindings: config.workspaceBindings.map((binding) => ({
       ...binding,
@@ -156,7 +209,10 @@ export function assertExecutionSupported(
   const compatible =
     binding !== undefined &&
     accessRank[binding.max_access] >= accessRank[workspace.access] &&
-    capabilities.executors.some(
+    [
+      ...capabilities.executors,
+      ...(action.harness_setup ? capabilities.harness_setups : []),
+    ].some(
       (executor) =>
         executor.harness_kind === requested.harness_kind &&
         (!requested.resolved_tool_profile.tools.includes("terminal.shell") ||
@@ -176,7 +232,12 @@ export function assertExecutionSupported(
             ),
         ) &&
         toolSelectionSupported(executor, requested) &&
-        harnessCombinationSupported(executor.harness_kind, action),
+        harnessCombinationSupported(executor.harness_kind, action) &&
+        (!action.harness_setup ||
+          (executor.execution_environment?.profile.id ===
+            action.harness_setup.environment.profile.id &&
+            executor.execution_environment?.profile.digest ===
+              action.harness_setup.environment.profile.digest)),
     );
   if (!compatible)
     throw new Error(

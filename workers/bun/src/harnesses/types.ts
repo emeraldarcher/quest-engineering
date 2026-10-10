@@ -4,6 +4,10 @@ import type {
   JsonValue,
   LocalDispatchState,
   ReasoningCapability,
+  ResolvedToolProfile,
+  ToolEnforcement,
+  ToolPolicy,
+  WorkspaceAccess,
 } from "../protocol/types.ts";
 import type { TerminalAttachmentDescriptor } from "../session-host/types.ts";
 import {
@@ -54,6 +58,7 @@ export interface HarnessDiscovery {
     detail: string;
     installed: boolean;
     authenticated: boolean;
+    setupAvailable?: boolean;
   };
   models: HarnessModelCapability[];
   capabilities: HarnessCapabilities;
@@ -585,11 +590,98 @@ export interface HarnessAdoptionCandidate {
  * terminal creation, recovery, attachment and raw transport stay behind the
  * TerminalSessionBackend contract.
  */
+export interface HarnessSetupContext {
+  setupId: string;
+  setupGeneration: number;
+  actionId: string;
+  runId: string;
+  occurrenceId: string;
+  memberKey: string;
+  harnessKind: HarnessKind;
+  physicalLineageId: string;
+  logicalLineageId: string;
+  workspaceId: string;
+  worktreeId: string;
+  workspaceBindingId: string;
+  canonicalRoot: string;
+  workspaceAccess: WorkspaceAccess;
+  profile: { id: string; digest: string };
+  configuration: {
+    model: { provider: string; model: string };
+    reasoning: string | null;
+    reasoningCapability: ReasoningCapability;
+    toolPolicy: ToolPolicy;
+    toolEnforcement: ToolEnforcement;
+    resolvedToolProfile: ResolvedToolProfile;
+  };
+}
+
+export interface HarnessSetupInspection {
+  state:
+    | "preparing"
+    | "human_interaction_required"
+    | "ready"
+    | "failed"
+    | "uncertain"
+    | "cancelled";
+  authenticated: boolean;
+  detail: string;
+  environment: {
+    environmentId: string;
+    incarnation: string;
+    profile: { id: string; digest: string };
+  } | null;
+  configIdentity: string | null;
+}
+
+export interface HarnessSetupPrepared {
+  context: HarnessSetupContext;
+  inspection: HarnessSetupInspection;
+  /** Adapter-owned in-memory handle. It is never serialized or persisted. */
+  native: object;
+}
+
+export type HarnessSetupEvent =
+  | { type: "invocation_acknowledged" }
+  | {
+      type: "human_interaction_required";
+      attentionId: string;
+      message: string;
+      /** Ephemeral official-provider output. It must never be durably persisted. */
+      ephemeralOutput?: string;
+    }
+  | { type: "ready"; inspection: HarnessSetupInspection }
+  | { type: "failed"; code: string; message: string }
+  | { type: "uncertain"; code: string; message: string }
+  | { type: "cancelled" };
+
+export interface HarnessSetupOperation {
+  completion: Promise<HarnessSetupInspection>;
+  respond(attentionId: string, value: string): Promise<void>;
+  cancel(): Promise<void>;
+}
+
+export interface AgentHarnessSetup {
+  readonly kind: "provider_authentication";
+  prepare(context: HarnessSetupContext): Promise<HarnessSetupPrepared>;
+  begin(
+    prepared: HarnessSetupPrepared,
+    authorization: {
+      authorizationId: string;
+      kind: "human_harness_setup";
+      authorizedAt: string;
+    },
+    onEvent: (event: HarnessSetupEvent) => void,
+  ): Promise<HarnessSetupOperation>;
+  inspect(prepared: HarnessSetupPrepared): Promise<HarnessSetupInspection>;
+}
+
 export interface AgentHarness {
   readonly kind: HarnessKind;
   readonly displayName: string;
   readonly integrationStrategy: HarnessIntegrationStrategy;
   readonly capabilities: HarnessCapabilities;
+  readonly setup?: AgentHarnessSetup;
 
   discover(): Promise<HarnessDiscovery>;
   start(

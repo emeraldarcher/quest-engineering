@@ -298,6 +298,7 @@ function chooseModel(value: string) {
 }
 
 function availabilityLabel(option: ExecutionOption): string {
+  if (option.setup_available) return "Run-bound subscription setup required";
   if (option.account_availability === "verified_available")
     return "Verified available";
   if (option.account_availability === "verified_unavailable")

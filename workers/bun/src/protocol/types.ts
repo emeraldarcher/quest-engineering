@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 12 as const;
+export const WORKER_PROTOCOL_VERSION = 13 as const;
 
 export type JsonValue =
   | string
@@ -115,6 +115,18 @@ export interface OperationalRecoveryExecution {
   request_id: string | null;
 }
 
+export interface HarnessSetupBinding {
+  setup_id: string;
+  setup_generation: number;
+  physical_lineage_id: string;
+  environment: {
+    environment_id: string;
+    incarnation: string;
+    profile: { id: string; digest: string };
+  };
+  config_identity: string;
+}
+
 export interface ExecuteAction {
   type: "execute_action";
   protocol_version: typeof WORKER_PROTOCOL_VERSION;
@@ -131,6 +143,64 @@ export interface ExecuteAction {
   context_requirement: { selector: "fresh" | "continue_from"; value: null };
   context_lineage_occurrence_id: string | null;
   operational_recovery?: OperationalRecoveryExecution;
+  harness_setup?: HarnessSetupBinding;
+}
+
+export interface PrepareHarnessSetupCommand {
+  type: "prepare_harness_setup";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  setup: {
+    setup_id: string;
+    setup_generation: number;
+    authorization_id: string;
+    authorization_kind: "human_harness_setup";
+    authorized_at: string;
+    action_id: string;
+    run_id: string;
+    occurrence_id: string;
+    member_key: string;
+    harness_kind: string;
+    physical_lineage_id: string;
+    logical_lineage_id: string;
+    workspace_id: string;
+    worktree_id: string;
+    workspace_binding_id: string;
+    canonical_root: string;
+    workspace_access: WorkspaceAccess;
+    profile: { id: string; digest: string };
+    configuration: {
+      model: { provider: string; model: string };
+      reasoning: Reasoning | null;
+      reasoning_capability: ReasoningCapability;
+      tool_policy: ToolPolicy;
+      tool_enforcement: ToolEnforcement;
+      resolved_tool_profile: ResolvedToolProfile;
+    };
+  };
+}
+
+export interface CancelHarnessSetupCommand {
+  type: "cancel_harness_setup";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  setup_id: string;
+  setup_generation: number;
+  request_id: string;
+}
+
+export interface RespondHarnessSetupCommand {
+  type: "respond_harness_setup";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  setup_id: string;
+  setup_generation: number;
+  attention_id: string;
+  request_id: string;
+  value: string;
 }
 
 export interface HumanAttentionResponseCommand {
@@ -324,6 +394,12 @@ export interface ExecutorCapability {
   tool_profile: ResolvedToolProfile;
 }
 
+export interface HarnessSetupCapability extends ExecutorCapability {
+  setup_kind: "provider_authentication";
+  setup_available: true;
+  authentication: "context_required";
+}
+
 export interface WorkerCapabilities {
   os: string;
   arch: string;
@@ -331,12 +407,14 @@ export interface WorkerCapabilities {
   dispatch_availability?: "active" | "maintenance";
   tags: string[];
   executors: ExecutorCapability[];
+  harness_setups: HarnessSetupCapability[];
   features?: Array<
     | "run_delivery_v1"
     | "run_worktree_retention_v1"
     | "run_resource_cleanup_v1"
     | "workspace_binding_status_v1"
     | "live_execution_sessions_v1"
+    | "run_bound_harness_setup_v1"
   >;
   workspace_bindings: Array<{
     binding_id: string;

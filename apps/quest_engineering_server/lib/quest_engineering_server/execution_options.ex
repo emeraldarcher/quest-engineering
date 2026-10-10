@@ -47,9 +47,20 @@ defmodule QuestEngineering.Server.ExecutionOptions do
 
     readiness = if active_ready, do: [worker.connection_generation], else: []
 
-    Enum.flat_map(executors, fn executor ->
-      profile(executor, bindings, active_ready, readiness)
-    end)
+    setup_capabilities = Map.get(worker.capabilities, "harness_setups", [])
+
+    Enum.flat_map(
+      Enum.map(executors, &{&1, false}) ++ Enum.map(setup_capabilities, &{&1, true}),
+      fn {executor, setup_available} ->
+        profile(
+          executor,
+          bindings,
+          active_ready and not setup_available,
+          if(setup_available, do: [], else: readiness),
+          setup_available
+        )
+      end
+    )
   end
 
   defp profiles(_worker), do: []
@@ -64,7 +75,8 @@ defmodule QuestEngineering.Server.ExecutionOptions do
          } = executor,
          bindings,
          available,
-         active_ready_generations
+         active_ready_generations,
+         setup_available
        )
        when is_binary(harness) and harness != "" and is_list(models) and is_list(tools) and
               is_list(supported_policies) and
@@ -92,7 +104,8 @@ defmodule QuestEngineering.Server.ExecutionOptions do
             tools,
             workspaces,
             available,
-            active_ready_generations
+            active_ready_generations,
+            setup_available
           )
         )
       end)
@@ -101,7 +114,14 @@ defmodule QuestEngineering.Server.ExecutionOptions do
     end
   end
 
-  defp profile(_executor, _bindings, _available, _active_ready_generations), do: []
+  defp profile(
+         _executor,
+         _bindings,
+         _available,
+         _active_ready_generations,
+         _setup_available
+       ),
+       do: []
 
   defp execution_option(
          policy_kind,
@@ -111,7 +131,8 @@ defmodule QuestEngineering.Server.ExecutionOptions do
          tools,
          workspaces,
          available,
-         active_ready_generations
+         active_ready_generations,
+         setup_available
        ) do
     %{
       harness: harness,
@@ -123,6 +144,7 @@ defmodule QuestEngineering.Server.ExecutionOptions do
       workspaces: workspaces,
       account_availability: model.account_availability,
       available: available and model.account_availability != "verified_unavailable",
+      setup_available: setup_available,
       active_ready_generations: active_ready_generations
     }
   end

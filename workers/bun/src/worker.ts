@@ -23,6 +23,8 @@ import {
   turnLifecycle,
 } from "./dispatch/registry.ts";
 import { SbxRunExecutionManager } from "./execution-environment/sbx-run.ts";
+import { HarnessSetupCoordinator } from "./harness-setup.ts";
+import { HarnessSetupStore } from "./harness-setup-store.ts";
 import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
 import { ClaudeAgentSdkAdapter } from "./harnesses/claude-agent-sdk/adapter.ts";
 import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
@@ -35,8 +37,11 @@ import { structuredResultExists } from "./harnesses/turn-lifecycle.ts";
 import type { AgentHarness } from "./harnesses/types.ts";
 import {
   decodeCancelDispatch,
+  decodeCancelHarnessSetup,
   decodeExecuteAction,
   decodeHumanAttentionResponse,
+  decodePrepareHarnessSetup,
+  decodeRespondHarnessSetup,
 } from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
@@ -92,6 +97,7 @@ export class QuestEngineeringWorker {
   readonly harnessControl: HarnessControlAuthority;
   readonly harnesses: HarnessRegistry;
   private readonly harnessControlServer: HarnessControlServer;
+  private readonly setupCoordinator: HarnessSetupCoordinator;
   private readonly channel: PhoenixWorkerChannel;
   private readonly capabilities: WorkerCapabilities;
   private readonly herdr: WorkerInfrastructure | null;
@@ -217,6 +223,53 @@ export class QuestEngineeringWorker {
       this.registry,
       2,
       this.sbxExecutionManager ?? undefined,
+    );
+    this.setupCoordinator = new HarnessSetupCoordinator(
+      new HarnessSetupStore(config.dataRoot),
+      this.registry,
+      this.harnesses,
+      (record, ephemeralOutput) =>
+        this.channel
+          .sendProtocol({
+            type: "harness_setup_state",
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            worker_id: this.config.workerId,
+            setup_id: record.setupId,
+            setup_generation: record.setupGeneration,
+            action_id: record.command.setup.action_id,
+            run_id: record.command.setup.run_id,
+            occurrence_id: record.command.setup.occurrence_id,
+            physical_lineage_id: record.command.setup.physical_lineage_id,
+            state: record.state,
+            invocation_state: record.invocationState,
+            inspection: record.inspection
+              ? {
+                  state: record.inspection.state,
+                  authenticated: record.inspection.authenticated,
+                  detail: record.inspection.detail,
+                  environment: record.inspection.environment
+                    ? {
+                        environment_id:
+                          record.inspection.environment.environmentId,
+                        incarnation: record.inspection.environment.incarnation,
+                        profile: record.inspection.environment.profile,
+                      }
+                    : null,
+                  config_identity: record.inspection.configIdentity,
+                }
+              : null,
+            attention: record.attentionId
+              ? {
+                  attention_id: record.attentionId,
+                  kind: "provider_authentication",
+                  message:
+                    "Complete authentication in the official provider flow. This does not authorize model inference.",
+                }
+              : null,
+            failure: record.failure,
+            ...(ephemeralOutput ? { ephemeral_output: ephemeralOutput } : {}),
+          })
+          .then(() => undefined),
     );
     this.harnessControlServer = new HarnessControlServer(this.harnessControl);
     // Harness and terminal transport are composed once per long-lived Worker.
@@ -385,10 +438,11 @@ export class QuestEngineeringWorker {
     if (
       requireExecutor &&
       discovered.executors.length === 0 &&
+      discovered.harness_setups.length === 0 &&
       discoveries.every((item) => item.integration.status !== "ready")
     )
       throw new Error(
-        `No enabled harness is ready: ${discoveries
+        `No enabled harness is execution-ready or setup-capable: ${discoveries
           .map((item) => `${item.displayName}: ${item.integration.detail}`)
           .join(" ")}`,
       );
@@ -453,6 +507,7 @@ export class QuestEngineeringWorker {
       return;
     }
     await this.harnessControlServer.stop();
+    this.setupCoordinator.close();
     await this.sbxExecutionManager?.close();
     this.registry.close();
     this.cleanups.close();
@@ -569,6 +624,34 @@ export class QuestEngineeringWorker {
       );
       return;
     }
+    if (message.type === "prepare_harness_setup") {
+      await this.awaitClaimReadiness(generation);
+      const command = decodePrepareHarnessSetup(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.setupCoordinator.prepare(command);
+      return;
+    }
+    if (message.type === "cancel_harness_setup") {
+      const command = decodeCancelHarnessSetup(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.setupCoordinator.cancel(command);
+      return;
+    }
+    if (message.type === "respond_harness_setup") {
+      const command = decodeRespondHarnessSetup(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.setupCoordinator.respond(command);
+      return;
+    }
     if (message.type === "cancel_dispatch") {
       const cancellation = decodeCancelDispatch(
         message,
@@ -597,6 +680,12 @@ export class QuestEngineeringWorker {
       await this.awaitClaimReadiness(generation);
       const action = decodeExecuteAction(message, this.config.workerId);
       assertExecutionSupported(action, this.capabilities);
+      if (action.harness_setup)
+        this.setupCoordinator.assertExecutionBinding(action);
+      else if (
+        action.execution.configuration.harness_kind === "claude_agent_sdk"
+      )
+        throw new Error("Context-bound Claude setup evidence is required.");
       const worktree = await this.worktrees.verify(
         action.execution.execution_workspace.worktree_id,
       );
@@ -784,6 +873,7 @@ export class QuestEngineeringWorker {
         "Control plane did not acknowledge current-generation Worker readiness.",
       );
     }
+    await this.setupCoordinator.reconcile();
     console.log(
       JSON.stringify({
         event: "worker_active_ready",
@@ -1158,10 +1248,11 @@ export class QuestEngineeringWorker {
     });
   }
 
-  private startRunCleanup(
+  private async startRunCleanup(
     request: RunCleanupRequest,
     retryFailures: boolean,
   ): Promise<void> {
+    await this.setupCoordinator.invalidateRun(request.runId);
     return this.cleanupCoordinator.request(request, retryFailures);
   }
 
@@ -1169,6 +1260,8 @@ export class QuestEngineeringWorker {
     if (this.cleanupScanActive || !this.controlPlaneReady()) return;
     this.cleanupScanActive = true;
     try {
+      for (const cleanup of this.cleanups.listReconcilable())
+        await this.setupCoordinator.invalidateRun(cleanup.runId);
       await this.cleanupCoordinator.reconcilePending();
     } finally {
       this.cleanupScanActive = false;

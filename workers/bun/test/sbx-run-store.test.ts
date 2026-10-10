@@ -2,9 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
+import { SBX_CODING_EXECUTION_PROFILE_V2 } from "../src/execution-environment/sbx-profile.ts";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import { SbxRunExecutionStore } from "../src/execution-environment/sbx-run-store.ts";
 import type { EnvironmentRef } from "../src/execution-environment/types.ts";
+import type { HarnessSetupContext } from "../src/harnesses/types.ts";
 import type {
   PrivateGitChangeExport,
   PrivateLineageWorkspace,
@@ -15,6 +17,89 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
+});
+
+test("Run-bound setup rejects mismatched harness, Workspace, and access before environment creation", async () => {
+  const parent = join(process.cwd(), ".pi", "tmp");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "sbx-run-setup-guard-"));
+  roots.push(root);
+  let ensureCount = 0;
+  const worktree = {
+    state: "ready",
+    runId: "run-1",
+    workspaceId: "workspace-1",
+    bindingId: "binding-1",
+    canonicalRoot: "/host/run-1",
+    baseRevision: "base-1",
+  };
+  const manager = new SbxRunExecutionManager(
+    {
+      workerId: "worker-1",
+      dataRoot: root,
+      enabledHarnesses: ["claude_agent_sdk"],
+      workspaceBindings: [
+        {
+          binding_id: "binding-1",
+          workspace_id: "workspace-1",
+          max_access: "read_only",
+        },
+      ],
+    } as unknown as WorkerConfig,
+    { verify: async () => worktree } as never,
+    {
+      backend: {
+        ensure: async () => {
+          ensureCount += 1;
+          throw new Error("environment creation must not be reached");
+        },
+        close: () => undefined,
+      } as never,
+      privateGit: { close: () => undefined } as never,
+    },
+  );
+  const context = {
+    setupId: "setup-1",
+    setupGeneration: 1,
+    actionId: "action-1",
+    runId: "run-1",
+    occurrenceId: "occurrence-1",
+    memberKey: "member-1",
+    harnessKind: "claude_agent_sdk",
+    physicalLineageId: "physical-1",
+    logicalLineageId: "logical-1",
+    workspaceId: "workspace-1",
+    worktreeId: "worktree-1",
+    workspaceBindingId: "binding-1",
+    canonicalRoot: "/host/run-1",
+    workspaceAccess: "read_only",
+    profile: SBX_CODING_EXECUTION_PROFILE_V2,
+    configuration: {
+      model: { provider: "anthropic", model: "claude-test" },
+      reasoning: "high",
+      reasoningCapability: { kind: "enumerated", values: ["high"] },
+      toolPolicy: { kind: "exact", tools: ["workspace.filesystem"] },
+      toolEnforcement: "exact",
+      resolvedToolProfile: { tools: ["workspace.filesystem"] },
+    },
+  } satisfies HarnessSetupContext;
+  try {
+    await expect(
+      manager.prepareHarnessSetup({ ...context, harnessKind: "fake" }),
+    ).rejects.toThrow("does not match");
+    await expect(
+      manager.prepareHarnessSetup({ ...context, workspaceId: "workspace-2" }),
+    ).rejects.toThrow("exact ready Run worktree");
+    await expect(
+      manager.prepareHarnessSetup({
+        ...context,
+        workspaceAccess: "read_write",
+      }),
+    ).rejects.toThrow("exceeds the authorized source binding");
+    expect(ensureCount).toBe(0);
+  } finally {
+    await manager.close();
+  }
 });
 
 test("teardown health never rewrites completed Product export but active loss needs attention", async () => {

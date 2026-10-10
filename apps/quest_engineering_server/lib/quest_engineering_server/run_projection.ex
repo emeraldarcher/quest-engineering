@@ -8,6 +8,7 @@ defmodule QuestEngineering.Server.RunProjection do
   alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.ExecutionStatus
+  alias QuestEngineering.Server.HarnessSetupStore
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OperationalAttemptAttribution
@@ -86,7 +87,7 @@ defmodule QuestEngineering.Server.RunProjection do
   end
 
   defp build(launch, snapshot, run, revision) do
-    {actions, scheduled, dispatches, sessions, session_events, attributions, epochs} =
+    {actions, scheduled, dispatches, sessions, session_events, attributions, epochs, setups} =
       execution_data(run.id)
 
     execution = %{
@@ -99,7 +100,8 @@ defmodule QuestEngineering.Server.RunProjection do
         end),
       session_events: session_events,
       attribution_by_action: Map.new(attributions, &{&1.action_id, &1}),
-      epoch_by_id: Map.new(epochs, &{&1.id, &1})
+      epoch_by_id: Map.new(epochs, &{&1.id, &1}),
+      setup_by_action: Map.new(setups, &{&1.action_id, &1})
     }
 
     plan_by_key = Map.new(run.plan.steps, &{&1.key, &1})
@@ -372,7 +374,9 @@ defmodule QuestEngineering.Server.RunProjection do
           order_by: [asc: item.occurrence_id, asc: item.epoch_number]
       )
 
-    {actions, scheduled, dispatches, sessions, session_events, attributions, epochs}
+    setups = HarnessSetupStore.list_for_run(run_id)
+
+    {actions, scheduled, dispatches, sessions, session_events, attributions, epochs, setups}
   end
 
   defp step(occurrence, execution, run, snapshot, plan_by_key) do
@@ -381,8 +385,19 @@ defmodule QuestEngineering.Server.RunProjection do
     scheduled = action && Map.get(execution.scheduled_by_action, action.id)
     dispatch = action && Map.get(execution.dispatch_by_action, action.id)
     session = action && persisted_session(action.id, execution)
+    setup = action && Map.get(execution.setup_by_action, action.id)
     state = ExecutionStatus.step_state(occurrence.status, scheduled, dispatch, session)
-    member = if scheduled, do: member(snapshot, scheduled.member_key), else: nil
+
+    member_definition =
+      cond do
+        scheduled -> find_member(snapshot, scheduled.member_key)
+        setup -> find_member(snapshot, setup.member_key)
+        action -> member_for_action(snapshot, action)
+        true -> nil
+      end
+
+    member = member_definition && snapshot_member(member_definition)
+
     attempts = attempts(occurrence, execution, run)
     current_attempt = Enum.find(attempts, &(&1.id == occurrence.current_attempt_id))
 
@@ -398,6 +413,11 @@ defmodule QuestEngineering.Server.RunProjection do
       attempt: current_attempt,
       attempts: attempts,
       session: current_attempt && current_attempt.session,
+      harness_setup: HarnessSetupStore.projection(setup),
+      can_authorize_harness_setup:
+        not is_nil(action) and is_nil(scheduled) and
+          (is_nil(setup) or HarnessSetupStore.retryable?(setup)) and
+          HarnessSetupStore.available_for_action?(action, member_definition),
       member: member,
       performer: performer(action, plan_step, run),
       context: context(action, plan_step, run),
@@ -533,6 +553,14 @@ defmodule QuestEngineering.Server.RunProjection do
        do: used >= allowance
 
   defp epoch_exhausted?(_classification, _attempt), do: false
+
+  defp member_for_action(snapshot, %{
+         performer_requirement: %{selector: :class, value: class_key}
+       }) do
+    Enum.find(snapshot.squad.members, &(&1.class.key == class_key))
+  end
+
+  defp member_for_action(_snapshot, _action), do: nil
 
   defp performer(action, plan_step, run) do
     requirement = (action && action.performer_requirement) || (plan_step && plan_step.performer)
@@ -886,12 +914,7 @@ defmodule QuestEngineering.Server.RunProjection do
 
   defp previous_attempt_id(_attempts, _number), do: nil
 
-  defp member(snapshot, key) do
-    case Enum.find(snapshot.squad.members, &(&1.key == key)) do
-      nil -> nil
-      value -> snapshot_member(value)
-    end
-  end
+  defp find_member(snapshot, key), do: Enum.find(snapshot.squad.members, &(&1.key == key))
 
   defp snapshot_member(value) do
     %{

@@ -7,9 +7,9 @@ import {
 } from "../../dispatch/registry.ts";
 import type {
   PreparedSbxHarnessExecution,
+  PreparedSbxHarnessSetup,
   SbxRunExecutionManager,
 } from "../../execution-environment/sbx-run.ts";
-import type { StreamedProcess } from "../../execution-environment/types.ts";
 import type { JsonValue } from "../../protocol/types.ts";
 import { materializeExecutionArtifacts } from "../../workspace/execution-artifacts.ts";
 import { controlDescriptorPath } from "../control/authority.ts";
@@ -23,6 +23,7 @@ import { harnessPromptFor } from "../prompt.ts";
 import { structuredResultExists } from "../turn-lifecycle.ts";
 import type {
   AgentHarness,
+  AgentHarnessSetup,
   HarnessCapabilities,
   HarnessDiscovery,
   HarnessEvent,
@@ -30,19 +31,23 @@ import type {
   HarnessInspection,
   HarnessPreparedExecution,
   HarnessRecoveredExecution,
+  HarnessSetupContext,
+  HarnessSetupInspection,
+  HarnessSetupOperation,
+  HarnessSetupPrepared,
   HumanAttention,
 } from "../types.ts";
 import { OperationalExecutionError } from "../types.ts";
 import {
+  type ClaudeTransportState,
   claudeTransportBinding,
   parseClaudeTransportBinding,
-  type ClaudeTransportState,
 } from "./binding.ts";
 import {
   type ClaudeEffort,
   type ClaudeSemanticTool,
-  type ClaudeWrapperConfiguration,
   ClaudeWrapperClient,
+  type ClaudeWrapperConfiguration,
   type ClaudeWrapperEvent,
 } from "./protocol.ts";
 
@@ -104,6 +109,20 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     conversationalTakeover: false,
     automationResume: true,
   });
+  readonly setup: AgentHarnessSetup = Object.freeze({
+    kind: "provider_authentication" as const,
+    prepare: (context: HarnessSetupContext) => this.prepareSetup(context),
+    begin: (
+      prepared: HarnessSetupPrepared,
+      authorization: {
+        authorizationId: string;
+        kind: "human_harness_setup";
+        authorizedAt: string;
+      },
+      onEvent: Parameters<AgentHarnessSetup["begin"]>[2],
+    ) => this.beginSetup(prepared, authorization, onEvent),
+    inspect: (prepared: HarnessSetupPrepared) => this.inspectSetup(prepared),
+  });
   private readonly active = new Map<string, ActiveClaudeExecution>();
   private readonly now: () => Date;
 
@@ -127,6 +146,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
           detail: result.diagnostics.join(" "),
           installed: result.installed,
           authenticated: result.authenticated,
+          setupAvailable: result.setupAvailable,
         },
         models: result.models,
         capabilities: {
@@ -190,7 +210,9 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         materializeExecutionArtifacts(this.config, dispatch),
       );
       await this.writeAndSyncControl(dispatch, lineage, retained.prepared);
-      retained.control = new HarnessControlClient(controlDescriptorPath(lineage));
+      retained.control = new HarnessControlClient(
+        controlDescriptorPath(lineage),
+      );
       retained.binding.submission = {
         ...emptySubmission(),
         eventCursor: retained.binding.submission.eventCursor,
@@ -239,12 +261,16 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     const active = this.required(execution.lineage.lineageId);
     active.activeDispatch = dispatch;
     if (active.binding.submission.state === "not_submitted") {
-      const prompt = harnessPromptFor(dispatch, active.prepared.materializedArtifacts, {
-        completionTool: "qe_complete_step",
-        humanAssistanceInstruction:
-          "Use the native structured HumanAttention request when confirmation or information is genuinely required. Wait for the correlated response; do not infer one.",
-        recoveryContext: "retained Claude native session",
-      });
+      const prompt = harnessPromptFor(
+        dispatch,
+        active.prepared.materializedArtifacts,
+        {
+          completionTool: "qe_complete_step",
+          humanAssistanceInstruction:
+            "Use the native structured HumanAttention request when confirmation or information is genuinely required. Wait for the correlated response; do not infer one.",
+          recoveryContext: "retained Claude native session",
+        },
+      );
       const requestId = randomUUID();
       const turnId = randomUUID();
       onEvent({
@@ -305,10 +331,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     const pending = [...active.attention.values()].find(
       (candidate) => candidate.qeAttentionId === input.attentionId,
     );
-    if (
-      !pending ||
-      pending.qeAttentionId !== lineage.attention?.attentionId
-    )
+    if (!pending || pending.qeAttentionId !== lineage.attention?.attentionId)
       throw claudeError(
         "stale_human_attention",
         "HumanAttention response does not match the exact pending native request.",
@@ -342,42 +365,115 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     active.inspection = this.inspection(active, "running", "active");
   }
 
-  /** Future setup action: this is the only allowed Claude authentication launch. */
-  async beginAuthenticationSetup(
-    dispatch: DispatchRecord,
-    lineage: HarnessLineage,
+  private async prepareSetup(
+    context: HarnessSetupContext,
+  ): Promise<HarnessSetupPrepared> {
+    if (context.configuration.model.provider !== "anthropic")
+      throw runtimeError(
+        "Claude setup requires an Anthropic execution selection.",
+      );
+    const prepared = await this.executionManager.prepareHarnessSetup(context);
+    const inspection = await inspectPreparedSetup(prepared);
+    return { context, inspection, native: { prepared } };
+  }
+
+  private async inspectSetup(
+    setup: HarnessSetupPrepared,
+  ): Promise<HarnessSetupInspection> {
+    return inspectPreparedSetup(nativePreparedSetup(setup));
+  }
+
+  private async beginSetup(
+    setup: HarnessSetupPrepared,
     authorization: {
-      kind: "human";
-      action: "claude_auth_login";
+      authorizationId: string;
+      kind: "human_harness_setup";
       authorizedAt: string;
     },
-  ): Promise<StreamedProcess> {
+    onEvent: Parameters<AgentHarnessSetup["begin"]>[2],
+  ): Promise<HarnessSetupOperation> {
     const authorizedAt = Date.parse(authorization.authorizedAt);
     const authorizationAge = this.now().getTime() - authorizedAt;
     if (
-      authorization.kind !== "human" ||
-      authorization.action !== "claude_auth_login" ||
+      authorization.kind !== "human_harness_setup" ||
+      !authorization.authorizationId ||
       !Number.isFinite(authorizedAt) ||
       authorizationAge < -60_000 ||
       authorizationAge > 5 * 60_000
     )
       throw claudeError(
         "permission_denied",
-        "Claude authentication setup requires explicit current human authorization.",
+        "Claude authentication setup requires explicit current human setup authorization.",
         "terminal_not_recoverable",
         "prepare",
         "not_submitted",
       );
-    const prepared = await this.executionManager.prepare(
-      dispatch,
-      lineage,
-      materializeExecutionArtifacts(this.config, dispatch),
+    const prepared = nativePreparedSetup(setup);
+    const process = await prepared.lease.spawnStreamed(
+      claudeAuthenticationCommand(prepared),
+      { bufferBytes: 256 * 1024, acknowledgementTimeoutMs: 30_000 },
     );
-    if (!prepared.claude) throw runtimeError("Claude setup artifacts are absent.");
-    return prepared.lease.spawnStreamed(claudeAuthenticationCommand(prepared), {
-      bufferBytes: 256 * 1024,
-      acknowledgementTimeoutMs: 30_000,
+    const attentionId = randomUUID();
+    let cancelled = false;
+    onEvent({
+      type: "human_interaction_required",
+      attentionId,
+      message:
+        "Complete authentication in the official provider flow. This setup does not authorize model inference.",
     });
+    const consume = async (
+      stream: AsyncIterable<{ kind: string; data?: Uint8Array }>,
+    ) => {
+      const decoder = new TextDecoder();
+      let retained = "";
+      for await (const event of stream) {
+        if (event.kind !== "data" || !event.data) continue;
+        retained += decoder.decode(event.data, { stream: true });
+        if (retained.length > 16_384) retained = retained.slice(-16_384);
+        const ephemeralOutput = sanitizeSetupOutput(retained);
+        if (ephemeralOutput)
+          onEvent({
+            type: "human_interaction_required",
+            attentionId,
+            message:
+              "Complete authentication in the official provider flow. This setup does not authorize model inference.",
+            ephemeralOutput,
+          });
+      }
+    };
+    void consume(process.stdout).catch(() => undefined);
+    void consume(process.stderr).catch(() => undefined);
+    const completion = process.exit.then(async (exit) => {
+      if (cancelled)
+        return setupInspection(
+          prepared,
+          "cancelled",
+          false,
+          "Harness setup was cancelled.",
+        );
+      if (exit.kind !== "exited" || exit.exitCode !== 0)
+        return setupInspection(
+          prepared,
+          "failed",
+          false,
+          "Provider authentication did not complete successfully.",
+        );
+      return inspectPreparedSetup(prepared);
+    });
+    return {
+      completion,
+      respond: async (candidateAttentionId, value) => {
+        if (candidateAttentionId !== attentionId || value.length > 8_192)
+          throw new Error(
+            "Harness setup response identity or size is invalid.",
+          );
+        await process.write(new TextEncoder().encode(`${value}\n`));
+      },
+      cancel: async () => {
+        cancelled = true;
+        await process.cancel();
+      },
+    };
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
@@ -501,12 +597,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       lineage,
       binding,
     );
-    const active = await this.spawn(
-      dispatch,
-      lineage,
-      binding,
-      replacement,
-    );
+    const active = await this.spawn(dispatch, lineage, binding, replacement);
     return {
       found: true,
       handle: executionHandle(lineage, active),
@@ -518,7 +609,9 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     };
   }
 
-  async proveInactiveForFreshRecovery(lineage: HarnessLineage): Promise<boolean> {
+  async proveInactiveForFreshRecovery(
+    lineage: HarnessLineage,
+  ): Promise<boolean> {
     if (this.active.has(lineage.lineageId)) return false;
     const binding = parseClaudeTransportBinding(lineage.transportBinding);
     // A persisted attached-only process needs the exact dispatch/spec to
@@ -536,7 +629,10 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     if (!active) return;
     try {
       await active.client.shutdown(randomUUID());
-      await withTimeout(active.client.process.exit.then(() => undefined), 2_000);
+      await withTimeout(
+        active.client.process.exit.then(() => undefined),
+        2_000,
+      );
     } catch {
       await active.client.process.cancel().catch(() => undefined);
     } finally {
@@ -580,7 +676,9 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         materializeExecutionArtifacts(this.config, dispatch),
       ));
     if (prepared.harnessKind !== this.kind || !prepared.claude)
-      throw runtimeError("The exact Claude Agent SDK profile artifacts are absent.");
+      throw runtimeError(
+        "The exact Claude Agent SDK profile artifacts are absent.",
+      );
     if (
       !prepared.lease.capabilities.some(
         (capability) =>
@@ -588,7 +686,9 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
           capability.mode === "attached_only",
       )
     )
-      throw runtimeError("Attached-only process.streamed capability is required.");
+      throw runtimeError(
+        "Attached-only process.streamed capability is required.",
+      );
     await this.writeAndSyncControl(dispatch, lineage, prepared);
     const generation = randomUUID();
     const process = await prepared.lease.spawnStreamed(
@@ -601,7 +701,11 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       { bufferBytes: 2 * 1024 * 1024, acknowledgementTimeoutMs: 30_000 },
     );
     const client = new ClaudeWrapperClient(process, generation);
-    const configuration = this.wrapperConfiguration(dispatch, lineage, prepared);
+    const configuration = this.wrapperConfiguration(
+      dispatch,
+      lineage,
+      prepared,
+    );
     const requestId = randomUUID();
     await client.send({
       type: "initialize",
@@ -645,15 +749,13 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
               state: "settled",
               requestId: null,
               turnId: null,
-              continuationCount:
-                recoveryBinding.submission.continuationCount,
+              continuationCount: recoveryBinding.submission.continuationCount,
               eventCursor: recoveryBinding.submission.eventCursor,
             }
           : recoveryBinding?.submission.state === "not_submitted"
             ? {
                 ...emptySubmission(),
-                continuationCount:
-                  recoveryBinding.submission.continuationCount,
+                continuationCount: recoveryBinding.submission.continuationCount,
                 eventCursor: recoveryBinding.submission.eventCursor,
               }
             : emptySubmission(),
@@ -699,7 +801,9 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       active.binding.submission.eventCursor += 1;
       if (event.type === "fatal_error") throw eventError(event, "observe");
       if (event.type === "shutdown" || event.type === "ready")
-        throw runtimeError("Claude wrapper emitted an out-of-order lifecycle event.");
+        throw runtimeError(
+          "Claude wrapper emitted an out-of-order lifecycle event.",
+        );
       this.assertTurnCorrelation(event, active);
       if (event.type === "native_session") {
         active.inspection.nativeSession = nativeSessionRef(
@@ -738,10 +842,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       }
       if (event.type === "human_attention_resolved") {
         const pending = active.attention.get(event.native_request_id);
-        if (
-          !pending ||
-          pending.attentionId !== event.attention_id
-        )
+        if (!pending || pending.attentionId !== event.attention_id)
           throw claudeError(
             "stale_human_attention",
             "Claude acknowledged a HumanAttention response for another native request.",
@@ -973,15 +1074,13 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       wrapper_version: claude.wrapperVersion,
       sdk_version: claude.sdkVersion,
       claude_code_version: claude.claudeCodeVersion,
-      runtime_sha256:
-        this.options.fake?.runtimeSha256 ?? claude.runtimeSha256,
+      runtime_sha256: this.options.fake?.runtimeSha256 ?? claude.runtimeSha256,
       claude_executable: claude.runtimeExecutable,
       sdk_module: claude.sdkModule,
       sdk_package_json: claude.sdkPackageJson,
       zod_module: claude.zodModule,
       workspace: prepared.workspace.paths.workspace,
-      workspace_access:
-        dispatch.action.execution.execution_workspace.access,
+      workspace_access: dispatch.action.execution.execution_workspace.access,
       config_dir: claude.configDirectory,
       control_descriptor: claude.controlDescriptor,
       temp_dir: `${claude.configDirectory}/.tmp`,
@@ -1016,7 +1115,9 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         (this.options.fake?.runtimeSha256 ?? claude.runtimeSha256) ||
       event.streamed_process !== "attached_only"
     )
-      throw runtimeError("Claude wrapper/runtime provenance does not match the immutable profile.");
+      throw runtimeError(
+        "Claude wrapper/runtime provenance does not match the immutable profile.",
+      );
   }
 
   private async prepareReplacement(
@@ -1128,7 +1229,10 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
   }
 
   private assertTurnCorrelation(
-    event: Exclude<ClaudeWrapperEvent, { type: "ready" | "fatal_error" | "shutdown" }>,
+    event: Exclude<
+      ClaudeWrapperEvent,
+      { type: "ready" | "fatal_error" | "shutdown" }
+    >,
     active: ActiveClaudeExecution,
   ): void {
     if (
@@ -1180,7 +1284,10 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       );
   }
 
-  private assertDispatch(dispatch: DispatchRecord, lineage: HarnessLineage): void {
+  private assertDispatch(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+  ): void {
     if (
       dispatch.action.execution.configuration.harness_kind !== this.kind ||
       lineage.harnessKind !== this.kind
@@ -1220,8 +1327,92 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
   }
 }
 
+function nativePreparedSetup(
+  setup: HarnessSetupPrepared,
+): PreparedSbxHarnessSetup {
+  const candidate = (setup.native as { prepared?: PreparedSbxHarnessSetup })
+    .prepared;
+  if (!candidate?.claude || !candidate.lease || !candidate.workspace)
+    throw runtimeError("Claude setup preparation handle is unavailable.");
+  return candidate;
+}
+
+async function inspectPreparedSetup(
+  prepared: PreparedSbxHarnessSetup,
+): Promise<HarnessSetupInspection> {
+  const result = await prepared.lease.exec({
+    executable: prepared.claude.runtimeExecutable,
+    args: ["auth", "status"],
+    cwd: prepared.workspace.paths.workspace,
+    environment: safeEnvironment(prepared),
+    timeoutMs: 30_000,
+  });
+  let authMethod = "none";
+  if (result.exitCode === 0) {
+    try {
+      const value = JSON.parse(result.stdout) as Record<string, unknown>;
+      if (typeof value.authMethod === "string") authMethod = value.authMethod;
+    } catch {
+      return setupInspection(
+        prepared,
+        "failed",
+        false,
+        "Claude authentication status was malformed.",
+      );
+    }
+  }
+  if (authMethod === "claude.ai")
+    return setupInspection(
+      prepared,
+      "ready",
+      true,
+      "Run-bound Claude subscription authentication is ready.",
+    );
+  if (authMethod !== "none")
+    return setupInspection(
+      prepared,
+      "failed",
+      false,
+      "Claude selected a forbidden non-subscription authentication method.",
+    );
+  return setupInspection(
+    prepared,
+    "preparing",
+    false,
+    "Claude subscription authentication is required for this Run-bound context.",
+  );
+}
+
+function setupInspection(
+  prepared: PreparedSbxHarnessSetup,
+  state: HarnessSetupInspection["state"],
+  authenticated: boolean,
+  detail: string,
+): HarnessSetupInspection {
+  return {
+    state,
+    authenticated,
+    detail,
+    environment: {
+      environmentId: prepared.lease.ref.environmentId,
+      incarnation: prepared.lease.ref.incarnation,
+      profile: { ...prepared.lease.ref.profile },
+    },
+    configIdentity: prepared.configIdentity,
+  };
+}
+
+function sanitizeSetupOutput(value: string): string {
+  // biome-ignore lint/complexity/useRegexLiterals: A literal ESC byte is intentionally avoided.
+  const ansiControlSequence = new RegExp("\\x1b\\[[0-9;?]*[ -/]*[@-~]", "g");
+  return value
+    .replace(ansiControlSequence, "")
+    .replace(/[^\n\r\t\x20-\x7e]/g, "")
+    .slice(-16_384);
+}
+
 export function claudeAuthenticationCommand(
-  prepared: PreparedSbxHarnessExecution,
+  prepared: PreparedSbxHarnessExecution | PreparedSbxHarnessSetup,
 ) {
   const claude = prepared.claude;
   if (!claude) throw runtimeError("Claude setup artifacts are absent.");
@@ -1267,7 +1458,7 @@ function executionHandle(
   };
 }
 function safeEnvironment(
-  prepared: PreparedSbxHarnessExecution,
+  prepared: PreparedSbxHarnessExecution | PreparedSbxHarnessSetup,
 ): Record<string, string> {
   const claude = prepared.claude;
   if (!claude) throw runtimeError("Claude profile environment is missing.");
@@ -1309,7 +1500,8 @@ function semanticTools(dispatch: DispatchRecord): ClaudeSemanticTool[] {
     "workspace.search",
     "terminal.shell",
   ]);
-  const tools = dispatch.action.execution.configuration.resolved_tool_profile.tools;
+  const tools =
+    dispatch.action.execution.configuration.resolved_tool_profile.tools;
   if (tools.some((tool) => !supported.has(tool as ClaudeSemanticTool)))
     throw claudeError(
       "tool_policy_violation",

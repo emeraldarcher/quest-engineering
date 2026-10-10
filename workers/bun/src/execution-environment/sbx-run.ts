@@ -39,7 +39,10 @@ import {
   nativeSessionRef,
 } from "../harnesses/native-session.ts";
 import { mappedPiTools } from "../harnesses/pi/tools.ts";
-import type { HarnessModelCapability } from "../harnesses/types.ts";
+import type {
+  HarnessModelCapability,
+  HarnessSetupContext,
+} from "../harnesses/types.ts";
 import type { JsonValue } from "../protocol/types.ts";
 import type {
   NativeSessionRef,
@@ -193,6 +196,13 @@ export type ProviderEligibilityFailure = Extract<
   ProviderAvailabilityEvidence,
   { state: "verified_unavailable" }
 >;
+
+export interface PreparedSbxHarnessSetup {
+  lease: EnvironmentLease;
+  workspace: PrivateLineageWorkspace;
+  claude: NonNullable<PreparedSbxHarnessExecution["claude"]>;
+  configIdentity: string;
+}
 
 export interface PreparedSbxHarnessExecution {
   lease: EnvironmentLease;
@@ -412,7 +422,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           accountAvailability: "unknown" as const,
           reasoningCapability: {
             kind: "enumerated" as const,
-            values: [...(this.config.reasoningLevels ?? ["low", "medium", "high"])],
+            values: [
+              ...(this.config.reasoningLevels ?? ["low", "medium", "high"]),
+            ],
           },
         }));
       return {
@@ -433,6 +445,170 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
 
   async retireStreamedProcesses(ref: EnvironmentRef): Promise<void> {
     await this.backend.retireStreamedProcesses(ref);
+  }
+
+  async prepareHarnessSetup(
+    context: HarnessSetupContext,
+  ): Promise<PreparedSbxHarnessSetup> {
+    if (
+      context.harnessKind !== "claude_agent_sdk" ||
+      context.profile.id !== SBX_CODING_EXECUTION_PROFILE_V2.id ||
+      context.profile.digest !== SBX_CODING_EXECUTION_PROFILE_V2.digest
+    )
+      throw new Error(
+        "Harness setup identity does not match the Claude execution profile.",
+      );
+    const worktree = await this.worktrees.verify(context.worktreeId);
+    if (
+      worktree.state !== "ready" ||
+      worktree.runId !== context.runId ||
+      worktree.workspaceId !== context.workspaceId ||
+      worktree.bindingId !== context.workspaceBindingId ||
+      worktree.canonicalRoot !== context.canonicalRoot ||
+      !worktree.baseRevision
+    )
+      throw new Error("Harness setup requires the exact ready Run worktree.");
+    const binding = this.requiredBinding(worktree);
+    const accessRank = { none: 0, read_only: 1, read_write: 2 } as const;
+    if (accessRank[context.workspaceAccess] > accessRank[binding.max_access])
+      throw new Error(
+        "Harness setup workspace access exceeds the authorized source binding.",
+      );
+    const spec = this.spec({
+      runId: context.runId,
+      workspaceId: context.workspaceId,
+      access: binding.max_access,
+      sourceIdentity:
+        binding.publication_repository_identity ||
+        binding.source_fingerprint ||
+        binding.binding_id,
+      frozenBase: worktree.baseRevision,
+      materialization: "frozen_import",
+    });
+    const lease = await this.backend.ensure(spec);
+    const existing = this.store.get(context.physicalLineageId);
+    if (existing && !sameEnvironmentRef(existing.environmentRef, lease.ref))
+      throw new Error(
+        "Harness setup environment changed without credential continuity; setup readiness is invalid.",
+      );
+    const repository = await this.privateGit.materializeSource({
+      lease,
+      source: {
+        repositoryId: binding.binding_id,
+        canonicalSourceIdentifier:
+          binding.publication_repository_identity ||
+          binding.source_fingerprint ||
+          binding.binding_id,
+        hostRepositoryRoot: worktree.canonicalRoot,
+        frozenBaseCommit: worktree.baseRevision,
+        provenance: { kind: "authorized_local_object_database" },
+      },
+    });
+    const workspace = await this.privateGit.ensureWorktree({
+      lease,
+      repositoryId: repository.source.repositoryId,
+      physicalLineageId: context.physicalLineageId,
+      access:
+        context.workspaceAccess === "read_write" ? "read_write" : "read_only",
+    });
+    const controlRoot = posix.join(
+      lease.paths.control,
+      "lineages",
+      digest(context.physicalLineageId).slice(0, 32),
+    );
+    const guestHome = posix.join(
+      lease.paths.state,
+      "claude-lineages",
+      digest(context.physicalLineageId).slice(0, 32),
+      "config",
+    );
+    const guestPaths = guestControlPaths(controlRoot);
+    await lease.workerExec({
+      executable: "/usr/bin/install",
+      args: [
+        "-d",
+        "-m",
+        "0700",
+        "-o",
+        "1000",
+        "-g",
+        "1000",
+        controlRoot,
+        posix.join(controlRoot, "mailbox", "requests"),
+        posix.join(controlRoot, "mailbox", "responses"),
+        guestHome,
+        posix.join(guestHome, ".cache"),
+        posix.join(guestHome, ".tmp"),
+      ],
+    });
+    const claude = await this.claudeRuntimeConfiguration(
+      lease,
+      guestHome,
+      guestPaths.descriptor,
+    );
+    const attestation = {
+      schemaVersion: 1,
+      workerId: lease.ref.workerId,
+      runId: lease.ref.runId,
+      environmentId: lease.ref.environmentId,
+      incarnation: lease.ref.incarnation,
+      profileId: lease.ref.profile.id,
+      profileDigest: lease.ref.profile.digest,
+      physicalLineageId: context.physicalLineageId,
+      workspacePath: workspace.paths.workspace,
+      homePath: guestHome,
+      harnessKind: "claude_agent_sdk",
+    } as const;
+    const ownershipMarkerPath = posix.join(
+      lease.paths.state,
+      "environment-ownership.json",
+    );
+    const launchBindingPath = posix.join(controlRoot, "launch-binding.json");
+    await lease.writeFile({
+      path: launchBindingPath,
+      data: new TextEncoder().encode(`${JSON.stringify(attestation)}\n`),
+      mode: 0o400,
+    });
+    await this.validateGuestLaunchPaths(
+      lease,
+      attestation,
+      ownershipMarkerPath,
+      launchBindingPath,
+      [
+        ownershipMarkerPath,
+        launchBindingPath,
+        SBX_CLAUDE_WRAPPER,
+        workspace.paths.workspace,
+        guestHome,
+        controlRoot,
+        guestPaths.mailbox,
+        claude.runtimeExecutable,
+        claude.sdkModule,
+        claude.sdkPackageJson,
+        claude.zodModule,
+      ],
+      workspace.paths.workspace,
+      SBX_CLAUDE_WRAPPER,
+    );
+    this.store.ready({
+      lineageId: context.physicalLineageId,
+      actionId: context.actionId,
+      runId: context.runId,
+      environmentRef: lease.ref,
+      workspace,
+      extensionSetDigest: digest("claude-headless-wrapper-v1"),
+    });
+    return {
+      lease,
+      workspace,
+      claude,
+      configIdentity: claudeConfigIdentity(
+        context.runId,
+        context.physicalLineageId,
+        lease.ref,
+        guestHome,
+      ),
+    };
   }
 
   async prepareAndReconcileStreamedProcess(
@@ -595,6 +771,36 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       materialization: "frozen_import",
     });
     const lease = await this.backend.ensure(spec);
+    const setupBinding = dispatch.action.harness_setup;
+    const expectedSetupConfigIdentity =
+      setupBinding &&
+      dispatch.action.execution.configuration.harness_kind ===
+        "claude_agent_sdk"
+        ? claudeConfigIdentity(
+            dispatch.action.run_id,
+            lineage.lineageId,
+            lease.ref,
+            posix.join(
+              lease.paths.state,
+              "claude-lineages",
+              digest(lineage.lineageId).slice(0, 32),
+              "config",
+            ),
+          )
+        : null;
+    if (
+      setupBinding &&
+      (setupBinding.physical_lineage_id !== lineage.lineageId ||
+        setupBinding.environment.environment_id !== lease.ref.environmentId ||
+        setupBinding.environment.incarnation !== lease.ref.incarnation ||
+        setupBinding.environment.profile.id !== lease.ref.profile.id ||
+        setupBinding.environment.profile.digest !== lease.ref.profile.digest ||
+        (expectedSetupConfigIdentity !== null &&
+          setupBinding.config_identity !== expectedSetupConfigIdentity))
+    )
+      throw new Error(
+        "The Run-bound harness setup environment changed; credential continuity is invalid.",
+      );
     const access = dispatch.action.execution.execution_workspace.access;
     const physicalAccess = access === "read_write" ? "read_write" : "read_only";
     const existingExecution = this.store.get(lineage.lineageId);
@@ -753,7 +959,11 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     const guestPaths = guestControlPaths(controlRoot);
     const claude =
       harnessKind === "claude_agent_sdk"
-        ? await this.claudeRuntimeConfiguration(lease, guestHome, guestPaths.descriptor)
+        ? await this.claudeRuntimeConfiguration(
+            lease,
+            guestHome,
+            guestPaths.descriptor,
+          )
         : null;
     const attestation = {
       schemaVersion: 1,
@@ -835,23 +1045,23 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         : harnessKind === "antigravity"
           ? {
               QE_ANTIGRAVITY_EXPECTED_ARGV_JSON: JSON.stringify([
-              ...(antigravityNativeSession?.identityKind === "id"
-                ? ["--conversation", antigravityNativeSession.opaqueId]
-                : []),
-              "--model",
-              dispatch.action.execution.configuration.model.model,
-              ...(typeof dispatch.action.execution.configuration.reasoning ===
-              "string"
-                ? [
-                    "--effort",
-                    dispatch.action.execution.configuration.reasoning,
-                  ]
-                : []),
-              "--dangerously-skip-permissions",
-              "--log-file",
-              guestLogPath as string,
-            ]),
-          }
+                ...(antigravityNativeSession?.identityKind === "id"
+                  ? ["--conversation", antigravityNativeSession.opaqueId]
+                  : []),
+                "--model",
+                dispatch.action.execution.configuration.model.model,
+                ...(typeof dispatch.action.execution.configuration.reasoning ===
+                "string"
+                  ? [
+                      "--effort",
+                      dispatch.action.execution.configuration.reasoning,
+                    ]
+                  : []),
+                "--dangerously-skip-permissions",
+                "--log-file",
+                guestLogPath as string,
+              ]),
+            }
           : {
               CLAUDE_CONFIG_DIR: guestHome,
               CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -2463,6 +2673,24 @@ function sameAttestation(
 
 function environmentLaunchFailure(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
+}
+
+function claudeConfigIdentity(
+  runId: string,
+  lineageId: string,
+  environment: EnvironmentRef,
+  configDirectory: string,
+): string {
+  return digest(
+    JSON.stringify({
+      runId,
+      lineageId,
+      environmentId: environment.environmentId,
+      incarnation: environment.incarnation,
+      profile: environment.profile,
+      configDirectory,
+    }),
+  );
 }
 
 function digest(value: string): string {

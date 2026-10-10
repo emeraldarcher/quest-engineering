@@ -5,6 +5,7 @@ import type {
 import type { JsonValue } from "../../protocol/types.ts";
 import type {
   AgentHarness,
+  AgentHarnessSetup,
   HarnessCapabilities,
   HarnessDiscovery,
   HarnessEvent,
@@ -12,6 +13,9 @@ import type {
   HarnessInspection,
   HarnessPreparedExecution,
   HarnessRecoveredExecution,
+  HarnessSetupContext,
+  HarnessSetupInspection,
+  HarnessSetupPrepared,
   HumanAttentionCategory,
 } from "../types.ts";
 import { OperationalExecutionError } from "../types.ts";
@@ -27,6 +31,61 @@ export class FakeHarness implements AgentHarness {
   private readonly listeners = new Map<string, (event: HarnessEvent) => void>();
   private nextFailure: Error | null = null;
   recoveryCount = 0;
+  private readonly setupReady = new Set<string>();
+  readonly setup: AgentHarnessSetup = {
+    kind: "provider_authentication",
+    prepare: async (context) => {
+      const prepared: HarnessSetupPrepared = {
+        context,
+        inspection: this.inspectSetup(context),
+        native: { fake: true },
+      };
+      return prepared;
+    },
+    inspect: async (prepared) => this.inspectSetup(prepared.context),
+    begin: async (prepared, _authorization, onEvent) => {
+      const context = prepared.context;
+      const attentionId = `fake-setup-${context.setupId}-${context.setupGeneration}`;
+      let settle!: (inspection: HarnessSetupInspection) => void;
+      let settled = false;
+      const completion = new Promise<HarnessSetupInspection>((resolve) => {
+        settle = resolve;
+      });
+      onEvent({ type: "invocation_acknowledged" });
+      if (this.setupReady.has(context.physicalLineageId)) {
+        const inspection = this.inspectSetup(context);
+        onEvent({ type: "ready", inspection });
+        settle(inspection);
+      } else {
+        onEvent({
+          type: "human_interaction_required",
+          attentionId,
+          message: "Deterministic fake setup requires an explicit response.",
+          ephemeralOutput:
+            "FAKE SETUP — no provider process or network request",
+        });
+      }
+      return {
+        completion,
+        respond: async (candidateAttentionId) => {
+          if (candidateAttentionId !== attentionId || settled)
+            throw new Error("Stale fake setup interaction.");
+          settled = true;
+          this.setupReady.add(context.physicalLineageId);
+          const inspection = this.inspectSetup(context);
+          onEvent({ type: "ready", inspection });
+          settle(inspection);
+        },
+        cancel: async () => {
+          if (settled) return;
+          settled = true;
+          const inspection = this.cancelledSetup(context);
+          onEvent({ type: "cancelled" });
+          settle(inspection);
+        },
+      };
+    },
+  };
 
   constructor(
     private readonly outputs: Record<string, JsonValue> = {},
@@ -56,6 +115,31 @@ export class FakeHarness implements AgentHarness {
       nativePromptControl: behavior.conversationalTakeover ?? false,
       conversationalTakeover: behavior.conversationalTakeover ?? false,
       automationResume: behavior.conversationalTakeover ?? false,
+    };
+  }
+
+  private inspectSetup(context: HarnessSetupContext): HarnessSetupInspection {
+    const authenticated = this.setupReady.has(context.physicalLineageId);
+    return {
+      state: authenticated ? "ready" : "preparing",
+      authenticated,
+      detail: authenticated
+        ? "Deterministic fake setup is ready."
+        : "Deterministic fake setup is not ready.",
+      environment: {
+        environmentId: `fake-environment-${context.physicalLineageId}`,
+        incarnation: `fake-incarnation-${context.setupGeneration}`,
+        profile: context.profile,
+      },
+      configIdentity: `fake-config-${context.physicalLineageId}`,
+    };
+  }
+
+  private cancelledSetup(context: HarnessSetupContext): HarnessSetupInspection {
+    return {
+      ...this.inspectSetup(context),
+      state: "cancelled",
+      authenticated: false,
     };
   }
 

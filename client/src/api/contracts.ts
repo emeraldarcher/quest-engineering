@@ -269,6 +269,7 @@ export interface ExecutionOption {
   }>;
   account_availability: AccountAvailability;
   available: boolean;
+  setup_available?: boolean;
 }
 
 export interface SnapshotMember {
@@ -436,6 +437,44 @@ export interface RunAttempt {
   } | null;
   session?: HarnessSessionProjection | null;
 }
+export interface HarnessSetupProjection {
+  id: string;
+  generation: number;
+  harness_kind: string;
+  state:
+    | "authorized"
+    | "preparing"
+    | "invocation_requested"
+    | "invocation_acknowledged"
+    | "human_interaction_required"
+    | "cancellation_requested"
+    | "ready"
+    | "failed"
+    | "uncertain"
+    | "cancelled"
+    | "invalidated";
+  invocation_state:
+    | "not_requested"
+    | "requested"
+    | "acknowledged"
+    | "settled"
+    | "uncertain";
+  setup_required: boolean;
+  authenticated: boolean;
+  authorized_at: string | null;
+  attention: {
+    attention_id: string;
+    kind: "provider_authentication";
+    message: string;
+  } | null;
+  failure: { code: string; message: string } | null;
+  physical_lineage_id: string;
+  environment: {
+    environment_id: string;
+    incarnation: string;
+    profile: { id: string; digest: string };
+  } | null;
+}
 export interface RunStep {
   occurrence_id: string;
   semantic_step_key: string;
@@ -448,6 +487,8 @@ export interface RunStep {
   attempt: RunAttempt | null;
   attempts: RunAttempt[];
   session?: HarnessSessionProjection | null;
+  harness_setup?: HarnessSetupProjection | null;
+  can_authorize_harness_setup?: boolean;
   member: SnapshotMember | null;
   performer: {
     selector: string | null;

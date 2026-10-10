@@ -66,6 +66,22 @@ defmodule QuestEngineering.ServerWeb.Router do
 
     post "/runs/:id/execution/authorize-prompt", RunController, :authorize_execution_prompt
 
+    post "/runs/:id/occurrences/:occurrence_id/harness-setup",
+         RunController,
+         :authorize_harness_setup
+
+    get "/runs/:id/occurrences/:occurrence_id/harness-setup/:setup_id/interactions/:attention_id",
+        RunController,
+        :harness_setup_interaction
+
+    post "/runs/:id/occurrences/:occurrence_id/harness-setup/:setup_id/respond",
+         RunController,
+         :respond_harness_setup
+
+    post "/runs/:id/occurrences/:occurrence_id/harness-setup/:setup_id/cancel",
+         RunController,
+         :cancel_harness_setup
+
     post "/runs/:id/attempts/:attempt_id/sessions/:session_id/respond-attention",
          RunController,
          :respond_execution_attention

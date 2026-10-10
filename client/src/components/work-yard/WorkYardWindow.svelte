@@ -95,6 +95,15 @@ let cancellationDialog: HTMLDialogElement;
 let cancellationKeep: HTMLButtonElement;
 let cancellationTrigger: HTMLButtonElement;
 let cancellationTarget: ExecutionAttemptIdentity | null = null;
+let setupDialog: HTMLDialogElement;
+let setupCancel: HTMLButtonElement;
+let setupTrigger: HTMLButtonElement;
+let setupTarget: RunStep | null = null;
+let setupInteraction: {
+  setupId: string;
+  attentionId: string;
+  output: string;
+} | null = null;
 let handledSessionFocus: string | null = null;
 const watchForFirstRun = $selectedRunStore === null && product.runs.length === 0;
 
@@ -124,6 +133,9 @@ $: reviewResult = run ? currentReviewResult(run) : null;
 $: currentAcceptedPlan = run ? acceptedPlan(run) : null;
 $: uncertainStep = run?.steps.find((step) => step.recovery !== null) ?? null;
 $: sessionSteps = uniqueSessionSteps(run?.steps ?? []);
+$: harnessSetupSteps = (run?.steps ?? []).filter(
+  (step) => step.can_authorize_harness_setup || step.harness_setup != null,
+);
 $: sessionlessOperatorSteps = (run?.steps ?? []).filter(
   (step) =>
     !step.session &&
@@ -138,6 +150,7 @@ $: if (run?.id !== activeRunId) {
   selectedArtifactId = null;
   selectedArtifact = null;
   artifactLoading = false;
+  setupInteraction = null;
   selectedMemberKey =
     run?.squad.members.some((member) => member.member_key === initialMemberKey)
       ? initialMemberKey
@@ -171,6 +184,17 @@ $: if (
   (!run || !executionTargetIsCurrent(authorizationTarget, "authorize"))
 ) {
   closeAuthorizationConfirmation();
+}
+$: if (
+  setupTarget &&
+  (!run ||
+    !run.steps.some(
+      (step) =>
+        step.occurrence_id === setupTarget?.occurrence_id &&
+        step.can_authorize_harness_setup,
+    ))
+) {
+  closeHarnessSetupConfirmation();
 }
 $: if (
   cancellationTarget &&
@@ -388,6 +412,94 @@ function closeExecutionRecovery() {
   recoveryDialog?.close();
   recoveryAction = null;
   recoveryTrigger?.focus();
+}
+
+function requestHarnessSetup(step: RunStep, event: MouseEvent) {
+  if (!run || busy || !step.can_authorize_harness_setup) return;
+  setupTarget = step;
+  setupTrigger = event.currentTarget as HTMLButtonElement;
+  setupDialog.showModal();
+  void tick().then(() => setupCancel?.focus());
+}
+
+function closeHarnessSetupConfirmation() {
+  setupDialog?.close();
+  setupTarget = null;
+  setupTrigger?.focus();
+}
+
+async function confirmHarnessSetup() {
+  if (!run || !setupTarget || busy) return;
+  const runId = run.id;
+  const occurrenceId = setupTarget.occurrence_id;
+  setupDialog.close();
+  setupTarget = null;
+  busy = true;
+  try {
+    await store.authorizeHarnessSetup(runId, occurrenceId);
+  } finally {
+    busy = false;
+    setupTrigger?.focus();
+  }
+}
+
+async function revealHarnessSetupInteraction(step: RunStep) {
+  const setup = step.harness_setup;
+  const attention = setup?.attention;
+  if (!run || !setup || !attention || busy) return;
+  busy = true;
+  try {
+    const interaction = await store.getHarnessSetupInteraction(
+      run.id,
+      step.occurrence_id,
+      setup.id,
+      setup.generation,
+      attention.attention_id,
+    );
+    setupInteraction = interaction
+      ? {
+          setupId: setup.id,
+          attentionId: attention.attention_id,
+          output: interaction.output,
+        }
+      : null;
+  } finally {
+    busy = false;
+  }
+}
+
+async function respondHarnessSetup(event: SubmitEvent, step: RunStep) {
+  event.preventDefault();
+  const setup = step.harness_setup;
+  const attention = setup?.attention;
+  const value = new FormData(event.currentTarget as HTMLFormElement).get("response");
+  if (!run || !setup || !attention || typeof value !== "string" || busy) return;
+  busy = true;
+  try {
+    await store.respondHarnessSetup(
+      run.id,
+      step.occurrence_id,
+      setup.id,
+      setup.generation,
+      attention.attention_id,
+      value,
+    );
+    setupInteraction = null;
+  } finally {
+    busy = false;
+  }
+}
+
+async function cancelHarnessSetup(step: RunStep) {
+  const setup = step.harness_setup;
+  if (!run || !setup || busy) return;
+  busy = true;
+  try {
+    await store.cancelHarnessSetup(run.id, step.occurrence_id, setup.id);
+    setupInteraction = null;
+  } finally {
+    busy = false;
+  }
 }
 
 async function confirmExecutionRecovery() {
@@ -785,6 +897,41 @@ function attemptOutput(attempt: RunAttempt): string {
                 </article>
               {/if}
 
+              {#if harnessSetupSteps.length}
+                <section class="live-sessions" aria-labelledby="harness-setup-title">
+                  <div class="section-heading"><div><span class="eyebrow">Run-bound operational setup</span><h3 id="harness-setup-title">Harness setup</h3></div><span>Not an execution Attempt</span></div>
+                  <div class="session-list">
+                    {#each harnessSetupSteps as step (step.occurrence_id)}
+                      <article class:waiting={step.harness_setup?.state === "human_interaction_required"}>
+                        <div class="session-copy">
+                          <span class="eyebrow">{step.member?.name ?? "Member"} · {step.name ?? humanize(step.semantic_step_key)}</span>
+                          <h4>{step.harness_setup ? humanize(step.harness_setup.state) : "Subscription setup required"}</h4>
+                          <p>{step.harness_setup?.attention?.message ?? "Prepare a private provider subscription context for this Run before scheduling."}</p>
+                          {#if step.harness_setup?.failure}<small role="alert">{step.harness_setup.failure.message}</small>{/if}
+                          {#if setupInteraction && step.harness_setup?.attention && setupInteraction.setupId === step.harness_setup.id && setupInteraction.attentionId === step.harness_setup.attention.attention_id}
+                            <pre class="setup-interaction" aria-label="Official provider login output">{setupInteraction.output}</pre>
+                            <form class="attention-response-form" on:submit={(event) => respondHarnessSetup(event, step)}>
+                              <input name="response" type="password" autocomplete="off" spellcheck="false" maxlength="8192" aria-label="Response to official provider login" placeholder="Response, if requested" />
+                              <button class="primary" type="submit" disabled={busy}>Continue official login</button>
+                            </form>
+                          {/if}
+                        </div>
+                        <div class="session-actions">
+                          {#if step.can_authorize_harness_setup}
+                            <button class="primary" disabled={busy} on:click={(event) => requestHarnessSetup(step, event)}>{step.harness_setup ? "Retry setup" : "Set up subscription"}</button>
+                          {:else if step.harness_setup?.state === "human_interaction_required"}
+                            <button class="primary" disabled={busy} on:click={() => revealHarnessSetupInteraction(step)}>View official login</button>
+                            <button class="secondary" disabled={busy} on:click={() => cancelHarnessSetup(step)}>Cancel setup</button>
+                          {:else if step.harness_setup && !["ready", "failed", "cancelled", "invalidated", "cancellation_requested"].includes(step.harness_setup.state)}
+                            <button class="secondary" disabled={busy} on:click={() => cancelHarnessSetup(step)}>Cancel setup</button>
+                          {/if}
+                        </div>
+                      </article>
+                    {/each}
+                  </div>
+                </section>
+              {/if}
+
               {#if sessionSteps.length || sessionlessOperatorSteps.length}
                 <section class="live-sessions" aria-labelledby="live-session-title">
                   <div class="section-heading"><div><span class="eyebrow">Coding-agent execution</span><h3 id="live-session-title">{sessionSteps.length ? "Live Session" : "Execution control"}</h3></div><span>{sessionSteps.length ? `${sessionSteps.length} ${sessionSteps.length === 1 ? "session" : "sessions"}` : `${sessionlessOperatorSteps.length} active`}</span></div>
@@ -1095,6 +1242,16 @@ function attemptOutput(attempt: RunAttempt): string {
     </section>
   </div>
 
+  <dialog bind:this={setupDialog} aria-labelledby="setup-title" on:cancel|preventDefault={closeHarnessSetupConfirmation}>
+    <div class="dialog-card">
+      <span class="dialog-icon authorization" aria-hidden="true">✓</span>
+      <h2 id="setup-title">Set up this Run’s Claude subscription?</h2>
+      <p>This creates and retains a private Claude setup context for this Run and starts the unmodified official <code>claude auth login</code> flow. It does not authorize or perform model inference.</p>
+      <p>By continuing, you confirm that you reviewed <code>docs/claude-agent-sdk-decision.md</code> and independently chose to proceed with Anthropic’s terms. Quest Engineering does not accept legal terms for you.</p>
+      <div class="action-row"><button bind:this={setupCancel} class="secondary" on:click={closeHarnessSetupConfirmation}>Not yet</button><button class="primary" disabled={busy} on:click={confirmHarnessSetup}>Start official login</button></div>
+    </div>
+  </dialog>
+
   <dialog bind:this={authorizationDialog} aria-labelledby="authorization-title" on:cancel|preventDefault={closeAuthorizationConfirmation}>
     <div class="dialog-card">
       <span class="dialog-icon authorization" aria-hidden="true">✓</span>
@@ -1179,6 +1336,7 @@ function attemptOutput(attempt: RunAttempt): string {
   .session-history summary { cursor:pointer; color:var(--app-teal-dark); font-weight:750; }
   .session-history ul { margin:.25rem 0 0; padding-left:1rem; }
   .session-copy blockquote { color:#7b443b; font-style:italic; }
+  .setup-interaction { max-width:40rem; max-height:14rem; overflow:auto; padding:.6rem; color:#f5f0df; background:#1f2929; border-radius:5px; white-space:pre-wrap; overflow-wrap:anywhere; }
   .attention-response-form { display:grid; gap:.45rem; max-width:34rem; margin-top:.5rem; }
   .attention-response-form label { display:grid; gap:.2rem; color:var(--app-ink); font-size:.78rem; font-weight:750; }
   .attention-response-form input,.attention-response-form textarea,.attention-response-form select { width:100%; padding:.45rem; color:var(--app-ink); background:#fffdf7; border:1px solid #bca77f; border-radius:5px; font:inherit; }

@@ -357,6 +357,52 @@ test("pre-prompt execution exposes distinct confirmed authorization and cancella
   expect(run.id).toBe(identity.runId);
 });
 
+test("Run-bound subscription setup has distinct legal confirmation and no inference authority", async () => {
+  const value = fixture("work-yard-running");
+  const runId = value.selectedRunId;
+  const run = runId ? value.runs[runId] : null;
+  const step = run?.steps[0];
+  if (!run || !step) throw new Error("Expected setup Step fixture");
+  step.attempt = null;
+  step.attempts = [];
+  step.session = null;
+  step.harness_setup = null;
+  step.can_authorize_harness_setup = true;
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  const authorize = vi
+    .spyOn(store, "authorizeHarnessSetup")
+    .mockResolvedValue(true);
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Set up subscription" }),
+  );
+  const dialog = screen.getByRole("dialog", {
+    name: "Set up this Run’s Claude subscription?",
+  });
+  expect(dialog.textContent).toContain("claude auth login");
+  expect(dialog.textContent).toContain(
+    "does not authorize or perform model inference",
+  );
+  expect(dialog.textContent).toContain(
+    "independently chose to proceed with Anthropic’s terms",
+  );
+  expect(dialog.textContent).toContain(
+    "Quest Engineering does not accept legal terms for you",
+  );
+
+  await fireEvent.click(
+    within(dialog).getByRole("button", { name: "Start official login" }),
+  );
+  expect(authorize).toHaveBeenCalledWith(run.id, step.occurrence_id);
+});
+
 test("Work Yard preserves the exact pane ID through inputless native attachment", async () => {
   const { value, api, run, step, store } = operatorSetup();
   const descriptor: LocalSessionAttachmentDescriptor = {

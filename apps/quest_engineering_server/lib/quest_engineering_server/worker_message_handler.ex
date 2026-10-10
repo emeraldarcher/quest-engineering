@@ -11,6 +11,8 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionSessionStore
+  alias QuestEngineering.Server.HarnessSetupInteractions
+  alias QuestEngineering.Server.HarnessSetupStore
   alias QuestEngineering.Server.OperationalFailure
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.ProductChangeNotifier
@@ -29,6 +31,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
   def handle(worker_id, generation, %{type: :worker_ready}) do
     with {:ok, worker} <- WorkerStore.mark_ready(worker_id, generation) do
+      HarnessSetupStore.redeliver(worker_id, generation)
       Scheduler.wake_all()
 
       {:ok,
@@ -76,6 +79,39 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          "type" => "message_result",
          "protocol_version" => WorkerProtocol.version(),
          "result" => "workspace_binding_recorded"
+       }}
+    end
+  end
+
+  def handle(worker_id, generation, %{
+        type: :harness_setup_state,
+        setup: setup,
+        ephemeral: ephemeral
+      }) do
+    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, context} <- HarnessSetupStore.record(worker_id, generation, setup) do
+      attention_id = context.attention && context.attention["attention_id"]
+
+      if is_binary(ephemeral) and is_binary(attention_id),
+        do:
+          HarnessSetupInteractions.put(
+            context.id,
+            context.setup_generation,
+            attention_id,
+            ephemeral
+          )
+
+      if context.state != "human_interaction_required",
+        do: HarnessSetupInteractions.clear(context.id)
+
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "harness_setup_recorded",
+         "setup_id" => context.id,
+         "setup_generation" => context.setup_generation,
+         "state" => context.state
        }}
     end
   end

@@ -146,6 +146,7 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
            end
          end) do
       {:ok, assignment} ->
+        QuestEngineering.Server.HarnessSetupStore.invalidate_run(run_id, "run_cleanup_requested")
         RunChangeNotifier.notify(run_id)
         {:ok, assignment}
 
@@ -501,7 +502,13 @@ defmodule QuestEngineering.Server.RunWorkspaceStore do
       workspace_access: loadout.workspace_access
     }
 
-    case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
+    resolution =
+      case CapabilityMatcher.resolve_executor(worker.capabilities, requested) do
+        {:ok, value} -> {:ok, value}
+        :error -> CapabilityMatcher.resolve_setup(worker.capabilities, requested)
+      end
+
+    case resolution do
       {:ok,
        %{
          resolved_tool_profile: %{tools: tools},

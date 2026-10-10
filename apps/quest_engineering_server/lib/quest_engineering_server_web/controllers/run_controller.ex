@@ -6,6 +6,8 @@ defmodule QuestEngineering.ServerWeb.RunController do
   alias QuestEngineering.Server.ExecutionCancellation
   alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionSessionStore
+  alias QuestEngineering.Server.HarnessSetupInteractions
+  alias QuestEngineering.Server.HarnessSetupStore
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Product.Repository
@@ -175,6 +177,123 @@ defmodule QuestEngineering.ServerWeb.RunController do
   def respond_execution_attention(conn, _params),
     do: Api.render_error(conn, :invalid_attention_response)
 
+  def authorize_harness_setup(
+        conn,
+        %{
+          "id" => run_id,
+          "occurrence_id" => occurrence_id,
+          "request_id" => request_id,
+          "confirmed" => true
+        }
+      ) do
+    with :ok <- require_local_tauri_client(conn),
+         {:ok, result} <- HarnessSetupStore.authorize(run_id, occurrence_id, request_id),
+         :ok <- HarnessSetupStore.deliver(result.context),
+         {:ok, run} <- RunProjection.get(run_id) do
+      json(conn, %{
+        harness_setup: HarnessSetupStore.projection(result.context),
+        idempotent_replay: result.idempotent?,
+        run: run
+      })
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def authorize_harness_setup(conn, _params),
+    do: Api.render_error(conn, :invalid_harness_setup_authorization)
+
+  def harness_setup_interaction(
+        conn,
+        %{
+          "id" => run_id,
+          "occurrence_id" => occurrence_id,
+          "setup_id" => setup_id,
+          "generation" => generation,
+          "attention_id" => attention_id
+        }
+      ) do
+    with :ok <- require_local_tauri_client(conn),
+         {parsed_generation, ""} <- Integer.parse(generation),
+         context when not is_nil(context) <- HarnessSetupStore.fetch(setup_id),
+         true <-
+           context.run_id == run_id and context.occurrence_id == occurrence_id and
+             context.setup_generation == parsed_generation and
+             context.state == "human_interaction_required" and
+             get_in(context.attention || %{}, ["attention_id"]) == attention_id,
+         {:ok, interaction} <-
+           HarnessSetupInteractions.fetch(setup_id, parsed_generation, attention_id) do
+      json(conn, %{
+        interaction: %{
+          setup_id: setup_id,
+          generation: parsed_generation,
+          attention_id: attention_id,
+          output: interaction.output,
+          expires_at: DateTime.to_iso8601(interaction.expires_at)
+        }
+      })
+    else
+      {:error, error} -> Api.render_error(conn, error)
+      _ -> Api.render_error(conn, :setup_interaction_unavailable)
+    end
+  end
+
+  def respond_harness_setup(
+        conn,
+        %{
+          "id" => run_id,
+          "occurrence_id" => occurrence_id,
+          "setup_id" => setup_id,
+          "generation" => generation,
+          "attention_id" => attention_id,
+          "request_id" => request_id,
+          "value" => value
+        }
+      )
+      when is_integer(generation) and is_binary(value) do
+    with :ok <- require_local_tauri_client(conn),
+         {:ok, context} <-
+           HarnessSetupStore.respond(
+             run_id,
+             occurrence_id,
+             setup_id,
+             generation,
+             attention_id,
+             request_id,
+             value
+           ),
+         {:ok, run} <- RunProjection.get(run_id) do
+      json(conn, %{harness_setup: HarnessSetupStore.projection(context), run: run})
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def respond_harness_setup(conn, _params),
+    do: Api.render_error(conn, :invalid_harness_setup_response)
+
+  def cancel_harness_setup(
+        conn,
+        %{
+          "id" => run_id,
+          "occurrence_id" => occurrence_id,
+          "setup_id" => setup_id,
+          "request_id" => request_id
+        }
+      ) do
+    with :ok <- require_local_tauri_client(conn),
+         {:ok, context} <-
+           HarnessSetupStore.cancel(run_id, occurrence_id, setup_id, request_id),
+         {:ok, run} <- RunProjection.get(run_id) do
+      json(conn, %{harness_setup: HarnessSetupStore.projection(context), run: run})
+    else
+      {:error, error} -> Api.render_error(conn, error)
+    end
+  end
+
+  def cancel_harness_setup(conn, _params),
+    do: Api.render_error(conn, :invalid_harness_setup_cancellation)
+
   def cancel_execution_attempt(
         conn,
         %{
@@ -297,6 +416,13 @@ defmodule QuestEngineering.ServerWeb.RunController do
 
   defp require_local_tauri(conn) do
     enabled = Application.get_env(:quest_engineering_server, :local_session_attach_enabled, false)
+
+    if enabled and require_local_tauri_client(conn) == :ok,
+      do: :ok,
+      else: {:error, :local_session_attachment_disabled}
+  end
+
+  defp require_local_tauri_client(conn) do
     local_request = conn.remote_ip in [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}]
     local_host = conn.host in ["127.0.0.1", "localhost", "::1"]
 
@@ -305,9 +431,9 @@ defmodule QuestEngineering.ServerWeb.RunController do
 
     tauri_client = get_req_header(conn, "x-quest-engineering-local-client") == ["tauri"]
 
-    if enabled and local_request and local_host and direct_request and tauri_client,
+    if local_request and local_host and direct_request and tauri_client,
       do: :ok,
-      else: {:error, :local_session_attachment_disabled}
+      else: {:error, :local_harness_setup_unavailable}
   end
 
   defp cleanup_complete?(%{

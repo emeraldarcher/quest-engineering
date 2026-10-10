@@ -17,6 +17,7 @@ import type {
   HarnessCapabilities,
   HarnessExecutionHandle,
   HarnessSessionState,
+  HarnessSetupContext,
   HumanAttention,
   HumanInterventionLifecycle,
   InteractiveHarnessSession,
@@ -217,6 +218,70 @@ export class DispatchRegistry {
     this.db.close();
   }
 
+  reserveSetupLineage(context: HarnessSetupContext): HarnessLineage {
+    const configurationJson = physicalConfigurationForSetup(context);
+    return this.db
+      .transaction(() => {
+        const existing = this.db
+          .query("SELECT * FROM harness_lineages WHERE lineage_id=?")
+          .get(context.physicalLineageId) as LineageRow | null;
+        if (existing) {
+          if (
+            existing.logical_lineage_id !== context.logicalLineageId ||
+            existing.harness_kind !== context.harnessKind ||
+            existing.configuration_json !== configurationJson ||
+            existing.active_action_id !== null ||
+            ["closed", "unavailable"].includes(existing.session_state)
+          )
+            throw new Error(
+              "Harness setup lineage conflicts with durable physical ownership.",
+            );
+          return this.getLineage(context.physicalLineageId);
+        }
+        const createdAt = now();
+        const capabilities =
+          typeof this.harnessCapabilities === "function"
+            ? this.harnessCapabilities(context.harnessKind)
+            : this.harnessCapabilities;
+        this.db
+          .query(`INSERT INTO harness_lineages
+          (lineage_id,logical_lineage_id,configuration_json,configuration_hash,provider,harness_kind,session_state,capabilities_json,attention_json,intervention_json,started_at,last_activity_at,result_control_path,ownership_token,active_action_id,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)`)
+          .run(
+            context.physicalLineageId,
+            context.logicalLineageId,
+            configurationJson,
+            digest(configurationJson),
+            context.configuration.model.provider,
+            context.harnessKind,
+            "starting",
+            JSON.stringify(capabilities),
+            null,
+            null,
+            createdAt,
+            createdAt,
+            this.lineageControlPath(context.physicalLineageId),
+            `qe-${digest(`${this.harnessKind}:${context.physicalLineageId}`).slice(0, 24)}`,
+            createdAt,
+            createdAt,
+          );
+        return this.getLineage(context.physicalLineageId);
+      })
+      .immediate();
+  }
+
+  retireUnclaimedSetupLineage(lineageId: string): void {
+    const existing = this.db
+      .query("SELECT active_action_id FROM harness_lineages WHERE lineage_id=?")
+      .get(lineageId) as { active_action_id: string | null } | null;
+    if (!existing || existing.active_action_id !== null) return;
+    this.db
+      .query(
+        "UPDATE harness_lineages SET session_state='closed',attention_json=NULL,intervention_json=NULL,updated_at=? WHERE lineage_id=? AND active_action_id IS NULL",
+      )
+      .run(now(), lineageId);
+  }
+
   accept(action: ExecuteAction): Acceptance {
     const actionJson = canonicalJson(action);
     const actionHash = digest(actionJson);
@@ -234,7 +299,30 @@ export class DispatchRegistry {
         }
 
         let lineageId: string | null = null;
-        if (
+        if (action.harness_setup) {
+          const setup = action.harness_setup;
+          const retained = this.db
+            .query("SELECT * FROM harness_lineages WHERE lineage_id=?")
+            .get(setup.physical_lineage_id) as LineageRow | null;
+          const expectedConfiguration = physicalConfiguration(action);
+          if (
+            !["fresh", "continue_from"].includes(
+              action.execution.context.mode,
+            ) ||
+            !retained ||
+            retained.harness_kind !==
+              action.execution.configuration.harness_kind ||
+            retained.logical_lineage_id !==
+              action.execution.context.logical_lineage_id ||
+            retained.configuration_json !== expectedConfiguration ||
+            retained.active_action_id !== null ||
+            ["closed", "unavailable"].includes(retained.session_state)
+          )
+            throw new Error(
+              `Harness setup lineage ${setup.physical_lineage_id} is unavailable or incompatible.`,
+            );
+          lineageId = setup.physical_lineage_id;
+        } else if (
           action.operational_recovery?.continuation_mode === "retained" &&
           action.operational_recovery.retained_lineage_id
         ) {
@@ -1630,6 +1718,28 @@ export function structuredCompletionRequirement(
       (output) => output.kind === "change_set",
     ),
   };
+}
+
+export function physicalConfigurationForSetup(
+  context: HarnessSetupContext,
+): string {
+  const configuration = context.configuration;
+  return canonicalJson({
+    harness_kind: context.harnessKind,
+    model: configuration.model,
+    reasoning: configuration.reasoning,
+    reasoning_capability: configuration.reasoningCapability,
+    tool_policy: configuration.toolPolicy,
+    tool_enforcement: configuration.toolEnforcement,
+    resolved_tool_profile: {
+      tools: [...configuration.resolvedToolProfile.tools].sort(),
+    },
+    logical_workspace_id: context.workspaceId,
+    workspace_binding_id: context.workspaceBindingId,
+    worktree_id: context.worktreeId,
+    workspace_root: context.canonicalRoot,
+    workspace_access: context.workspaceAccess,
+  });
 }
 
 export function physicalConfiguration(action: ExecuteAction): string {
