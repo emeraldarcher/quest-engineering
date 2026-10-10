@@ -357,25 +357,35 @@ test("pre-prompt execution exposes distinct confirmed authorization and cancella
   expect(run.id).toBe(identity.runId);
 });
 
-test("Run-bound subscription setup has distinct legal confirmation and no inference authority", async () => {
+test("Run-bound subscription setup submits with a pre-dispatch Attempt projection", async () => {
   const value = fixture("work-yard-running");
   const runId = value.selectedRunId;
   const run = runId ? value.runs[runId] : null;
   const step = run?.steps[0];
-  if (!run || !step) throw new Error("Expected setup Step fixture");
-  step.attempt = null;
-  step.attempts = [];
+  if (!run || !step?.attempt)
+    throw new Error("Expected projected setup Attempt fixture");
+  step.state = "waiting";
+  step.attempt.state = "waiting";
+  step.attempt.started_at = null;
+  step.attempt.finished_at = null;
+  step.attempt.execution = null;
+  step.attempt.operational = null;
+  step.attempt.can_cancel = false;
+  step.attempts = [step.attempt];
   step.session = null;
   step.harness_setup = null;
   step.can_authorize_harness_setup = true;
+  const request = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(new Response(JSON.stringify({ run })));
   const store = createAppStore(
-    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    new ApiClient({
+      httpBaseUrl: "http://fixture.invalid/api/v1",
+      localTauriClient: true,
+    }),
     "ws://fixture.invalid/socket",
     value,
   );
-  const authorize = vi
-    .spyOn(store, "authorizeHarnessSetup")
-    .mockResolvedValue(true);
   render(WorkYardWindow, {
     props: { store, product: value.product, onClose: vi.fn() },
   });
@@ -400,7 +410,13 @@ test("Run-bound subscription setup has distinct legal confirmation and no infere
   await fireEvent.click(
     within(dialog).getByRole("button", { name: "Start official login" }),
   );
-  expect(authorize).toHaveBeenCalledWith(run.id, step.occurrence_id);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+  const [url, init] = request.mock.calls[0] ?? [];
+  expect(String(url)).toBe(
+    `http://fixture.invalid/api/v1/runs/${run.id}/occurrences/${step.occurrence_id}/harness-setup`,
+  );
+  expect(init?.method).toBe("POST");
+  expect(JSON.parse(String(init?.body))).toMatchObject({ confirmed: true });
 });
 
 test("Work Yard preserves the exact pane ID through inputless native attachment", async () => {

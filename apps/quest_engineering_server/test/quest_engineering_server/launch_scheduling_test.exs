@@ -2728,7 +2728,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     end)
   end
 
-  test "Run-bound harness setup creates no Attempt and gates one exact contextual handoff",
+  test "Run-bound harness setup creates no operational Attempt and gates one exact contextual handoff",
        context do
     tactic =
       sequence([
@@ -2781,6 +2781,17 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
       )
 
     [action] = launched.actions
+
+    assert {:ok, pre_dispatch_projection} = RunProjection.get(launched.run_id)
+    [pre_dispatch_step | _] = pre_dispatch_projection.steps
+    assert pre_dispatch_step.attempt.id == action.attempt_id
+    assert pre_dispatch_step.attempt.state == "waiting"
+    assert pre_dispatch_step.attempt.started_at == nil
+    assert pre_dispatch_step.attempt.operational == nil
+    assert pre_dispatch_step.can_authorize_harness_setup
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 0
+
     request_id = Ecto.UUID.generate()
 
     assert {:ok, %{context: setup, idempotent?: false}} =
@@ -3024,6 +3035,19 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert dispatch.harness_setup.environment.environment_id == "environment-1"
     assert Repo.aggregate(ScheduledActionExecution, :count) == 1
     assert Repo.aggregate(OperationalAttemptAttribution, :count) == 1
+
+    assert {:ok, operational_projection} = RunProjection.get(launched.run_id)
+    [operational_step | _] = operational_projection.steps
+    refute operational_step.can_authorize_harness_setup
+    assert operational_step.attempt.started_at
+    assert operational_step.attempt.operational
+
+    assert {:error, %HarnessSetupStore.Error{code: :pending_action_not_found}} =
+             HarnessSetupStore.authorize(
+               launched.run_id,
+               action.occurrence_id,
+               Ecto.UUID.generate()
+             )
 
     complete(worker, dispatch)
     assert {:ok, continuation} = SchedulingStore.schedule_next(launched.run_id)
