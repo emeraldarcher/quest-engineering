@@ -203,6 +203,15 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
           "prepare",
           "native_accepted",
         );
+      const settledRetainedSession =
+        retained.binding.query.state === "acknowledged" &&
+        retained.binding.submission.state === "settled" &&
+        Boolean(lineage.nativeSession);
+      const preparedZeroQueryGate =
+        retained.binding.query.state === "not_invoked" &&
+        retained.binding.submission.state === "not_submitted";
+      if (!settledRetainedSession && !preparedZeroQueryGate)
+        throw recoveryError(retained.binding.submission.state);
       this.validateBindingConfiguration(retained.binding, dispatch);
       retained.prepared = await this.executionManager.prepare(
         dispatch,
@@ -213,10 +222,11 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       retained.control = new HarnessControlClient(
         controlDescriptorPath(lineage),
       );
-      retained.binding.submission = {
-        ...emptySubmission(),
-        eventCursor: retained.binding.submission.eventCursor,
-      };
+      if (settledRetainedSession)
+        retained.binding.submission = {
+          ...emptySubmission(),
+          eventCursor: retained.binding.submission.eventCursor,
+        };
       retained.cancellation = deferred<void>();
       retained.inspection = this.inspection(retained, "starting", "idle");
       return preparedExecution(lineage, retained);
@@ -320,7 +330,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
           request_id: requestId,
           turn_id: turnId,
           prompt,
-          continuation: !startsQuery,
+          continuation: Boolean(execution.lineage.nativeSession),
         });
       } catch (error) {
         if (startsQuery) active.binding.query.state = "uncertain";
@@ -592,8 +602,13 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         detail:
           "Authoritative QE completion exists; wrapper/provider settlement is no longer required for replay.",
       };
+    const retainedPreQueryContinuation =
+      binding.query.state === "acknowledged" &&
+      binding.submission.state === "not_submitted" &&
+      Boolean(lineage.nativeSession);
     if (
       binding.submission.state !== "settled" &&
+      !retainedPreQueryContinuation &&
       (binding.query.state !== "not_invoked" ||
         ["submitted", "native_accepted"].includes(binding.submission.state))
     ) {

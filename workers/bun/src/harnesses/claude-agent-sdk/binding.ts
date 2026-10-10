@@ -29,11 +29,16 @@ export type ClaudeRecoveryDisposition =
 export function claudeRecoveryDisposition(
   submissionState: ClaudeSubmissionState,
   queryState: ClaudeQueryState,
+  hasRetainedNativeSession = false,
 ): ClaudeRecoveryDisposition {
   if (submissionState === "cancelled" || submissionState === "terminal")
     return "terminal_history";
   if (submissionState === "settled") return "reopen_settled_session";
-  if (queryState === "not_invoked" && submissionState === "not_submitted")
+  if (
+    submissionState === "not_submitted" &&
+    (queryState === "not_invoked" ||
+      (queryState === "acknowledged" && hasRetainedNativeSession))
+  )
     return "replace_without_submission";
   return "submission_uncertain";
 }

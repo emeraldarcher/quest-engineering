@@ -707,6 +707,60 @@ test("recovery replaces only a proven-unsubmitted exited wrapper", async () => {
   }
 });
 
+test("pre-query retained continuation recovery reopens locally without replaying the prior query", async () => {
+  const value = await fixture({ reconciliation: "exited" });
+  try {
+    const execution = await value.adapter.start(value.dispatch, value.lineage);
+    const persisted = parseClaudeTransportBinding(
+      execution.handle.transportBinding ?? null,
+    ) as ClaudeTransportState;
+    persisted.query = {
+      state: "acknowledged",
+      requestId: "prior-settled-query",
+      invocationCount: 1,
+    };
+    value.registry.recordExecution(
+      value.lineage.lineageId,
+      {
+        ...execution.handle,
+        transportBinding: claudeTransportBinding(persisted),
+      },
+      null,
+    );
+    value.registry.recordNativeSession(
+      value.lineage.lineageId,
+      nativeSessionRef("claude_agent_sdk", "id", "retained-session"),
+    );
+    value.adapter.disconnect();
+    const recovered = await value.adapter.recover(
+      value.registry.getLineage(value.lineage.lineageId),
+      value.dispatch,
+    );
+    expect(recovered.detail).toContain("without replaying provider work");
+    if (!recovered.found)
+      throw new Error("Expected retained pre-query Claude recovery.");
+    expect(
+      parseClaudeTransportBinding(recovered.handle.transportBinding ?? null),
+    ).toMatchObject({
+      query: { state: "not_invoked", invocationCount: 0 },
+      submission: { state: "not_submitted" },
+    });
+    const continued = await value.adapter.continue(
+      value.dispatch,
+      value.registry.getLineage(value.lineage.lineageId),
+    );
+    expect(
+      parseClaudeTransportBinding(continued.handle.transportBinding ?? null),
+    ).toMatchObject({
+      query: { state: "not_invoked", invocationCount: 0 },
+      submission: { state: "not_submitted" },
+    });
+    expect(value.commands).toHaveLength(2);
+  } finally {
+    await value.close();
+  }
+});
+
 test("settled recovery reopens the exact native session for one bounded correction", async () => {
   const value = await fixture({
     turns: [
@@ -953,6 +1007,12 @@ test("Claude transport binding classifies recovery states without interactive at
     );
     expect(claudeRecoveryDisposition(typedState, queryState)).toBe(disposition);
   }
+  expect(claudeRecoveryDisposition("not_submitted", "acknowledged", true)).toBe(
+    "replace_without_submission",
+  );
+  expect(
+    claudeRecoveryDisposition("not_submitted", "acknowledged", false),
+  ).toBe("submission_uncertain");
   const malformed = claudeTransportBinding(base);
   malformed.payload.runtimeSha256 = "wrong";
   expect(() => parseClaudeTransportBinding(malformed)).toThrow(

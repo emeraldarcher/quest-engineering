@@ -139,6 +139,7 @@ Recovery uses independent durable query-start and prompt-submission state:
 | Durable state/evidence | Automatic action |
 |---|---|
 | query `not_invoked`, submission `not_submitted`, old process authoritatively gone/exited | replace wrapper; zero provider work is replayed and no native session is required |
+| prior query `acknowledged`, new continuation submission `not_submitted`, exact retained native session, old process gone/exited | replace wrapper locally with query `not_invoked`; start the resumed query only after the new Product authorization |
 | query `requested` or `uncertain` without acknowledgement/settlement | `query_start_uncertain`; never replay |
 | query `acknowledged` with submission `submitted` or `native_accepted` without settlement | `submission_uncertain`; never replay |
 | authoritative QE result exists | collect it; provider settlement is not required |
