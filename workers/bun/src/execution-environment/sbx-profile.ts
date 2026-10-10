@@ -97,7 +97,7 @@ export const SBX_CLAUDE_SDK_PACKAGE_JSON =
 export const SBX_CLAUDE_ZOD_MODULE = "/opt/qe/pi/node_modules/zod/index.js";
 export const SBX_CLAUDE_AGENT_SDK_VERSION = "0.3.292";
 export const SBX_CLAUDE_CODE_VERSION = "2.1.292";
-export const SBX_CLAUDE_WRAPPER_VERSION = "1.0.0";
+export const SBX_CLAUDE_WRAPPER_VERSION = "1.1.0";
 export const SBX_CLAUDE_LINUX_ARM64_SHA256 =
   "24caa9e6ff13bf227049a2626f1c816fc895023050f0ec3b12dbf14d897367e0";
 export const SBX_CLAUDE_LINUX_X64_SHA256 =
@@ -242,13 +242,14 @@ export const SBX_CODING_EXECUTION_PROFILE_V1: EnvironmentProfileIdentity =
   });
 
 const SBX_CODING_V2_PROFILE_ASSETS = Object.freeze({
-  "spec.yaml": "917a0773ff9672b5ed22a8b83d607ecdb9329ef272a26b45ae9c43f949adc779",
+  "spec.yaml":
+    "917a0773ff9672b5ed22a8b83d607ecdb9329ef272a26b45ae9c43f949adc779",
   "files/home/.qe-profile/package.json":
     "7f843d96c5203103c226833f18e74a75c9b79dbadd68d7201348de15e658f3cd",
   "files/home/.qe-profile/package-lock.json":
     "e9bcc4c2159bee2b54da57ef91972d087b32cb3a2f1d98a2204c46211b08a324",
   "files/home/.qe-profile/claude-wrapper.mjs":
-    "c25e087b0855812d320f9385078cb3e6c11c85ecbee51913f325db2fceb4dafb",
+    "82781ffa4a23f60e6eb5078733554da9484d7db01392d2ac48481470f07cd66b",
   "files/home/.qe-profile/codex-model-eligibility.mjs":
     "e8fbc8b2ed437ebaec0214a5c7ab1b61a6562438b9cc863235b8a2a1a0016972",
   "files/home/.qe-profile/discover-models.mjs":

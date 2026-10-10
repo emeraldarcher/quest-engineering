@@ -1,12 +1,11 @@
 import type {
   StreamedProcess,
   StreamedProcessExit,
-  StreamedProcessStreamEvent,
 } from "../../execution-environment/types.ts";
 import type { JsonValue } from "../../protocol/types.ts";
 import { OperationalExecutionError } from "../types.ts";
 
-export const CLAUDE_WRAPPER_PROTOCOL_VERSION = 1 as const;
+export const CLAUDE_WRAPPER_PROTOCOL_VERSION = 2 as const;
 export const CLAUDE_WRAPPER_MAX_FRAME_BYTES = 512 * 1024;
 const MAX_PENDING_EVENTS = 1_024;
 const MAX_PENDING_EVENT_BYTES = 2 * 1024 * 1024;
@@ -50,7 +49,7 @@ export interface ClaudeWrapperConfiguration {
 }
 
 interface EventEnvelope {
-  protocol_version: 1;
+  protocol_version: 2;
   generation: string;
   request_id: string;
 }
@@ -65,6 +64,8 @@ export type ClaudeWrapperEvent =
       authentication: "authenticated" | "authentication_required";
       setup_available: boolean;
       streamed_process: "attached_only";
+      query_state: "not_invoked";
+      query_invocation_count: 0;
       models: Array<{
         id: string;
         account_availability:
@@ -73,6 +74,11 @@ export type ClaudeWrapperEvent =
           | "unknown";
         effort: ClaudeEffort[];
       }>;
+    })
+  | (EventEnvelope & {
+      type: "query_started";
+      turn_id: string;
+      query_invocation_count: number;
     })
   | (EventEnvelope & {
       type: "native_session";
@@ -147,6 +153,8 @@ export type ClaudeWrapperEvent =
         | "submitted"
         | "native_accepted"
         | "ambiguous";
+      query_state: "not_invoked" | "requested" | "acknowledged" | "uncertain";
+      query_invocation_count: number;
     })
   | (EventEnvelope & { type: "shutdown"; accepted: true });
 
@@ -261,7 +269,9 @@ export class ClaudeWrapperClient {
           const bytes = Buffer.byteLength(line, "utf8");
           this.push(decodeEvent(line, this.generation), bytes);
         }
-        if (Buffer.byteLength(buffered, "utf8") > CLAUDE_WRAPPER_MAX_FRAME_BYTES)
+        if (
+          Buffer.byteLength(buffered, "utf8") > CLAUDE_WRAPPER_MAX_FRAME_BYTES
+        )
           throw wrapperError(
             "oversized_frame",
             "Claude wrapper emitted an oversized or unterminated frame.",
@@ -408,6 +418,8 @@ function validateEvent(value: Record<string, unknown>): void {
       "authentication",
       "setup_available",
       "streamed_process",
+      "query_state",
+      "query_invocation_count",
       "models",
     ]);
     if (
@@ -421,8 +433,16 @@ function validateEvent(value: Record<string, unknown>): void {
       ) ||
       typeof value.setup_available !== "boolean" ||
       value.streamed_process !== "attached_only" ||
+      value.query_state !== "not_invoked" ||
+      value.query_invocation_count !== 0 ||
       !validModels(value.models)
     )
+      invalid();
+    return;
+  }
+  if (type === "query_started") {
+    exact(value, [...common, "turn_id", "query_invocation_count"]);
+    if (!safeToken(value.turn_id, 128) || value.query_invocation_count !== 1)
       invalid();
     return;
   }
@@ -433,7 +453,13 @@ function validateEvent(value: Record<string, unknown>): void {
     return;
   }
   if (type === "native_activity") {
-    const allowed = new Set([...common, "turn_id", "state", "activity", "tool"]);
+    const allowed = new Set([
+      ...common,
+      "turn_id",
+      "state",
+      "activity",
+      "tool",
+    ]);
     if (
       Object.keys(value).some((key) => !allowed.has(key)) ||
       !safeToken(value.turn_id, 128) ||
@@ -482,19 +508,15 @@ function validateEvent(value: Record<string, unknown>): void {
       typeof value.message !== "string" ||
       value.message.length === 0 ||
       value.message.length > 240 ||
-      (value.response_schema !== undefined && !jsonValue(value.response_schema)) ||
+      (value.response_schema !== undefined &&
+        !jsonValue(value.response_schema)) ||
       (value.tool_use_id !== undefined && !safeToken(value.tool_use_id, 128))
     )
       invalid();
     return;
   }
   if (type === "human_attention_resolved") {
-    exact(value, [
-      ...common,
-      "turn_id",
-      "native_request_id",
-      "attention_id",
-    ]);
+    exact(value, [...common, "turn_id", "native_request_id", "attention_id"]);
     if (
       !safeToken(value.turn_id, 128) ||
       !safeToken(value.native_request_id, 128) ||
@@ -569,17 +591,33 @@ function validateEvent(value: Record<string, unknown>): void {
       "code",
       "message",
       "side_effect_certainty",
+      "query_state",
+      "query_invocation_count",
     ]);
     if (
       !safeToken(value.code, 64) ||
       typeof value.message !== "string" ||
       value.message.length > 320 ||
-      ![
-        "not_submitted",
-        "submitted",
-        "native_accepted",
-        "ambiguous",
-      ].includes(String(value.side_effect_certainty))
+      !["not_submitted", "submitted", "native_accepted", "ambiguous"].includes(
+        String(value.side_effect_certainty),
+      ) ||
+      !["not_invoked", "requested", "acknowledged", "uncertain"].includes(
+        String(value.query_state),
+      ) ||
+      !natural(value.query_invocation_count) ||
+      Number(value.query_invocation_count) > 1 ||
+      (value.query_state === "not_invoked" &&
+        value.query_invocation_count !== 0) ||
+      (value.query_state === "requested" &&
+        value.query_invocation_count !== 0) ||
+      (value.query_state === "acknowledged" &&
+        value.query_invocation_count !== 1) ||
+      (value.query_state === "not_invoked" &&
+        value.side_effect_certainty !== "not_submitted") ||
+      (["requested", "uncertain"].includes(String(value.query_state)) &&
+        value.side_effect_certainty !== "ambiguous") ||
+      (value.query_state === "acknowledged" &&
+        value.side_effect_certainty === "not_submitted")
     )
       invalid();
     return;
@@ -641,7 +679,7 @@ function safeToken(value: unknown, max: number): value is string {
     typeof value === "string" &&
     value.length > 0 &&
     value.length <= max &&
-    /^[a-zA-Z0-9._:@/+\-]+$/.test(value)
+    /^[a-zA-Z0-9._:@/+-]+$/.test(value)
   );
 }
 function record(value: unknown): value is Record<string, unknown> {
@@ -667,7 +705,9 @@ function jsonValue(value: unknown, depth = 0): value is JsonValue {
     return true;
   if (typeof value === "number") return Number.isFinite(value);
   if (Array.isArray(value))
-    return value.length <= 512 && value.every((item) => jsonValue(item, depth + 1));
+    return (
+      value.length <= 512 && value.every((item) => jsonValue(item, depth + 1))
+    );
   return (
     record(value) &&
     Object.keys(value).length <= 128 &&

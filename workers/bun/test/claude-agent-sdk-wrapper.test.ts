@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   CLAUDE_WRAPPER_MAX_FRAME_BYTES,
@@ -37,7 +38,9 @@ class WrapperProcess {
     });
     this.exited = this.child.exited;
     void this.read();
-    void new Response(this.child.stderr as ReadableStream<Uint8Array>).arrayBuffer();
+    void new Response(
+      this.child.stderr as ReadableStream<Uint8Array>,
+    ).arrayBuffer();
   }
 
   send(value: unknown): void {
@@ -106,7 +109,7 @@ async function fixture(input?: {
   await mkdir(join(config, ".tmp"));
   return {
     backend: "fake",
-    wrapper_version: "1.0.0",
+    wrapper_version: "1.1.0",
     sdk_version: "0.3.292",
     claude_code_version: "2.1.292",
     runtime_sha256: "a".repeat(64),
@@ -139,7 +142,7 @@ function command(
   extra: Record<string, unknown> = {},
 ) {
   return {
-    protocol_version: 1,
+    protocol_version: 2,
     generation,
     type,
     request_id: requestId,
@@ -149,7 +152,7 @@ function command(
 
 async function initialize(
   process: WrapperProcess,
-  configuration: Awaited<ReturnType<typeof fixture>>,
+  configuration: Record<string, unknown>,
   generation = "generation-a",
 ) {
   process.send(
@@ -157,6 +160,99 @@ async function initialize(
   );
   return process.next();
 }
+
+test("authenticated SDK initialization performs zero query calls until execute_turn", async () => {
+  const parent = join(process.cwd(), ".pi", "tmp");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "claude-wrapper-sdk-spy-"));
+  roots.push(root);
+  const workspace = join(root, "workspace");
+  const config = join(root, "claude-config");
+  const control = join(root, "control");
+  const runtime = join(root, "claude-runtime");
+  const sdkModule = join(root, "sdk-spy.mjs");
+  const sdkPackage = join(root, "sdk-package.json");
+  const zodModule = join(root, "zod-spy.mjs");
+  const queryCounter = join(root, "query-invocations.txt");
+  await Promise.all([mkdir(workspace), mkdir(config), mkdir(control)]);
+  await mkdir(join(config, ".tmp"));
+  await Bun.write(join(config, ".credentials.json"), "{}\n");
+  const authStatus = JSON.stringify({
+    authMethod: "claude.ai",
+    configDirectory: config,
+  }).replaceAll("'", "'\\''");
+  await Bun.write(runtime, `#!/bin/sh\nprintf '%s\\n' '${authStatus}'\n`);
+  await chmod(runtime, 0o755);
+  await Bun.write(
+    sdkModule,
+    `import { appendFileSync } from "node:fs";
+export function tool() { return {}; }
+export function createSdkMcpServer() { return {}; }
+export function query() {
+  appendFileSync(${JSON.stringify(queryCounter)}, "query\\n");
+  throw new Error("deterministic SDK query spy stop");
+}
+`,
+  );
+  await Bun.write(
+    sdkPackage,
+    JSON.stringify({ version: "0.3.292", claudeCodeVersion: "2.1.292" }),
+  );
+  await Bun.write(
+    zodModule,
+    "export const z = { string: () => ({}), json: () => ({}), record: () => ({}) };\n",
+  );
+  const runtimeSha256 = createHash("sha256")
+    .update(new Uint8Array(await Bun.file(runtime).arrayBuffer()))
+    .digest("hex");
+  const configuration = {
+    backend: "sdk",
+    wrapper_version: "1.1.0",
+    sdk_version: "0.3.292",
+    claude_code_version: "2.1.292",
+    runtime_sha256: runtimeSha256,
+    claude_executable: runtime,
+    sdk_module: sdkModule,
+    sdk_package_json: sdkPackage,
+    zod_module: zodModule,
+    workspace,
+    workspace_access: "read_write",
+    config_dir: config,
+    control_descriptor: join(control, "descriptor.json"),
+    temp_dir: join(config, ".tmp"),
+    model: "claude-test-exact",
+    effort: "high",
+    tools: ["workspace.filesystem"],
+    native_session_id: null,
+    runtime_models: [{ id: "claude-test-exact", effort: ["high"] }],
+    fake: null,
+  };
+  const wrapperProcess = new WrapperProcess();
+  expect(await initialize(wrapperProcess, configuration)).toMatchObject({
+    type: "ready",
+    authentication: "authenticated",
+    query_state: "not_invoked",
+    query_invocation_count: 0,
+  });
+  expect(await Bun.file(queryCounter).exists()).toBe(false);
+
+  wrapperProcess.send(
+    command("generation-a", "execute_turn", "execute-sdk-spy", {
+      turn_id: "turn-sdk-spy",
+      prompt: "authorized deterministic SDK spy prompt",
+      continuation: false,
+    }),
+  );
+  expect(await wrapperProcess.next()).toMatchObject({
+    type: "fatal_error",
+    code: "protocol_error",
+    side_effect_certainty: "ambiguous",
+    query_state: "uncertain",
+    query_invocation_count: 1,
+  });
+  expect(await Bun.file(queryCounter).text()).toBe("query\n");
+  expect(await wrapperProcess.exited).toBe(70);
+});
 
 test("real headless wrapper fake streams session, tools, usage, HumanAttention, completion, and settlement", async () => {
   const process = new WrapperProcess();
@@ -202,6 +298,8 @@ test("real headless wrapper fake streams session, tools, usage, HumanAttention, 
     sdk_version: "0.3.292",
     claude_code_version: "2.1.292",
     streamed_process: "attached_only",
+    query_state: "not_invoked",
+    query_invocation_count: 0,
   });
 
   process.send(
@@ -212,10 +310,13 @@ test("real headless wrapper fake streams session, tools, usage, HumanAttention, 
     }),
   );
   const observed: string[] = [];
+  let queryInvocations = 0;
   for (;;) {
     const event = await process.next();
     observed.push(String(event.type));
     decodeEvent(JSON.stringify(event), "generation-a");
+    if (event.type === "query_started")
+      queryInvocations = Number(event.query_invocation_count);
     if (event.type === "human_attention_request") {
       expect(event).toMatchObject({
         native_request_id: "native-request-a",
@@ -272,8 +373,10 @@ test("real headless wrapper fake streams session, tools, usage, HumanAttention, 
       break;
     }
   }
+  expect(queryInvocations).toBe(1);
   expect(observed).toEqual(
     expect.arrayContaining([
+      "query_started",
       "native_session",
       "native_activity",
       "usage",
@@ -283,7 +386,10 @@ test("real headless wrapper fake streams session, tools, usage, HumanAttention, 
     ]),
   );
   process.send(command("generation-a", "shutdown", "shutdown-a"));
-  expect(await process.next()).toMatchObject({ type: "shutdown", accepted: true });
+  expect(await process.next()).toMatchObject({
+    type: "shutdown",
+    accepted: true,
+  });
   expect(await process.exited).toBe(0);
 });
 
@@ -296,6 +402,8 @@ test("unauthenticated wrapper advertises setup but executes zero provider turns"
     type: "ready",
     authentication: "authentication_required",
     setup_available: true,
+    query_state: "not_invoked",
+    query_invocation_count: 0,
   });
   process.send(
     command("generation-a", "execute_turn", "execute-authless", {
@@ -310,8 +418,77 @@ test("unauthenticated wrapper advertises setup but executes zero provider turns"
     type: "fatal_error",
     code: "authentication_required",
     side_effect_certainty: "not_submitted",
+    query_state: "not_invoked",
+    query_invocation_count: 0,
   });
   expect(providerTurns).toBe(0);
+  expect(await process.exited).toBe(70);
+});
+
+test("wrapper invokes one query only after execute_turn and rejects duplicate query start", async () => {
+  const process = new WrapperProcess();
+  const configuration = await fixture({
+    turns: [
+      [
+        {
+          type: "attention",
+          native_request_id: "hold-query",
+          interaction: "text",
+          message: "Hold the deterministic turn.",
+        },
+      ],
+    ],
+  });
+  const ready = await initialize(process, configuration);
+  expect(ready).toMatchObject({
+    type: "ready",
+    query_state: "not_invoked",
+    query_invocation_count: 0,
+  });
+  const execute = command("generation-a", "execute_turn", "execute-once", {
+    turn_id: "turn-once",
+    prompt: "deterministic fixture prompt",
+    continuation: false,
+  });
+  process.send(execute);
+  let queryStarts = 0;
+  for (;;) {
+    const event = await process.next();
+    if (event.type === "query_started") {
+      queryStarts += 1;
+      expect(event.query_invocation_count).toBe(1);
+    }
+    if (event.type === "human_attention_request") break;
+  }
+  process.send(execute);
+  const fatal = await process.next();
+  expect(fatal).toMatchObject({
+    type: "fatal_error",
+    code: "duplicate_request",
+    query_state: "acknowledged",
+    query_invocation_count: 1,
+  });
+  expect(queryStarts).toBe(1);
+  expect(await process.exited).toBe(70);
+});
+
+test("stale execute command is rejected before query invocation", async () => {
+  const process = new WrapperProcess();
+  await initialize(process, await fixture());
+  process.send(
+    command("generation-stale", "execute_turn", "stale-execute", {
+      turn_id: "stale-turn",
+      prompt: "must not run",
+      continuation: false,
+    }),
+  );
+  expect(await process.next()).toMatchObject({
+    type: "fatal_error",
+    code: "stale_generation",
+    side_effect_certainty: "not_submitted",
+    query_state: "not_invoked",
+    query_invocation_count: 0,
+  });
   expect(await process.exited).toBe(70);
 });
 
@@ -344,6 +521,8 @@ test("wrapper fails closed on forbidden tools and exact model or effort mismatch
           : "effort_unavailable",
     );
     expect(fatal.side_effect_certainty).toBe("native_accepted");
+    expect(fatal.query_state).toBe("acknowledged");
+    expect(fatal.query_invocation_count).toBe(1);
     expect(await process.exited).toBe(70);
   }
 });

@@ -1,8 +1,12 @@
-import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { SbxExecutionEnvironmentBackend } from "../src/execution-environment/sbx-backend.ts";
+import type {
+  SbxClient,
+  SbxSandboxSummary,
+} from "../src/execution-environment/sbx-client.ts";
 import { CliSbxClient } from "../src/execution-environment/sbx-client.ts";
 import {
   SBX_CLAUDE_AGENT_SDK_VERSION,
@@ -20,6 +24,10 @@ import {
   SBX_GUEST_PATHS,
   SBX_MIXED_RUNTIME_NETWORK_TARGETS,
 } from "../src/execution-environment/sbx-profile.ts";
+import type {
+  SbxEnvironmentVerifier,
+  SbxVerifiedEnvironment,
+} from "../src/execution-environment/sbx-verifier.ts";
 import type { DurableEnvironmentRecord } from "../src/execution-environment/store.ts";
 import type {
   EnvironmentCapability,
@@ -27,14 +35,6 @@ import type {
   StreamedProcess,
   StreamedProcessStreamEvent,
 } from "../src/execution-environment/types.ts";
-import type {
-  SbxEnvironmentVerifier,
-  SbxVerifiedEnvironment,
-} from "../src/execution-environment/sbx-verifier.ts";
-import type {
-  SbxClient,
-  SbxSandboxSummary,
-} from "../src/execution-environment/sbx-client.ts";
 
 const live = process.env.QE_LIVE_SBX_CLAUDE === "1";
 
@@ -126,7 +126,7 @@ test.skipIf(!live)(
       await streamProcess.write(
         new TextEncoder().encode(
           `${JSON.stringify({
-            protocol_version: 1,
+            protocol_version: 2,
             generation,
             type: "initialize",
             request_id: initializeRequest,
@@ -166,12 +166,14 @@ test.skipIf(!live)(
           claude_code_version: SBX_CLAUDE_CODE_VERSION,
           runtime_sha256: runtimeSha256,
           models: [],
+          query_state: "not_invoked",
+          query_invocation_count: 0,
         },
       });
       await streamProcess.write(
         new TextEncoder().encode(
           `${JSON.stringify({
-            protocol_version: 1,
+            protocol_version: 2,
             generation,
             type: "shutdown",
             request_id: crypto.randomUUID(),
@@ -259,7 +261,7 @@ class ZeroInferenceClaudeVerifier implements SbxEnvironmentVerifier {
       executable: "/usr/bin/node",
       args: [
         "-e",
-        "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const runtime=`/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-${a}/claude`; const mounts=fs.readFileSync('/proc/self/mountinfo','utf8'); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime,sha256:c.createHash('sha256').update(fs.readFileSync(runtime)).digest('hex'),wrapperExecutable:(fs.statSync(process.env.W).mode&0o111)!==0,credentialsPresent:fs.existsSync(process.env.C),hostUsersVisible:mounts.includes('/Users/'),sshAgentVisible:Boolean(process.env.SSH_AUTH_SOCK&&fs.existsSync(process.env.SSH_AUTH_SOCK))}));",
+        "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const runtime='/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-'+a+'/claude'; const mounts=fs.readFileSync('/proc/self/mountinfo','utf8'); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime,sha256:c.createHash('sha256').update(fs.readFileSync(runtime)).digest('hex'),wrapperExecutable:(fs.statSync(process.env.W).mode&0o111)!==0,credentialsPresent:fs.existsSync(process.env.C),hostUsersVisible:mounts.includes('/Users/'),sshAgentVisible:Boolean(process.env.SSH_AUTH_SOCK&&fs.existsSync(process.env.SSH_AUTH_SOCK))}));",
       ],
       environment: {
         P: SBX_CLAUDE_SDK_PACKAGE_JSON,
@@ -300,7 +302,10 @@ class ZeroInferenceClaudeVerifier implements SbxEnvironmentVerifier {
   }
 }
 
-function markerFor(record: DurableEnvironmentRecord, sandbox: SbxSandboxSummary) {
+function markerFor(
+  record: DurableEnvironmentRecord,
+  sandbox: SbxSandboxSummary,
+) {
   return {
     schemaVersion: 1,
     backendKind: "sbx",

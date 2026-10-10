@@ -8,14 +8,14 @@ The implementation follows [`claude-agent-sdk-decision.md`](claude-agent-sdk-dec
 
 | Component | Immutable provenance |
 |---|---|
-| QE profile | `qe-coding-execution-v2`, `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24` |
+| QE profile | `qe-coding-execution-v2`, `sha256:a515a987b33f6b4bae64f7c2d3107a7094b967d17cd99559824083659c7086b4` |
 | Claude Agent SDK | `@anthropic-ai/claude-agent-sdk@0.3.292` |
 | SDK npm integrity | `sha512-C5XI/19uArTg3jjgayN9CSQxJilRciBko007AdPmHXwQqbAzdUldaPUQtDp8Pm6QJg5Aw3jI1G1eIJOBrx4xKQ==` |
 | SDK research tar SHA-256 | `967024d934865047062b5b5ed6e0d613d4454a846e9c71e1ac55ee3c6d57c168` |
 | Claude Code | `2.1.292`, source commit `37832d0b7cad7b40bac7c82dff58629313913edf` |
 | Linux ARM64 runtime | SHA-256 `24caa9e6ff13bf227049a2626f1c816fc895023050f0ec3b12dbf14d897367e0`; npm integrity `sha512-ziGXVP0Kjjg531fUNZh/1lkT8MQKc77qFinqvQ7N7ZbR7Kr/wVRhs3kSb2s7A1+z/3TNsPiQJManEmbw61U+Hw==` |
 | Linux x64 runtime | SHA-256 `a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3`; npm integrity `sha512-dnMVyLxpg8mUzEqAtxhv+5oBxdiYjCLIBHLPFM4z7cuk+Se6SwgyHPRGipp8rOociJBS8yyB7QXJh+RO41y+Kg==` |
-| QE wrapper protocol | `claude_agent_sdk_stream_v1`, protocol `1`, wrapper `1.0.0`, source SHA-256 `c25e087b0855812d320f9385078cb3e6c11c85ecbee51913f325db2fceb4dafb` |
+| QE wrapper protocol | `claude_agent_sdk_stream_v2`, protocol `2`, wrapper `1.1.0`, source SHA-256 `82781ffa4a23f60e6eb5078733554da9484d7db01392d2ac48481470f07cd66b` |
 
 `qe-coding-execution-v1` remains byte-for-byte unchanged and retains its original identity digest `sha256:09dc17e0b2270441ba4af01d3e59f803c0514bfedb82356f8849017a76e2cc2b`.
 
@@ -35,8 +35,8 @@ Wrapper stdout is strict bounded NDJSON. Stderr bytes are drained but never logg
 
 The adapter persists only the existing generic seams:
 
-- `transport_binding_json`: wrapper/process/environment generation, immutable configuration hashes, and submission cursor/state;
-- `native_session_json`: the SDK session ID as a harness-owned opaque ID;
+- `transport_binding_json`: wrapper/process/environment generation, immutable configuration hashes, durable query-start intent/certainty/count, and submission cursor/state;
+- `native_session_json`: the SDK session ID as a harness-owned opaque ID, which does not exist before the first authorized query;
 - `interactive_json`: `null`.
 
 No new generic terminal topology or Claude-specific registry columns were added.
@@ -61,7 +61,9 @@ Worker Protocol v13 makes this a first-class **operational setup**, not an `Exec
 4. The Worker reserves that exact physical lineage, creates or adopts the exact Run SBX and private-Git worktree, creates `/qe/state/claude-lineages/<lineage-hash>/config`, checks `claude auth status`, and only then may invoke the command above once for that generation.
 5. `requested`, `acknowledged`, HumanAttention, ready, failed, uncertain, and cancelled state is durable. A known pre-invocation failure can be explicitly retried. An acknowledged or ambiguous invocation is never replayed automatically after restart. Cancellation is persisted before process interruption and fences late completion.
 6. Ready evidence is contextual: environment UUID/incarnation, profile ID/digest, config identity, physical/logical lineage, Worker generation, workspace identity, and exact resolved configuration must all still match. The scheduler overlays that evidence only for the owning Action or a compatible `continue_from` lineage. Unrelated Actions/Runs remain unschedulable and never inherit credentials.
-7. Normal scheduling then creates the first `ExecutionAttempt` and sends the setup binding with `execute_action`. The Worker rejects stale, cross-generation, cross-Run, cross-action, incompatible-continuation, replaced-environment, or mismatched-config evidence before SDK execution.
+7. Normal scheduling then creates the first `ExecutionAttempt` and sends the setup binding with `execute_action`. Authenticated wrapper initialization performs only local module/tool/options preparation: it does not call SDK `query()`, submit a prompt, contact the provider for a model turn, or require a native session.
+8. The Attempt reaches Product `needs_confirmation` with durable query state `not_invoked`, count `0`, prompt intent absent, and no native session. Only explicit `human_prompt` authority advances the Attempt. The Worker then durably records prompt intent and query-start intent before sending `execute_turn`.
+9. The wrapper advances its deterministic invocation count immediately before the first SDK call and emits `query_started` only after that call returns a Query object. The Worker persists query acknowledgement independently of prompt/native acceptance. Loss or synchronous failure between intent and acknowledgement remains uncertain and non-replayable. The Worker rejects stale authorization, wrapper generation, Worker/environment/incarnation/profile/setup/configuration/action identity, model, effort, or tool policy before it can send the command.
 
 Work Yard's setup confirmation explicitly states that the user reviewed the decision notice and independently chose whether to proceed under Anthropic's terms. QE neither accepts terms nor infers consent. Official provider interaction bytes are retrieved only on demand from an in-memory five-minute relay; refresh, expiry, restart, cancellation, and Run cleanup can make them unavailable without weakening the durable setup outcome.
 
@@ -76,9 +78,17 @@ QE does not:
 
 An authenticated subscription execution must report `claude auth status` method `claude.ai`, and the SDK init must report no API-key source. Any other method is `auth_required`/`permission_denied`, never an economic fallback.
 
+## Product inference authorization and first-query boundary
+
+Harness-setup authority and authentication readiness never authorize inference. Authenticated `initialize` emits `ready` only after local SDK import, tool-policy construction, and option preparation. It leaves query state `not_invoked`, query count `0`, submission state `not_submitted`, and native session absent. Therefore Product `needs_confirmation` means **zero SDK `query()` calls, zero Product prompt submission, zero provider/model turns, and zero native-session requirement**.
+
+`sendInputAndCollect()` accepts execution only when exact current Product prompt authorization and durable prompt intent are present and fenced to the active Action, wrapper generation, environment/incarnation/profile, and configuration identity. It persists `query=requested` before writing `execute_turn`. The wrapper transitions the first call to `acknowledged` via `query_started`; any loss after durable request but before acknowledgement becomes `uncertain`. Requested, acknowledged, or uncertain query state without settlement evidence is never automatically replayed. Corrective continuation may reuse an already acknowledged live/reopened query only under the existing exact settled native-session authority.
+
+Cancellation before Product inference authorization interrupts and retires the prepared wrapper without starting a query. Setup authorization, setup HumanAttention, inference authorization, and execution HumanAttention remain distinct authorities.
+
 ## Model and effort contract
 
-After authentication, the wrapper uses the SDK initialization model catalog. It requires the exact scheduled model to exist and the exact scheduled effort to be in that model's supported effort levels. It then checks the same values in SDK init, assistant messages, hook inputs, usage attribution, and terminal settlement.
+After authentication **and explicit Product inference authorization**, the first `query()` returns the SDK initialization model catalog. The wrapper requires the exact scheduled model to exist and the exact scheduled effort to be in that model's supported effort levels. It then checks the same values in SDK init, assistant messages, hook inputs, usage attribution, and terminal settlement.
 
 A model switch is denied before the switch and checked again afterward. Fallback models are not configured. Missing or downgraded effort is `effort_unavailable`; alias or model drift is `model_unavailable`. Neither condition retries with another model.
 
@@ -124,20 +134,20 @@ The local Product UI renders confirmation, text, bounded multiline, and sanitize
 
 Cancellation authority is persisted before native interruption. The adapter first sends `Query.interrupt()` through the wrapper, waits a bounded interval for correlated cancelled settlement, and then uses exact physical-process cancellation as fallback. Lost fallback acknowledgement is `cancellation_uncertain`; cancellation does not claim to undo filesystem, shell, network, completion, or provider side effects.
 
-Recovery uses the durable submission state:
+Recovery uses independent durable query-start and prompt-submission state:
 
 | Durable state/evidence | Automatic action |
 |---|---|
-| `not_submitted`, old process authoritatively gone/exited | replace wrapper; no provider work is replayed |
-| `submitted` | `submission_uncertain`; never replay |
-| `native_accepted` | `submission_uncertain`; never replay |
+| query `not_invoked`, submission `not_submitted`, old process authoritatively gone/exited | replace wrapper; zero provider work is replayed and no native session is required |
+| query `requested` or `uncertain` without acknowledgement/settlement | `query_start_uncertain`; never replay |
+| query `acknowledged` with submission `submitted` or `native_accepted` without settlement | `submission_uncertain`; never replay |
 | authoritative QE result exists | collect it; provider settlement is not required |
 | provider `settled`, result absent | reopen the exact native session and ask existing completion authority whether one bounded correction is allowed |
 | `cancelled` or `terminal` | immutable terminal history; no adoption |
 | detached process still running or unavailable | `stream_lost`; attached-only stdio cannot be invented and replacement is forbidden |
 | process start identity mismatch | terminal `ownership_mismatch` |
 
-The process handle, environment ref, profile digest, workspace/configuration identities, exact model/effort/tool-policy hash, request/turn IDs, continuation count, and event cursor are validated before recovery. A Worker restart may replace only after physical absence evidence. Same-lineage continuation is rejected by the existing physical-configuration equality check if model, effort, tools, workspace, or harness changes.
+The process handle, environment ref, profile digest, workspace/configuration identities, exact setup binding identity, model/effort/tool-policy hash, request/turn IDs, continuation count, and event cursor are validated before execution and recovery. A Worker restart may replace only after physical absence evidence. Same-lineage continuation is rejected by the existing physical-configuration equality check if model, effort, tools, workspace, or harness changes.
 
 ## Typed failures
 
@@ -151,6 +161,7 @@ Important adapter codes include:
 - `permission_denied`
 - `runtime_incompatible`
 - `stream_lost`
+- `query_start_uncertain`
 - `submission_uncertain`
 - `cancellation_uncertain`
 - `completion_export_timeout`
@@ -164,7 +175,7 @@ Each carries the existing operational classification, phase, side-effect certain
 
 ## Deterministic and physical validation
 
-Deterministic tests execute the real wrapper process in fake mode. They cover session discovery, exact tools, structured usage/cost, HumanAttention round trips, custom completion, settlement, cancellation, unauthenticated setup readiness, forbidden tools, model/effort mismatch, duplicate/stale requests, malformed/oversized frames, adapter completion authority, headless persistence, auth command construction, and the recovery-state matrix.
+Deterministic tests execute the real wrapper process in fake mode. They instrument the query invocation count and cover zero-query authenticated initialization, Product `needs_confirmation`, one authorized query, cancellation before query, duplicate query prevention, stale authorization/wrapper/environment fencing, pre-invocation rejection, query-start ambiguity/no replay, native-session absence before query, exact tools/model/effort, structured usage/cost, HumanAttention round trips, custom completion, settlement, cancellation after query, unauthenticated setup readiness, malformed/oversized frames, adapter completion authority, headless persistence, auth command construction, and the recovery-state matrix.
 
 The physical gate is:
 
@@ -176,7 +187,9 @@ QE_LIVE_SBX_CLAUDE=1 QE_SBX_BIN=/absolute/sbx \
 
 It creates the real `qe-coding-execution-v2` SBX, installs the lockfile-pinned artifacts, independently verifies SDK/Claude versions and runtime SHA-256, proves no Claude credential file, host `/Users` mount, or SSH agent is present, launches the real wrapper through production `EnvironmentLease.spawnStreamed()`, and receives `authentication_required` before the wrapper loads the SDK or constructs `query()`. It then shuts down and removes the exact environment.
 
-The final accepted local proof completed on 2026-10-08 against profile `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24` with:
+The protocol-v2 zero-inference physical proof completed on 2026-10-10 against profile `sha256:a515a987b33f6b4bae64f7c2d3107a7094b967d17cd99559824083659c7086b4`. It verified the pinned SDK/runtime and wrapper bytes, observed `authentication_required` with query state `not_invoked` and invocation count `0`, sent only shutdown, and removed the exact SBX. Claude authentication, prompt submission, SDK query construction, provider/model requests, Product Actions, and `qe_complete_step` calls were all **0**.
+
+The prior accepted zero-auth local proof completed on 2026-10-08 against the superseded profile `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24` with:
 
 - Claude auth-login invocations: **0**
 - Claude credential imports/extractions: **0**

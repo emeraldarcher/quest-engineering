@@ -4,7 +4,13 @@ import type { HarnessTransportBinding } from "../transport-binding.ts";
 import { validateTransportBinding } from "../transport-binding.ts";
 
 export const CLAUDE_TRANSPORT_BINDING_KIND =
-  "claude_agent_sdk_stream_v1" as const;
+  "claude_agent_sdk_stream_v2" as const;
+
+export type ClaudeQueryState =
+  | "not_invoked"
+  | "requested"
+  | "acknowledged"
+  | "uncertain";
 
 export type ClaudeSubmissionState =
   | "not_submitted"
@@ -21,11 +27,14 @@ export type ClaudeRecoveryDisposition =
   | "terminal_history";
 
 export function claudeRecoveryDisposition(
-  state: ClaudeSubmissionState,
+  submissionState: ClaudeSubmissionState,
+  queryState: ClaudeQueryState,
 ): ClaudeRecoveryDisposition {
-  if (state === "not_submitted") return "replace_without_submission";
-  if (state === "settled") return "reopen_settled_session";
-  if (state === "cancelled" || state === "terminal") return "terminal_history";
+  if (submissionState === "cancelled" || submissionState === "terminal")
+    return "terminal_history";
+  if (submissionState === "settled") return "reopen_settled_session";
+  if (queryState === "not_invoked" && submissionState === "not_submitted")
+    return "replace_without_submission";
   return "submission_uncertain";
 }
 
@@ -44,6 +53,11 @@ export interface ClaudeTransportState {
   model: string;
   effort: string;
   toolPolicyDigest: string;
+  query: {
+    state: ClaudeQueryState;
+    requestId: string | null;
+    invocationCount: number;
+  };
   submission: {
     state: ClaudeSubmissionState;
     requestId: string | null;
@@ -90,6 +104,7 @@ export function parseClaudeTransportBinding(
     "model",
     "effort",
     "toolPolicyDigest",
+    "query",
     "submission",
   ]);
   for (const field of [
@@ -111,6 +126,21 @@ export function parseClaudeTransportBinding(
       invalid();
   if (!/^[a-f0-9]{64}$/.test(String(value.runtimeSha256))) invalid();
   const process = parseProcess(value.process);
+  if (!record(value.query)) invalid();
+  exact(value.query, ["state", "requestId", "invocationCount"]);
+  if (
+    !["not_invoked", "requested", "acknowledged", "uncertain"].includes(
+      String(value.query.state),
+    ) ||
+    !nullableToken(value.query.requestId) ||
+    !natural(value.query.invocationCount) ||
+    Number(value.query.invocationCount) > 1 ||
+    (value.query.state === "not_invoked" &&
+      (value.query.requestId !== null || value.query.invocationCount !== 0)) ||
+    (value.query.state !== "not_invoked" && value.query.requestId === null) ||
+    (value.query.state === "acknowledged" && value.query.invocationCount !== 1)
+  )
+    invalid();
   if (!record(value.submission)) invalid();
   exact(value.submission, [
     "state",
@@ -131,7 +161,13 @@ export function parseClaudeTransportBinding(
     !nullableToken(value.submission.requestId) ||
     !nullableToken(value.submission.turnId) ||
     !natural(value.submission.continuationCount) ||
-    !natural(value.submission.eventCursor)
+    !natural(value.submission.eventCursor) ||
+    (value.submission.state === "native_accepted" &&
+      value.query.state !== "acknowledged") ||
+    (value.submission.state === "submitted" &&
+      !["requested", "acknowledged", "uncertain"].includes(
+        String(value.query.state),
+      ))
   )
     invalid();
   return {
@@ -149,6 +185,11 @@ export function parseClaudeTransportBinding(
     model: value.model as string,
     effort: value.effort as string,
     toolPolicyDigest: value.toolPolicyDigest as string,
+    query: {
+      state: value.query.state as ClaudeQueryState,
+      requestId: value.query.requestId as string | null,
+      invocationCount: value.query.invocationCount as number,
+    },
     submission: {
       state: value.submission.state as ClaudeSubmissionState,
       requestId: value.submission.requestId as string | null,
@@ -211,7 +252,10 @@ function parseProcess(value: unknown): StreamedProcessHandle {
   return structuredClone(value) as unknown as StreamedProcessHandle;
 }
 
-function exact(value: Record<string, unknown>, fields: readonly string[]): void {
+function exact(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): void {
   const actual = Object.keys(value).sort();
   const expected = [...fields].sort();
   if (

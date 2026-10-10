@@ -45,6 +45,9 @@ test("Pi, Antigravity, Claude, and mixed Runs resolve one composable immutable p
   expect(SBX_CODING_EXECUTION_PROFILE_V1.digest).toBe(
     "sha256:09dc17e0b2270441ba4af01d3e59f803c0514bfedb82356f8849017a76e2cc2b",
   );
+  expect(SBX_CODING_EXECUTION_PROFILE_V2.digest).toBe(
+    "sha256:a515a987b33f6b4bae64f7c2d3107a7094b967d17cd99559824083659c7086b4",
+  );
   expect(profileSupportsHarness(SBX_CODING_EXECUTION_PROFILE_V1.id, "pi")).toBe(
     true,
   );
@@ -68,7 +71,10 @@ test("Pi, Antigravity, Claude, and mixed Runs resolve one composable immutable p
 
 test("qe-coding-execution-v1 remains byte-for-byte immutable", async () => {
   const paths = await Array.fromAsync(
-    new Bun.Glob("**/*").scan({ cwd: SBX_CODING_PROFILE_V1_ROOT, onlyFiles: true }),
+    new Bun.Glob("**/*").scan({
+      cwd: SBX_CODING_PROFILE_V1_ROOT,
+      onlyFiles: true,
+    }),
   );
   paths.sort();
   const digest = createHash("sha256");
@@ -93,17 +99,23 @@ test("mixed profile pins Antigravity provenance and revokes installer/updater eg
       "utf8",
     ),
   );
-  expect(lock.packages["node_modules/@anthropic-ai/claude-agent-sdk"]).toMatchObject({
+  expect(
+    lock.packages["node_modules/@anthropic-ai/claude-agent-sdk"],
+  ).toMatchObject({
     version: "0.3.292",
     integrity:
       "sha512-C5XI/19uArTg3jjgayN9CSQxJilRciBko007AdPmHXwQqbAzdUldaPUQtDp8Pm6QJg5Aw3jI1G1eIJOBrx4xKQ==",
   });
-  expect(lock.packages["node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64"]).toMatchObject({
+  expect(
+    lock.packages["node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64"],
+  ).toMatchObject({
     version: "0.3.292",
     integrity:
       "sha512-ziGXVP0Kjjg531fUNZh/1lkT8MQKc77qFinqvQ7N7ZbR7Kr/wVRhs3kSb2s7A1+z/3TNsPiQJManEmbw61U+Hw==",
   });
-  expect(lock.packages["node_modules/@anthropic-ai/claude-agent-sdk-linux-x64"]).toMatchObject({
+  expect(
+    lock.packages["node_modules/@anthropic-ai/claude-agent-sdk-linux-x64"],
+  ).toMatchObject({
     version: "0.3.292",
     integrity:
       "sha512-dnMVyLxpg8mUzEqAtxhv+5oBxdiYjCLIBHLPFM4z7cuk+Se6SwgyHPRGipp8rOociJBS8yyB7QXJh+RO41y+Kg==",
@@ -111,6 +123,9 @@ test("mixed profile pins Antigravity provenance and revokes installer/updater eg
   const wrapperSource = await readFile(
     `${SBX_CODING_PROFILE_ROOT}/files/home/.qe-profile/claude-wrapper.mjs`,
     "utf8",
+  );
+  expect(createHash("sha256").update(wrapperSource).digest("hex")).toBe(
+    "82781ffa4a23f60e6eb5078733554da9484d7db01392d2ac48481470f07cd66b",
   );
   expect(wrapperSource).toContain('"/home/agent/.pi"');
   expect(wrapperSource).toContain('"/home/agent/.gemini"');
@@ -127,10 +142,12 @@ test("mixed profile pins Antigravity provenance and revokes installer/updater eg
     binarySha256: SBX_ANTIGRAVITY_LINUX_ARM64_BINARY_SHA256,
   });
   expect(SBX_ANTIGRAVITY_EXECUTABLE).toBe("/opt/qe/antigravity/agy");
-  expect(SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION.harnesses.claude_agent_sdk).toMatchObject({
+  expect(
+    SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION.harnesses.claude_agent_sdk,
+  ).toMatchObject({
     sdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
     claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
-    wrapperVersion: "1.0.0",
+    wrapperVersion: "1.1.0",
   });
   expect(SBX_MIXED_RUNTIME_NETWORK_TARGETS).toEqual([
     "chatgpt.com",

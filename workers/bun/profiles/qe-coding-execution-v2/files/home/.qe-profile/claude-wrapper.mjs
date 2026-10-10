@@ -5,8 +5,8 @@ import { access, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const PROTOCOL_VERSION = 1;
-const WRAPPER_VERSION = "1.0.0";
+const PROTOCOL_VERSION = 2;
+const WRAPPER_VERSION = "1.1.0";
 const SDK_VERSION = "0.3.292";
 const CLAUDE_CODE_VERSION = "2.1.292";
 const MAX_FRAME_BYTES = 512 * 1024;
@@ -20,9 +20,13 @@ let generation = null;
 let configuration = null;
 let nativeSessionId = null;
 let activeTurn = null;
+let sdk = null;
+let sdkOptionsPrepared = null;
 let sdkQuery = null;
 let sdkInput = null;
 let sdkReader = null;
+let queryInvocationState = "not_invoked";
+let queryInvocationCount = 0;
 let completionAcknowledged = false;
 let fatal = false;
 
@@ -73,7 +77,9 @@ function emit(frame) {
       request_id: frame.request_id ?? randomUUID(),
       code: "oversized_frame",
       message: "Wrapper output exceeded the protocol frame bound.",
-      side_effect_certainty: activeTurn ? "ambiguous" : "not_submitted",
+      side_effect_certainty: querySideEffectCertainty(),
+      query_state: queryInvocationState,
+      query_invocation_count: queryInvocationCount,
     });
     process.stdout.write(`${fallback}\n`);
     fatal = true;
@@ -169,74 +175,67 @@ async function initialize(frame) {
 
   if (config.backend === "fake") {
     const authenticated = config.fake.authenticated;
-    emit({
-      type: "ready",
-      request_id: frame.request_id,
-      wrapper_version: WRAPPER_VERSION,
-      sdk_version: SDK_VERSION,
-      claude_code_version: CLAUDE_CODE_VERSION,
-      runtime_sha256: provenance.runtimeSha256,
-      authentication: authenticated ? "authenticated" : "authentication_required",
-      setup_available: true,
-      streamed_process: "attached_only",
-      models: config.fake.models.map((model) => ({
+    emitReady(
+      frame.request_id,
+      provenance.runtimeSha256,
+      authenticated ? "authenticated" : "authentication_required",
+      config.fake.models.map((model) => ({
         id: model.id,
         account_availability: authenticated ? "verified_available" : "unknown",
         effort: [...model.effort],
       })),
-    });
+    );
     return;
   }
 
   const auth = await localAuthenticationState(config);
   if (!auth.authenticated) {
-    emit({
-      type: "ready",
-      request_id: frame.request_id,
-      wrapper_version: WRAPPER_VERSION,
-      sdk_version: SDK_VERSION,
-      claude_code_version: CLAUDE_CODE_VERSION,
-      runtime_sha256: provenance.runtimeSha256,
-      authentication: "authentication_required",
-      setup_available: true,
-      streamed_process: "attached_only",
-      models: config.runtime_models.map((model) => ({
+    emitReady(
+      frame.request_id,
+      provenance.runtimeSha256,
+      "authentication_required",
+      config.runtime_models.map((model) => ({
         id: model.id,
         account_availability: "unknown",
         effort: [...model.effort],
       })),
-    });
+    );
     return;
   }
   if (auth.authMethod !== "claude.ai")
     throw protocolError("authentication_required", "The configured Claude authentication is not a user-owned Claude subscription.");
 
-  const sdk = await loadSdk(config);
-  const input = asyncQueue();
-  sdkInput = input;
+  // Import and configure only local SDK/tool objects. sdk.query() is the
+  // authorized execution boundary and is deliberately absent from initialize.
+  sdk = await loadSdk(config);
   const qeTool = await completionTool(sdk, config);
-  const options = sdkOptions(sdk, config, qeTool);
-  sdkQuery = sdk.query({ prompt: input.iterable, options });
-  sdkReader = consumeSdkMessages(sdkQuery).catch((error) => {
-    fail("stream_lost", safeMessage(error));
-  });
-  const init = await sdkQuery.initializationResult();
-  const models = normalizeModels(init.models);
-  const exact = models.find((model) => model.id === config.model);
-  if (!exact) throw protocolError("model_unavailable", "The exact scheduled Claude model is not supported by this authenticated runtime.");
-  if (!exact.effort.includes(config.effort))
-    throw protocolError("effort_unavailable", "The exact scheduled Claude effort is not supported by this model.");
+  sdkOptionsPrepared = sdkOptions(sdk, config, qeTool);
+  emitReady(
+    frame.request_id,
+    provenance.runtimeSha256,
+    "authenticated",
+    config.runtime_models.map((model) => ({
+      id: model.id,
+      account_availability: "unknown",
+      effort: [...model.effort],
+    })),
+  );
+}
+
+function emitReady(requestId, runtimeSha256, authentication, models) {
   emit({
     type: "ready",
-    request_id: frame.request_id,
+    request_id: requestId,
     wrapper_version: WRAPPER_VERSION,
     sdk_version: SDK_VERSION,
     claude_code_version: CLAUDE_CODE_VERSION,
-    runtime_sha256: provenance.runtimeSha256,
-    authentication: "authenticated",
+    runtime_sha256: runtimeSha256,
+    authentication,
     setup_available: true,
     streamed_process: "attached_only",
-    models: models.map((model) => ({ ...model, account_availability: "unknown" })),
+    query_state: "not_invoked",
+    query_invocation_count: 0,
+    models,
   });
 }
 
@@ -249,17 +248,57 @@ async function executeTurn(frame) {
     throw protocolError("malformed_frame", "The turn identity is invalid.");
   if (configuration.backend === "fake" && !configuration.fake.authenticated)
     throw protocolError("authentication_required", "Claude authentication is required before a model turn can execute.");
+  if (queryInvocationState === "acknowledged" && !frame.continuation)
+    throw protocolError("duplicate_query_start", "The Claude SDK query was already started for this wrapper generation.");
+  if (
+    queryInvocationState !== "acknowledged" &&
+    frame.continuation &&
+    !configuration.native_session_id
+  )
+    throw protocolError("query_not_started", "A corrective continuation requires an acknowledged query or an exact retained native session.");
+
   activeTurn = { requestId: frame.request_id, turnId: frame.turn_id, accepted: false, cancelled: false };
   completionAcknowledged = false;
-  emit({ type: "native_activity", request_id: frame.request_id, turn_id: frame.turn_id, state: "working", activity: "submitting" });
 
+  if (queryInvocationState === "not_invoked") {
+    queryInvocationState = "requested";
+    try {
+      if (configuration.backend === "fake") {
+        queryInvocationCount += 1;
+        queryInvocationState = "acknowledged";
+        emit({ type: "query_started", request_id: frame.request_id, turn_id: frame.turn_id, query_invocation_count: queryInvocationCount });
+      } else {
+        if (!sdk || !sdkOptionsPrepared)
+          throw protocolError("runtime_incompatible", "The authenticated SDK configuration was not prepared locally.");
+        sdkInput = asyncQueue();
+        queryInvocationCount += 1;
+        sdkQuery = sdk.query({ prompt: sdkInput.iterable, options: sdkOptionsPrepared });
+        queryInvocationState = "acknowledged";
+        emit({ type: "query_started", request_id: frame.request_id, turn_id: frame.turn_id, query_invocation_count: queryInvocationCount });
+        sdkReader = consumeSdkMessages(sdkQuery).catch((error) => {
+          fail("stream_lost", safeMessage(error));
+        });
+        const init = await sdkQuery.initializationResult();
+        const models = normalizeModels(init.models);
+        const exact = models.find((model) => model.id === configuration.model);
+        if (!exact) throw protocolError("model_unavailable", "The exact scheduled Claude model is not supported by this authenticated runtime.");
+        if (!exact.effort.includes(configuration.effort))
+          throw protocolError("effort_unavailable", "The exact scheduled Claude effort is not supported by this model.");
+      }
+    } catch (error) {
+      if (queryInvocationState === "requested") queryInvocationState = "uncertain";
+      throw error;
+    }
+  }
+
+  emit({ type: "native_activity", request_id: frame.request_id, turn_id: frame.turn_id, state: "working", activity: "submitting" });
   if (configuration.backend === "fake") {
     void runFakeTurn(frame, configuration.fake.turns.shift() ?? [{ type: "settle" }]).catch((error) =>
       fail(error.code ?? "wrapper_failure", safeMessage(error), frame.request_id),
     );
     return;
   }
-  if (!sdkInput || !sdkQuery) throw protocolError("runtime_incompatible", "The authenticated SDK session was not initialized.");
+  if (!sdkInput || !sdkQuery) throw protocolError("runtime_incompatible", "The authenticated SDK query is unavailable after acknowledgement.");
   activeTurn.accepted = true;
   sdkInput.push({
     type: "user",
@@ -783,14 +822,29 @@ async function shutdown(code) {
   process.exit(process.exitCode);
 }
 
-function fail(code, message, requestId = randomUUID()) {
-  emit({ type: "fatal_error", request_id: requestId, code: token(code, 64) ? code : "wrapper_failure", message: String(message).slice(0, 320), side_effect_certainty: activeTurn ? (activeTurn.accepted ? "native_accepted" : "submitted") : "not_submitted" });
+function fail(code, message, requestId = activeTurn?.requestId ?? randomUUID()) {
+  emit({
+    type: "fatal_error",
+    request_id: requestId,
+    code: token(code, 64) ? code : "wrapper_failure",
+    message: String(message).slice(0, 320),
+    side_effect_certainty: querySideEffectCertainty(),
+    query_state: queryInvocationState,
+    query_invocation_count: queryInvocationCount,
+  });
   fatal = true;
   stopInput();
   sdkInput?.close();
   try { sdkQuery?.close(); } catch {}
   process.exitCode = 70;
   process.stdout.write("", () => process.exit(70));
+}
+
+function querySideEffectCertainty() {
+  if (activeTurn?.accepted) return "native_accepted";
+  if (queryInvocationState === "acknowledged") return "submitted";
+  if (queryInvocationState === "requested" || queryInvocationState === "uncertain") return "ambiguous";
+  return "not_submitted";
 }
 
 function stopInput() {
