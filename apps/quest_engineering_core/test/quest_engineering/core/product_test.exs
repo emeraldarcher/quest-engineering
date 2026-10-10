@@ -43,6 +43,58 @@ defmodule QuestEngineering.Core.ProductTest do
       refute Map.has_key?(fields, :agent_kind)
     end
 
+    test "Loadout accepts canonical harness identifiers without normalization" do
+      for harness <- [
+            "pi",
+            "antigravity",
+            "claude_agent_sdk",
+            "custom-harness_2",
+            String.duplicate("a", 64)
+          ] do
+        loadout = %{coding_loadout() | harness: harness}
+
+        assert {:ok, ^loadout} = Validation.validate(loadout)
+        assert loadout.harness == harness
+      end
+    end
+
+    test "Loadout rejects malformed harness identifiers" do
+      malformed = [
+        "",
+        " ",
+        "Claude",
+        "_claude",
+        "claude_",
+        "-claude",
+        "claude-",
+        "claude__sdk",
+        "claude--sdk",
+        "claude_-sdk",
+        "claude sdk",
+        "claude/sdk",
+        "claude\\sdk",
+        "claude..sdk",
+        "claude:sdk",
+        "claude;sdk",
+        "claude$(sdk)",
+        "claude\tsdk",
+        "claude\nsdk",
+        "claude\0sdk",
+        "claudé",
+        <<0xFF>>,
+        String.duplicate("a", 65)
+      ]
+
+      for harness <- malformed do
+        assert {:error, errors} = Validation.validate(%{coding_loadout() | harness: harness})
+
+        assert Enum.any?(errors, fn error ->
+                 error.code == :invalid_harness and error.path == ["harness"] and
+                   error.details == %{value: harness}
+               end)
+      end
+    end
+
     test "Loadout rejects duplicate or malformed capability keys" do
       loadout = %{
         coding_loadout()

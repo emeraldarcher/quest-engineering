@@ -69,6 +69,8 @@ defmodule QuestEngineering.Server.Persistence.ProductLoadout do
 
   import Ecto.Changeset
 
+  alias QuestEngineering.Core.Product.Validation
+
   @primary_key {:id, Ecto.UUID, autogenerate: true}
   schema "product_loadouts" do
     field :key, :string
@@ -141,7 +143,11 @@ defmodule QuestEngineering.Server.Persistence.ProductLoadout do
       :tool_policy_tools,
       :workspace_access
     ])
-    |> validate_format(:harness_kind, ~r/^[a-z][a-z0-9_-]*$/)
+    |> validate_change(:harness_kind, fn :harness_kind, value ->
+      if Validation.valid_harness_identifier?(value),
+        do: [],
+        else: [harness_kind: "has invalid format"]
+    end)
     |> validate_format(:reasoning, ~r/^\S(?:.*\S)?$/)
     |> validate_inclusion(:tool_policy_kind, ["exact", "native_permissions"])
     |> check_constraint(:harness_kind, name: :product_loadouts_harness_kind_valid)

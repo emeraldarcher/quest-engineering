@@ -32,8 +32,10 @@ defmodule QuestEngineering.Core.Product.Validation do
   alias QuestEngineering.Core.Tactics.ArtifactRef
 
   @key ~r/\A[a-z][a-z0-9-]{0,63}\z/
+  @harness_identifier ~r/\A[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*\z/
   @capability_key ~r/\A[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\z/
   @provider_key ~r/\A[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\z/
+  @maximum_harness_identifier_bytes 64
 
   @type result(value) :: {:ok, value} | {:error, [ValidationError.t()]}
 
@@ -62,6 +64,15 @@ defmodule QuestEngineering.Core.Product.Validation do
 
   def validate(%TacticDefinition{} = value),
     do: finish(value, tactic_definition_errors(value))
+
+  @doc "Returns whether a value is a canonical, bounded harness identifier."
+  @spec valid_harness_identifier?(term()) :: boolean()
+  def valid_harness_identifier?(value) when is_binary(value) do
+    byte_size(value) <= @maximum_harness_identifier_bytes and String.valid?(value) and
+      Regex.match?(@harness_identifier, value)
+  end
+
+  def valid_harness_identifier?(_value), do: false
 
   @doc "Validates a Squad and resolves every Member reference against supplied definitions."
   @spec validate_roster(Squad.t(), [Class.t()], [Loadout.t()]) :: result(Squad.t())
@@ -106,7 +117,12 @@ defmodule QuestEngineering.Core.Product.Validation do
       |> require(key?(value.key), :invalid_key, ["key"], %{value: value.key})
       |> require(non_blank?(value.name), :invalid_name, ["name"], %{})
       |> require(text?(value.description), :invalid_description, ["description"], %{})
-      |> require(key?(value.harness), :invalid_harness, ["harness"], %{value: value.harness})
+      |> require(
+        valid_harness_identifier?(value.harness),
+        :invalid_harness,
+        ["harness"],
+        %{value: value.harness}
+      )
       |> require(model_ref?(value.model), :invalid_model_ref, ["model"], %{})
       |> require(
         is_nil(value.reasoning) or non_blank?(value.reasoning),
