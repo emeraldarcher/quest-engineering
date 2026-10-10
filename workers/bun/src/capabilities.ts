@@ -1,5 +1,5 @@
 import type { WorkerConfig } from "./config.ts";
-import { SBX_CODING_EXECUTION_PROFILE_V2 } from "./execution-environment/sbx-profile.ts";
+import { SBX_CODING_EXECUTION_PROFILE_V3 } from "./execution-environment/sbx-profile.ts";
 import type { HarnessDiscovery } from "./harnesses/types.ts";
 import type {
   ExecuteAction,
@@ -20,7 +20,7 @@ export const QE_TOOL_CAPABILITIES = [
 export const SBX_EXECUTOR_EXECUTION_ENVIRONMENT: ExecutorExecutionEnvironment =
   {
     backend_kind: "sbx",
-    profile: { ...SBX_CODING_EXECUTION_PROFILE_V2 },
+    profile: { ...SBX_CODING_EXECUTION_PROFILE_V3 },
     capabilities: [
       { kind: "filesystem_namespace", mode: "isolated" },
       { kind: "host_filesystem", mode: "unexposed" },

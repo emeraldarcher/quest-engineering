@@ -16,9 +16,10 @@ import {
   SBX_CLAUDE_SDK_MODULE,
   SBX_CLAUDE_SDK_PACKAGE_JSON,
   SBX_CLAUDE_WRAPPER,
+  SBX_CLAUDE_WRAPPER_SHA256,
   SBX_CLAUDE_WRAPPER_VERSION,
   SBX_CLAUDE_ZOD_MODULE,
-  SBX_CODING_EXECUTION_PROFILE_V2,
+  SBX_CODING_EXECUTION_PROFILE_V3,
   SBX_CODING_PROFILE,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_GUEST_PATHS,
@@ -39,7 +40,7 @@ import type {
 const live = process.env.QE_LIVE_SBX_CLAUDE === "1";
 
 /**
- * Zero-inference proof. It installs and verifies the real immutable v2 kit,
+ * Zero-inference proof. It installs and verifies the real immutable v3 kit,
  * starts the real QE wrapper through EnvironmentLease.spawnStreamed, and
  * proves authentication_required before query() can be constructed. The
  * validation verifier intentionally provisions no Pi/Antigravity credential
@@ -67,7 +68,7 @@ test.skipIf(!live)(
     try {
       const spec = claudeProofSpec(`claude-proof-${Date.now()}`);
       const lease = await backend.ensure(spec);
-      expect(lease.ref.profile).toEqual(SBX_CODING_EXECUTION_PROFILE_V2);
+      expect(lease.ref.profile).toEqual(SBX_CODING_EXECUTION_PROFILE_V3);
       expect(lease.capabilities).toContainEqual(
         expect.objectContaining({
           kind: "process.streamed",
@@ -78,6 +79,7 @@ test.skipIf(!live)(
         sdk: SBX_CLAUDE_AGENT_SDK_VERSION,
         code: SBX_CLAUDE_CODE_VERSION,
         wrapperExecutable: true,
+        wrapperSha256: SBX_CLAUDE_WRAPPER_SHA256,
         credentialsPresent: false,
         hostUsersVisible: false,
         sshAgentVisible: false,
@@ -261,7 +263,7 @@ class ZeroInferenceClaudeVerifier implements SbxEnvironmentVerifier {
       executable: "/usr/bin/node",
       args: [
         "-e",
-        "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const runtime='/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-'+a+'/claude'; const mounts=fs.readFileSync('/proc/self/mountinfo','utf8'); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime,sha256:c.createHash('sha256').update(fs.readFileSync(runtime)).digest('hex'),wrapperExecutable:(fs.statSync(process.env.W).mode&0o111)!==0,credentialsPresent:fs.existsSync(process.env.C),hostUsersVisible:mounts.includes('/Users/'),sshAgentVisible:Boolean(process.env.SSH_AUTH_SOCK&&fs.existsSync(process.env.SSH_AUTH_SOCK))}));",
+        "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const runtime='/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-'+a+'/claude'; const mounts=fs.readFileSync('/proc/self/mountinfo','utf8'); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime,sha256:c.createHash('sha256').update(fs.readFileSync(runtime)).digest('hex'),wrapperExecutable:(fs.statSync(process.env.W).mode&0o111)!==0,wrapperSha256:c.createHash('sha256').update(fs.readFileSync(process.env.W)).digest('hex'),credentialsPresent:fs.existsSync(process.env.C),hostUsersVisible:mounts.includes('/Users/'),sshAgentVisible:Boolean(process.env.SSH_AUTH_SOCK&&fs.existsSync(process.env.SSH_AUTH_SOCK))}));",
       ],
       environment: {
         P: SBX_CLAUDE_SDK_PACKAGE_JSON,
@@ -284,6 +286,7 @@ class ZeroInferenceClaudeVerifier implements SbxEnvironmentVerifier {
       provenance.code !== SBX_CLAUDE_CODE_VERSION ||
       provenance.sha256 !== expected ||
       provenance.wrapperExecutable !== true ||
+      provenance.wrapperSha256 !== SBX_CLAUDE_WRAPPER_SHA256 ||
       provenance.credentialsPresent !== false ||
       provenance.hostUsersVisible !== false ||
       provenance.sshAgentVisible !== false
@@ -346,7 +349,7 @@ function claudeProofSpec(runId: string): EnvironmentSpec {
         frozenBase: { kind: "git_commit", value: "none" },
       },
     },
-    profile: SBX_CODING_EXECUTION_PROFILE_V2,
+    profile: SBX_CODING_EXECUTION_PROFILE_V3,
     resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
     // These are non-secret descriptors required by the composed profile. The
     // validation backend uses an explicit no-op credential provisioner, so no

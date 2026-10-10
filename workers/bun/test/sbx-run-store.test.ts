@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
-import { SBX_CODING_EXECUTION_PROFILE_V2 } from "../src/execution-environment/sbx-profile.ts";
+import {
+  SBX_CODING_EXECUTION_PROFILE_V2,
+  SBX_CODING_EXECUTION_PROFILE_V3,
+} from "../src/execution-environment/sbx-profile.ts";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import { SbxRunExecutionStore } from "../src/execution-environment/sbx-run-store.ts";
 import type { EnvironmentRef } from "../src/execution-environment/types.ts";
@@ -73,7 +76,7 @@ test("Run-bound setup rejects mismatched harness, Workspace, and access before e
     workspaceBindingId: "binding-1",
     canonicalRoot: "/host/run-1",
     workspaceAccess: "read_only",
-    profile: SBX_CODING_EXECUTION_PROFILE_V2,
+    profile: SBX_CODING_EXECUTION_PROFILE_V3,
     configuration: {
       model: { provider: "anthropic", model: "claude-test" },
       reasoning: "high",
@@ -86,6 +89,12 @@ test("Run-bound setup rejects mismatched harness, Workspace, and access before e
   try {
     await expect(
       manager.prepareHarnessSetup({ ...context, harnessKind: "fake" }),
+    ).rejects.toThrow("does not match");
+    await expect(
+      manager.prepareHarnessSetup({
+        ...context,
+        profile: SBX_CODING_EXECUTION_PROFILE_V2,
+      }),
     ).rejects.toThrow("does not match");
     await expect(
       manager.prepareHarnessSetup({ ...context, workspaceId: "workspace-2" }),

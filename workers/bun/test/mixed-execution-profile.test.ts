@@ -18,9 +18,12 @@ import {
   SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION,
   SBX_CODING_EXECUTION_PROFILE_V2,
   SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION,
+  SBX_CODING_EXECUTION_PROFILE_V3,
+  SBX_CODING_EXECUTION_PROFILE_V3_DEFINITION,
   SBX_CODING_PROFILE,
   SBX_CODING_PROFILE_ROOT,
   SBX_CODING_PROFILE_V1_ROOT,
+  SBX_CODING_PROFILE_V2_ROOT,
   SBX_MIXED_INSTALL_NETWORK_TARGETS,
   SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_EXECUTION_PROFILE_V2,
@@ -35,7 +38,7 @@ test("Pi, Antigravity, Claude, and mixed Runs resolve one composable immutable p
     ["pi", "antigravity", "claude_agent_sdk"],
   ]) {
     const resolved = resolveRunExecutionProfile(harnesses);
-    expect(resolved.profile.identity).toEqual(SBX_CODING_EXECUTION_PROFILE_V2);
+    expect(resolved.profile.identity).toEqual(SBX_CODING_EXECUTION_PROFILE_V3);
     expect(resolved.harnesses).toEqual([
       "antigravity",
       "claude_agent_sdk",
@@ -46,14 +49,17 @@ test("Pi, Antigravity, Claude, and mixed Runs resolve one composable immutable p
     "sha256:09dc17e0b2270441ba4af01d3e59f803c0514bfedb82356f8849017a76e2cc2b",
   );
   expect(SBX_CODING_EXECUTION_PROFILE_V2.digest).toBe(
-    "sha256:a515a987b33f6b4bae64f7c2d3107a7094b967d17cd99559824083659c7086b4",
+    "sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24",
+  );
+  expect(SBX_CODING_EXECUTION_PROFILE_V3.digest).toBe(
+    "sha256:3085d323073b1917b19cf269104236fd5aab9f72bd28a14312e2cdfc6bc107e8",
   );
   expect(profileSupportsHarness(SBX_CODING_EXECUTION_PROFILE_V1.id, "pi")).toBe(
-    true,
+    false,
   );
   expect(
     profileSupportsHarness(SBX_CODING_EXECUTION_PROFILE_V1.id, "antigravity"),
-  ).toBe(true);
+  ).toBe(false);
   expect(
     profileSupportsHarness(
       SBX_CODING_EXECUTION_PROFILE_V1.id,
@@ -65,27 +71,25 @@ test("Pi, Antigravity, Claude, and mixed Runs resolve one composable immutable p
       SBX_CODING_EXECUTION_PROFILE_V2.id,
       "claude_agent_sdk",
     ),
+  ).toBe(false);
+  expect(
+    profileSupportsHarness(
+      SBX_CODING_EXECUTION_PROFILE_V3.id,
+      "claude_agent_sdk",
+    ),
   ).toBe(true);
   expect(SBX_PI_EXECUTION_PROFILE_V2.id).toBe("qe-pi-execution-v2");
 });
 
-test("qe-coding-execution-v1 remains byte-for-byte immutable", async () => {
-  const paths = await Array.fromAsync(
-    new Bun.Glob("**/*").scan({
-      cwd: SBX_CODING_PROFILE_V1_ROOT,
-      onlyFiles: true,
-    }),
-  );
-  paths.sort();
-  const digest = createHash("sha256");
-  for (const path of paths) {
-    digest.update(path);
-    digest.update("\0");
-    digest.update(await readFile(`${SBX_CODING_PROFILE_V1_ROOT}/${path}`));
-    digest.update("\0");
-  }
-  expect(digest.digest("hex")).toBe(
+test("historical coding profiles remain byte-for-byte immutable", async () => {
+  await expect(profileTreeDigest(SBX_CODING_PROFILE_V1_ROOT)).resolves.toBe(
     "c72c11d5430ab02f0eaab9901116572b5b158497c095ccc13b84358c71305c8d",
+  );
+  await expect(profileTreeDigest(SBX_CODING_PROFILE_V2_ROOT)).resolves.toBe(
+    "6e6fd98e513e2e6de5be277d10c169b32629831f9908def20d15f99bf7afc4aa",
+  );
+  await expect(profileTreeDigest(SBX_CODING_PROFILE_ROOT)).resolves.toBe(
+    "341762212dc15f6736ff406170fbda7f3424adf6f892a45393e3a25641573758",
   );
 });
 
@@ -147,6 +151,13 @@ test("mixed profile pins Antigravity provenance and revokes installer/updater eg
   ).toMatchObject({
     sdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
     claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
+    wrapperVersion: "1.0.0",
+  });
+  expect(
+    SBX_CODING_EXECUTION_PROFILE_V3_DEFINITION.harnesses.claude_agent_sdk,
+  ).toMatchObject({
+    sdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
+    claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
     wrapperVersion: "1.1.0",
   });
   expect(SBX_MIXED_RUNTIME_NETWORK_TARGETS).toEqual([
@@ -173,6 +184,21 @@ test("mixed profile pins Antigravity provenance and revokes installer/updater eg
     ),
   ).toBe(false);
 });
+
+async function profileTreeDigest(root: string): Promise<string> {
+  const paths = await Array.fromAsync(
+    new Bun.Glob("**/*").scan({ cwd: root, onlyFiles: true }),
+  );
+  paths.sort();
+  const value = createHash("sha256");
+  for (const path of paths) {
+    value.update(path);
+    value.update("\0");
+    value.update(await readFile(`${root}/${path}`));
+    value.update("\0");
+  }
+  return value.digest("hex");
+}
 
 test("mixed credential provisioning revokes Pi authority when Antigravity setup fails", async () => {
   const revoked: Array<[string, string]> = [];

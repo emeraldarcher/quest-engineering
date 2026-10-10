@@ -1,0 +1,124 @@
+schemaVersion: "2"
+kind: sandbox
+name: qe-coding-execution-v3
+version: "3.0.0"
+displayName: Quest Engineering Pi, Antigravity, and Claude coding execution
+# This immutable profile composes the accepted Pi and Antigravity runtimes
+# with the pinned Claude Agent SDK, Claude Code runtime, and QE deferred-query
+# wrapper. Lockfiles, digests, setup, credential contracts, and capability
+# probes are repository-owned inputs to the Worker profile digest.
+sandbox:
+  image: "docker.io/docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919"
+  entrypoint: ["/bin/bash"]
+  command:
+    default: ["-l"]
+    interactive: ["-l"]
+
+permissions:
+  network:
+    allow:
+      # Subscription resource requests only. Host-side Pi owns OAuth refresh;
+      # the guest cannot reach the token endpoint.
+      - chatgpt.com
+      # Claude subscription inference and explicit human-authorized setup.
+      # TLS remains end-to-end; QE does not intermediate bearer traffic.
+      - api.anthropic.com
+      - claude.ai
+      # Used only by setup.install. The Worker installs sandbox-scoped denies
+      # immediately after creation and verifies the runtime denies.
+      - registry.npmjs.org
+      - github.com
+      - release-assets.githubusercontent.com
+      # Antigravity subscription/model traffic. OAuth refresh remains host-side.
+      - daily-cloudcode-pa.googleapis.com
+      # Antigravity 1.2.7 validates the loaded OAuth access token here before
+      # eligibility. The same short-lived token is substituted for this exact
+      # host; refresh and ID authority remain host-side.
+      - www.googleapis.com
+      # Antigravity 1.2.7 treats a denied public profile-picture fetch as an
+      # eligibility failure. No credential is sent to this exact image host.
+      - lh3.googleusercontent.com
+
+environment:
+  variables:
+    PI_CODING_AGENT_DIR: /home/agent/.pi/agent
+    PI_TELEMETRY: "0"
+    # Runtime egress is intentionally closed to Pi's optional GitHub tool
+    # downloads; avoid retrying an operation that policy will reject.
+    PI_OFFLINE: "1"
+    # Pi runs on Node 22.22. Node fetch must opt into HTTPS_PROXY so SBX can
+    # replace the sandbox-scoped placeholder; it is never valid upstream.
+    NODE_USE_ENV_PROXY: "1"
+    # The guest must never open a browser implicitly. Antigravity and Claude
+    # binaries are root-owned and updater endpoints are absent from the runtime
+    # network grant. Claude authentication is an explicit, human-authorized,
+    # Run-private setup action only.
+    BROWSER: /bin/false
+    GIT_TERMINAL_PROMPT: "0"
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    DISABLE_AUTOUPDATER: "1"
+    DISABLE_TELEMETRY: "1"
+    DISABLE_ERROR_REPORTING: "1"
+
+setup:
+  install:
+    - command: |
+        set -eu
+        install -d -m 0755 /opt/qe/pi
+        install -m 0644 /home/agent/.qe-profile/package.json /opt/qe/pi/package.json
+        install -m 0644 /home/agent/.qe-profile/package-lock.json /opt/qe/pi/package-lock.json
+        cd /opt/qe/pi
+        npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        chown -R root:root /opt/qe/pi
+        chmod -R go-w /opt/qe/pi
+        install -d -m 0700 -o 1000 -g 1000 /home/agent/.pi/agent
+        install -d -m 0755 /opt/qe/claude
+        install -m 0555 /home/agent/.qe-profile/claude-wrapper.mjs /opt/qe/claude/wrapper.mjs
+        test "$(node -p "require('/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version")" = "0.3.292"
+        test "$(node -p "require('/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk/package.json').claudeCodeVersion")" = "2.1.292"
+        case "$(uname -m)" in
+          aarch64|arm64)
+            runtime=/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude
+            expected=24caa9e6ff13bf227049a2626f1c816fc895023050f0ec3b12dbf14d897367e0
+            ;;
+          x86_64|amd64)
+            runtime=/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
+            expected=a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3
+            ;;
+          *) echo "Unsupported Claude runtime architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
+        test "$(sha256sum "$runtime" | cut -d ' ' -f 1)" = "$expected"
+        chmod 0555 "$runtime"
+        chown -R root:root /opt/qe/claude
+        chmod -R go-w /opt/qe/claude
+      user: "0"
+      description: Install lockfile-pinned Pi and Claude runtimes plus the immutable QE wrapper
+    - command: |
+        set -eu
+        version='1.2.7'
+        archive='/tmp/qe-antigravity.tar.gz'
+        expected='8ddbb669158de1d1bc4c1fe5c130dca8f51da80d62569a54a4133f06768a723b'
+        url="https://github.com/google-antigravity/antigravity-cli/releases/download/${version}/agy_cli_linux_arm64.tar.gz"
+        curl --fail --silent --show-error --location "$url" --output "$archive"
+        printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict
+        install -d -m 0755 /opt/qe/antigravity
+        tar -xzf "$archive" -C /opt/qe/antigravity antigravity
+        mv /opt/qe/antigravity/antigravity /opt/qe/antigravity/agy
+        chown -R root:root /opt/qe/antigravity
+        chmod -R go-w /opt/qe/antigravity
+        chmod 0755 /opt/qe/antigravity/agy
+        rm -f "$archive"
+        test "$(/opt/qe/antigravity/agy --version)" = "$version"
+        install -d -m 0700 -o 1000 -g 1000 /home/agent/.gemini/antigravity-cli /home/agent/.gemini/config
+        chown 1000:1000 /home/agent/.gemini/config/mcp_config.json /home/agent/.gemini/antigravity-cli/cache/onboarding.json
+        chmod 0600 /home/agent/.gemini/config/mcp_config.json /home/agent/.gemini/antigravity-cli/cache/onboarding.json
+      user: "0"
+      description: Install the digest-pinned Antigravity Linux runtime into a root-owned prefix
+
+agentInstructions:
+  filename: AGENTS.md
+  content: |
+    This is a Quest Engineering Run-owned execution environment. The Worker
+    supplies the exact workspace, tools, extensions, prompt, and completion
+    authority for each Attempt.

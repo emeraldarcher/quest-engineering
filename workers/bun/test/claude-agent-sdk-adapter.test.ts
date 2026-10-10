@@ -47,7 +47,7 @@ afterEach(async () => {
 
 const wrapper = resolve(
   import.meta.dir,
-  "../profiles/qe-coding-execution-v2/files/home/.qe-profile/claude-wrapper.mjs",
+  "../profiles/qe-coding-execution-v3/files/home/.qe-profile/claude-wrapper.mjs",
 );
 
 function claudeAction() {
@@ -118,7 +118,7 @@ async function fixture(
     workerId: "worker-test",
     runId: accepted.action.run_id,
     profile: {
-      id: "qe-coding-execution-v2",
+      id: "qe-coding-execution-v3",
       digest: `sha256:${"a".repeat(64)}`,
     },
   };
@@ -1028,7 +1028,7 @@ function bindingState(): ClaudeTransportState {
     workerId: "worker-test",
     runId: "run-1",
     profile: {
-      id: "qe-coding-execution-v2",
+      id: "qe-coding-execution-v3",
       digest: `sha256:${"a".repeat(64)}`,
     },
   };

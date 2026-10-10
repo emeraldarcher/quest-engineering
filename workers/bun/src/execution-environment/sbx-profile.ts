@@ -97,7 +97,10 @@ export const SBX_CLAUDE_SDK_PACKAGE_JSON =
 export const SBX_CLAUDE_ZOD_MODULE = "/opt/qe/pi/node_modules/zod/index.js";
 export const SBX_CLAUDE_AGENT_SDK_VERSION = "0.3.292";
 export const SBX_CLAUDE_CODE_VERSION = "2.1.292";
+const SBX_CLAUDE_WRAPPER_V2_VERSION = "1.0.0";
 export const SBX_CLAUDE_WRAPPER_VERSION = "1.1.0";
+export const SBX_CLAUDE_WRAPPER_SHA256 =
+  "82781ffa4a23f60e6eb5078733554da9484d7db01392d2ac48481470f07cd66b";
 export const SBX_CLAUDE_LINUX_ARM64_SHA256 =
   "24caa9e6ff13bf227049a2626f1c816fc895023050f0ec3b12dbf14d897367e0";
 export const SBX_CLAUDE_LINUX_X64_SHA256 =
@@ -249,7 +252,7 @@ const SBX_CODING_V2_PROFILE_ASSETS = Object.freeze({
   "files/home/.qe-profile/package-lock.json":
     "e9bcc4c2159bee2b54da57ef91972d087b32cb3a2f1d98a2204c46211b08a324",
   "files/home/.qe-profile/claude-wrapper.mjs":
-    "82781ffa4a23f60e6eb5078733554da9484d7db01392d2ac48481470f07cd66b",
+    "c25e087b0855812d320f9385078cb3e6c11c85ecbee51913f325db2fceb4dafb",
   "files/home/.qe-profile/codex-model-eligibility.mjs":
     "e8fbc8b2ed437ebaec0214a5c7ab1b61a6562438b9cc863235b8a2a1a0016972",
   "files/home/.qe-profile/discover-models.mjs":
@@ -266,6 +269,13 @@ const SBX_CODING_V2_PROFILE_ASSETS = Object.freeze({
     "29f1bd0a818cc1824d34953d1dafb97831be0ae6ea477b88c9298a2cdbd45b79",
 });
 
+const SBX_CODING_V3_PROFILE_ASSETS = Object.freeze({
+  ...SBX_CODING_V2_PROFILE_ASSETS,
+  "spec.yaml":
+    "5b483dadd289cd8293a88e3e7682dcc65b8069ef28f537773d9f31eb995a5445",
+  "files/home/.qe-profile/claude-wrapper.mjs": SBX_CLAUDE_WRAPPER_SHA256,
+});
+
 export const SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION = Object.freeze({
   ...SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION,
   schemaVersion: 2,
@@ -276,7 +286,7 @@ export const SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION = Object.freeze({
     claude_agent_sdk: Object.freeze({
       sdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
       claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
-      wrapperVersion: SBX_CLAUDE_WRAPPER_VERSION,
+      wrapperVersion: SBX_CLAUDE_WRAPPER_V2_VERSION,
       linuxArm64Sha256: SBX_CLAUDE_LINUX_ARM64_SHA256,
       linuxX64Sha256: SBX_CLAUDE_LINUX_X64_SHA256,
     }),
@@ -297,6 +307,27 @@ export const SBX_CODING_EXECUTION_PROFILE_V2: EnvironmentProfileIdentity =
   Object.freeze({
     id: SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION.id,
     digest: digest(SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION),
+  });
+
+export const SBX_CODING_EXECUTION_PROFILE_V3_DEFINITION = Object.freeze({
+  ...SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION,
+  schemaVersion: 3,
+  id: "qe-coding-execution-v3",
+  kitName: "qe-coding-execution-v3",
+  harnesses: Object.freeze({
+    ...SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION.harnesses,
+    claude_agent_sdk: Object.freeze({
+      ...SBX_CODING_EXECUTION_PROFILE_V2_DEFINITION.harnesses.claude_agent_sdk,
+      wrapperVersion: SBX_CLAUDE_WRAPPER_VERSION,
+    }),
+  }),
+  assets: SBX_CODING_V3_PROFILE_ASSETS,
+});
+
+export const SBX_CODING_EXECUTION_PROFILE_V3: EnvironmentProfileIdentity =
+  Object.freeze({
+    id: SBX_CODING_EXECUTION_PROFILE_V3_DEFINITION.id,
+    digest: digest(SBX_CODING_EXECUTION_PROFILE_V3_DEFINITION),
   });
 
 export interface SbxExecutionProfile {
@@ -338,15 +369,19 @@ export const SBX_CODING_PROFILE_V1_ROOT = resolve(
   import.meta.dir,
   "../../profiles/qe-coding-execution-v1",
 );
-export const SBX_CODING_PROFILE_ROOT = resolve(
+export const SBX_CODING_PROFILE_V2_ROOT = resolve(
   import.meta.dir,
   "../../profiles/qe-coding-execution-v2",
 );
+export const SBX_CODING_PROFILE_ROOT = resolve(
+  import.meta.dir,
+  "../../profiles/qe-coding-execution-v3",
+);
 
 export const SBX_CODING_PROFILE: SbxExecutionProfile = Object.freeze({
-  identity: SBX_CODING_EXECUTION_PROFILE_V2,
+  identity: SBX_CODING_EXECUTION_PROFILE_V3,
   agentReference: SBX_CODING_PROFILE_ROOT,
-  nativeAgent: "qe-coding-execution-v2",
+  nativeAgent: "qe-coding-execution-v3",
   networkMode: "mixed_subscriptions",
   credentialMode: "host_mixed_oauth_dynamic_proxies",
   postCreateNetworkDenies: SBX_MIXED_INSTALL_NETWORK_TARGETS,
@@ -363,21 +398,28 @@ export async function verifySbxProfileAssets(
           assets: SBX_PI_PROFILE_ASSETS,
           label: "Pi",
         }
-      : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
-          profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V2.digest
+      : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V3.id &&
+          profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V3.digest
         ? {
             root: SBX_CODING_PROFILE_ROOT,
-            assets: SBX_CODING_V2_PROFILE_ASSETS,
-            label: "mixed coding v2",
+            assets: SBX_CODING_V3_PROFILE_ASSETS,
+            label: "mixed coding v3",
           }
-        : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
-            profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V1.digest
+        : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
+            profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V2.digest
           ? {
-              root: SBX_CODING_PROFILE_V1_ROOT,
-              assets: SBX_CODING_PROFILE_ASSETS,
-              label: "mixed coding v1",
+              root: SBX_CODING_PROFILE_V2_ROOT,
+              assets: SBX_CODING_V2_PROFILE_ASSETS,
+              label: "mixed coding v2",
             }
-          : null;
+          : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
+              profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V1.digest
+            ? {
+                root: SBX_CODING_PROFILE_V1_ROOT,
+                assets: SBX_CODING_PROFILE_ASSETS,
+                label: "mixed coding v1",
+              }
+            : null;
   if (!expected) return;
   if (resolve(profile.agentReference) !== expected.root)
     throw new Error(

@@ -8,7 +8,7 @@ The implementation follows [`claude-agent-sdk-decision.md`](claude-agent-sdk-dec
 
 | Component | Immutable provenance |
 |---|---|
-| QE profile | `qe-coding-execution-v2`, `sha256:a515a987b33f6b4bae64f7c2d3107a7094b967d17cd99559824083659c7086b4` |
+| QE profile | `qe-coding-execution-v3`, `sha256:3085d323073b1917b19cf269104236fd5aab9f72bd28a14312e2cdfc6bc107e8` |
 | Claude Agent SDK | `@anthropic-ai/claude-agent-sdk@0.3.292` |
 | SDK npm integrity | `sha512-C5XI/19uArTg3jjgayN9CSQxJilRciBko007AdPmHXwQqbAzdUldaPUQtDp8Pm6QJg5Aw3jI1G1eIJOBrx4xKQ==` |
 | SDK research tar SHA-256 | `967024d934865047062b5b5ed6e0d613d4454a846e9c71e1ac55ee3c6d57c168` |
@@ -17,7 +17,7 @@ The implementation follows [`claude-agent-sdk-decision.md`](claude-agent-sdk-dec
 | Linux x64 runtime | SHA-256 `a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3`; npm integrity `sha512-dnMVyLxpg8mUzEqAtxhv+5oBxdiYjCLIBHLPFM4z7cuk+Se6SwgyHPRGipp8rOociJBS8yyB7QXJh+RO41y+Kg==` |
 | QE wrapper protocol | `claude_agent_sdk_stream_v2`, protocol `2`, wrapper `1.1.0`, source SHA-256 `82781ffa4a23f60e6eb5078733554da9484d7db01392d2ac48481470f07cd66b` |
 
-`qe-coding-execution-v1` remains byte-for-byte unchanged and retains its original identity digest `sha256:09dc17e0b2270441ba4af01d3e59f803c0514bfedb82356f8849017a76e2cc2b`.
+Historical `qe-coding-execution-v1` and `qe-coding-execution-v2` remain byte-for-byte unchanged. Their identity digests are respectively `sha256:09dc17e0b2270441ba4af01d3e59f803c0514bfedb82356f8849017a76e2cc2b` and `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24`; v2 retains wrapper 1.0.0 at source SHA-256 `c25e087b0855812d320f9385078cb3e6c11c85ecbee51913f325db2fceb4dafb`. The deferred-query wrapper is introduced only by v3. The earlier draft identity `sha256:a515a987b33f6b4bae64f7c2d3107a7094b967d17cd99559824083659c7086b4` was rejected because it mutated v2 and is not a valid immutable release identity.
 
 ## Process and isolation architecture
 
@@ -186,11 +186,11 @@ QE_LIVE_SBX_CLAUDE=1 QE_SBX_BIN=/absolute/sbx \
   bun test test/sbx-claude-agent-sdk-live.test.ts
 ```
 
-It creates the real `qe-coding-execution-v2` SBX, installs the lockfile-pinned artifacts, independently verifies SDK/Claude versions and runtime SHA-256, proves no Claude credential file, host `/Users` mount, or SSH agent is present, launches the real wrapper through production `EnvironmentLease.spawnStreamed()`, and receives `authentication_required` before the wrapper loads the SDK or constructs `query()`. It then shuts down and removes the exact environment.
+It creates the real `qe-coding-execution-v3` SBX, installs the lockfile-pinned artifacts, independently verifies SDK/Claude versions and runtime SHA-256, proves no Claude credential file, host `/Users` mount, or SSH agent is present, launches the real wrapper through production `EnvironmentLease.spawnStreamed()`, and receives `authentication_required` before the wrapper loads the SDK or constructs `query()`. It then shuts down and removes the exact environment.
 
-The protocol-v2 zero-inference physical proof completed on 2026-10-10 against profile `sha256:a515a987b33f6b4bae64f7c2d3107a7094b967d17cd99559824083659c7086b4`. It verified the pinned SDK/runtime and wrapper bytes, observed `authentication_required` with query state `not_invoked` and invocation count `0`, sent only shutdown, and removed the exact SBX. Claude authentication, prompt submission, SDK query construction, provider/model requests, Product Actions, and `qe_complete_step` calls were all **0**.
+The protocol-v2 zero-inference physical proof completed on 2026-10-10 against v3 profile `sha256:3085d323073b1917b19cf269104236fd5aab9f72bd28a14312e2cdfc6bc107e8`. It verified the pinned SDK/runtime and wrapper bytes, observed `authentication_required` with query state `not_invoked` and invocation count `0`, sent only shutdown, and removed the exact SBX. Claude auth-login invocations, credential creation, prompt submission, SDK query construction, provider/model requests, Product Actions, and `qe_complete_step` calls were all **0**.
 
-The prior accepted zero-auth local proof completed on 2026-10-08 against the superseded profile `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24` with:
+The prior accepted zero-auth local proof completed on 2026-10-08 against historical v2 profile `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24` with:
 
 - Claude auth-login invocations: **0**
 - Claude credential imports/extractions: **0**

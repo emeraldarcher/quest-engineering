@@ -16,7 +16,7 @@ afterEach(async () => {
 
 const wrapper = resolve(
   import.meta.dir,
-  "../profiles/qe-coding-execution-v2/files/home/.qe-profile/claude-wrapper.mjs",
+  "../profiles/qe-coding-execution-v3/files/home/.qe-profile/claude-wrapper.mjs",
 );
 
 class WrapperProcess {
