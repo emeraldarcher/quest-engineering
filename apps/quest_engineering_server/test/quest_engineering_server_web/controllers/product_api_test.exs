@@ -4,6 +4,8 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
   import Phoenix.ConnTest
   import Plug.Conn
 
+  alias QuestEngineering.Server.CapabilityMatcher
+  alias QuestEngineering.Server.Persistence.ProductLoadout
   alias QuestEngineering.Server.Persistence.ProductTactic
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
@@ -39,6 +41,84 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
 
     assert %{"classes" => [%{"id" => ^id, "archived_at" => ^archived_at}]} =
              json_response(listed, 200)
+  end
+
+  test "Loadout API preserves the canonical Claude harness through scheduling match" do
+    payload = %{
+      key: "claude-sdk-http",
+      name: "Claude SDK",
+      harness: "claude_agent_sdk",
+      model: %{provider: "anthropic", model: "claude-sonnet-5"},
+      reasoning: "high",
+      tool_policy: %{
+        kind: "exact",
+        tools: ["workspace.filesystem", "workspace.search", "terminal.shell"]
+      },
+      workspace_access: "read_write"
+    }
+
+    response = post_json("/api/v1/loadouts", payload)
+
+    assert %{
+             "loadout" => %{
+               "id" => loadout_id,
+               "harness" => "claude_agent_sdk"
+             }
+           } = json_response(response, 201)
+
+    assert %ProductLoadout{harness_kind: "claude_agent_sdk"} =
+             Repo.get!(ProductLoadout, loadout_id)
+
+    assert %{"loadout" => %{"harness" => "claude_agent_sdk"}} =
+             build_conn()
+             |> get("/api/v1/loadouts/#{loadout_id}")
+             |> json_response(200)
+
+    assert {:ok, persisted} = Products.get_loadout(loadout_id)
+
+    requested = %{
+      harness_kind: persisted.harness,
+      model: persisted.model,
+      reasoning: persisted.reasoning,
+      tool_policy: persisted.tool_policy,
+      workspace_access: persisted.workspace_access
+    }
+
+    advertised_setup = %{
+      "harness_kind" => "claude_agent_sdk",
+      "setup_kind" => "provider_authentication",
+      "setup_available" => true,
+      "authentication" => "context_required",
+      "models" => [
+        %{
+          "provider" => "anthropic",
+          "model" => "claude-sonnet-5",
+          "display_name" => "Claude Sonnet 5",
+          "account_availability" => "unknown",
+          "reasoning_capability" => %{"kind" => "enumerated", "values" => ["high"]}
+        }
+      ],
+      "supported_tool_policies" => ["exact"],
+      "tool_enforcement" => "exact",
+      "tool_profile" => %{
+        "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"]
+      }
+    }
+
+    assert requested.harness_kind == advertised_setup["harness_kind"]
+
+    assert {:ok, _resolution} =
+             CapabilityMatcher.resolve_setup(%{"harness_setups" => [advertised_setup]}, requested)
+
+    assert :error =
+             CapabilityMatcher.resolve_setup(
+               %{
+                 "harness_setups" => [
+                   Map.put(advertised_setup, "harness_kind", "claude-agent-sdk")
+                 ]
+               },
+               requested
+             )
   end
 
   test "Tactic preview projects inferred, explicit, and nested semantic artifact sources" do
