@@ -1699,21 +1699,19 @@ function sanitizeSetupOutput(value: string): string {
     .slice(-16_384);
 }
 
-export function claudeAuthenticationCommand(
-  prepared: PreparedSbxHarnessExecution | PreparedSbxHarnessSetup,
-) {
+export function claudeAuthenticationCommand(prepared: PreparedSbxHarnessSetup) {
   const claude = prepared.claude;
   if (!claude) throw runtimeError("Claude setup artifacts are absent.");
   return {
     executable: claude.runtimeExecutable,
     args: ["auth", "login"] as const,
-    cwd: prepared.workspace.paths.workspace,
+    cwd: prepared.setupWorkingDirectory,
     environment: safeEnvironment(prepared),
   };
 }
 
 export function claudeAuthenticationStatusCommand(
-  prepared: PreparedSbxHarnessExecution | PreparedSbxHarnessSetup,
+  prepared: PreparedSbxHarnessSetup,
 ) {
   const claude = prepared.claude;
   if (!claude) throw runtimeError("Claude setup artifacts are absent.");
@@ -1730,7 +1728,7 @@ export function claudeAuthenticationStatusCommand(
       "import os,sys;paths=('/etc/claude-code/managed-settings.json','/etc/claude-code/managed-mcp.json');sys.exit(42) if any(os.path.exists(path) for path in paths) else os.execve(sys.argv[1],[sys.argv[1],'auth','status'],dict(os.environ))",
       claude.runtimeExecutable,
     ],
-    cwd: prepared.workspace.paths.workspace,
+    cwd: prepared.setupWorkingDirectory,
     environment: {},
     timeoutMs: 30_000,
   };

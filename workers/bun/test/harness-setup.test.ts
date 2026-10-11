@@ -532,6 +532,47 @@ test("known pre-invocation failure is retryable only as a new explicit setup gen
   fixture.close();
 });
 
+test("physical process acknowledgement does not wait for provider output or HumanAttention", async () => {
+  const harness = new FakeHarness();
+  if (!harness.setup) throw new Error("fake setup unavailable");
+  let cancelled = false;
+  harness.setup.begin = async () => ({
+    completion: new Promise(() => undefined),
+    respond: async () => undefined,
+    cancel: async () => {
+      cancelled = true;
+    },
+  });
+  const fixture = await coordinatorFixture(harness);
+  const reports: string[] = [];
+  fixture.setReporter((record) => reports.push(record.state));
+
+  await fixture.coordinator.prepare(fixture.command);
+  expect(fixture.store.get("setup-1")).toMatchObject({
+    state: "invocation_acknowledged",
+    invocationState: "acknowledged",
+    attentionId: null,
+  });
+  expect(reports).toEqual([
+    "preparing",
+    "invocation_requested",
+    "invocation_acknowledged",
+  ]);
+
+  await fixture.coordinator.cancel({
+    type: "cancel_harness_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-1",
+    connection_generation: 1,
+    setup_id: "setup-1",
+    setup_generation: 1,
+    request_id: "cancel-acknowledged-without-output",
+  });
+  expect(cancelled).toBe(true);
+  expect(fixture.store.get("setup-1").state).toBe("cancelled");
+  fixture.close();
+});
+
 test("physical prelaunch rejection is failed while a crossed launch boundary remains uncertain", async () => {
   for (const candidate of [
     { certainty: "not_submitted" as const, expected: "failed" },

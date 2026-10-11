@@ -71,6 +71,24 @@ The 2026-10-11 failed acceptance selected exact method `api_key`: the SBX creati
 
 The remediation removes that Anthropic selector from SBX creation, enforces exact child environments, and blocks every non-eligible semantic state before intent. The streamed launch boundary now carries explicit certainty: validation/environment rejection and relay `spawn_not_started` are known `not_submitted`; timeout, loss after launch, or missing post-spawn identity remain genuinely ambiguous. Authentication mode and environment-policy version are also included in the Run-private configuration identity, so pre-policy setup evidence cannot be reused. No immutable profile or wrapper byte changed; v3 provenance remains unchanged.
 
+A later fresh acceptance reached exact eligible preflight but failed before physical launch with `streamed_process_spawn_failed` / `not_submitted`: setup passed the private lineage worktree (for example `/qe/workspaces/<lineage>`) as the streamed-process cwd, while the lease path map authorizes the canonical workspace leaf `/qe/workspaces/default`, not sibling paths. Generic cwd containment correctly rejected it before opening the SBX relay; Product therefore projected `setup_invocation_not_started`, with zero physical login invocations. The correction is caller-side: `prepareHarnessSetup()` now returns the canonical lease workspace as `setupWorkingDirectory`, and both login and status use it. The private worktree remains the later wrapper's repository cwd, and `CLAUDE_CONFIG_DIR` remains the lineage-private state target. Generic path containment is unchanged.
+
+Login and the already-working headless wrapper share the same physical primitive and certainty boundary but intentionally differ by role:
+
+| Field | Setup login | Execution wrapper |
+|---|---|---|
+| primitive | `EnvironmentLease.spawnStreamed()` | `EnvironmentLease.spawnStreamed()` |
+| executable / argv | pinned Claude Code / `auth login` | immutable QE wrapper / empty argv |
+| cwd | canonical lease workspace | private lineage worktree |
+| target environment | exact `claude-subscription-explicit-environment-v1` | same exact policy |
+| transport | attached-only, non-PTY | attached-only, non-PTY |
+| acknowledgement | exact relay PID/start/executable identity | same |
+| output | bounded ephemeral provider interaction | strict bounded NDJSON |
+| buffer | 256 KiB | 2 MiB |
+| inference authority | none | still none until separate Product prompt authorization |
+
+The QE transport requirement is conclusively non-PTY: `spawnStreamed()` uses `sbx exec --interactive` without `--tty`, and the real-SBX fake-target proof observes `isatty(0/1/2) == false`. Whether pinned Claude Code 2.1.292's **real** `auth login` independently requires a TTY remains unknown: official browser/code-paste documentation does not state such a requirement, and this fix was forbidden from invoking real login to test it. QE therefore makes no unsupported TTY compatibility claim and does not weaken the accepted headless transport. A future fresh, explicitly authorized acceptance is the boundary that can establish provider behavior.
+
 Worker Protocol v13 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
 
 1. Global disposable discovery verifies only immutable artifacts and publishes a `harness_setups` capability with `authentication: context_required`; it never publishes a globally ready Claude executor.
@@ -217,6 +235,16 @@ QE_LIVE_SBX_CLAUDE_AUTH_PREFLIGHT=1 QE_SBX_BIN=/absolute/sbx \
 ```
 
 It completed on 2026-10-11 in one new disposable v3 SBX/private config. Against pinned Claude Code 2.1.292, intentionally adding only the historical non-secret `ANTHROPIC_API_KEY=none` selector classified as exact `api_key`; removing it under `claude-subscription-explicit-environment-v1` classified as exact `authentication_required`/`none`. A metadata-only existence check proved the private `.credentials.json` remained absent without reading any credential content. The only provider-runtime operation was `claude auth status`; the test then stopped and removed its exact environment. Login, credential creation/import, Product setup authority, prompt/inference authority, wrapper/SDK `query()`, provider/model turns, and `qe_complete_step` were all **0**.
+
+The streamed setup-launch physical gate replaces the provider executable with a deterministic guest fixture while exercising the production Claude setup adapter and real SBX streamed transport:
+
+```sh
+cd workers/bun
+QE_LIVE_SBX_CLAUDE_SETUP_LAUNCH=1 QE_SBX_BIN=/absolute/sbx \
+  bun test test/sbx-claude-agent-sdk-live.test.ts
+```
+
+It verifies the installed pinned Claude executable path, SHA-256, and executable mode without running it; launches exactly one fake `auth login` target from the canonical setup cwd; proves exact explicit environment names, private mode-0700 writable config ownership, non-PTY stdin/stdout/stderr, relay identity acknowledgement, HumanAttention output, cancellation, process exit, and SBX removal. It invokes zero real Claude authentication commands, creates/imports/reads zero credentials, and performs zero SDK queries, prompts, provider turns, Product Actions, or completion calls.
 
 The prior accepted zero-auth local proof completed on 2026-10-08 against historical v2 profile `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24` with:
 

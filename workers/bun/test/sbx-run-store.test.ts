@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import {
   SBX_CODING_EXECUTION_PROFILE_V2,
   SBX_CODING_EXECUTION_PROFILE_V3,
+  SBX_GUEST_PATHS,
 } from "../src/execution-environment/sbx-profile.ts";
 import { SbxRunExecutionManager } from "../src/execution-environment/sbx-run.ts";
 import { SbxRunExecutionStore } from "../src/execution-environment/sbx-run-store.ts";
@@ -106,6 +108,126 @@ test("Run-bound setup rejects mismatched harness, Workspace, and access before e
       }),
     ).rejects.toThrow("exceeds the authorized source binding");
     expect(ensureCount).toBe(0);
+  } finally {
+    await manager.close();
+  }
+});
+
+test("Run-bound setup keeps provider-auth cwd on the canonical lease workspace", async () => {
+  const parent = join(process.cwd(), ".pi", "tmp");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "sbx-run-setup-cwd-"));
+  roots.push(root);
+  const environmentRef = {
+    backendKind: "sbx",
+    environmentId: "environment-setup-cwd",
+    incarnation: "incarnation-setup-cwd",
+    workerId: "worker-setup-cwd",
+    runId: "run-setup-cwd",
+    profile: SBX_CODING_EXECUTION_PROFILE_V3,
+  };
+  const lease = {
+    ref: environmentRef,
+    paths: { ...SBX_GUEST_PATHS },
+    capabilities: [{ kind: "process.streamed", mode: "attached_only" }],
+    workerExec: async (command: { executable: string }) =>
+      command.executable === "/usr/bin/uname"
+        ? { exitCode: 0, stdout: "aarch64\n", stderr: "" }
+        : { exitCode: 0, stdout: "", stderr: "" },
+    exec: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }),
+    writeFile: async (input: { path: string; data: Uint8Array }) => ({
+      path: input.path,
+      byteLength: input.data.byteLength,
+      sha256: createHash("sha256").update(input.data).digest("hex"),
+    }),
+  };
+  const privateWorkspace = {
+    physicalId: "private-workspace-setup-cwd",
+    environmentRef,
+    repositoryPhysicalId: "repository-physical-setup-cwd",
+    repositoryId: "binding-setup-cwd",
+    physicalLineageId: "physical-setup-cwd",
+    access: "read_write",
+    branchRef: "refs/heads/qe/lineages/setup-cwd",
+    paths: {
+      repository: "/qe/git/binding-setup-cwd.git",
+      workspace: "/qe/workspaces/private-setup-cwd",
+      runtimeHome: "/qe/state/private-git/runtime/setup-cwd/home",
+      runtimeCache: "/qe/state/private-git/runtime/setup-cwd/cache",
+      runtimeTemp: "/qe/state/private-git/runtime/setup-cwd/tmp",
+      workerState: "/qe/state/private-git/lineages/setup-cwd",
+    },
+  };
+  const manager = new SbxRunExecutionManager(
+    {
+      workerId: environmentRef.workerId,
+      dataRoot: root,
+      enabledHarnesses: ["claude_agent_sdk"],
+      workspaceBindings: [
+        {
+          binding_id: "binding-setup-cwd",
+          workspace_id: "workspace-setup-cwd",
+          max_access: "read_write",
+        },
+      ],
+    } as unknown as WorkerConfig,
+    {
+      verify: async () => ({
+        state: "ready",
+        runId: environmentRef.runId,
+        workspaceId: "workspace-setup-cwd",
+        bindingId: "binding-setup-cwd",
+        canonicalRoot: "/host/run-setup-cwd",
+        baseRevision: "base-setup-cwd",
+      }),
+    } as never,
+    {
+      backend: {
+        ensure: async () => lease,
+        close: () => undefined,
+      } as never,
+      privateGit: {
+        materializeSource: async () => ({
+          source: { repositoryId: "binding-setup-cwd" },
+        }),
+        ensureWorktree: async () => privateWorkspace,
+        close: () => undefined,
+      } as never,
+    },
+  );
+  try {
+    const prepared = await manager.prepareHarnessSetup({
+      setupId: "setup-cwd",
+      setupGeneration: 1,
+      actionId: "action-setup-cwd",
+      runId: environmentRef.runId,
+      occurrenceId: "occurrence-setup-cwd",
+      memberKey: "operator",
+      harnessKind: "claude_agent_sdk",
+      physicalLineageId: "physical-setup-cwd",
+      logicalLineageId: "logical-setup-cwd",
+      workspaceId: "workspace-setup-cwd",
+      worktreeId: "worktree-setup-cwd",
+      workspaceBindingId: "binding-setup-cwd",
+      canonicalRoot: "/host/run-setup-cwd",
+      workspaceAccess: "read_write",
+      profile: SBX_CODING_EXECUTION_PROFILE_V3,
+      configuration: {
+        model: { provider: "anthropic", model: "claude-sonnet-5" },
+        reasoning: "high",
+        reasoningCapability: { kind: "enumerated", values: ["high"] },
+        toolPolicy: { kind: "exact", tools: ["workspace.filesystem"] },
+        toolEnforcement: "exact",
+        resolvedToolProfile: { tools: ["workspace.filesystem"] },
+      },
+    });
+    expect(prepared.setupWorkingDirectory).toBe(SBX_GUEST_PATHS.workspace);
+    expect(prepared.workspace.paths.workspace).toBe(
+      "/qe/workspaces/private-setup-cwd",
+    );
+    expect(prepared.setupWorkingDirectory).not.toBe(
+      prepared.workspace.paths.workspace,
+    );
   } finally {
     await manager.close();
   }

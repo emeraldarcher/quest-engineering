@@ -330,6 +330,97 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
       )
 
     assert Jason.decode!(decoded_json) == setup_command
+
+    setup_launcher =
+      Path.join(root, "workers/bun/test/fixtures/exercise-claude-setup-launch.ts")
+
+    {launch_json, 0} =
+      System.cmd(
+        bun,
+        [
+          setup_launcher,
+          setup_command |> Jason.encode!() |> Base.encode64(),
+          worker.id,
+          Integer.to_string(worker.connection_generation)
+        ],
+        cd: root,
+        stderr_to_stdout: true
+      )
+
+    launch = Jason.decode!(launch_json)
+    assert launch["decoded"] == setup_command
+
+    assert launch["beforeCleanup"] == %{
+             "state" => "human_interaction_required",
+             "invocationState" => "acknowledged",
+             "physicalLaunchCount" => 1,
+             "launchedCommand" => %{
+               "executable" =>
+                 "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
+               "args" => ["auth", "login"],
+               "cwd" => "/qe/workspaces/default",
+               "environmentNames" => [
+                 "BROWSER",
+                 "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                 "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                 "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
+                 "CLAUDE_CONFIG_DIR",
+                 "DISABLE_AUTOUPDATER",
+                 "DISABLE_ERROR_REPORTING",
+                 "DISABLE_FEEDBACK_COMMAND",
+                 "DISABLE_TELEMETRY",
+                 "HOME",
+                 "LANG",
+                 "PATH",
+                 "TMPDIR"
+               ]
+             },
+             "privateWorkspace" => "/qe/workspaces/fake-product-boundary",
+             "setupWorkingDirectory" => "/qe/workspaces/default",
+             "forbiddenEnvironmentNames" => [],
+             "reportStates" => [
+               "preparing",
+               "invocation_requested",
+               "invocation_acknowledged",
+               "human_interaction_required",
+               "human_interaction_required"
+             ],
+             "humanAttentionCount" => 2,
+             "ephemeralOutputObserved" => true,
+             "durableContainsFixtureOutput" => false,
+             "processIdentity" => %{
+               "contractVersion" => 1,
+               "backendKind" => "sbx",
+               "environment" => %{
+                 "backendKind" => "sbx",
+                 "environmentId" => "fake-setup-environment",
+                 "incarnation" => "fake-setup-incarnation",
+                 "workerId" => worker.id,
+                 "runId" => run_id,
+                 "profile" => %{
+                   "id" => "qe-coding-execution-v3",
+                   "digest" =>
+                     "sha256:3085d323073b1917b19cf269104236fd5aab9f72bd28a14312e2cdfc6bc107e8"
+                 }
+               },
+               "backendProcessId" => "fixture-pid-1",
+               "processStartIdentity" => "fixture-start-1",
+               "processGeneration" =>
+                 launch["beforeCleanup"]["processIdentity"]["processGeneration"],
+               "executable" =>
+                 "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
+               "observedExecutable" =>
+                 "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude"
+             }
+           }
+
+    assert launch["afterCleanup"] == %{
+             "state" => "invalidated",
+             "cancelCount" => 1,
+             "processRunning" => false
+           }
+
     assert Repo.aggregate(HarnessSetupAuthorization, :count) == 1
     assert Repo.aggregate(ScheduledActionExecution, :count) == 0
     assert Repo.aggregate(OperationalAttemptAttribution, :count) == 0
