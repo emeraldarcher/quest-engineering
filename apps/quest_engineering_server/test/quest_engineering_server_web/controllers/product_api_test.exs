@@ -4,14 +4,21 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
   import Phoenix.ConnTest
   import Plug.Conn
 
+  alias Ecto.Changeset
   alias QuestEngineering.Server.CapabilityMatcher
+  alias QuestEngineering.Server.Persistence.HarnessSetupAuthorization
+  alias QuestEngineering.Server.Persistence.OperationalAttemptAttribution
   alias QuestEngineering.Server.Persistence.ProductLoadout
   alias QuestEngineering.Server.Persistence.ProductTactic
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
+  alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
+  alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
+  alias QuestEngineering.Server.RunWorkspaceStore
+  alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerStore
   alias QuestEngineering.ServerWeb.Endpoint
 
@@ -119,6 +126,214 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
                },
                requested
              )
+  end
+
+  test "Product API harness setup command decodes at the real Worker boundary" do
+    tools = ["workspace.filesystem", "workspace.search", "terminal.shell"]
+
+    %{"class" => %{"id" => class_id}} =
+      post_json("/api/v1/classes", %{
+        key: "claude-setup-boundary",
+        name: "Claude Setup Boundary",
+        instructions: "Remain behind Product authority."
+      })
+      |> json_response(201)
+
+    %{"loadout" => %{"id" => loadout_id}} =
+      post_json("/api/v1/loadouts", %{
+        key: "claude-setup-boundary",
+        name: "Claude Setup Boundary",
+        harness: "claude_agent_sdk",
+        model: %{provider: "anthropic", model: "claude-sonnet-5"},
+        reasoning: "high",
+        tool_policy: %{kind: "exact", tools: tools},
+        workspace_access: "read_write"
+      })
+      |> json_response(201)
+
+    %{"squad" => %{"id" => squad_id}} =
+      post_json("/api/v1/squads", %{
+        key: "claude-setup-boundary",
+        name: "Claude Setup Boundary",
+        members: [
+          %{
+            member_key: "operator",
+            name: "Operator",
+            class_id: class_id,
+            loadout_id: loadout_id
+          }
+        ]
+      })
+      |> json_response(201)
+
+    %{"tactic" => %{"id" => tactic_id}} =
+      post_json("/api/v1/tactics", %{
+        key: "claude-setup-boundary",
+        name: "Claude Setup Boundary",
+        body: %{
+          type: "step",
+          key: "boundary",
+          name: "Boundary",
+          instruction: "Wait for separate inference authority.",
+          performer: %{selector: "class", value: "claude-setup-boundary"},
+          context: %{selector: "fresh", value: nil},
+          consumes: [],
+          produces: []
+        }
+      })
+      |> json_response(201)
+
+    %{"workspace" => %{"id" => workspace_id}} =
+      post_json("/api/v1/workspaces", %{
+        key: "claude-setup-boundary",
+        name: "Claude Setup Boundary",
+        source_kind: "local_git"
+      })
+      |> json_response(201)
+
+    %{"quest" => %{"id" => quest_id}} =
+      post_json("/api/v1/quests", %{
+        title: "Claude setup boundary",
+        objective: "Prove the Product-generated setup protocol payload.",
+        workspace_id: workspace_id,
+        squad_id: squad_id,
+        tactic_source: %{type: "definition", tactic_definition_id: tactic_id}
+      })
+      |> json_response(201)
+
+    worker_id = "product-setup-boundary"
+
+    capabilities = %{
+      "os" => "test",
+      "arch" => "test",
+      "max_concurrency" => 1,
+      "dispatch_availability" => "active",
+      "tags" => [],
+      "features" => ["run_bound_harness_setup_v1"],
+      "executors" => [],
+      "harness_setups" => [
+        %{
+          "harness_kind" => "claude_agent_sdk",
+          "setup_kind" => "provider_authentication",
+          "setup_available" => true,
+          "authentication" => "context_required",
+          "models" => [
+            %{
+              "provider" => "anthropic",
+              "model" => "claude-sonnet-5",
+              "display_name" => "Claude Sonnet 5",
+              "account_availability" => "unknown",
+              "reasoning_capability" => %{"kind" => "enumerated", "values" => ["high"]}
+            }
+          ],
+          "supported_tool_policies" => ["exact"],
+          "tool_enforcement" => "exact",
+          "tool_profile" => %{"tools" => tools},
+          "execution_environment" => %{
+            "backend_kind" => "sbx",
+            "profile" => %{
+              "id" => "qe-coding-execution-v3",
+              "digest" =>
+                "sha256:3085d323073b1917b19cf269104236fd5aab9f72bd28a14312e2cdfc6bc107e8"
+            },
+            "capabilities" => [
+              %{"kind" => "filesystem_namespace", "mode" => "isolated"},
+              %{"kind" => "host_filesystem", "mode" => "unexposed"},
+              %{"kind" => "environment_exec", "mode" => "available"},
+              %{"kind" => "pty_launcher", "mode" => "available"}
+            ]
+          }
+        }
+      ]
+    }
+
+    {:ok, worker} = WorkerStore.register(worker_id, capabilities, Ecto.UUID.generate())
+    {:ok, workspace} = Products.get_workspace(workspace_id)
+    reconcile_binding!(worker, workspace, "product-setup-boundary")
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
+    start_supervised!(WorkerConnections)
+
+    :ok =
+      WorkerConnections.activate(
+        worker.id,
+        worker.connection_id,
+        worker.connection_generation,
+        self()
+      )
+
+    %{"launch" => %{"run_id" => run_id}} =
+      post_json("/api/v1/quests/#{quest_id}/launch", %{})
+      |> json_response(201)
+
+    assert {:provision, assignment} = RunWorkspaceStore.ensure_assignment(run_id)
+
+    assignment
+    |> Changeset.change(
+      state: "ready",
+      base_revision: String.duplicate("a", 40),
+      canonical_worktree_root: "/managed/worktrees/#{assignment.worktree_id}",
+      source_dirty_excluded: false,
+      ready_at: DateTime.utc_now()
+    )
+    |> Repo.update!()
+
+    %{"run" => %{"steps" => [step]}} =
+      get(build_conn(), "/api/v1/runs/#{run_id}")
+      |> json_response(200)
+
+    assert step["can_authorize_harness_setup"]
+    assert step["attempt"]["operational"] == nil
+
+    setup_path =
+      "/api/v1/runs/#{run_id}/occurrences/#{URI.encode_www_form(step["occurrence_id"])}/harness-setup"
+
+    setup_response =
+      %{build_conn() | host: "127.0.0.1"}
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("x-quest-engineering-local-client", "tauri")
+      |> post(setup_path, %{request_id: Ecto.UUID.generate(), confirmed: true})
+      |> json_response(200)
+
+    assert setup_response["idempotent_replay"] == false
+    assert setup_response["harness_setup"]["state"] == "authorized"
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_harness_setup",
+                      "protocol_version" => 13,
+                      "worker_id" => ^worker_id,
+                      "connection_generation" => generation
+                    } = setup_command}
+
+    assert generation == worker.connection_generation
+
+    assert get_in(setup_command, ["setup", "configuration", "tool_policy"]) == %{
+             "kind" => "exact",
+             "tools" => tools
+           }
+
+    root = Path.expand("../../../../..", __DIR__)
+    bun = System.find_executable("bun") || flunk("bun is required for the cross-boundary test")
+    decoder = Path.join(root, "workers/bun/test/fixtures/decode-prepare-harness-setup.ts")
+
+    {decoded_json, 0} =
+      System.cmd(
+        bun,
+        [
+          decoder,
+          setup_command |> Jason.encode!() |> Base.encode64(),
+          worker.id,
+          Integer.to_string(worker.connection_generation)
+        ],
+        cd: root,
+        stderr_to_stdout: true
+      )
+
+    assert Jason.decode!(decoded_json) == setup_command
+    assert Repo.aggregate(HarnessSetupAuthorization, :count) == 1
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 0
+    assert Repo.aggregate(RunWorkspaceAssignment, :count) == 1
   end
 
   test "Tactic preview projects inferred, explicit, and nested semantic artifact sources" do

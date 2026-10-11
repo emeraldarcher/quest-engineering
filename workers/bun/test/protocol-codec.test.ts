@@ -3,11 +3,13 @@ import {
   decodeCancelDispatch,
   decodeExecuteAction,
   decodeHumanAttentionResponse,
+  decodePrepareHarnessSetup,
   ProtocolDecodeError,
 } from "../src/protocol/codec.ts";
 import {
   type CancelDispatch,
   type HumanAttentionResponseCommand,
+  type PrepareHarnessSetupCommand,
   WORKER_PROTOCOL_VERSION,
 } from "../src/protocol/types.ts";
 import { action } from "./support.ts";
@@ -185,6 +187,9 @@ describe("Worker Protocol v13 ResolvedExecution codec", () => {
     const decoded = decodeExecuteAction(input, input.worker_id);
 
     expect(decoded.execution.configuration.reasoning).toBeNull();
+    expect(decoded.execution.configuration.tool_policy).toEqual({
+      kind: "native_permissions",
+    });
     expect(decoded.execution.configuration.tool_enforcement).toBe(
       "native_permissions",
     );
@@ -266,3 +271,75 @@ describe("Worker Protocol v13 ResolvedExecution codec", () => {
     ).toThrow("JSON-compatible");
   });
 });
+
+describe("Worker Protocol v13 harness setup codec", () => {
+  test("requires the explicit exact ToolPolicy discriminator", () => {
+    const input = setupCommand();
+    expect(decodePrepareHarnessSetup(input, "worker-test", 7)).toEqual(input);
+
+    const missingKind = structuredClone(input) as unknown as {
+      setup: { configuration: { tool_policy: Record<string, unknown> } };
+    };
+    delete missingKind.setup.configuration.tool_policy.kind;
+    expect(() =>
+      decodePrepareHarnessSetup(missingKind, "worker-test", 7),
+    ).toThrow("invalid tool policy");
+
+    const unknownKind = structuredClone(input) as unknown as {
+      setup: { configuration: { tool_policy: Record<string, unknown> } };
+    };
+    unknownKind.setup.configuration.tool_policy.kind = "inferred_exact";
+    expect(() =>
+      decodePrepareHarnessSetup(unknownKind, "worker-test", 7),
+    ).toThrow("invalid tool policy");
+
+    const malformedTools = structuredClone(input) as unknown as {
+      setup: { configuration: { tool_policy: Record<string, unknown> } };
+    };
+    malformedTools.setup.configuration.tool_policy.tools = "terminal.shell";
+    expect(() =>
+      decodePrepareHarnessSetup(malformedTools, "worker-test", 7),
+    ).toThrow("must be an array");
+  });
+});
+
+function setupCommand(): PrepareHarnessSetupCommand {
+  const tools = ["workspace.filesystem", "workspace.search", "terminal.shell"];
+  return {
+    type: "prepare_harness_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: "worker-test",
+    connection_generation: 7,
+    setup: {
+      setup_id: "setup-1",
+      setup_generation: 1,
+      authorization_id: "authorization-1",
+      authorization_kind: "human_harness_setup",
+      authorized_at: "2026-10-11T00:00:00Z",
+      action_id: "action-1",
+      run_id: "run-1",
+      occurrence_id: "occurrence-1",
+      member_key: "operator",
+      harness_kind: "claude_agent_sdk",
+      physical_lineage_id: "physical-lineage-1",
+      logical_lineage_id: "logical-lineage-1",
+      workspace_id: "workspace-1",
+      worktree_id: "worktree-1",
+      workspace_binding_id: "binding-1",
+      canonical_root: "/workspace",
+      workspace_access: "read_write",
+      profile: {
+        id: "qe-coding-execution-v3",
+        digest: "sha256:profile-v3",
+      },
+      configuration: {
+        model: { provider: "anthropic", model: "claude-sonnet-5" },
+        reasoning: "high",
+        reasoning_capability: { kind: "enumerated", values: ["high"] },
+        tool_policy: { kind: "exact", tools },
+        tool_enforcement: "exact",
+        resolved_tool_profile: { tools },
+      },
+    },
+  };
+}
