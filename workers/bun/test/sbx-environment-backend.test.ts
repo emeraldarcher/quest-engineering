@@ -156,6 +156,7 @@ test("creation disables ambient credential variables and carries only ownership 
     QE_RUN_ID: "run-create-environment",
     QE_WORKER_ID: "worker-sbx-test",
   });
+  expect(environment).not.toHaveProperty("ANTHROPIC_API_KEY");
   expect(environment).not.toHaveProperty("QE_WORKER_TOKEN");
 });
 
@@ -432,6 +433,28 @@ test("an externally stopped sandbox cannot execute through an old running lease"
   expect((await fixture.backend.recover(lease.ref, spec)).ref).toEqual(
     lease.ref,
   );
+});
+
+test("streamed launch rejected before the physical boundary is proven not submitted", async () => {
+  const fixture = await setup();
+  const lease = await fixture.backend.ensure(
+    sbxSpec("run-stream-prelaunch-rejected"),
+  );
+  const sandbox = [...fixture.state.sandboxes.values()][0];
+  if (!sandbox) throw new Error("expected fake sandbox");
+  sandbox.status = "stopped";
+  await expect(
+    lease.spawnStreamed({
+      executable: "/usr/bin/python3",
+      args: ["-c", "pass"],
+      cwd: lease.paths.workspace,
+      environment: {},
+    }),
+  ).rejects.toMatchObject({
+    code: "environment_not_usable",
+    operation: "spawn_streamed",
+    sideEffectCertainty: "not_submitted",
+  });
 });
 
 test("acknowledged stop with immediate stopped evidence is durable and idempotent", async () => {

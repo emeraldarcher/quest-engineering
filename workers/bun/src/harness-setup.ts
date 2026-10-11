@@ -1,8 +1,15 @@
 import type { DispatchRegistry } from "./dispatch/registry.ts";
+import { EnvironmentBackendError } from "./execution-environment/types.ts";
 import type {
   HarnessSetupRecord,
   HarnessSetupStore,
 } from "./harness-setup-store.ts";
+import {
+  CLAUDE_SUBSCRIPTION_AUTH_MODE,
+  CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
+  CLAUDE_SUBSCRIPTION_LOGIN_MODE,
+  isClaudeSubscriptionLoginEligible,
+} from "./harnesses/claude-agent-sdk/auth.ts";
 import type { HarnessRegistry } from "./harnesses/registry.ts";
 import type {
   HarnessSetupContext,
@@ -215,8 +222,8 @@ export class HarnessSetupCoordinator {
       record.command.setup.run_id !== command.run_id ||
       record.command.setup.physical_lineage_id !==
         binding.physical_lineage_id ||
-      !inspection?.authenticated ||
-      inspection.state !== "ready" ||
+      !inspection ||
+      !subscriptionReady(inspection) ||
       inspection.environment?.environmentId !==
         binding.environment.environment_id ||
       inspection.environment?.incarnation !== binding.environment.incarnation ||
@@ -352,7 +359,7 @@ export class HarnessSetupCoordinator {
       previous?.environment?.profile.digest ===
         inspected.environment?.profile.digest &&
       previous?.configIdentity === inspected.configIdentity;
-    if (exact && inspected.state === "ready" && inspected.authenticated) {
+    if (exact && subscriptionReady(inspected)) {
       await this.report(
         this.store.transition(record.setupId, record.setupGeneration, "ready", {
           invocationState: "settled",
@@ -410,7 +417,7 @@ export class HarnessSetupCoordinator {
     let inspected: HarnessSetupPrepared["inspection"];
     try {
       prepared = await harness.setup.prepare(context);
-      inspected = await harness.setup.inspect(prepared);
+      inspected = prepared.inspection;
     } catch {
       if (this.isInvalidated(record.setupId)) return;
       if (
@@ -452,22 +459,6 @@ export class HarnessSetupCoordinator {
       return;
     }
 
-    if (inspected.state === "ready" && inspected.authenticated) {
-      const ready = this.store.transition(
-        record.setupId,
-        record.setupGeneration,
-        "ready",
-        {
-          invocationState: "settled",
-          inspection: inspected,
-          attentionId: null,
-          failure: null,
-        },
-      );
-      await this.report(ready);
-      return;
-    }
-
     if (record.invocationState !== "not_requested") {
       const uncertain = this.store.transition(
         record.setupId,
@@ -487,6 +478,62 @@ export class HarnessSetupCoordinator {
       await this.report(uncertain);
       return;
     }
+
+    if (subscriptionReady(inspected)) {
+      const ready = this.store.transition(
+        record.setupId,
+        record.setupGeneration,
+        "ready",
+        {
+          invocationState: "settled",
+          inspection: inspected,
+          attentionId: null,
+          failure: null,
+        },
+      );
+      await this.report(ready);
+      return;
+    }
+
+    const blocked = setupPreflightFailure(inspected);
+    if (blocked) {
+      const failed = this.store.transition(
+        record.setupId,
+        record.setupGeneration,
+        "failed",
+        {
+          invocationState: "not_requested",
+          inspection: inspected,
+          attentionId: null,
+          failure: blocked,
+        },
+      );
+      await this.report(failed);
+      return;
+    }
+
+    const eligibilityFailure = loginEligibilityFailure(
+      command,
+      context,
+      prepared,
+      inspected,
+    );
+    if (eligibilityFailure) {
+      const failed = this.store.transition(
+        record.setupId,
+        record.setupGeneration,
+        "failed",
+        {
+          invocationState: "not_requested",
+          inspection: inspected,
+          attentionId: null,
+          failure: eligibilityFailure,
+        },
+      );
+      await this.report(failed);
+      return;
+    }
+    prepared.inspection = inspected;
 
     record = this.store.transition(
       record.setupId,
@@ -584,8 +631,10 @@ export class HarnessSetupCoordinator {
     } catch (error) {
       if (this.isInvalidated(record.setupId)) return;
       const knownNotSubmitted =
-        error instanceof OperationalExecutionError &&
-        error.sideEffectCertainty === "not_submitted";
+        (error instanceof OperationalExecutionError &&
+          error.sideEffectCertainty === "not_submitted") ||
+        (error instanceof EnvironmentBackendError &&
+          error.sideEffectCertainty === "not_submitted");
       if (
         ["cancellation_requested", "cancelled"].includes(
           this.store.get(record.setupId).state,
@@ -754,7 +803,7 @@ export class HarnessSetupCoordinator {
     const state =
       inspection.state === "cancelled"
         ? "cancelled"
-        : inspection.authenticated && inspection.state === "ready"
+        : subscriptionReady(inspection)
           ? "ready"
           : "failed";
     const updated = this.store.transition(setupId, generation, state, {
@@ -763,7 +812,10 @@ export class HarnessSetupCoordinator {
       attentionId: null,
       failure:
         state === "failed"
-          ? { code: "authentication_not_ready", message: inspection.detail }
+          ? (setupPreflightFailure(inspection) ?? {
+              code: "authentication_not_ready",
+              message: inspection.detail,
+            })
           : null,
     });
     this.active.delete(setupId);
@@ -797,6 +849,83 @@ export class HarnessSetupCoordinator {
     this.active.delete(setupId);
     await this.report(failed);
   }
+}
+
+function subscriptionReady(
+  inspection: HarnessSetupPrepared["inspection"] | null,
+): boolean {
+  return (
+    inspection?.state === "ready" &&
+    inspection.authenticated === true &&
+    inspection.authMode === CLAUDE_SUBSCRIPTION_AUTH_MODE &&
+    inspection.loginMode === CLAUDE_SUBSCRIPTION_LOGIN_MODE &&
+    inspection.environmentPolicy === CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY &&
+    inspection.authState === "subscription_authenticated" &&
+    inspection.authMethod === "claude.ai"
+  );
+}
+
+function setupPreflightFailure(
+  inspection: HarnessSetupPrepared["inspection"],
+): { code: string; message: string } | null {
+  switch (inspection.authState) {
+    case "authentication_required":
+      return null;
+    case "subscription_authenticated":
+      return {
+        code: "claude_auth_preflight_incompatible",
+        message:
+          "Claude subscription authentication status was contradictory and setup is blocked.",
+      };
+    case "forbidden_auth_method":
+      return {
+        code: "claude_auth_preflight_forbidden",
+        message: `Claude setup is blocked by the conflicting ${inspection.authMethod ?? "unknown"} authentication method.`,
+      };
+    case "inspection_unavailable":
+      return {
+        code: "claude_auth_preflight_unavailable",
+        message:
+          "Claude subscription authentication status could not be inspected; login was not invoked.",
+      };
+    case "incompatible_status":
+      return {
+        code: "claude_auth_preflight_incompatible",
+        message:
+          "Claude subscription authentication status was incompatible; login was not invoked.",
+      };
+  }
+}
+
+function loginEligibilityFailure(
+  command: PrepareHarnessSetupCommand,
+  context: HarnessSetupContext,
+  prepared: HarnessSetupPrepared,
+  inspection: HarnessSetupPrepared["inspection"],
+): { code: string; message: string } | null {
+  const authorizedAt = Date.parse(command.setup.authorized_at);
+  const authorizationAge = Date.now() - authorizedAt;
+  const environment = inspection.environment;
+  if (
+    command.setup.authorization_kind !== "human_harness_setup" ||
+    !command.setup.authorization_id ||
+    !Number.isFinite(authorizedAt) ||
+    authorizationAge < -60_000 ||
+    authorizationAge > 5 * 60_000 ||
+    JSON.stringify(prepared.context) !== JSON.stringify(context) ||
+    !isClaudeSubscriptionLoginEligible(inspection) ||
+    inspection.state !== "preparing" ||
+    inspection.authenticated !== false ||
+    environment?.profile.id !== context.profile.id ||
+    environment.profile.digest !== context.profile.digest ||
+    !inspection.configIdentity
+  )
+    return {
+      code: "claude_auth_login_ineligible",
+      message:
+        "Claude subscription login eligibility was not proven for the exact authorized setup context.",
+    };
+  return null;
 }
 
 function setupContext(

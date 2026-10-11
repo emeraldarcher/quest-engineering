@@ -39,6 +39,13 @@ import type {
 } from "../types.ts";
 import { OperationalExecutionError } from "../types.ts";
 import {
+  classifyClaudeSubscriptionAuthStatus,
+  claudeSubscriptionEnvironment,
+  forbiddenClaudeManagedPolicyInspection,
+  isClaudeSubscriptionLoginEligible,
+  unavailableClaudeSubscriptionAuthInspection,
+} from "./auth.ts";
+import {
   type ClaudeTransportState,
   claudeTransportBinding,
   parseClaudeTransportBinding,
@@ -441,6 +448,14 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     },
     onEvent: Parameters<AgentHarnessSetup["begin"]>[2],
   ): Promise<HarnessSetupOperation> {
+    if (!isClaudeSubscriptionLoginEligible(setup.inspection))
+      throw claudeError(
+        "authentication_required",
+        "Claude subscription login is not eligible for the inspected authentication state.",
+        "terminal_not_recoverable",
+        "prepare",
+        "not_submitted",
+      );
     const authorizedAt = Date.parse(authorization.authorizedAt);
     const authorizationAge = this.now().getTime() - authorizedAt;
     if (
@@ -497,14 +512,14 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         return setupInspection(
           prepared,
           "cancelled",
-          false,
+          unavailableClaudeSubscriptionAuthInspection(),
           "Harness setup was cancelled.",
         );
       if (exit.kind !== "exited" || exit.exitCode !== 0)
         return setupInspection(
           prepared,
           "failed",
-          false,
+          unavailableClaudeSubscriptionAuthInspection(),
           "Provider authentication did not complete successfully.",
         );
       return inspectPreparedSetup(prepared);
@@ -1623,58 +1638,48 @@ function nativePreparedSetup(
 async function inspectPreparedSetup(
   prepared: PreparedSbxHarnessSetup,
 ): Promise<HarnessSetupInspection> {
-  const result = await prepared.lease.exec({
-    executable: prepared.claude.runtimeExecutable,
-    args: ["auth", "status"],
-    cwd: prepared.workspace.paths.workspace,
-    environment: safeEnvironment(prepared),
-    timeoutMs: 30_000,
-  });
-  let authMethod = "none";
-  if (result.exitCode === 0) {
-    try {
-      const value = JSON.parse(result.stdout) as Record<string, unknown>;
-      if (typeof value.authMethod === "string") authMethod = value.authMethod;
-    } catch {
+  try {
+    const result = await prepared.lease.exec(
+      claudeAuthenticationStatusCommand(prepared),
+    );
+    if (result.exitCode === 42)
       return setupInspection(
         prepared,
         "failed",
-        false,
-        "Claude authentication status was malformed.",
+        forbiddenClaudeManagedPolicyInspection(),
       );
-    }
-  }
-  if (authMethod === "claude.ai")
+    const authentication = classifyClaudeSubscriptionAuthStatus(
+      result,
+      prepared.claude.configDirectory,
+    );
     return setupInspection(
       prepared,
-      "ready",
-      true,
-      "Run-bound Claude subscription authentication is ready.",
+      authentication.authState === "subscription_authenticated"
+        ? "ready"
+        : authentication.authState === "authentication_required"
+          ? "preparing"
+          : "failed",
+      authentication,
     );
-  if (authMethod !== "none")
+  } catch {
     return setupInspection(
       prepared,
       "failed",
-      false,
-      "Claude selected a forbidden non-subscription authentication method.",
+      unavailableClaudeSubscriptionAuthInspection(),
     );
-  return setupInspection(
-    prepared,
-    "preparing",
-    false,
-    "Claude subscription authentication is required for this Run-bound context.",
-  );
+  }
 }
 
 function setupInspection(
   prepared: PreparedSbxHarnessSetup,
   state: HarnessSetupInspection["state"],
-  authenticated: boolean,
-  detail: string,
+  authentication = unavailableClaudeSubscriptionAuthInspection(),
+  detail = authentication.detail,
 ): HarnessSetupInspection {
   return {
+    ...authentication,
     state,
-    authenticated,
+    authenticated: authentication.authState === "subscription_authenticated",
     detail,
     environment: {
       environmentId: prepared.lease.ref.environmentId,
@@ -1704,6 +1709,30 @@ export function claudeAuthenticationCommand(
     args: ["auth", "login"] as const,
     cwd: prepared.workspace.paths.workspace,
     environment: safeEnvironment(prepared),
+  };
+}
+
+export function claudeAuthenticationStatusCommand(
+  prepared: PreparedSbxHarnessExecution | PreparedSbxHarnessSetup,
+) {
+  const claude = prepared.claude;
+  if (!claude) throw runtimeError("Claude setup artifacts are absent.");
+  const environment = safeEnvironment(prepared);
+  return {
+    executable: "/usr/bin/env",
+    args: [
+      "-i",
+      ...Object.entries(environment)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, value]) => `${name}=${value}`),
+      "/usr/bin/python3",
+      "-c",
+      "import os,sys;paths=('/etc/claude-code/managed-settings.json','/etc/claude-code/managed-mcp.json');sys.exit(42) if any(os.path.exists(path) for path in paths) else os.execve(sys.argv[1],[sys.argv[1],'auth','status'],dict(os.environ))",
+      claude.runtimeExecutable,
+    ],
+    cwd: prepared.workspace.paths.workspace,
+    environment: {},
+    timeoutMs: 30_000,
   };
 }
 
@@ -1745,19 +1774,7 @@ function safeEnvironment(
 ): Record<string, string> {
   const claude = prepared.claude;
   if (!claude) throw runtimeError("Claude profile environment is missing.");
-  return {
-    HOME: claude.configDirectory,
-    CLAUDE_CONFIG_DIR: claude.configDirectory,
-    TMPDIR: `${claude.configDirectory}/.tmp`,
-    PATH: "/usr/local/bin:/usr/bin:/bin",
-    LANG: "C.UTF-8",
-    BROWSER: "/bin/false",
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    DISABLE_AUTOUPDATER: "1",
-    DISABLE_TELEMETRY: "1",
-    DISABLE_ERROR_REPORTING: "1",
-  };
+  return claudeSubscriptionEnvironment(claude.configDirectory);
 }
 function requiredEffort(dispatch: DispatchRecord): ClaudeEffort {
   const value = dispatch.action.execution.configuration.reasoning;

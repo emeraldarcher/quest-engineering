@@ -20,7 +20,6 @@ export const SBX_GUEST_PATHS: EnvironmentPathMap = Object.freeze({
 });
 
 export const SBX_DISABLED_CREDENTIAL_ENVIRONMENT = Object.freeze({
-  ANTHROPIC_API_KEY: "none",
   GH_TOKEN: "none",
   GITHUB_TOKEN: "none",
   GOOGLE_API_KEY: "none",

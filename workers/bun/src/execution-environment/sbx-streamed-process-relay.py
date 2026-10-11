@@ -1,6 +1,7 @@
 # Generic QE streamed-process relay. Protocol payloads are bytes; only relay
 # identity/exit control records are JSON. The target is launched with literal
 # argv and shell=False.
+import base64
 import ctypes
 import hashlib
 import json
@@ -164,11 +165,38 @@ def on_relay_signal(_signum, _frame):
 
 def main():
     global process
-    if len(sys.argv) < 4 or sys.argv[2] != "--":
+    if (
+        len(sys.argv) < 6
+        or sys.argv[2] != "--environment-names-base64"
+        or sys.argv[4] != "--"
+    ):
         send_json(RELAY_ERROR, {"code": "invalid_argv"})
         return 125
     marker_path = sys.argv[1]
-    target_argv = sys.argv[3:]
+    target_argv = sys.argv[5:]
+    try:
+        encoded_environment_names = sys.argv[3]
+        padding = "=" * (-len(encoded_environment_names) % 4)
+        environment_names = json.loads(
+            base64.b64decode(encoded_environment_names + padding, validate=True)
+        )
+        if (
+            not isinstance(environment_names, list)
+            or len(environment_names) != len(set(environment_names))
+            or any(
+                not isinstance(name, str)
+                or not name
+                or name not in os.environ
+                for name in environment_names
+            )
+        ):
+            raise ValueError("invalid target environment")
+        target_environment = {
+            name: os.environ[name] for name in environment_names
+        }
+    except Exception:
+        send_json(RELAY_ERROR, {"code": "invalid_environment"})
+        return 125
     if not os.path.isabs(target_argv[0]):
         send_json(RELAY_ERROR, {"code": "executable_not_absolute"})
         return 125
@@ -191,13 +219,18 @@ def main():
             stderr=subprocess.PIPE,
             bufsize=0,
             close_fds=True,
+            env=target_environment,
         )
+    except Exception:
+        send_json(RELAY_ERROR, {"code": "spawn_not_started"})
+        return 126
+    try:
         observed = os.readlink(f"/proc/{process.pid}/exe")
         started = start_identity(process.pid)
         marker_sha256 = hashlib.sha256(open(marker_path, "rb").read()).hexdigest()
     except Exception:
         terminate_target()
-        send_json(RELAY_ERROR, {"code": "spawn_failed"})
+        send_json(RELAY_ERROR, {"code": "spawn_identity_unavailable"})
         return 126
 
     send_json(

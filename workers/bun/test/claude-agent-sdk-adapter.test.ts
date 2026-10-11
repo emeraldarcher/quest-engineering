@@ -16,7 +16,9 @@ import type {
 import {
   ClaudeAgentSdkAdapter,
   claudeAuthenticationCommand,
+  claudeAuthenticationStatusCommand,
 } from "../src/harnesses/claude-agent-sdk/adapter.ts";
+import { CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES } from "../src/harnesses/claude-agent-sdk/auth.ts";
 import {
   type ClaudeTransportState,
   claudeRecoveryDisposition,
@@ -645,6 +647,47 @@ test("stale authorization, setup, wrapper generation, and replacement environmen
   }
 });
 
+test("adapter rejects forbidden auth preflight before resolving setup native state or spawning login", async () => {
+  const value = await fixture();
+  try {
+    const setup = value.adapter.setup;
+    if (!setup) throw new Error("Claude setup unavailable");
+    await expect(
+      setup.begin(
+        {
+          context: {} as never,
+          inspection: {
+            state: "failed",
+            authenticated: false,
+            authMode: "subscription",
+            loginMode: "subscription_login",
+            environmentPolicy: "claude-subscription-explicit-environment-v1",
+            authState: "forbidden_auth_method",
+            authMethod: "api_key",
+            detail:
+              "Claude selected the forbidden api_key authentication method.",
+            environment: null,
+            configIdentity: null,
+          },
+          native: {},
+        },
+        {
+          authorizationId: "authorization-1",
+          kind: "human_harness_setup",
+          authorizedAt: new Date().toISOString(),
+        },
+        () => undefined,
+      ),
+    ).rejects.toMatchObject({
+      code: "authentication_required",
+      sideEffectCertainty: "not_submitted",
+    });
+    expect(value.commands).toHaveLength(0);
+  } finally {
+    await value.close();
+  }
+});
+
 test("authentication plumbing exposes only pinned unmodified claude auth login and Run-private state", async () => {
   const value = await fixture();
   try {
@@ -666,9 +709,23 @@ test("authentication plumbing exposes only pinned unmodified claude auth login a
       }),
     });
     expect(value.commands).toHaveLength(0);
-    expect(
-      Object.keys(claudeAuthenticationCommand(prepared).environment),
-    ).not.toContain("ANTHROPIC_API_KEY");
+    const login = claudeAuthenticationCommand(prepared);
+    for (const name of CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES)
+      expect(Object.keys(login.environment)).not.toContain(name);
+    const status = claudeAuthenticationStatusCommand(prepared);
+    expect(status.executable).toBe("/usr/bin/env");
+    expect(status.args.slice(0, 1)).toEqual(["-i"]);
+    expect(status.args.slice(-3)).toEqual([
+      "-c",
+      expect.stringContaining("'auth','status'"),
+      "/opt/qe/claude-runtime",
+    ]);
+    expect(status.args.join(" ")).toContain(
+      "/etc/claude-code/managed-settings.json",
+    );
+    expect(status.environment).toEqual({});
+    for (const name of CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES)
+      expect(status.args.some((arg) => arg.startsWith(`${name}=`))).toBe(false);
   } finally {
     await value.close();
   }

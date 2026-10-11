@@ -53,13 +53,31 @@ The only provider-authentication setup operation is:
 
 It may be launched only after an explicit current human setup authorization, inside the exact Run-owned SBX, with Run/lineage-private `HOME` and `CLAUDE_CONFIG_DIR`. The command is unmodified. Setup output remains on a bounded ephemeral local-only relay and is never written to PostgreSQL, Worker SQLite, diagnostics, or protocol-result logs.
 
+Inspection, login, and wrapper execution share environment policy `claude-subscription-explicit-environment-v1`. The policy supplies only private HOME/config/temp paths, a fixed PATH/locale, disabled browser, updater, telemetry, feedback, marketplace, memory, and nonessential traffic. The generic streamed-process relay now launches its target with exactly the command's named environment entries rather than inheriting the relay's guest environment. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, base URL/profile selectors, OAuth-token injection, Bedrock/Vertex/Foundry selectors, AWS/Google/Azure credentials, and proxy/gateway variables are absent. Status inspection additionally uses `/usr/bin/env -i`, fails if Linux managed Claude settings/MCP policy paths exist, and then `execve`s the pinned runtime with only the explicit environment. SDK execution adds only its pinned client-app marker inside the immutable wrapper and keeps `settingSources: []`.
+
+Pinned Claude Code `2.1.292` status JSON is classified as this closed state machine:
+
+| Exact observation | QE auth state | Login eligible? |
+|---|---|---|
+| exit `1`, `loggedIn=false`, `authMethod=none`, exact private config directory | `authentication_required` | yes |
+| exit `0`, `loggedIn=true`, `authMethod=claude.ai`, string `apiProvider`, exact private config directory | `subscription_authenticated` | no; setup is already ready |
+| `api_key`, `oauth_token`, `api_key_helper`, or `third_party` (including Bedrock, Vertex, Foundry, Anthropic AWS, or a gateway) | `forbidden_auth_method` | no |
+| command/status unavailable | `inspection_unavailable` | no |
+| malformed, unknown, contradictory, or wrong-directory JSON | `incompatible_status` | no |
+
+The login predicate is a conjunction, not a truthy `authenticated` check: exact `authentication_required`/`none`, subscription mode, `subscription_login`, environment-policy version, `state=preparing`, unauthenticated, current `human_harness_setup` authority, exact setup context, environment profile, and nonempty configuration identity, with no prior invocation. Only after all terms hold may the Worker durably record invocation intent immediately before physical launch. A forbidden, unavailable, incompatible, or ineligible preflight persists `failed` + `not_requested`; Product projects the safe failure and does not offer another setup authorization for that terminal generation. It is not relabeled `uncertain`. Historical requested/ambiguous invocations remain terminal and non-replayable.
+
+The 2026-10-11 failed acceptance selected exact method `api_key`: the SBX creation environment injected the non-secret disable sentinel `ANTHROPIC_API_KEY=none`, while direct status/login children inherited that guest environment. Claude Code treats presence of that selector as API-key mode regardless of its sentinel value. The old coordinator recorded intent for every non-ready inspection and the adapter did not re-check login eligibility, so the conclusive forbidden result crossed the durable intent boundary. `begin` acknowledged only after the streamed relay returned exact process identity; its pre-ack error was not typed as known-unsent, so the coordinator conservatively retained `uncertain`. No provider-output evidence survives that can narrow the historical physical result further, and that historical invocation remains ambiguous/non-replayable.
+
+The remediation removes that Anthropic selector from SBX creation, enforces exact child environments, and blocks every non-eligible semantic state before intent. The streamed launch boundary now carries explicit certainty: validation/environment rejection and relay `spawn_not_started` are known `not_submitted`; timeout, loss after launch, or missing post-spawn identity remain genuinely ambiguous. Authentication mode and environment-policy version are also included in the Run-private configuration identity, so pre-policy setup evidence cannot be reused. No immutable profile or wrapper byte changed; v3 provenance remains unchanged.
+
 Worker Protocol v13 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
 
 1. Global disposable discovery verifies only immutable artifacts and publishes a `harness_setups` capability with `authentication: context_required`; it never publishes a globally ready Claude executor.
 2. The normal Run workspace lifecycle first selects one setup-capable Worker and provisions the durable Run worktree. Work Yard then offers a separate “Set up subscription” action for the pending occurrence.
 3. A local-desktop human confirmation records `human_harness_setup` authority, pre-binds the exact Member and logical lineage, and creates a setup generation containing Worker generation, Run/action/occurrence, worktree/binding/root, profile digest, physical lineage, and resolved model/effort/tool contract. This authority cannot authorize Product inference.
-4. The Worker reserves that exact physical lineage, creates or adopts the exact Run SBX and private-Git worktree, creates `/qe/state/claude-lineages/<lineage-hash>/config`, checks `claude auth status`, and only then may invoke the command above once for that generation.
-5. `requested`, `acknowledged`, HumanAttention, ready, failed, uncertain, and cancelled state is durable. A known pre-invocation failure can be explicitly retried. An acknowledged or ambiguous invocation is never replayed automatically after restart. Cancellation is persisted before process interruption and fences late completion.
+4. The Worker reserves that exact physical lineage, creates or adopts the exact Run SBX and private-Git worktree, creates `/qe/state/claude-lineages/<lineage-hash>/config`, checks the pinned default-JSON `claude auth status` contract under the explicit environment policy, and applies the exact eligibility predicate before it can record intent or invoke the command above once for that generation.
+5. `requested`, `acknowledged`, HumanAttention, ready, failed, uncertain, and cancelled state is durable. Generic known pre-invocation infrastructure failure can be explicitly retried. A conclusive auth-preflight block is terminal for the setup generation and is not presented as executable setup. An acknowledged or ambiguous invocation is never replayed automatically after restart. Cancellation is persisted before process interruption and fences late completion.
 6. Ready evidence is contextual: environment UUID/incarnation, profile ID/digest, config identity, physical/logical lineage, Worker generation, workspace identity, and exact resolved configuration must all still match. The scheduler overlays that evidence only for the owning Action or a compatible `continue_from` lineage. Unrelated Actions/Runs remain unschedulable and never inherit credentials.
 7. Normal scheduling then creates the first `ExecutionAttempt` and sends the setup binding with `execute_action`. Authenticated wrapper initialization performs only local module/tool/options preparation: it does not call SDK `query()`, submit a prompt, contact the provider for a model turn, or require a native session.
 8. The Attempt reaches Product `needs_confirmation` with durable query state `not_invoked`, count `0`, prompt intent absent, and no native session. Only explicit `human_prompt` authority advances the Attempt. The Worker then durably records prompt intent and query-start intent before sending `execute_turn`.
@@ -76,7 +94,7 @@ QE does not:
 - terminate provider TLS or place a QE sampling proxy in subscription traffic;
 - infer Terms, Data Use, billing, or account consent.
 
-An authenticated subscription execution must report `claude auth status` method `claude.ai`, and the SDK init must report no API-key source. Any other method is `auth_required`/`permission_denied`, never an economic fallback.
+An authenticated subscription execution must report `claude auth status` method `claude.ai`, and the SDK init must report no API-key source. Any other selected method is a durable forbidden preflight block, never `authentication_required`, never login-eligible, and never an economic fallback.
 
 ## Product inference authorization and first-query boundary
 
@@ -189,6 +207,16 @@ QE_LIVE_SBX_CLAUDE=1 QE_SBX_BIN=/absolute/sbx \
 It creates the real `qe-coding-execution-v3` SBX, installs the lockfile-pinned artifacts, independently verifies SDK/Claude versions and runtime SHA-256, proves no Claude credential file, host `/Users` mount, or SSH agent is present, launches the real wrapper through production `EnvironmentLease.spawnStreamed()`, and receives `authentication_required` before the wrapper loads the SDK or constructs `query()`. It then shuts down and removes the exact environment.
 
 The protocol-v2 zero-inference physical proof completed on 2026-10-10 against v3 profile `sha256:3085d323073b1917b19cf269104236fd5aab9f72bd28a14312e2cdfc6bc107e8`. It verified the pinned SDK/runtime and wrapper bytes, observed `authentication_required` with query state `not_invoked` and invocation count `0`, sent only shutdown, and removed the exact SBX. Claude auth-login invocations, credential creation, prompt submission, SDK query construction, provider/model requests, Product Actions, and `qe_complete_step` calls were all **0**.
+
+The subscription-preflight physical gate is separate and status-only:
+
+```sh
+cd workers/bun
+QE_LIVE_SBX_CLAUDE_AUTH_PREFLIGHT=1 QE_SBX_BIN=/absolute/sbx \
+  bun test test/sbx-claude-agent-sdk-live.test.ts
+```
+
+It completed on 2026-10-11 in one new disposable v3 SBX/private config. Against pinned Claude Code 2.1.292, intentionally adding only the historical non-secret `ANTHROPIC_API_KEY=none` selector classified as exact `api_key`; removing it under `claude-subscription-explicit-environment-v1` classified as exact `authentication_required`/`none`. A metadata-only existence check proved the private `.credentials.json` remained absent without reading any credential content. The only provider-runtime operation was `claude auth status`; the test then stopped and removed its exact environment. Login, credential creation/import, Product setup authority, prompt/inference authority, wrapper/SDK `query()`, provider/model turns, and `qe_complete_step` were all **0**.
 
 The prior accepted zero-auth local proof completed on 2026-10-08 against historical v2 profile `sha256:836fb88e0b1431f6e86618ee6865b0792db4ad7b9b404db4b995745c7d88ec24` with:
 

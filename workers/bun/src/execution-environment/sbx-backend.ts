@@ -820,43 +820,62 @@ export class SbxExecutionEnvironmentBackend
         }
       },
       spawnStreamed: async (command, options = {}) => {
-        const current = await this.requireUsableLease(record, "spawn_streamed");
-        assertStreamedProcessCapability(current.capabilities);
-        return this.streamedProcesses.spawn(
-          ref,
-          SBX_GUEST_PATHS,
-          command,
-          options,
-          async (context) => {
-            const exact = await this.requireUsableLease(
-              record,
-              "spawn_streamed",
-            );
-            if (!exact.markerDigest)
-              throw new EnvironmentBackendError(
-                "streamed_process_identity_mismatch",
-                "Verified SBX ownership marker evidence is absent.",
+        let physicalLaunchAttempted = false;
+        try {
+          const current = await this.requireUsableLease(
+            record,
+            "spawn_streamed",
+          );
+          assertStreamedProcessCapability(current.capabilities);
+          return await this.streamedProcesses.spawn(
+            ref,
+            SBX_GUEST_PATHS,
+            command,
+            options,
+            async (context) => {
+              const exact = await this.requireUsableLease(
+                record,
                 "spawn_streamed",
               );
-            if (this.options.openStreamedProcess)
-              return this.options.openStreamedProcess({
-                ...context,
+              if (!exact.markerDigest)
+                throw new EnvironmentBackendError(
+                  "streamed_process_identity_mismatch",
+                  "Verified SBX ownership marker evidence is absent.",
+                  "spawn_streamed",
+                );
+              const relaySource = this.options.openStreamedProcess
+                ? null
+                : await readFile(this.streamedProcessRelayPath, "utf8");
+              physicalLaunchAttempted = true;
+              if (this.options.openStreamedProcess)
+                return this.options.openStreamedProcess({
+                  ...context,
+                  sandboxName: exact.displayName,
+                });
+              return SbxStreamedProcessTransport.open({
+                client: this.client,
                 sandboxName: exact.displayName,
+                command: context.command,
+                relaySource: relaySource as string,
+                markerPath: `${SBX_GUEST_PATHS.state}/environment-ownership.json`,
+                expectedMarkerSha256: exact.markerDigest,
+                acknowledgementTimeoutMs: context.acknowledgementTimeoutMs,
               });
-            return SbxStreamedProcessTransport.open({
-              client: this.client,
-              sandboxName: exact.displayName,
-              command: context.command,
-              relaySource: await readFile(
-                this.streamedProcessRelayPath,
-                "utf8",
-              ),
-              markerPath: `${SBX_GUEST_PATHS.state}/environment-ownership.json`,
-              expectedMarkerSha256: exact.markerDigest,
-              acknowledgementTimeoutMs: context.acknowledgementTimeoutMs,
-            });
-          },
-        );
+            },
+          );
+        } catch (error) {
+          if (
+            !physicalLaunchAttempted &&
+            error instanceof EnvironmentBackendError
+          )
+            throw new EnvironmentBackendError(
+              error.code,
+              error.message,
+              error.operation,
+              "not_submitted",
+            );
+          throw error;
+        }
       },
       reconcileStreamedProcess: async (handle) => {
         if (!sameRef(handle.environment, ref))

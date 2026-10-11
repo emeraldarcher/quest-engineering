@@ -26,6 +26,11 @@ import {
   isAntigravityInputReadyForMode,
 } from "../harnesses/antigravity/initial-input-readiness.ts";
 import {
+  CLAUDE_SUBSCRIPTION_AUTH_MODE,
+  CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
+  CLAUDE_SUBSCRIPTION_LOGIN_MODE,
+} from "../harnesses/claude-agent-sdk/auth.ts";
+import {
   controlDescriptorPath,
   type StructuredCompletionBoundary,
 } from "../harnesses/control/authority.ts";
@@ -2675,7 +2680,7 @@ function environmentLaunchFailure(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
-function claudeConfigIdentity(
+export function claudeConfigIdentity(
   runId: string,
   lineageId: string,
   environment: EnvironmentRef,
@@ -2689,6 +2694,11 @@ function claudeConfigIdentity(
       incarnation: environment.incarnation,
       profile: environment.profile,
       configDirectory,
+      authentication: {
+        mode: CLAUDE_SUBSCRIPTION_AUTH_MODE,
+        loginMode: CLAUDE_SUBSCRIPTION_LOGIN_MODE,
+        environmentPolicy: CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
+      },
     }),
   );
 }
