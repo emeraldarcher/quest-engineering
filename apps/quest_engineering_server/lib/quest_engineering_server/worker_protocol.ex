@@ -107,6 +107,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @spec version() :: 13
   def version, do: @version
 
+  @spec encode_tool_policy(Exact.t() | NativePermissions.t()) :: map()
+  def encode_tool_policy(%Exact{tools: tools}), do: %{"kind" => "exact", "tools" => tools}
+  def encode_tool_policy(%NativePermissions{}), do: %{"kind" => "native_permissions"}
+
   @spec decode_hello(term()) :: {:ok, map()} | {:error, Error.t()}
   def decode_hello(%{"type" => "worker_hello"} = payload) do
     with :ok <- validate_version(payload),
@@ -1798,7 +1802,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
         },
         "reasoning" => configuration.reasoning,
         "reasoning_capability" => reasoning_capability(configuration.reasoning_capability),
-        "tool_policy" => tool_policy(configuration.tool_policy),
+        "tool_policy" => encode_tool_policy(configuration.tool_policy),
         "tool_enforcement" => Atom.to_string(configuration.tool_enforcement),
         "resolved_tool_profile" => %{"tools" => configuration.resolved_tool_profile.tools}
       },
@@ -1869,9 +1873,6 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp reasoning_capability(%ReasoningCapability{kind: :enumerated, values: values}),
     do: %{"kind" => "enumerated", "values" => values}
-
-  defp tool_policy(%Exact{tools: tools}), do: %{"kind" => "exact", "tools" => tools}
-  defp tool_policy(%NativePermissions{}), do: %{"kind" => "native_permissions"}
 
   defp encode_operational_recovery(nil), do: nil
 

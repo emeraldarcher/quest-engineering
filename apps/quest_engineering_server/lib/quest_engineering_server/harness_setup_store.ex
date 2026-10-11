@@ -838,7 +838,7 @@ defmodule QuestEngineering.Server.HarnessSetupStore do
       },
       "reasoning" => requested.reasoning,
       "reasoning_capability" => encode_struct(resolution.reasoning_capability),
-      "tool_policy" => encode_struct(requested.tool_policy),
+      "tool_policy" => WorkerProtocol.encode_tool_policy(requested.tool_policy),
       "tool_enforcement" => Atom.to_string(resolution.tool_enforcement),
       "resolved_tool_profile" => encode_struct(resolution.resolved_tool_profile)
     }

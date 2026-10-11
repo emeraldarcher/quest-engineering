@@ -3,6 +3,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
   alias QuestEngineering.Core.Product.ModelRef
   alias QuestEngineering.Core.Product.ToolPolicy.Exact
+  alias QuestEngineering.Core.Product.ToolPolicy.NativePermissions
   alias QuestEngineering.Core.ResolvedExecution
   alias QuestEngineering.Core.ResolvedExecution.Configuration
   alias QuestEngineering.Core.ResolvedExecution.Context
@@ -601,6 +602,21 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert {:error, %WorkerProtocol.Error{field: "cleanup.resources.host_run_repository.state"}} =
              WorkerProtocol.decode_worker_message(harness_not_retired, @worker_id)
+  end
+
+  test "encodes every Product ToolPolicy with an explicit Worker Protocol discriminator" do
+    exact = %Exact{
+      tools: ["workspace.filesystem", "workspace.search", "terminal.shell"]
+    }
+
+    assert WorkerProtocol.encode_tool_policy(exact) == %{
+             "kind" => "exact",
+             "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"]
+           }
+
+    assert WorkerProtocol.encode_tool_policy(%NativePermissions{}) == %{
+             "kind" => "native_permissions"
+           }
   end
 
   test "encodes logical and physical execution workspaces separately" do

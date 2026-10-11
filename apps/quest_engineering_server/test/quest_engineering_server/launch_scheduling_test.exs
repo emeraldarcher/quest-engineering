@@ -43,6 +43,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.SchedulingStore
   alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerMessageHandler
+  alias QuestEngineering.Server.WorkerProtocol
   alias QuestEngineering.Server.WorkerStore
 
   setup do
@@ -2730,6 +2731,8 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
   test "Run-bound harness setup creates no operational Attempt and gates one exact contextual handoff",
        context do
+    observed_tools = ["workspace.filesystem", "workspace.search", "terminal.shell"]
+
     tactic =
       sequence([
         step("setup-build",
@@ -2746,7 +2749,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
         )
       ])
 
-    fixture = product_fixture(tactic: tactic)
+    fixture = product_fixture(tactic: tactic, tools: observed_tools)
     assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
 
     worker =
@@ -2809,7 +2812,14 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
                         "physical_lineage_id" => physical_lineage_id,
                         "authorization_kind" => "human_harness_setup"
                       }
-                    }}
+                    } = setup_command}
+
+    setup_tool_policy = get_in(setup_command, ["setup", "configuration", "tool_policy"])
+
+    assert setup_tool_policy == %{
+             "kind" => "exact",
+             "tools" => observed_tools
+           }
 
     assert setup_id == setup.id
     assert action_id == action.id
@@ -3030,6 +3040,13 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     assert ready_context.state == "ready"
     assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    execution_tool_policy =
+      worker.id
+      |> WorkerProtocol.execute_action(dispatch.execution)
+      |> get_in(["execution", "configuration", "tool_policy"])
+
+    assert execution_tool_policy == setup_tool_policy
     assert dispatch.harness_setup.setup_id == setup.id
     assert dispatch.harness_setup.physical_lineage_id == setup.physical_lineage_id
     assert dispatch.harness_setup.environment.environment_id == "environment-1"
