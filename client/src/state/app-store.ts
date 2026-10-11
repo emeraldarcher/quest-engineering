@@ -980,7 +980,6 @@ export function createAppStore(
     if (
       !projection ||
       projection.id !== runId ||
-      step?.attempt != null ||
       step?.can_authorize_harness_setup !== true
     ) {
       reportError(

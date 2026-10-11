@@ -484,6 +484,7 @@ export interface RunStep {
   phase: string | null;
   remediation_cycle: number | null;
   control_path: string[];
+  /** Current semantic Runtime attempt; it may precede an operational scheduling record. */
   attempt: RunAttempt | null;
   attempts: RunAttempt[];
   session?: HarnessSessionProjection | null;

@@ -55,6 +55,27 @@ function storeWith(
   );
 }
 
+function harnessSetupFixture() {
+  const fixture = createFixture("work-yard-running");
+  if (!fixture?.selectedRunId) throw new Error("Expected running fixture");
+  const run = fixture.runs[fixture.selectedRunId];
+  const step = run?.steps.at(-1);
+  if (!run || !step?.attempt) throw new Error("Expected projected Attempt");
+  step.state = "waiting";
+  step.session = null;
+  step.recovery = null;
+  step.harness_setup = null;
+  step.can_authorize_harness_setup = true;
+  step.attempt.state = "waiting";
+  step.attempt.started_at = null;
+  step.attempt.finished_at = null;
+  step.attempt.execution = null;
+  step.attempt.operational = null;
+  step.attempt.can_cancel = false;
+  step.attempts = [step.attempt];
+  return { fixture, run, step };
+}
+
 function authorizationProjection(run: RunProjection): RunProjection {
   const projection = structuredClone(run);
   const step = projection.steps.at(-1);
@@ -104,6 +125,101 @@ function cancellationResult(
     idempotent_replay: state !== "cancellation_requested",
   };
 }
+
+test("harness setup trusts Product authority with a pre-dispatch Attempt projection", async () => {
+  const { fixture, run, step } = harnessSetupFixture();
+  const authorizeHarnessSetup = mock(
+    async (_runId: string, _occurrenceId: string, _requestId: string) =>
+      structuredClone(run),
+  );
+  const store = storeWith({ authorizeHarnessSetup }, fixture);
+
+  expect(await store.authorizeHarnessSetup(run.id, step.occurrence_id)).toBe(
+    true,
+  );
+  expect(authorizeHarnessSetup).toHaveBeenCalledTimes(1);
+  const request = authorizeHarnessSetup.mock.calls[0];
+  expect(request?.slice(0, 2)).toEqual([run.id, step.occurrence_id]);
+  expect(request?.[2]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  expect(get(store.error)).toBeNull();
+});
+
+test("harness setup is rejected when Product authority is false regardless of Attempt projection", async () => {
+  const projected = harnessSetupFixture();
+  projected.step.can_authorize_harness_setup = false;
+  const withoutAttempt = harnessSetupFixture();
+  withoutAttempt.step.attempt = null;
+  withoutAttempt.step.attempts = [];
+  withoutAttempt.step.can_authorize_harness_setup = false;
+  const authorizeHarnessSetup = mock(async () =>
+    structuredClone(projected.run),
+  );
+
+  for (const { fixture, run, step } of [projected, withoutAttempt]) {
+    const store = storeWith({ authorizeHarnessSetup }, fixture);
+    expect(await store.authorizeHarnessSetup(run.id, step.occurrence_id)).toBe(
+      false,
+    );
+    expect(get(store.error)).toMatchObject({ code: "stale_harness_setup" });
+  }
+
+  expect(authorizeHarnessSetup).not.toHaveBeenCalled();
+});
+
+test("harness setup remains unavailable for an operational Attempt when Product authority is false", async () => {
+  const { fixture, run, step } = harnessSetupFixture();
+  if (!step.attempt) throw new Error("Expected projected Attempt");
+  step.can_authorize_harness_setup = false;
+  step.attempt.started_at = "2026-10-10T00:00:00Z";
+  step.attempt.operational = {
+    recovery_epoch: 1,
+    recovery_kind: "initial",
+    attempt_in_epoch: 1,
+    attempt_allowance: 1,
+    policy_source: "configured",
+    continuation_mode: "fresh",
+    recovery_authorized_at: "2026-10-10T00:00:00Z",
+  };
+  const authorizeHarnessSetup = mock(async () => structuredClone(run));
+  const store = storeWith({ authorizeHarnessSetup }, fixture);
+
+  expect(await store.authorizeHarnessSetup(run.id, step.occurrence_id)).toBe(
+    false,
+  );
+  expect(authorizeHarnessSetup).not.toHaveBeenCalled();
+});
+
+test("a stale harness-setup submission accepts server rejection and refreshes authority", async () => {
+  const { fixture, run, step } = harnessSetupFixture();
+  const latest = structuredClone(run);
+  const latestStep = latest.steps.find(
+    (item) => item.occurrence_id === step.occurrence_id,
+  );
+  if (!latestStep) throw new Error("Expected setup Step");
+  latestStep.can_authorize_harness_setup = false;
+  const authorizeHarnessSetup = mock(async () => {
+    throw new ApiError(
+      "pending_action_not_found",
+      "The pending setup action is no longer available.",
+    );
+  });
+  const getRun = mock(async () => latest);
+  const store = storeWith({ authorizeHarnessSetup, getRun }, fixture);
+
+  expect(await store.authorizeHarnessSetup(run.id, step.occurrence_id)).toBe(
+    false,
+  );
+  expect(authorizeHarnessSetup).toHaveBeenCalledTimes(1);
+  expect(getRun).toHaveBeenCalledWith(run.id);
+  expect(
+    get(store.selectedRun)?.steps.find(
+      (item) => item.occurrence_id === step.occurrence_id,
+    )?.can_authorize_harness_setup,
+  ).toBe(false);
+  expect(get(store.error)).toMatchObject({ code: "pending_action_not_found" });
+});
 
 test("authorizePrompt submits exact identity without optimistic lifecycle state", async () => {
   const { fixture, run, step, identity } = prePromptFixture();
