@@ -514,133 +514,186 @@ function environmentArgs(
     .flatMap(([key, value]) => ["--env", `${key}=${value}`]);
 }
 
-interface ExtractedJsonDocument {
+interface ParsedJson {
+  ok: true;
   value: unknown;
-  start: number;
-  end: number;
 }
+
+const INVALID_JSON = Object.freeze({ ok: false as const });
+const SBX_UPDATE_BOX_WIDTH = 82;
+const SBX_UPDATE_SEMVER = /^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const SBX_LEGACY_UPDATE_NOTICE =
+  /^(?:warning:\s*)?update available:\s*v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\s+\(running\s+v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\)$/i;
 
 function parseJson(value: string, args: readonly string[]): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    // SBX's periodic update check can print its diagnosed update notice to
-    // stdout even when --json is active. Accept that one explicit notice class
-    // and terminal SGR presentation around one complete JSON document only.
-    const documents = extractJsonDocuments(value);
-    if (documents.length !== 1)
-      throw malformed(
-        "response did not contain exactly one valid JSON document",
-        args,
-      );
-    const document = documents[0] as ExtractedJsonDocument;
+  const strict = tryParseJson(value);
+  if (strict.ok) return strict.value;
+
+  // SBX v0.43's periodic update check violates --json by appending a text
+  // notice to stdout. Only version --json may discard one fully recognized,
+  // outer diagnostic. Other commands and every unrecognized byte fail closed.
+  if (!isVersionJsonCommand(args))
+    throw malformed("response contained unsupported non-JSON framing", args);
+
+  for (const candidate of legacyUpdateNoticeCandidates(value)) {
+    const parsed = tryParseJson(candidate);
+    if (parsed.ok) return parsed.value;
+  }
+
+  const boxed = boxedUpdateNoticeCandidate(value);
+  if (boxed) {
+    const parsed = tryParseJson(boxed.json);
     if (
-      !isToleratedJsonFraming(value.slice(0, document.start)) ||
-      !isToleratedJsonFraming(value.slice(document.end))
+      parsed.ok &&
+      reportedVersionMatchesUpdateNotice(parsed.value, boxed.runningVersion)
     )
-      throw malformed("response contained unsupported non-JSON framing", args);
-    return document.value;
+      return parsed.value;
+  }
+
+  throw malformed("response contained unsupported non-JSON framing", args);
+}
+
+function tryParseJson(value: string): ParsedJson | typeof INVALID_JSON {
+  try {
+    return { ok: true, value: JSON.parse(value) };
+  } catch {
+    return INVALID_JSON;
   }
 }
 
-function extractJsonDocuments(value: string): ExtractedJsonDocument[] {
-  const documents: ExtractedJsonDocument[] = [];
-  for (let cursor = 0; cursor < value.length; ) {
-    const objectStart = value.indexOf("{", cursor);
-    const arrayStart = value.indexOf("[", cursor);
-    const start =
-      objectStart < 0
-        ? arrayStart
-        : arrayStart < 0
-          ? objectStart
-          : Math.min(objectStart, arrayStart);
-    if (start < 0) break;
-
-    const end = jsonDocumentEnd(value, start);
-    if (end === null) {
-      cursor = start + 1;
-      continue;
-    }
-    try {
-      documents.push({
-        value: JSON.parse(value.slice(start, end)),
-        start,
-        end,
-      });
-      cursor = end;
-    } catch {
-      cursor = start + 1;
-    }
-  }
-  return documents;
+function isVersionJsonCommand(args: readonly string[]): boolean {
+  return args.length === 2 && args[0] === "version" && args[1] === "--json";
 }
 
-function isToleratedJsonFraming(value: string): boolean {
-  const normalized = normalizeTerminalSgr(value);
-  if (normalized === null) return false;
-  return normalized
-    .split(/\r\n|[\r\n]/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .every((line) =>
-      /^(?:warning:\s*)?update available:\s*v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\s+\(running\s+v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\)$/i.test(
-        line,
-      ),
-    );
+function legacyUpdateNoticeCandidates(value: string): string[] {
+  const normalized = normalizeLineEndings(value);
+  if (normalized === null) return [];
+  const lines = normalized.split("\n");
+  const significant = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => line.trim().length > 0);
+  if (significant.length < 2) return [];
+
+  const candidates: string[] = [];
+  const first = significant[0];
+  if (first && isLegacyUpdateNotice(first.line))
+    candidates.push(lines.slice(first.index + 1).join("\n"));
+  const last = significant.at(-1);
+  if (last && isLegacyUpdateNotice(last.line))
+    candidates.push(lines.slice(0, last.index).join("\n"));
+  return candidates;
 }
 
-function normalizeTerminalSgr(value: string): string | null {
-  let normalized = "";
-  for (let index = 0; index < value.length; ) {
-    const character = value[index] as string;
-    if (character !== "\u001b") {
-      const code = character.charCodeAt(0);
-      if (
-        (code < 0x20 &&
-          character !== "\t" &&
-          character !== "\r" &&
-          character !== "\n") ||
-        (code >= 0x7f && code <= 0x9f)
+function isLegacyUpdateNotice(line: string): boolean {
+  const trimmed = line.trim();
+  const notice =
+    trimmed.startsWith("\u001b[33m") && trimmed.endsWith("\u001b[0m")
+      ? trimmed.slice("\u001b[33m".length, -"\u001b[0m".length)
+      : trimmed;
+  return SBX_LEGACY_UPDATE_NOTICE.test(notice);
+}
+
+function boxedUpdateNoticeCandidate(
+  value: string,
+): { json: string; runningVersion: string } | null {
+  const normalized = normalizeLineEndings(value);
+  if (normalized === null) return null;
+  const lines = normalized.split("\n");
+  // One blank line separates JSON from the nine-line box; two line feeds
+  // follow it. These are the exact non-TTY bytes emitted by SBX v0.43.0.
+  const trailerLength = 12;
+  if (lines.length <= trailerLength) return null;
+  const trailer = lines.slice(-trailerLength);
+  if (trailer[0] !== "" || trailer[10] !== "" || trailer[11] !== "")
+    return null;
+
+  const top = `╭${"─".repeat(SBX_UPDATE_BOX_WIDTH)}╮`;
+  const separator = `├${"─".repeat(SBX_UPDATE_BOX_WIDTH)}┤`;
+  const bottom = `╰${"─".repeat(SBX_UPDATE_BOX_WIDTH)}╯`;
+  if (
+    trailer[1] !== top ||
+    trailer[2] !== updateBoxRow("Docker Sandboxes Update Available") ||
+    trailer[3] !== separator ||
+    trailer[5] !== separator ||
+    trailer[7] !== separator ||
+    trailer[8] !== updateBoxRow("To upgrade     brew upgrade docker/tap/sbx") ||
+    trailer[9] !== bottom
+  )
+    return null;
+
+  const versionContent = updateBoxContent(trailer[4] as string);
+  const versions = versionContent?.match(/^(v\S+) {2}→ {2}(v\S+)$/);
+  const runningVersion = versions?.[1];
+  const availableVersion = versions?.[2];
+  if (
+    !runningVersion ||
+    !availableVersion ||
+    !SBX_UPDATE_SEMVER.test(runningVersion) ||
+    !SBX_UPDATE_SEMVER.test(availableVersion) ||
+    !isNewerUpdateVersion(runningVersion, availableVersion) ||
+    trailer[4] !== updateBoxRow(`${runningVersion}  →  ${availableVersion}`) ||
+    trailer[6] !==
+      updateBoxRow(
+        `Release notes  https://github.com/docker/sbx-releases/releases/tag/${availableVersion}`,
       )
-        return null;
-      normalized += character;
-      index += 1;
-      continue;
-    }
-    if (value[index + 1] !== "[") return null;
-    index += 2;
-    while (index < value.length && /[0-9;:]/.test(value[index] as string))
-      index += 1;
-    if (value[index] !== "m") return null;
-    index += 1;
-  }
-  return normalized;
+  )
+    return null;
+
+  return {
+    json: lines.slice(0, -trailerLength).join("\n"),
+    runningVersion,
+  };
 }
 
-function jsonDocumentEnd(value: string, start: number): number | null {
-  const stack: string[] = [];
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < value.length; index += 1) {
-    const character = value[index] as string;
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      continue;
-    }
-    if (character === "{" || character === "[") stack.push(character);
-    else if (character === "}" || character === "]") {
-      const expected = character === "}" ? "{" : "[";
-      if (stack.pop() !== expected) return null;
-      if (stack.length === 0) return index + 1;
-    }
+function isNewerUpdateVersion(running: string, available: string): boolean {
+  const numeric = (version: string): number[] =>
+    version.slice(1).split(/[-+]/, 1)[0]?.split(".").map(Number) ?? [];
+  const left = numeric(running);
+  const right = numeric(available);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (right[index] as number) - (left[index] as number);
+    if (difference !== 0) return difference > 0;
   }
-  return null;
+  return false;
+}
+
+function updateBoxRow(content: string): string {
+  return `│${` ${content}`.padEnd(SBX_UPDATE_BOX_WIDTH, " ")}│`;
+}
+
+function updateBoxContent(line: string): string | null {
+  if (!line.startsWith("│ ") || !line.endsWith("│")) return null;
+  const inner = line.slice(1, -1);
+  if (inner.length !== SBX_UPDATE_BOX_WIDTH) return null;
+  return inner.trim();
+}
+
+function reportedVersionMatchesUpdateNotice(
+  value: unknown,
+  runningVersion: string,
+): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const client = (value as Record<string, unknown>).client;
+  if (!client || typeof client !== "object" || Array.isArray(client))
+    return false;
+  if ((client as Record<string, unknown>).version !== runningVersion)
+    return false;
+
+  const server = (value as Record<string, unknown>).server;
+  if (!server || typeof server !== "object" || Array.isArray(server))
+    return false;
+  const serverVersion = (server as Record<string, unknown>).version;
+  return serverVersion === undefined || serverVersion === runningVersion;
+}
+
+function normalizeLineEndings(value: string): string | null {
+  const withoutCrLf = value.replaceAll("\r\n", "");
+  if (
+    withoutCrLf.includes("\r") ||
+    (value.includes("\r\n") && withoutCrLf.includes("\n"))
+  )
+    return null;
+  return value.replaceAll("\r\n", "\n");
 }
 
 function object(value: unknown): Record<string, unknown> {
