@@ -205,6 +205,12 @@ export type ProviderEligibilityFailure = Extract<
 export interface PreparedSbxHarnessSetup {
   lease: EnvironmentLease;
   workspace: PrivateLineageWorkspace;
+  /**
+   * Setup commands are environment-scoped, not repository-scoped. Keep their
+   * cwd on the canonical lease workspace instead of the private lineage
+   * worktree, whose sibling path is intentionally outside the path-map leaf.
+   */
+  setupWorkingDirectory: string;
   claude: NonNullable<PreparedSbxHarnessExecution["claude"]>;
   configIdentity: string;
 }
@@ -606,6 +612,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     return {
       lease,
       workspace,
+      setupWorkingDirectory: lease.paths.workspace,
       claude,
       configIdentity: claudeConfigIdentity(
         context.runId,

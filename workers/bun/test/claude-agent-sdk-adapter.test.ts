@@ -4,7 +4,10 @@ import { join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
-import type { PreparedSbxHarnessExecution } from "../src/execution-environment/sbx-run.ts";
+import type {
+  PreparedSbxHarnessExecution,
+  PreparedSbxHarnessSetup,
+} from "../src/execution-environment/sbx-run.ts";
 import type {
   EnvironmentRef,
   StreamedProcess,
@@ -698,21 +701,31 @@ test("authentication plumbing exposes only pinned unmodified claude auth login a
         };
       }
     ).executionManager.prepare();
-    expect(claudeAuthenticationCommand(prepared)).toEqual({
+    const setupPrepared = {
+      lease: prepared.lease,
+      workspace: prepared.workspace,
+      setupWorkingDirectory: join(value.root, "setup-workspace"),
+      claude: prepared.claude,
+      configIdentity: "setup-config-identity",
+    } as PreparedSbxHarnessSetup;
+    expect(claudeAuthenticationCommand(setupPrepared)).toEqual({
       executable: "/opt/qe/claude-runtime",
       args: ["auth", "login"],
-      cwd: join(value.root, "workspace"),
+      cwd: join(value.root, "setup-workspace"),
       environment: expect.objectContaining({
         HOME: join(value.root, "claude-config"),
         CLAUDE_CONFIG_DIR: join(value.root, "claude-config"),
         BROWSER: "/bin/false",
       }),
     });
+    expect(claudeAuthenticationCommand(setupPrepared).cwd).not.toBe(
+      prepared.workspace.paths.workspace,
+    );
     expect(value.commands).toHaveLength(0);
-    const login = claudeAuthenticationCommand(prepared);
+    const login = claudeAuthenticationCommand(setupPrepared);
     for (const name of CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES)
       expect(Object.keys(login.environment)).not.toContain(name);
-    const status = claudeAuthenticationStatusCommand(prepared);
+    const status = claudeAuthenticationStatusCommand(setupPrepared);
     expect(status.executable).toBe("/usr/bin/env");
     expect(status.args.slice(0, 1)).toEqual(["-i"]);
     expect(status.args.slice(-3)).toEqual([

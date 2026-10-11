@@ -34,15 +34,24 @@ import type {
   EnvironmentCapability,
   EnvironmentSpec,
   StreamedProcess,
+  StreamedProcessInfrastructureEvent,
   StreamedProcessStreamEvent,
 } from "../src/execution-environment/types.ts";
+import { ClaudeAgentSdkAdapter } from "../src/harnesses/claude-agent-sdk/adapter.ts";
 import {
+  CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES,
   classifyClaudeSubscriptionAuthStatus,
   claudeSubscriptionEnvironment,
 } from "../src/harnesses/claude-agent-sdk/auth.ts";
+import type {
+  HarnessSetupContext,
+  HarnessSetupEvent,
+  HarnessSetupPrepared,
+} from "../src/harnesses/types.ts";
 
 const live = process.env.QE_LIVE_SBX_CLAUDE === "1";
 const authPreflightLive = process.env.QE_LIVE_SBX_CLAUDE_AUTH_PREFLIGHT === "1";
+const setupLaunchLive = process.env.QE_LIVE_SBX_CLAUDE_SETUP_LAUNCH === "1";
 
 /**
  * Bounded auth-status-only proof. It never invokes login or the SDK wrapper.
@@ -130,6 +139,273 @@ test.skipIf(!authPreflightLive)(
         timeoutMs: 30_000,
       });
       expect(credentialMetadata.exitCode).toBe(0);
+    } finally {
+      if (lease) {
+        await backend.stop(lease.ref).catch(() => undefined);
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          const stopped = await backend
+            .reconcileStop(lease.ref)
+            .catch(() => null);
+          if (stopped?.state === "stopped") break;
+          await Bun.sleep(500);
+        }
+        await backend.remove(lease.ref).catch(() => undefined);
+      }
+      await backend.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  20 * 60 * 1_000,
+);
+
+test.skipIf(!setupLaunchLive)(
+  "live SBX exercises the production Claude setup launcher with a zero-auth guest fixture",
+  async () => {
+    const parent = join(process.cwd(), ".pi", "tmp");
+    await mkdir(parent, { recursive: true });
+    const root = await mkdtemp(join(parent, "sbx-claude-setup-launch-"));
+    const client = new CliSbxClient(process.env.QE_SBX_BIN);
+    const verifier = new ZeroInferenceClaudeVerifier(client);
+    const infrastructure: StreamedProcessInfrastructureEvent[] = [];
+    const backend = new SbxExecutionEnvironmentBackend({
+      workerId: "worker-claude-setup-launch",
+      dataRoot: root,
+      client,
+      verifier,
+      executionProfile: SBX_CODING_PROFILE,
+      credentialProvisioner: { provision: async () => undefined },
+      reconciliationPollMs: 500,
+      reconciliationAttempts: 120,
+      onStreamedProcessEvent: (event) => infrastructure.push(event),
+    });
+    let lease: Awaited<ReturnType<typeof backend.ensure>> | null = null;
+    try {
+      lease = await backend.ensure(
+        claudeProofSpec(
+          `claude-setup-launch-${Date.now()}`,
+          "worker-claude-setup-launch",
+        ),
+      );
+      const configDirectory = `${SBX_GUEST_PATHS.state}/claude-setup-launch/config`;
+      const fixtureExecutable = `${SBX_GUEST_PATHS.state}/claude-setup-launch/fake-claude`;
+      await lease.workerExec({
+        executable: "/usr/bin/install",
+        args: [
+          "-d",
+          "-m",
+          "0700",
+          "-o",
+          "1000",
+          "-g",
+          "1000",
+          configDirectory,
+          `${configDirectory}/.tmp`,
+        ],
+      });
+      const fixtureSource = `#!/usr/bin/python3\nimport json,os,stat,sys,time\nconfig=os.environ['CLAUDE_CONFIG_DIR']\nmetadata=os.stat(config)\nprint(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd(),'environment_names':sorted(os.environ.keys()),'stdin_tty':os.isatty(0),'stdout_tty':os.isatty(1),'stderr_tty':os.isatty(2),'config_uid':metadata.st_uid,'config_mode':stat.S_IMODE(metadata.st_mode),'config_writable':os.access(config,os.W_OK)},separators=(',',':')),flush=True)\nfor line in sys.stdin:\n time.sleep(0.01)\n`;
+      await lease.writeFile({
+        path: fixtureExecutable,
+        data: new TextEncoder().encode(fixtureSource),
+        mode: 0o500,
+      });
+      const runtime = verifier.provenance?.runtime;
+      const runtimeSha256 = verifier.provenance?.sha256;
+      if (typeof runtime !== "string" || typeof runtimeSha256 !== "string")
+        throw new Error("Pinned Claude runtime proof is unavailable.");
+      const setupContext = {
+        setupId: "fake-local-setup",
+        setupGeneration: 1,
+        actionId: "fake-local-action",
+        runId: lease.ref.runId,
+        occurrenceId: "fake-local-occurrence",
+        memberKey: "operator",
+        harnessKind: "claude_agent_sdk",
+        physicalLineageId: "fake-local-lineage",
+        logicalLineageId: "fake-local-logical-lineage",
+        workspaceId: lease.ref.runId,
+        worktreeId: "fake-local-worktree",
+        workspaceBindingId: "fake-local-binding",
+        canonicalRoot: "/fake/local-only",
+        workspaceAccess: "read_write",
+        profile: lease.ref.profile,
+        configuration: {
+          model: { provider: "anthropic", model: "claude-sonnet-5" },
+          reasoning: "high",
+          reasoningCapability: { kind: "enumerated", values: ["high"] },
+          toolPolicy: { kind: "exact", tools: ["workspace.filesystem"] },
+          toolEnforcement: "exact",
+          resolvedToolProfile: { tools: ["workspace.filesystem"] },
+        },
+      } satisfies HarnessSetupContext;
+      const prepared = {
+        lease,
+        workspace: {
+          paths: { workspace: "/qe/workspaces/fake-private-lineage" },
+        },
+        setupWorkingDirectory: lease.paths.workspace,
+        claude: {
+          runtimeExecutable: fixtureExecutable,
+          runtimeSha256: "fake-local-runtime",
+          sdkModule: SBX_CLAUDE_SDK_MODULE,
+          sdkPackageJson: SBX_CLAUDE_SDK_PACKAGE_JSON,
+          zodModule: SBX_CLAUDE_ZOD_MODULE,
+          sdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
+          claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
+          wrapperVersion: SBX_CLAUDE_WRAPPER_VERSION,
+          configDirectory,
+          controlDescriptor: "/qe/control/fake-local/descriptor.json",
+        },
+        configIdentity: "fake-local-config-identity",
+      } as unknown as import("../src/execution-environment/sbx-run.ts").PreparedSbxHarnessSetup;
+      const setupPrepared: HarnessSetupPrepared = {
+        context: setupContext,
+        inspection: {
+          state: "preparing",
+          authenticated: false,
+          authMode: "subscription",
+          loginMode: "subscription_login",
+          environmentPolicy: "claude-subscription-explicit-environment-v1",
+          authState: "authentication_required",
+          authMethod: "none",
+          detail:
+            "Local fixture is login-eligible without invoking a provider.",
+          environment: {
+            environmentId: lease.ref.environmentId,
+            incarnation: lease.ref.incarnation,
+            profile: lease.ref.profile,
+          },
+          configIdentity: prepared.configIdentity,
+        },
+        native: { prepared },
+      };
+      const adapter = new ClaudeAgentSdkAdapter(
+        {
+          workerId: lease.ref.workerId,
+          dataRoot: root,
+          executorModels: [{ provider: "anthropic", model: "claude-sonnet-5" }],
+          reasoningLevels: ["high"],
+        } as never,
+        {} as never,
+      );
+      const events: HarnessSetupEvent[] = [];
+      const operation = await adapter.setup?.begin(
+        setupPrepared,
+        {
+          authorizationId: "fake-local-authorization",
+          kind: "human_harness_setup",
+          authorizedAt: new Date().toISOString(),
+        },
+        (event) => events.push(event),
+      );
+      if (!operation) throw new Error("Claude setup operation unavailable.");
+      await eventually(() =>
+        events.some(
+          (event) =>
+            event.type === "human_interaction_required" &&
+            Boolean(event.ephemeralOutput),
+        ),
+      );
+      const output = events.find(
+        (
+          event,
+        ): event is Extract<
+          HarnessSetupEvent,
+          { type: "human_interaction_required" }
+        > =>
+          event.type === "human_interaction_required" &&
+          Boolean(event.ephemeralOutput),
+      )?.ephemeralOutput;
+      if (!output) throw new Error("Fake setup output was not observed.");
+      const proof = JSON.parse(output.trim());
+      expect(proof).toMatchObject({
+        argv: ["auth", "login"],
+        cwd: lease.paths.workspace,
+        stdin_tty: false,
+        stdout_tty: false,
+        stderr_tty: false,
+        config_uid: 1000,
+        config_mode: 0o700,
+        config_writable: true,
+      });
+      expect(proof.environment_names).toEqual(
+        Object.keys(claudeSubscriptionEnvironment(configDirectory)).sort(),
+      );
+      for (const name of CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES)
+        expect(proof.environment_names).not.toContain(name);
+      expect(infrastructure.map((event) => event.event)).toEqual(
+        expect.arrayContaining([
+          "streamed_process_spawn_requested",
+          "streamed_process_spawned",
+          "stream_connected",
+        ]),
+      );
+      expect(verifier.provenance).toMatchObject({
+        runtime,
+        runtimeExecutable: true,
+        sha256: runtimeSha256,
+        wrapperSha256: SBX_CLAUDE_WRAPPER_SHA256,
+        credentialsPresent: false,
+      });
+      expect(verifier.provenance?.runtimeMode).toBe(0o555);
+      await operation.cancel();
+      expect(await operation.completion).toMatchObject({
+        state: "cancelled",
+        authenticated: false,
+      });
+      expect(
+        infrastructure.some((event) => event.event === "process_cancelled"),
+      ).toBe(true);
+      expect(
+        infrastructure.some((event) => event.event === "process_exit_observed"),
+      ).toBe(true);
+      const credentialMetadata = await lease.exec({
+        executable: "/usr/bin/env",
+        args: [
+          "-i",
+          "/usr/bin/python3",
+          "-c",
+          "import os,sys;sys.exit(43 if os.path.exists(sys.argv[1]) else 0)",
+          `${configDirectory}/.credentials.json`,
+        ],
+        cwd: lease.paths.workspace,
+        environment: {},
+        timeoutMs: 30_000,
+      });
+      expect(credentialMetadata.exitCode).toBe(0);
+      const removedRunId = lease.ref.runId;
+      let stop = await backend.stop(lease.ref);
+      for (
+        let attempt = 0;
+        attempt < 120 && stop.state !== "stopped";
+        attempt += 1
+      ) {
+        await Bun.sleep(500);
+        stop = await backend.reconcileStop(lease.ref);
+      }
+      expect(stop.state).toBe("stopped");
+      await backend.remove(lease.ref);
+      expect(await backend.currentEnvironment(removedRunId)).toBeNull();
+      lease = null;
+      console.log(
+        JSON.stringify({
+          proof: "claude_setup_streamed_launch_zero_auth",
+          providerExecutable: {
+            path: runtime,
+            sha256: runtimeSha256,
+            executable: verifier.provenance?.runtimeExecutable,
+            mode: verifier.provenance?.runtimeMode,
+          },
+          wrapperSha256: verifier.provenance?.wrapperSha256,
+          credentialsPresent: false,
+          fakeTarget: proof,
+          transport: "process.streamed/attached_only/non_pty",
+          lifecycleEvents: infrastructure.map((event) => event.event),
+          authenticationInvocations: 0,
+          sdkQueries: 0,
+          providerTurns: 0,
+          sandboxRemoved: true,
+        }),
+      );
     } finally {
       if (lease) {
         await backend.stop(lease.ref).catch(() => undefined);
@@ -373,7 +649,7 @@ class ZeroInferenceClaudeVerifier implements SbxEnvironmentVerifier {
       executable: "/usr/bin/node",
       args: [
         "-e",
-        "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const runtime='/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-'+a+'/claude'; const mounts=fs.readFileSync('/proc/self/mountinfo','utf8'); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime,sha256:c.createHash('sha256').update(fs.readFileSync(runtime)).digest('hex'),wrapperExecutable:(fs.statSync(process.env.W).mode&0o111)!==0,wrapperSha256:c.createHash('sha256').update(fs.readFileSync(process.env.W)).digest('hex'),credentialsPresent:fs.existsSync(process.env.C),hostUsersVisible:mounts.includes('/Users/'),sshAgentVisible:Boolean(process.env.SSH_AUTH_SOCK&&fs.existsSync(process.env.SSH_AUTH_SOCK))}));",
+        "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const runtime='/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-'+a+'/claude'; const runtimeStat=fs.statSync(runtime); const mounts=fs.readFileSync('/proc/self/mountinfo','utf8'); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime,runtimeExecutable:(runtimeStat.mode&0o111)!==0,runtimeMode:runtimeStat.mode&0o777,sha256:c.createHash('sha256').update(fs.readFileSync(runtime)).digest('hex'),wrapperExecutable:(fs.statSync(process.env.W).mode&0o111)!==0,wrapperSha256:c.createHash('sha256').update(fs.readFileSync(process.env.W)).digest('hex'),credentialsPresent:fs.existsSync(process.env.C),hostUsersVisible:mounts.includes('/Users/'),sshAgentVisible:Boolean(process.env.SSH_AUTH_SOCK&&fs.existsSync(process.env.SSH_AUTH_SOCK))}));",
       ],
       environment: {
         P: SBX_CLAUDE_SDK_PACKAGE_JSON,
@@ -395,6 +671,8 @@ class ZeroInferenceClaudeVerifier implements SbxEnvironmentVerifier {
       provenance.sdk !== SBX_CLAUDE_AGENT_SDK_VERSION ||
       provenance.code !== SBX_CLAUDE_CODE_VERSION ||
       provenance.sha256 !== expected ||
+      provenance.runtimeExecutable !== true ||
+      provenance.runtimeMode !== 0o555 ||
       provenance.wrapperExecutable !== true ||
       provenance.wrapperSha256 !== SBX_CLAUDE_WRAPPER_SHA256 ||
       provenance.credentialsPresent !== false ||
@@ -516,6 +794,14 @@ function claudeProofSpec(
       { kind: "process.streamed", mode: "attached_only" },
     ],
   };
+}
+
+async function eventually(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (predicate()) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("physical setup proof did not reach the expected state");
 }
 
 async function* ndjson(stream: AsyncIterable<StreamedProcessStreamEvent>) {
