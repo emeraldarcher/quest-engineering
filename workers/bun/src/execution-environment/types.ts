@@ -484,6 +484,7 @@ export class EnvironmentBackendError extends Error {
     readonly code: EnvironmentBackendErrorCode,
     message: string,
     readonly operation?: EnvironmentBackendOperation,
+    readonly sideEffectCertainty?: "not_submitted" | "ambiguous",
   ) {
     super(message);
   }

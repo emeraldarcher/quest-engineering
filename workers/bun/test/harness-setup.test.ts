@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import { EnvironmentBackendError } from "../src/execution-environment/types.ts";
 import { HarnessSetupCoordinator } from "../src/harness-setup.ts";
 import { HarnessSetupStore } from "../src/harness-setup-store.ts";
 import { FakeHarness } from "../src/harnesses/fake/adapter.ts";
@@ -358,6 +359,154 @@ test("cancellation requested while invocation acknowledgement is pending wins", 
   fixture.close();
 });
 
+test("forbidden, unavailable, and incompatible auth preflight states persist blocked without login intent", async () => {
+  for (const candidate of [
+    {
+      authState: "forbidden_auth_method" as const,
+      authMethod: "api_key" as const,
+      detail: "Claude selected the forbidden api_key authentication method.",
+      failureCode: "claude_auth_preflight_forbidden",
+    },
+    {
+      authState: "inspection_unavailable" as const,
+      authMethod: null,
+      detail:
+        "Claude subscription authentication status could not be inspected.",
+      failureCode: "claude_auth_preflight_unavailable",
+    },
+    {
+      authState: "incompatible_status" as const,
+      authMethod: null,
+      detail: "Claude authentication status output was incompatible.",
+      failureCode: "claude_auth_preflight_incompatible",
+    },
+  ]) {
+    const harness = new FakeHarness();
+    const prepare = harness.setup?.prepare;
+    const begin = harness.setup?.begin;
+    if (!harness.setup || !prepare || !begin)
+      throw new Error("fake setup unavailable");
+    let beginCount = 0;
+    harness.setup.prepare = async (context) => {
+      const prepared = await prepare(context);
+      return {
+        ...prepared,
+        inspection: {
+          ...prepared.inspection,
+          state: "failed",
+          authenticated: false,
+          authState: candidate.authState,
+          authMethod: candidate.authMethod,
+          detail: candidate.detail,
+        },
+      };
+    };
+    harness.setup.begin = async (...args) => {
+      beginCount += 1;
+      return begin(...args);
+    };
+    const fixture = await coordinatorFixture(harness);
+    const reports: string[] = [];
+    fixture.setReporter((record) => reports.push(record.state));
+    await fixture.coordinator.prepare(fixture.command);
+    const record = fixture.store.get("setup-1");
+    expect(record.state).toBe("failed");
+    expect(record.invocationState).toBe("not_requested");
+    expect(record.failure?.code).toBe(candidate.failureCode);
+    expect(record.inspection?.authState).toBe(candidate.authState);
+    expect(beginCount).toBe(0);
+    expect(reports).not.toContain("invocation_requested");
+    fixture.close();
+  }
+});
+
+test("login eligibility requires current authority and exact context, profile, and configuration identity", async () => {
+  for (const mutation of [
+    "stale_authority",
+    "context_mismatch",
+    "profile_mismatch",
+    "config_identity_missing",
+  ] as const) {
+    const harness = new FakeHarness();
+    const prepare = harness.setup?.prepare;
+    const begin = harness.setup?.begin;
+    if (!harness.setup || !prepare || !begin)
+      throw new Error("fake setup unavailable");
+    let beginCount = 0;
+    harness.setup.prepare = async (context) => {
+      const prepared = await prepare(context);
+      if (mutation === "context_mismatch")
+        prepared.context = { ...prepared.context, runId: "wrong-run" };
+      if (mutation === "profile_mismatch" && prepared.inspection.environment)
+        prepared.inspection.environment.profile = {
+          id: "wrong-profile",
+          digest: "sha256:wrong",
+        };
+      if (mutation === "config_identity_missing")
+        prepared.inspection.configIdentity = null;
+      return prepared;
+    };
+    harness.setup.begin = async (...args) => {
+      beginCount += 1;
+      return begin(...args);
+    };
+    const fixture = await coordinatorFixture(harness);
+    if (mutation === "stale_authority")
+      fixture.command.setup.authorized_at = new Date(
+        Date.now() - 10 * 60_000,
+      ).toISOString();
+    const reports: string[] = [];
+    fixture.setReporter((record) => reports.push(record.state));
+    await fixture.coordinator.prepare(fixture.command);
+    expect(fixture.store.get("setup-1")).toMatchObject({
+      state: "failed",
+      invocationState: "not_requested",
+      failure: { code: "claude_auth_login_ineligible" },
+    });
+    expect(beginCount).toBe(0);
+    expect(reports).not.toContain("invocation_requested");
+    fixture.close();
+  }
+});
+
+test("already-authenticated preflight becomes ready without login intent", async () => {
+  const harness = new FakeHarness();
+  const prepare = harness.setup?.prepare;
+  const begin = harness.setup?.begin;
+  if (!harness.setup || !prepare || !begin)
+    throw new Error("fake setup unavailable");
+  let beginCount = 0;
+  harness.setup.prepare = async (context) => {
+    const prepared = await prepare(context);
+    return {
+      ...prepared,
+      inspection: {
+        ...prepared.inspection,
+        state: "ready",
+        authenticated: true,
+        authState: "subscription_authenticated",
+        authMethod: "claude.ai",
+        detail: "Claude subscription authentication is ready.",
+      },
+    };
+  };
+  harness.setup.begin = async (...args) => {
+    beginCount += 1;
+    return begin(...args);
+  };
+  const fixture = await coordinatorFixture(harness);
+  const reports: string[] = [];
+  fixture.setReporter((record) => reports.push(record.state));
+  await fixture.coordinator.prepare(fixture.command);
+  expect(fixture.store.get("setup-1")).toMatchObject({
+    state: "ready",
+    invocationState: "settled",
+  });
+  expect(beginCount).toBe(0);
+  expect(reports).not.toContain("invocation_requested");
+  fixture.close();
+});
+
 test("known pre-invocation failure is retryable only as a new explicit setup generation", async () => {
   const harness = new FakeHarness();
   const prepare = harness.setup?.prepare;
@@ -383,7 +532,39 @@ test("known pre-invocation failure is retryable only as a new explicit setup gen
   fixture.close();
 });
 
-test("restart never replays an acknowledged setup invocation and cancellation is terminal", async () => {
+test("physical prelaunch rejection is failed while a crossed launch boundary remains uncertain", async () => {
+  for (const candidate of [
+    { certainty: "not_submitted" as const, expected: "failed" },
+    { certainty: "ambiguous" as const, expected: "uncertain" },
+  ]) {
+    const harness = new FakeHarness();
+    if (!harness.setup) throw new Error("fake setup unavailable");
+    harness.setup.begin = async () => {
+      throw new EnvironmentBackendError(
+        "streamed_process_spawn_failed",
+        "injected physical launch boundary outcome",
+        "spawn_streamed",
+        candidate.certainty,
+      );
+    };
+    const fixture = await coordinatorFixture(harness);
+    await fixture.coordinator.prepare(fixture.command);
+    expect(fixture.store.get("setup-1")).toMatchObject({
+      state: candidate.expected,
+      invocationState:
+        candidate.certainty === "not_submitted" ? "not_requested" : "uncertain",
+      failure: {
+        code:
+          candidate.certainty === "not_submitted"
+            ? "setup_invocation_not_started"
+            : "setup_invocation_outcome_uncertain",
+      },
+    });
+    fixture.close();
+  }
+});
+
+test("restart never lets a later forbidden inspection downgrade an acknowledged setup ambiguity", async () => {
   const fixture = await coordinatorFixture();
   await fixture.coordinator.prepare(fixture.command);
   expect(fixture.store.get("setup-1").invocationState).toBe("acknowledged");
@@ -391,10 +572,27 @@ test("restart never replays an acknowledged setup invocation and cancellation is
 
   const restartedStore = new HarnessSetupStore(fixture.root);
   const reports: string[] = [];
+  const restartedHarness = new FakeHarness();
+  const restartedPrepare = restartedHarness.setup?.prepare;
+  if (!restartedHarness.setup || !restartedPrepare)
+    throw new Error("fake setup unavailable");
+  restartedHarness.setup.prepare = async (context) => {
+    const prepared = await restartedPrepare(context);
+    return {
+      ...prepared,
+      inspection: {
+        ...prepared.inspection,
+        state: "failed",
+        authenticated: false,
+        authState: "forbidden_auth_method",
+        authMethod: "api_key",
+      },
+    };
+  };
   const restarted = new HarnessSetupCoordinator(
     restartedStore,
     fixture.registry,
-    new HarnessRegistry([new FakeHarness()]),
+    new HarnessRegistry([restartedHarness]),
     async (record) => {
       reports.push(record.state);
     },

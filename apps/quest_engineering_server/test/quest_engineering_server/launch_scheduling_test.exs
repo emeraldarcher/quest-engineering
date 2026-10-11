@@ -20,6 +20,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.ExecutionSession
+  alias QuestEngineering.Server.Persistence.HarnessSetupContext
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
@@ -68,6 +69,32 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     end)
 
     %{workspace_root: root, second_workspace_root: second_root}
+  end
+
+  test "Claude auth preflight blocks are not projected as retryable setup authority" do
+    for code <- [
+          "claude_auth_preflight_forbidden",
+          "claude_auth_preflight_unavailable",
+          "claude_auth_preflight_incompatible",
+          "claude_auth_login_ineligible"
+        ] do
+      context = %HarnessSetupContext{
+        state: "failed",
+        invocation_state: "not_requested",
+        failure: %{"code" => code, "message" => "safe blocked status"}
+      }
+
+      refute HarnessSetupStore.retryable?(context)
+    end
+
+    assert HarnessSetupStore.retryable?(%HarnessSetupContext{
+             state: "failed",
+             invocation_state: "not_requested",
+             failure: %{
+               "code" => "setup_invocation_not_started",
+               "message" => "known unsent"
+             }
+           })
   end
 
   test "launch atomically persists one immutable snapshot, Run, and ordered Actions" do
@@ -2727,6 +2754,109 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
       sibling
     end)
+  end
+
+  test "forbidden Claude auth preflight projects blocked setup with no executable authorization",
+       context do
+    tactic =
+      sequence([
+        step("blocked-setup",
+          name: "Blocked Setup",
+          performer: class("builder"),
+          context: fresh(),
+          instruction: "Remain waiting when subscription auth is blocked."
+        )
+      ])
+
+    fixture = product_fixture(tactic: tactic)
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("worker-forbidden-auth-setup", context.workspace_root,
+        setup_only: true,
+        execution_environment: execution_environment("sbx")
+      )
+
+    insert_binding(worker, fixture.quest.workspace_id, context.workspace_root, false)
+    assert {:provision, assignment} = RunWorkspaceStore.ensure_assignment(launched.run_id)
+    ready_assignment(assignment)
+    assert {:waiting, _issues} = SchedulingStore.schedule_next(launched.run_id)
+
+    start_supervised!(WorkerConnections)
+
+    :ok =
+      WorkerConnections.activate(
+        worker.id,
+        worker.connection_id,
+        worker.connection_generation,
+        self()
+      )
+
+    [action] = launched.actions
+
+    assert {:ok, %{context: setup, idempotent?: false}} =
+             HarnessSetupStore.authorize(
+               launched.run_id,
+               action.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert :ok = HarnessSetupStore.deliver(setup)
+    assert_receive {:worker_protocol, %{"type" => "prepare_harness_setup"}}
+
+    environment = %{
+      "environment_id" => "blocked-environment",
+      "incarnation" => "blocked-incarnation",
+      "profile" => %{"id" => setup.profile_id, "digest" => setup.profile_digest}
+    }
+
+    assert {:ok, blocked} =
+             HarnessSetupStore.record(worker.id, worker.connection_generation, %{
+               setup_id: setup.id,
+               setup_generation: setup.setup_generation,
+               action_id: setup.action_id,
+               run_id: setup.run_id,
+               occurrence_id: setup.occurrence_id,
+               physical_lineage_id: setup.physical_lineage_id,
+               state: :failed,
+               invocation_state: :not_requested,
+               inspection: %{
+                 "state" => "failed",
+                 "authenticated" => false,
+                 "detail" => "Claude selected the forbidden api_key authentication method.",
+                 "environment" => environment,
+                 "config_identity" => "blocked-config"
+               },
+               attention: nil,
+               failure: %{
+                 "code" => "claude_auth_preflight_forbidden",
+                 "message" =>
+                   "Claude setup is blocked by the conflicting api_key authentication method."
+               }
+             })
+
+    refute HarnessSetupStore.retryable?(blocked)
+    assert {:ok, projection} = RunProjection.get(launched.run_id)
+    [step] = projection.steps
+    refute step.can_authorize_harness_setup
+    assert step.harness_setup.state == "failed"
+    assert step.harness_setup.invocation_state == "not_requested"
+
+    assert step.harness_setup.failure == %{
+             "code" => "claude_auth_preflight_forbidden",
+             "message" =>
+               "Claude setup is blocked by the conflicting api_key authentication method."
+           }
+
+    assert {:error, %HarnessSetupStore.Error{code: :setup_invocation_already_used}} =
+             HarnessSetupStore.authorize(
+               launched.run_id,
+               action.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert Repo.aggregate(ScheduledActionExecution, :count) == 0
+    assert Repo.aggregate(OperationalAttemptAttribution, :count) == 0
   end
 
   test "Run-bound harness setup creates no operational Attempt and gates one exact contextual handoff",

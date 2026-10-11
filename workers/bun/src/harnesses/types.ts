@@ -625,6 +625,16 @@ export interface HarnessSetupInspection {
     | "uncertain"
     | "cancelled";
   authenticated: boolean;
+  authMode: string;
+  loginMode: string;
+  environmentPolicy: string;
+  authState:
+    | "authentication_required"
+    | "subscription_authenticated"
+    | "forbidden_auth_method"
+    | "inspection_unavailable"
+    | "incompatible_status";
+  authMethod: string | null;
   detail: string;
   environment: {
     environmentId: string;

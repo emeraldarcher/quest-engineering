@@ -260,10 +260,13 @@ defmodule QuestEngineering.Server.HarnessSetupStore do
 
   def fetch(setup_id), do: Repo.get(HarnessSetupContext, setup_id)
 
-  def retryable?(%HarnessSetupContext{} = context),
-    do:
-      context.state in ["failed", "cancelled"] and
-        context.invocation_state == "not_requested"
+  def retryable?(%HarnessSetupContext{} = context) do
+    failure_code = get_in(context.failure || %{}, ["code"])
+
+    context.state in ["failed", "cancelled"] and
+      context.invocation_state == "not_requested" and
+      not (is_binary(failure_code) and String.starts_with?(failure_code, "claude_auth_"))
+  end
 
   def retryable?(_context), do: false
 

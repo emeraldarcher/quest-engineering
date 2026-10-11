@@ -36,8 +36,118 @@ import type {
   StreamedProcess,
   StreamedProcessStreamEvent,
 } from "../src/execution-environment/types.ts";
+import {
+  classifyClaudeSubscriptionAuthStatus,
+  claudeSubscriptionEnvironment,
+} from "../src/harnesses/claude-agent-sdk/auth.ts";
 
 const live = process.env.QE_LIVE_SBX_CLAUDE === "1";
+const authPreflightLive = process.env.QE_LIVE_SBX_CLAUDE_AUTH_PREFLIGHT === "1";
+
+/**
+ * Bounded auth-status-only proof. It never invokes login or the SDK wrapper.
+ * The first status call recreates the historical non-secret disable sentinel;
+ * the second uses the production explicit environment policy.
+ */
+test.skipIf(!authPreflightLive)(
+  "live SBX classifies the historical API-key selector and isolates clean subscription preflight",
+  async () => {
+    const parent = join(process.cwd(), ".pi", "tmp");
+    await mkdir(parent, { recursive: true });
+    const root = await mkdtemp(join(parent, "sbx-claude-auth-preflight-"));
+    const client = new CliSbxClient(process.env.QE_SBX_BIN);
+    const verifier = new ZeroInferenceClaudeVerifier(client);
+    const backend = new SbxExecutionEnvironmentBackend({
+      workerId: "worker-claude-auth-preflight",
+      dataRoot: root,
+      client,
+      verifier,
+      executionProfile: SBX_CODING_PROFILE,
+      credentialProvisioner: { provision: async () => undefined },
+      reconciliationPollMs: 500,
+      reconciliationAttempts: 120,
+    });
+    let lease: Awaited<ReturnType<typeof backend.ensure>> | null = null;
+    try {
+      lease = await backend.ensure(
+        claudeProofSpec(
+          `claude-auth-preflight-${Date.now()}`,
+          "worker-claude-auth-preflight",
+        ),
+      );
+      const configDirectory = `${SBX_GUEST_PATHS.state}/claude-auth-preflight/config`;
+      await lease.workerExec({
+        executable: "/usr/bin/install",
+        args: [
+          "-d",
+          "-m",
+          "0700",
+          "-o",
+          "1000",
+          "-g",
+          "1000",
+          configDirectory,
+          `${configDirectory}/.tmp`,
+        ],
+      });
+      const runtime = verifier.provenance?.runtime;
+      if (typeof runtime !== "string")
+        throw new Error("Pinned Claude runtime proof is unavailable.");
+      const environment = claudeSubscriptionEnvironment(configDirectory);
+      const historical = await lease.exec(
+        authStatusCommand(runtime, lease.paths.workspace, {
+          ...environment,
+          ANTHROPIC_API_KEY: "none",
+        }),
+      );
+      expect(
+        classifyClaudeSubscriptionAuthStatus(historical, configDirectory),
+      ).toMatchObject({
+        authState: "forbidden_auth_method",
+        authMethod: "api_key",
+      });
+
+      const isolated = await lease.exec(
+        authStatusCommand(runtime, lease.paths.workspace, environment),
+      );
+      expect(
+        classifyClaudeSubscriptionAuthStatus(isolated, configDirectory),
+      ).toMatchObject({
+        authState: "authentication_required",
+        authMethod: "none",
+      });
+      const credentialMetadata = await lease.exec({
+        executable: "/usr/bin/env",
+        args: [
+          "-i",
+          "/usr/bin/python3",
+          "-c",
+          "import os,sys;sys.exit(43 if os.path.exists(sys.argv[1]) else 0)",
+          `${configDirectory}/.credentials.json`,
+        ],
+        cwd: lease.paths.workspace,
+        environment: {},
+        timeoutMs: 30_000,
+      });
+      expect(credentialMetadata.exitCode).toBe(0);
+    } finally {
+      if (lease) {
+        await backend.stop(lease.ref).catch(() => undefined);
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          const stopped = await backend
+            .reconcileStop(lease.ref)
+            .catch(() => null);
+          if (stopped?.state === "stopped") break;
+          await Bun.sleep(500);
+        }
+        await backend.remove(lease.ref).catch(() => undefined);
+      }
+      await backend.close().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  20 * 60 * 1_000,
+);
 
 /**
  * Zero-inference proof. It installs and verifies the real immutable v3 kit,
@@ -336,9 +446,34 @@ function capabilities(): EnvironmentCapability[] {
   ];
 }
 
-function claudeProofSpec(runId: string): EnvironmentSpec {
+function authStatusCommand(
+  runtime: string,
+  workspace: string,
+  environment: Record<string, string>,
+) {
   return {
-    workerId: "worker-claude-zero-inference",
+    executable: "/usr/bin/env",
+    args: [
+      "-i",
+      ...Object.entries(environment)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, value]) => `${name}=${value}`),
+      runtime,
+      "auth",
+      "status",
+    ],
+    cwd: workspace,
+    environment: {},
+    timeoutMs: 30_000,
+  };
+}
+
+function claudeProofSpec(
+  runId: string,
+  workerId = "worker-claude-zero-inference",
+): EnvironmentSpec {
+  return {
+    workerId,
     runId,
     workspace: {
       workspaceId: runId,

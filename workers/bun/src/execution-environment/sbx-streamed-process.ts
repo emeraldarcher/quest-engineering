@@ -84,6 +84,9 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     expectedMarkerSha256: string;
     acknowledgementTimeoutMs: number;
   }): Promise<SbxStreamedProcessTransport> {
+    const environmentNames = Buffer.from(
+      JSON.stringify(Object.keys(input.command.environment).sort()),
+    ).toString("base64");
     const relayCommand = {
       executable: "/usr/bin/python3",
       args: [
@@ -91,6 +94,8 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         "-c",
         input.relaySource,
         input.markerPath,
+        "--environment-names-base64",
+        environmentNames,
         "--",
         input.command.executable,
         ...input.command.args,
@@ -98,32 +103,54 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
       cwd: input.command.cwd,
       environment: { ...input.command.environment },
     };
-    const child = Bun.spawn(
-      [
-        input.client.executable,
-        ...input.client.streamLauncherArgs(input.sandboxName, relayCommand),
-      ],
-      {
-        env: definedProcessEnvironment(),
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    ) as unknown as RelayChild;
+    let child: RelayChild;
+    try {
+      child = Bun.spawn(
+        [
+          input.client.executable,
+          ...input.client.streamLauncherArgs(input.sandboxName, relayCommand),
+        ],
+        {
+          env: definedProcessEnvironment(),
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      ) as unknown as RelayChild;
+    } catch {
+      throw new EnvironmentBackendError(
+        "streamed_process_spawn_failed",
+        "SBX streamed process launcher was rejected before invocation.",
+        "spawn_streamed",
+        "not_submitted",
+      );
+    }
     const frames = new RelayFrameReader(child.stdout);
     try {
       const first = await withTimeout(
         frames.next(),
         input.acknowledgementTimeoutMs,
       );
-      if (!first || first.type !== READY)
+      if (!first || first.type !== READY) {
+        const relayErrorCode =
+          first?.type === RELAY_ERROR
+            ? optionalText(parseObject(first.payload).code)
+            : null;
+        const knownNotSubmitted = new Set([
+          "invalid_argv",
+          "invalid_environment",
+          "executable_not_absolute",
+          "spawn_not_started",
+        ]).has(relayErrorCode ?? "");
         throw new EnvironmentBackendError(
           first?.type === RELAY_ERROR
             ? "streamed_process_spawn_failed"
             : "streamed_process_identity_mismatch",
           "SBX guest relay did not return an exact process identity.",
           "spawn_streamed",
+          knownNotSubmitted ? "not_submitted" : "ambiguous",
         );
+      }
       const ready = parseObject(first.payload);
       const backendProcessId = requiredText(ready.pid);
       const processStartIdentity = requiredText(ready.startIdentity);
@@ -136,6 +163,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           "streamed_process_identity_mismatch",
           "SBX guest ownership marker changed at streamed process launch.",
           "spawn_streamed",
+          "ambiguous",
         );
       return new SbxStreamedProcessTransport(
         child,
@@ -156,6 +184,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         "streamed_process_spawn_failed",
         "SBX streamed process relay did not become ready within the bounded handshake.",
         "spawn_streamed",
+        "ambiguous",
       );
     }
   }
@@ -417,6 +446,10 @@ function parseObject(payload: Uint8Array): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("SBX relay control record was malformed.");
   return value as Record<string, unknown>;
+}
+
+function optionalText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function requiredText(value: unknown): string {
