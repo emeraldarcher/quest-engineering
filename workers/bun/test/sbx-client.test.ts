@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -17,6 +18,24 @@ const versionJson = JSON.stringify({
   },
 });
 const updateNotice = "update available: v0.46.0 (running v0.43.0)";
+const updateBoxWidth = 82;
+const updateBoxRow = (content: string): string =>
+  `│${` ${content}`.padEnd(updateBoxWidth, " ")}│`;
+const capturedBoxedUpdateSuffix = `
+
+╭${"─".repeat(updateBoxWidth)}╮
+${updateBoxRow("Docker Sandboxes Update Available")}
+├${"─".repeat(updateBoxWidth)}┤
+${updateBoxRow("v0.43.0  →  v0.47.0")}
+├${"─".repeat(updateBoxWidth)}┤
+${updateBoxRow(
+  "Release notes  https://github.com/docker/sbx-releases/releases/tag/v0.47.0",
+)}
+├${"─".repeat(updateBoxWidth)}┤
+${updateBoxRow("To upgrade     brew upgrade docker/tap/sbx")}
+╰${"─".repeat(updateBoxWidth)}╯
+
+`;
 const expectedVersion = {
   clientVersion: "v0.43.0",
   clientRevision: "client-rev",
@@ -72,6 +91,25 @@ for (const [name, stdout] of [
   });
 }
 
+test("CLI client accepts the exact captured v0.43 boxed update suffix", async () => {
+  const bytes = new TextEncoder().encode(capturedBoxedUpdateSuffix);
+  expect(bytes.byteLength).toBe(1_626);
+  expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+    "64ece91f56cdb14fefc396118d5b7b725f019b7ef446efb0bfa70900ac59adf2",
+  );
+  expect(
+    await versionClient(`${versionJson}${capturedBoxedUpdateSuffix}`).version(),
+  ).toEqual(expectedVersion);
+});
+
+test("CLI client accepts the exact boxed update suffix with CRLF framing", async () => {
+  const stdout = `${versionJson}${capturedBoxedUpdateSuffix}`.replaceAll(
+    "\n",
+    "\r\n",
+  );
+  expect(await versionClient(stdout).version()).toEqual(expectedVersion);
+});
+
 test("CLI client keeps an update warning on stderr separate from JSON stdout", async () => {
   const client = new CliSbxClient("/fake/sbx", async () => ({
     exitCode: 0,
@@ -79,6 +117,73 @@ test("CLI client keeps an update warning on stderr separate from JSON stdout", a
     stderr: `${updateNotice}\n`,
   }));
   expect(await client.version()).toEqual(expectedVersion);
+});
+
+test("CLI client limits update framing exceptions to version --json", async () => {
+  const commands = [
+    {
+      json: `{"sandboxes":[]}`,
+      args: ["ls", "--json"],
+      invoke: (client: CliSbxClient) => client.list(),
+    },
+    {
+      json: `{"rules":[]}`,
+      args: ["policy", "ls", "--json"],
+      invoke: (client: CliSbxClient) => client.policies(),
+    },
+    {
+      json: `{"key":"ssh.agentForwardingEnabled","type":"bool","source":"default","value":false}`,
+      args: ["settings", "get", "--json", "ssh.agentForwardingEnabled"],
+      invoke: (client: CliSbxClient) =>
+        client.setting("ssh.agentForwardingEnabled"),
+    },
+    {
+      json: `{"servers":[]}`,
+      args: ["mcp", "ls", "--json"],
+      invoke: (client: CliSbxClient) => client.registeredMcpServerCount(),
+    },
+  ];
+  for (const command of commands)
+    for (const stdout of [
+      `${command.json}\n${updateNotice}`,
+      `${command.json}${capturedBoxedUpdateSuffix}`,
+    ]) {
+      const client = new CliSbxClient("/fake/sbx", async () => ({
+        exitCode: 0,
+        stdout,
+        stderr: "",
+      }));
+      await expect(command.invoke(client)).rejects.toMatchObject({
+        code: "malformed_backend_response",
+        args: command.args,
+      });
+    }
+});
+
+test("CLI client rejects malformed or relocated boxed update diagnostics", async () => {
+  for (const stdout of [
+    `${versionJson}${capturedBoxedUpdateSuffix.replace("v0.43.0  →", "v0.42.0  →")}`,
+    `${versionJson}${capturedBoxedUpdateSuffix.replace("tag/v0.47.0", "tag/v0.46.0")}`,
+    `${versionJson}${capturedBoxedUpdateSuffix.replaceAll("v0.47.0", "v0.42.0")}`,
+    `${versionJson}${capturedBoxedUpdateSuffix.replace("Docker Sandboxes Update Available", "Docker Sandboxes arbitrary notice")}`,
+    `${versionJson}${capturedBoxedUpdateSuffix.replace("╭", "┌")}`,
+    `${versionJson}${capturedBoxedUpdateSuffix}arbitrary trailing text`,
+    `${capturedBoxedUpdateSuffix}${versionJson}`,
+    `\u001b[33m${versionJson}${capturedBoxedUpdateSuffix}\u001b[0m`,
+  ])
+    await expect(versionClient(stdout).version()).rejects.toMatchObject({
+      code: "malformed_backend_response",
+    });
+});
+
+test("CLI client does not strip generic terminal presentation", async () => {
+  for (const stdout of [
+    `\u001b[32m${versionJson}\u001b[0m`,
+    `\u001b[1;33m${updateNotice}\u001b[0m\n${versionJson}`,
+  ])
+    await expect(versionClient(stdout).version()).rejects.toMatchObject({
+      code: "malformed_backend_response",
+    });
 });
 
 test("CLI client rejects unsupported non-JSON framing", async () => {
