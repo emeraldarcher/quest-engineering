@@ -1,0 +1,4 @@
+{
+	"description": "QE account-cell broker-only Mod spike",
+	"modules": ["./register.ts"]
+}

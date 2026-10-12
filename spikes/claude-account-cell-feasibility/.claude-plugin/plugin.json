@@ -1,0 +1,6 @@
+{
+	"name": "qe-account-cell-feasibility",
+	"version": "0.0.0",
+	"description": "Zero-auth, zero-inference account-cell broker feasibility spike",
+	"author": { "name": "Quest Engineering" }
+}
