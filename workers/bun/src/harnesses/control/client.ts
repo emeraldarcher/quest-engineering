@@ -16,6 +16,7 @@ import {
   type HarnessControlOperation,
   type HarnessControlResponse,
   type HarnessControlResult,
+  type HumanAttentionWaitHandle,
 } from "./types.ts";
 
 export const SBX_CONTROL_MAILBOX_ENV = "QE_SBX_CONTROL_MAILBOX";
@@ -94,6 +95,54 @@ export class HarnessControlClient {
     requestId: string = crypto.randomUUID(),
   ) {
     return this.call({ type: "request_human_assistance", ...input }, requestId);
+  }
+
+  waitForHumanAssistanceResponse(
+    waitHandle: HumanAttentionWaitHandle,
+    requestId: string = crypto.randomUUID(),
+  ) {
+    return this.call(
+      { type: "wait_for_human_assistance_response", waitHandle },
+      requestId,
+    );
+  }
+
+  acknowledgeHumanAssistanceResponse(
+    waitHandle: HumanAttentionWaitHandle,
+    deliveryAttemptId: string,
+    requestId: string = crypto.randomUUID(),
+  ) {
+    return this.call(
+      {
+        type: "acknowledge_human_assistance_response",
+        waitHandle,
+        deliveryAttemptId,
+      },
+      requestId,
+    );
+  }
+
+  async requestHumanAssistanceAndWait(
+    input: Omit<
+      Extract<HarnessControlOperation, { type: "request_human_assistance" }>,
+      "type"
+    >,
+    registrationRequestId: string = crypto.randomUUID(),
+    waitRequestId: string = crypto.randomUUID(),
+  ) {
+    const registered = await this.requestHumanAssistance(
+      input,
+      registrationRequestId,
+    );
+    if (!registered.attentionWaitHandle)
+      throw new HarnessControlError(
+        "human_attention_request_rejected",
+        "QE did not return a durable HumanAttention wait handle.",
+      );
+    return this.waitForHumanAssistanceResponse(
+      registered.attentionWaitHandle,
+      waitRequestId,
+    );
   }
 
   resolveHumanAssistance(
@@ -179,6 +228,7 @@ async function callDescriptor(
   const response = await send(
     descriptor.endpoint.port,
     `${JSON.stringify(request)}\n`,
+    operation.type === "wait_for_human_assistance_response",
   );
   if (!response.ok)
     throw new HarnessControlError(response.error.code, response.error.message);
@@ -190,7 +240,11 @@ export async function forwardHarnessControlPayload(
   payload: string,
 ): Promise<string> {
   const descriptor = await readControlDescriptor(descriptorPath);
-  const response = await send(descriptor.endpoint.port, payload);
+  const response = await send(
+    descriptor.endpoint.port,
+    payload,
+    isWaitPayload(payload),
+  );
   return `${JSON.stringify(response)}\n`;
 }
 
@@ -223,9 +277,10 @@ async function callMailbox(
     flag: "wx",
   });
   await rename(temporary, requestPath);
+  const indefinite = operation.type === "wait_for_human_assistance_response";
   const deadline = Date.now() + 15_000;
   try {
-    while (Date.now() < deadline) {
+    while (indefinite || Date.now() < deadline) {
       try {
         const response = decodeResponse(
           JSON.parse(await readFile(responsePath, "utf8")),
@@ -243,7 +298,9 @@ async function callMailbox(
         )
           throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) =>
+        setTimeout(resolve, indefinite ? 500 : 50),
+      );
     }
     throw new HarnessControlError(
       "bridge_timeout",
@@ -260,6 +317,7 @@ async function callMailbox(
 async function send(
   port: number,
   payload: string,
+  indefinite = false,
 ): Promise<HarnessControlResponse> {
   return new Promise((resolve, reject) => {
     const socket = createConnection({ host: "127.0.0.1", port });
@@ -284,7 +342,7 @@ async function send(
       );
     };
     socket.setEncoding("utf8");
-    socket.setTimeout(10_000, () => fail("bridge_timeout"));
+    if (!indefinite) socket.setTimeout(10_000, () => fail("bridge_timeout"));
     socket.once("error", () =>
       fail(connected ? "invalid_bridge_response" : "bridge_unavailable"),
     );
@@ -315,6 +373,17 @@ async function send(
         fail(connected ? "invalid_bridge_response" : "bridge_unavailable");
     });
   });
+}
+
+function isWaitPayload(payload: string): boolean {
+  try {
+    const value = JSON.parse(payload) as {
+      operation?: { type?: unknown };
+    };
+    return value.operation?.type === "wait_for_human_assistance_response";
+  } catch {
+    return false;
+  }
 }
 
 function decodeResponse(value: unknown): HarnessControlResponse {

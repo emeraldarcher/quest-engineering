@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 13 as const;
+export const WORKER_PROTOCOL_VERSION = 14 as const;
 
 export type JsonValue =
   | string
@@ -215,10 +215,60 @@ export interface HumanAttentionResponseCommand {
   response: {
     request_id: string;
     attention_id: string;
+    request_generation: number;
+    session_id: string;
+    native_session_id: string | null;
+    delivery_attempt_id: string;
     approved: boolean;
     value: JsonValue;
     responded_at: string;
+    response_committed_at: string;
   };
+}
+
+export interface HumanAttentionDeliveryReport {
+  type: "human_attention_delivery";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  action_id: string;
+  run_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  session_id: string;
+  attention_id: string;
+  request_generation: number;
+  delivery_attempt_id: string | null;
+  state:
+    | "delivery_acknowledged"
+    | "delivery_uncertain"
+    | "cancelled"
+    | "obsolete";
+  observed_at: string;
+  reason?: string;
+}
+
+export interface ReconcileHumanAttentionDelivery {
+  action_id: string;
+  run_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  session_id: string;
+  attention_id: string;
+  request_generation: number;
+  response_state: "responded" | "cancelled" | "obsolete";
+  delivery_state:
+    | "response_not_delivered"
+    | "delivery_requested"
+    | "delivery_acknowledged"
+    | "delivery_uncertain";
+  delivery_attempt_id: string | null;
+  response_committed_at: string | null;
+  delivery_requested_at: string | null;
+  delivery_acknowledged_at: string | null;
+  delivery_uncertain_at: string | null;
+  cancelled_at: string | null;
+  reason: string | null;
 }
 
 export interface CancelDispatch {
@@ -304,9 +354,21 @@ export interface ReconcileSession {
   native_session_id: string | null;
   attention: {
     attention_id: string;
+    request_generation: number;
     category: string;
     message: string;
     requested_at: string;
+    response_state: "pending" | "responded" | "cancelled" | "obsolete";
+    delivery_state:
+      | "response_not_delivered"
+      | "delivery_requested"
+      | "delivery_acknowledged"
+      | "delivery_uncertain";
+    delivery_attempt_id?: string;
+    origin?: {
+      kind: "main_agent" | "internal_agent";
+      native_agent_ref?: string;
+    };
     interaction?: {
       kind: string;
       control_state: string;

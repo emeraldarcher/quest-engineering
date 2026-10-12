@@ -3,10 +3,49 @@ import type {
   HarnessSessionState,
   HumanAttention,
   HumanAttentionCategory,
+  HumanAttentionWaitRecoverability,
   HumanInterventionLifecycle,
 } from "../types.ts";
 
-export const HARNESS_CONTROL_PROTOCOL_VERSION = 1 as const;
+export const HARNESS_CONTROL_PROTOCOL_VERSION = 2 as const;
+
+export interface HumanAttentionWaitHandle {
+  attentionId: string;
+  requestGeneration: number;
+}
+
+export interface HumanAttentionResponse {
+  attentionId: string;
+  requestGeneration: number;
+  approved: boolean;
+  value: JsonValue;
+  respondedAt: string;
+}
+
+export type HumanAttentionWaitResult =
+  | {
+      outcome: "responded";
+      response: HumanAttentionResponse;
+      deliveryAttemptId: string;
+    }
+  | {
+      outcome: "cancelled";
+      reason: string;
+      cancelledAt: string;
+    };
+
+export interface HumanAttentionDeliveryReceipt {
+  attentionId: string;
+  requestGeneration: number;
+  deliveryAttemptId: string | null;
+  state:
+    | "delivery_acknowledged"
+    | "delivery_uncertain"
+    | "cancelled"
+    | "obsolete";
+  observedAt: string;
+  reason?: string;
+}
 
 /** Identity is held by the Worker authority and deliberately absent here. */
 export type HarnessControlOperation =
@@ -29,6 +68,19 @@ export type HarnessControlOperation =
         | "multiline_response"
         | "conversational_intervention";
       responseSchema?: JsonValue;
+      origin?: {
+        kind: "main_agent" | "internal_agent";
+        nativeAgentRef?: string;
+      };
+    }
+  | {
+      type: "wait_for_human_assistance_response";
+      waitHandle: HumanAttentionWaitHandle;
+    }
+  | {
+      type: "acknowledge_human_assistance_response";
+      waitHandle: HumanAttentionWaitHandle;
+      deliveryAttemptId: string;
     }
   | {
       type: "resolve_human_assistance";
@@ -117,6 +169,40 @@ export interface HarnessControlBinding {
   resultNonce: string;
 }
 
+export interface DurableHumanAttentionRequest {
+  attentionId: string;
+  requestGeneration: number;
+  registrationRequestId: string;
+  actionId: string;
+  runId: string;
+  occurrenceId: string;
+  attemptId: string;
+  lineageId: string;
+  harnessExecutionId: string;
+  nativeSessionId: string | null;
+  recoverability: HumanAttentionWaitRecoverability;
+  controllerGeneration: string;
+  request: Omit<
+    Extract<HarnessControlOperation, { type: "request_human_assistance" }>,
+    "type"
+  >;
+  responseState: "pending" | "responded" | "cancelled" | "obsolete";
+  response: HumanAttentionResponse | null;
+  deliveryState:
+    | "response_not_delivered"
+    | "delivery_requested"
+    | "delivery_acknowledged"
+    | "delivery_uncertain";
+  deliveryAttemptId: string | null;
+  createdAt: string;
+  responseCommittedAt: string | null;
+  deliveryRequestedAt: string | null;
+  deliveryAcknowledgedAt: string | null;
+  deliveryUncertainAt: string | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
+}
+
 export interface HarnessControlResult {
   accepted: true;
   duplicate?: boolean;
@@ -125,6 +211,8 @@ export interface HarnessControlResult {
   completion?: StructuredCompletionState;
   contractViolation?: string;
   attention?: HumanAttention;
+  attentionWaitHandle?: HumanAttentionWaitHandle;
+  humanAttentionWait?: HumanAttentionWaitResult;
   intervention?: HumanInterventionLifecycle | null;
   nativeStop?: NativeStopDecision;
   binding?: HarnessControlBinding;
@@ -144,6 +232,12 @@ export type HarnessControlErrorCode =
   | "replayed_request"
   | "invalid_step_result"
   | "invalid_attention"
+  | "human_attention_request_rejected"
+  | "human_attention_wait_unavailable"
+  | "human_attention_cancelled"
+  | "human_attention_response_invalid"
+  | "human_attention_delivery_uncertain"
+  | "stale_human_attention_response"
   | "bridge_unavailable"
   | "bridge_timeout"
   | "invalid_bridge_response"

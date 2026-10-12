@@ -8,6 +8,7 @@ defmodule QuestEngineering.Server.ExecutionCancellation do
 
   import Ecto.Query
 
+  alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.RuntimeRun
@@ -114,6 +115,12 @@ defmodule QuestEngineering.Server.ExecutionCancellation do
 
         case Repo.update(changeset) do
           {:ok, updated} ->
+            :ok =
+              ExecutionSessionStore.cancel_attention_for_action!(
+                action.id,
+                "Product execution cancellation made the HumanAttention request obsolete."
+              )
+
             %{dispatch: updated, action: action, new?: true}
 
           {:error, _changeset} ->

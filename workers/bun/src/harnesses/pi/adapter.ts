@@ -1320,9 +1320,12 @@ function readAttentionControl(lineage: HarnessLineage): {
           state: "requested",
           attention: {
             attentionId: value.attentionId,
+            requestGeneration: 1,
             category: value.category,
             message: value.message.slice(0, 240),
             requestedAt: value.requestedAt,
+            responseState: "pending",
+            deliveryState: "response_not_delivered",
             ...(conversational
               ? {
                   interaction: {

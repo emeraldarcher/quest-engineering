@@ -1729,9 +1729,26 @@ function decodeHarnessSession(value: unknown) {
     attention: attention
       ? {
           attention_id: asString(attention.attention_id, "human attention"),
+          request_generation: positiveInteger(
+            attention.request_generation,
+            "human attention request generation",
+          ),
           category: asString(attention.category, "human attention"),
           message: asString(attention.message, "human attention"),
           requested_at: asString(attention.requested_at, "human attention"),
+          response_state: humanAttentionResponseState(attention.response_state),
+          delivery_state: humanAttentionDeliveryState(attention.delivery_state),
+          ...(attention.delivery_attempt_id == null
+            ? {}
+            : {
+                delivery_attempt_id: asString(
+                  attention.delivery_attempt_id,
+                  "human attention delivery attempt",
+                ),
+              }),
+          ...(attention.origin == null
+            ? {}
+            : { origin: decodeHumanAttentionOrigin(attention.origin) }),
           ...(attention.interaction == null
             ? {}
             : {
@@ -1759,6 +1776,56 @@ function decodeHarnessSession(value: unknown) {
     }),
   };
 }
+function positiveInteger(value: unknown, context: string): number {
+  const parsed = asNumber(value, context);
+  if (!Number.isSafeInteger(parsed) || parsed < 1)
+    throw new Error(`Invalid ${context}.`);
+  return parsed;
+}
+
+function humanAttentionResponseState(value: unknown) {
+  const state = asString(value, "human attention response state");
+  if (["pending", "responded", "cancelled", "obsolete"].includes(state))
+    return state as "pending" | "responded" | "cancelled" | "obsolete";
+  throw new Error("Unsupported HumanAttention response state.");
+}
+
+function humanAttentionDeliveryState(value: unknown) {
+  const state = asString(value, "human attention delivery state");
+  if (
+    [
+      "response_not_delivered",
+      "delivery_requested",
+      "delivery_acknowledged",
+      "delivery_uncertain",
+    ].includes(state)
+  )
+    return state as
+      | "response_not_delivered"
+      | "delivery_requested"
+      | "delivery_acknowledged"
+      | "delivery_uncertain";
+  throw new Error("Unsupported HumanAttention delivery state.");
+}
+
+function decodeHumanAttentionOrigin(value: unknown) {
+  const origin = asRecord(value, "human attention origin");
+  const kind = asString(origin.kind, "human attention origin");
+  if (kind !== "main_agent" && kind !== "internal_agent")
+    throw new Error("Unsupported HumanAttention origin.");
+  return {
+    kind: kind as "main_agent" | "internal_agent",
+    ...(origin.native_agent_ref == null
+      ? {}
+      : {
+          native_agent_ref: asString(
+            origin.native_agent_ref,
+            "human attention native agent reference",
+          ),
+        }),
+  };
+}
+
 function decodeHumanInteraction(value: unknown) {
   const interaction = asRecord(value, "human interaction");
   const kind = asString(interaction.kind, "human interaction");

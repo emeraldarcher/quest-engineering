@@ -240,11 +240,33 @@ export type HumanControlState =
   | "human_control"
   | "resuming_automation";
 
+export type HumanAttentionResponseState =
+  | "pending"
+  | "responded"
+  | "cancelled"
+  | "obsolete";
+
+export type HumanAttentionDeliveryState =
+  | "response_not_delivered"
+  | "delivery_requested"
+  | "delivery_acknowledged"
+  | "delivery_uncertain";
+
 export interface HumanAttention {
   attentionId: string;
+  /** Monotonic within this opaque request identity; responses must match it. */
+  requestGeneration: number;
   category: HumanAttentionCategory;
   message: string;
   requestedAt: string;
+  responseState: HumanAttentionResponseState;
+  deliveryState: HumanAttentionDeliveryState;
+  deliveryAttemptId?: string;
+  origin?: {
+    kind: "main_agent" | "internal_agent";
+    /** Safe harness-native provenance only; never a QE Squad Member identity. */
+    nativeAgentRef?: string;
+  };
   interaction?: {
     kind: HumanInteractionKind;
     controlState: HumanControlState;
@@ -686,11 +708,17 @@ export interface AgentHarnessSetup {
   inspect(prepared: HarnessSetupPrepared): Promise<HarnessSetupInspection>;
 }
 
+export type HumanAttentionWaitRecoverability =
+  | "rebind_exact"
+  | "wait_not_recoverable";
+
 export interface AgentHarness {
   readonly kind: HarnessKind;
   readonly displayName: string;
   readonly integrationStrategy: HarnessIntegrationStrategy;
   readonly capabilities: HarnessCapabilities;
+  /** Whether an exact durable native wait can be rebound after Worker loss. */
+  readonly humanAttentionWaitRecoverability?: HumanAttentionWaitRecoverability;
   readonly setup?: AgentHarnessSetup;
 
   discover(): Promise<HarnessDiscovery>;

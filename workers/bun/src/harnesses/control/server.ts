@@ -14,6 +14,7 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 /** Loopback-only JSONL IPC. This is not a Product/Phoenix control API. */
 export class HarnessControlServer {
   private server: Server | null = null;
+  private readonly sockets = new Set<Socket>();
 
   constructor(private readonly authority: HarnessControlAuthority) {}
 
@@ -40,14 +41,18 @@ export class HarnessControlServer {
     const server = this.server;
     this.server = null;
     if (!server) return;
+    for (const socket of this.sockets) socket.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
   private handleSocket(socket: Socket): void {
+    this.sockets.add(socket);
     socket.setEncoding("utf8");
     socket.setTimeout(10_000, () => socket.destroy());
+    const controller = new AbortController();
     let input = "";
     let handled = false;
+    let replied = false;
     socket.on("data", (chunk: string) => {
       if (handled) return;
       input += chunk;
@@ -68,15 +73,32 @@ export class HarnessControlServer {
       if (newline < 0) return;
       handled = true;
       const line = input.slice(0, newline);
-      void this.process(line).then((response) => this.reply(socket, response));
+      void this.process(line, controller.signal, (operation) => {
+        if (operation.type === "wait_for_human_assistance_response")
+          socket.setTimeout(0);
+      })
+        .catch((error) => this.authority.failure(error))
+        .then((response) => {
+          replied = true;
+          this.reply(socket, response);
+        });
+    });
+    socket.on("close", () => {
+      this.sockets.delete(socket);
+      if (!replied) controller.abort();
     });
     socket.on("error", () => undefined);
   }
 
-  private async process(line: string): Promise<HarnessControlResponse> {
+  private async process(
+    line: string,
+    signal: AbortSignal,
+    onDecoded: (operation: HarnessControlOperation) => void,
+  ): Promise<HarnessControlResponse> {
     try {
       const request = decodeRequest(JSON.parse(line));
-      const result = await this.authority.handle(request);
+      onDecoded(request.operation);
+      const result = await this.authority.handle({ ...request, signal });
       return {
         protocolVersion: HARNESS_CONTROL_PROTOCOL_VERSION,
         ok: true,
@@ -144,7 +166,7 @@ function decodeOperation(
         },
       };
     }
-    case "request_human_assistance":
+    case "request_human_assistance": {
       if (
         ![
           "needs_input",
@@ -156,12 +178,46 @@ function decodeOperation(
           "unknown_interactive_block",
         ].includes(String(raw.category)) ||
         typeof raw.message !== "string" ||
-        (raw.responseSchema !== undefined && !isJsonValue(raw.responseSchema))
+        raw.message.trim().length === 0 ||
+        Buffer.byteLength(raw.message.trim(), "utf8") > 240 ||
+        (raw.interaction !== undefined &&
+          ![
+            "confirmation",
+            "text",
+            "choice",
+            "multiline_response",
+            "conversational_intervention",
+          ].includes(String(raw.interaction))) ||
+        (raw.responseSchema !== undefined &&
+          !isJsonValue(raw.responseSchema)) ||
+        !validResponseSchema(raw.interaction, raw.responseSchema)
       )
         throw new HarnessControlError(
           "invalid_request",
           "Human assistance payload is invalid.",
         );
+      let origin:
+        | { kind: "main_agent" | "internal_agent"; nativeAgentRef?: string }
+        | undefined;
+      if (raw.origin !== undefined) {
+        const candidate = record(raw.origin);
+        if (
+          !["main_agent", "internal_agent"].includes(String(candidate.kind)) ||
+          (candidate.nativeAgentRef !== undefined &&
+            (typeof candidate.nativeAgentRef !== "string" ||
+              candidate.nativeAgentRef.length > 256))
+        )
+          throw new HarnessControlError(
+            "invalid_request",
+            "Human assistance origin is invalid.",
+          );
+        origin = {
+          kind: candidate.kind as "main_agent" | "internal_agent",
+          ...(typeof candidate.nativeAgentRef === "string"
+            ? { nativeAgentRef: candidate.nativeAgentRef }
+            : {}),
+        };
+      }
       return {
         type: "request_human_assistance",
         category: raw.category as Extract<
@@ -188,7 +244,30 @@ function decodeOperation(
         ...(raw.responseSchema !== undefined && isJsonValue(raw.responseSchema)
           ? { responseSchema: raw.responseSchema }
           : {}),
+        ...(origin ? { origin } : {}),
       };
+    }
+    case "wait_for_human_assistance_response": {
+      const waitHandle = record(raw.waitHandle);
+      return {
+        type: "wait_for_human_assistance_response",
+        waitHandle: {
+          attentionId: nonEmpty(waitHandle.attentionId),
+          requestGeneration: positiveInteger(waitHandle.requestGeneration),
+        },
+      };
+    }
+    case "acknowledge_human_assistance_response": {
+      const waitHandle = record(raw.waitHandle);
+      return {
+        type: "acknowledge_human_assistance_response",
+        waitHandle: {
+          attentionId: nonEmpty(waitHandle.attentionId),
+          requestGeneration: positiveInteger(waitHandle.requestGeneration),
+        },
+        deliveryAttemptId: nonEmpty(raw.deliveryAttemptId),
+      };
+    }
     case "resolve_human_assistance":
       if (raw.outcome !== "completed" && raw.outcome !== "cannot_complete")
         throw new HarnessControlError(
@@ -252,6 +331,55 @@ function decodeOperation(
   }
 }
 
+function validResponseSchema(interaction: unknown, schema: unknown): boolean {
+  if (interaction !== "choice") return true;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema))
+    return false;
+  const form = schema as Record<string, unknown>;
+  if (form.kind !== "choice_form_v1" || !Array.isArray(form.questions))
+    return false;
+  if (form.questions.length === 0 || form.questions.length > 32) return false;
+  const headers = new Set<string>();
+  return form.questions.every((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return false;
+    const question = value as Record<string, unknown>;
+    if (
+      typeof question.header !== "string" ||
+      question.header.length === 0 ||
+      Buffer.byteLength(question.header, "utf8") > 128 ||
+      headers.has(question.header) ||
+      typeof question.question !== "string" ||
+      question.question.length === 0 ||
+      Buffer.byteLength(question.question, "utf8") > 1_024 ||
+      typeof question.multi_select !== "boolean" ||
+      !Array.isArray(question.options) ||
+      question.options.length === 0 ||
+      question.options.length > 128
+    )
+      return false;
+    headers.add(question.header);
+    const labels = new Set<string>();
+    return question.options.every((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return false;
+      const option = value as Record<string, unknown>;
+      if (
+        typeof option.label !== "string" ||
+        option.label.length === 0 ||
+        Buffer.byteLength(option.label, "utf8") > 512 ||
+        labels.has(option.label) ||
+        (option.description !== undefined &&
+          (typeof option.description !== "string" ||
+            Buffer.byteLength(option.description, "utf8") > 2_048))
+      )
+        return false;
+      labels.add(option.label);
+      return true;
+    });
+  });
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new HarnessControlError(
@@ -275,11 +403,26 @@ function controlErrorCode(
     "replayed_request",
     "invalid_step_result",
     "invalid_attention",
+    "human_attention_request_rejected",
+    "human_attention_wait_unavailable",
+    "human_attention_cancelled",
+    "human_attention_response_invalid",
+    "human_attention_delivery_uncertain",
+    "stale_human_attention_response",
     "bridge_unavailable",
     "bridge_timeout",
     "invalid_bridge_response",
     "harness_contract_violation",
   ].includes(String(value));
+}
+
+function positiveInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1)
+    throw new HarnessControlError(
+      "invalid_request",
+      "Harness control request generation is invalid.",
+    );
+  return Number(value);
 }
 
 function nonEmpty(value: unknown): string {

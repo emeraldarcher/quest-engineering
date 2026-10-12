@@ -183,6 +183,12 @@ defmodule QuestEngineering.Server.FakeWorker do
   def resolve_attention(worker, action_id),
     do: GenServer.call(worker, {:resolve_attention, action_id})
 
+  def attention_response(worker, attention_id),
+    do: GenServer.call(worker, {:attention_response, attention_id})
+
+  def acknowledge_attention(worker, attention_id),
+    do: GenServer.call(worker, {:acknowledge_attention, attention_id})
+
   def complete(worker, action_id, outputs),
     do: GenServer.call(worker, {:complete, action_id, outputs})
 
@@ -197,7 +203,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         options
         |> Keyword.get(:capabilities, default_capabilities())
         |> Map.put_new("workspace_bindings", []),
-      protocol_version: Keyword.get(options, :protocol_version, 13),
+      protocol_version: Keyword.get(options, :protocol_version, 14),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -209,6 +215,8 @@ defmodule QuestEngineering.Server.FakeWorker do
       ready_ref: nil,
       known: %{},
       sessions: %{},
+      attention_responses: %{},
+      attention_deliveries: %{},
       worktrees: %{},
       execution_counts: %{},
       drop_ack?: false,
@@ -287,9 +295,17 @@ defmodule QuestEngineering.Server.FakeWorker do
 
         attention = %{
           "attention_id" => attention_id,
+          "request_generation" => 1,
           "category" => "needs_input",
           "message" => "Fake harness needs input.",
-          "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+          "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+          "interaction" => %{
+            "kind" => "confirmation",
+            "control_state" => "intervention_pending"
+          },
+          "response_schema" => %{"kind" => "confirmation_v1"},
+          "response_state" => "pending",
+          "delivery_state" => "response_not_delivered"
         }
 
         session = session_payload(dispatch, "waiting_for_human", attention)
@@ -305,6 +321,53 @@ defmodule QuestEngineering.Server.FakeWorker do
 
       error ->
         {:reply, error, state}
+    end
+  end
+
+  def handle_call({:attention_response, attention_id}, _from, state),
+    do: {:reply, Map.get(state.attention_responses, attention_id), state}
+
+  def handle_call({:acknowledge_attention, attention_id}, _from, state) do
+    case Map.fetch(state.attention_responses, attention_id) do
+      {:ok, command} ->
+        response = command["response"]
+        observed_at = DateTime.utc_now() |> DateTime.to_iso8601()
+
+        report = %{
+          "type" => "human_attention_delivery",
+          "protocol_version" => state.protocol_version,
+          "worker_id" => state.worker_id,
+          "connection_generation" => command["connection_generation"],
+          "action_id" => command["action_id"],
+          "run_id" => command["run_id"],
+          "occurrence_id" => command["occurrence_id"],
+          "attempt_id" => command["attempt_id"],
+          "session_id" => response["session_id"],
+          "attention_id" => attention_id,
+          "request_generation" => response["request_generation"],
+          "delivery_attempt_id" => response["delivery_attempt_id"],
+          "state" => "delivery_acknowledged",
+          "observed_at" => observed_at,
+          "reason" => nil
+        }
+
+        delivery =
+          state.attention_deliveries
+          |> Map.fetch!(attention_id)
+          |> Map.merge(%{
+            "delivery_state" => "delivery_acknowledged",
+            "delivery_acknowledged_at" => observed_at
+          })
+
+        next =
+          state
+          |> put_in([:attention_deliveries, attention_id], delivery)
+          |> send_protocol(report)
+
+        {:reply, :ok, next}
+
+      :error ->
+        {:reply, {:error, :unknown_attention}, state}
     end
   end
 
@@ -426,10 +489,22 @@ defmodule QuestEngineering.Server.FakeWorker do
        ),
        do: %{state | ready?: true, ready_ref: nil}
 
+  defp handle_frame(
+         [_join_ref, _ref, @topic, "phx_reply", %{"status" => "ok", "response" => response}],
+         state
+       ),
+       do: handle_protocol_reply(response, state)
+
   defp handle_frame([_join_ref, _ref, @topic, "protocol", message], state),
     do: handle_protocol(message, state)
 
   defp handle_frame(_frame, state), do: state
+
+  defp handle_protocol_reply(%{"human_attention_responses" => responses}, state)
+       when is_list(responses),
+       do: Enum.reduce(responses, state, &handle_protocol/2)
+
+  defp handle_protocol_reply(_response, state), do: state
 
   defp handle_protocol(%{"type" => "provision_run_worktree", "worktree" => worktree}, state) do
     ready = %{
@@ -509,6 +584,7 @@ defmodule QuestEngineering.Server.FakeWorker do
   defp handle_protocol(%{"type" => "reconcile_request"}, state) do
     dispatches = state.known |> Map.values() |> Enum.map(&state_payload/1)
     sessions = Map.values(state.sessions)
+    attention_deliveries = Map.values(state.attention_deliveries)
 
     reconciled =
       send_protocol(state, %{
@@ -516,7 +592,8 @@ defmodule QuestEngineering.Server.FakeWorker do
         "protocol_version" => state.protocol_version,
         "worker_id" => state.worker_id,
         "dispatches" => dispatches,
-        "sessions" => sessions
+        "sessions" => sessions,
+        "human_attention_deliveries" => attention_deliveries
       })
 
     ready_ref = Integer.to_string(reconciled.ref + 1)
@@ -528,6 +605,37 @@ defmodule QuestEngineering.Server.FakeWorker do
       "worker_id" => state.worker_id
     })
     |> Map.put(:ready_ref, ready_ref)
+  end
+
+  defp handle_protocol(
+         %{"type" => "respond_human_attention", "response" => response} = command,
+         state
+       ) do
+    attention_id = response["attention_id"]
+    requested_at = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    delivery = %{
+      "action_id" => command["action_id"],
+      "run_id" => command["run_id"],
+      "occurrence_id" => command["occurrence_id"],
+      "attempt_id" => command["attempt_id"],
+      "session_id" => response["session_id"],
+      "attention_id" => attention_id,
+      "request_generation" => response["request_generation"],
+      "response_state" => "responded",
+      "delivery_state" => "delivery_requested",
+      "delivery_attempt_id" => response["delivery_attempt_id"],
+      "response_committed_at" => response["response_committed_at"],
+      "delivery_requested_at" => requested_at,
+      "delivery_acknowledged_at" => nil,
+      "delivery_uncertain_at" => nil,
+      "cancelled_at" => nil,
+      "reason" => nil
+    }
+
+    state
+    |> put_in([:attention_responses, attention_id], command)
+    |> put_in([:attention_deliveries, attention_id], delivery)
   end
 
   defp handle_protocol(%{"type" => "connection_superseded"}, state) do
@@ -623,7 +731,11 @@ defmodule QuestEngineering.Server.FakeWorker do
         "can_interrupt" => true,
         "can_detect_attention" => true,
         "can_resume" => true,
-        "can_observe_structured_events" => true
+        "can_observe_structured_events" => true,
+        "structured_confirmation" => true,
+        "structured_text_response" => false,
+        "structured_choice_response" => false,
+        "structured_multiline_response" => false
       },
       "terminal" => nil,
       "native_session_id" => nil,

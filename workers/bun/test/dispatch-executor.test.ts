@@ -1740,9 +1740,12 @@ class NativePermissionRecoveryHarness extends SnapshotObservationHarness {
       state: "waiting_for_human" as const,
       attention: {
         attentionId: "native-step-18",
+        requestGeneration: 1,
         category: "needs_permission" as const,
         message: "RunCommand requires approval in Antigravity.",
         requestedAt: "2026-09-17T04:55:58.365Z",
+        responseState: "pending" as const,
+        deliveryState: "response_not_delivered" as const,
         interaction: {
           kind: "conversational_intervention" as const,
           controlState: "intervention_pending" as const,

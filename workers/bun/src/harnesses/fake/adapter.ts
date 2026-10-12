@@ -8,6 +8,8 @@ import {
   CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
   CLAUDE_SUBSCRIPTION_LOGIN_MODE,
 } from "../claude-agent-sdk/auth.ts";
+import { controlDescriptorPath } from "../control/authority.ts";
+import { HarnessControlClient } from "../control/client.ts";
 import type {
   AgentHarness,
   AgentHarnessSetup,
@@ -30,12 +32,17 @@ export class FakeHarness implements AgentHarness {
   readonly kind = "fake";
   readonly displayName = "Test Harness";
   readonly integrationStrategy = "native_rpc" as const;
+  readonly humanAttentionWaitRecoverability = "rebind_exact" as const;
   readonly capabilities: HarnessCapabilities;
   private readonly inspections = new Map<string, HarnessInspection>();
   private readonly waiters = new Map<string, () => void>();
   private readonly listeners = new Map<string, (event: HarnessEvent) => void>();
   private nextFailure: Error | null = null;
   recoveryCount = 0;
+  readonly blockingResponses: Array<{
+    approved: boolean;
+    value: JsonValue;
+  }> = [];
   private readonly setupReady = new Set<string>();
   readonly setup: AgentHarnessSetup = {
     kind: "provider_authentication",
@@ -99,6 +106,12 @@ export class FakeHarness implements AgentHarness {
       autoEscalateMaterialMissingDecision?: boolean;
       conversationalTakeover?: boolean;
       structuredConfirmation?: boolean;
+      blockingAttention?: {
+        category: HumanAttentionCategory;
+        message: string;
+        interaction: "confirmation" | "text" | "choice" | "multiline_response";
+        responseSchema?: JsonValue;
+      };
     } = {},
   ) {
     this.capabilities = {
@@ -113,10 +126,15 @@ export class FakeHarness implements AgentHarness {
       canDetectAttention: true,
       canResume: true,
       canObserveStructuredEvents: true,
-      structuredConfirmation: behavior.structuredConfirmation ?? false,
-      structuredTextResponse: false,
-      structuredChoiceResponse: false,
-      structuredMultilineResponse: false,
+      structuredConfirmation:
+        behavior.structuredConfirmation ??
+        behavior.blockingAttention?.interaction === "confirmation",
+      structuredTextResponse:
+        behavior.blockingAttention?.interaction === "text",
+      structuredChoiceResponse:
+        behavior.blockingAttention?.interaction === "choice",
+      structuredMultilineResponse:
+        behavior.blockingAttention?.interaction === "multiline_response",
       nativePromptControl: behavior.conversationalTakeover ?? false,
       conversationalTakeover: behavior.conversationalTakeover ?? false,
       automationResume: behavior.conversationalTakeover ?? false,
@@ -205,6 +223,49 @@ export class FakeHarness implements AgentHarness {
     const lineageId = execution.lineage.lineageId;
     this.listeners.set(lineageId, onEvent);
     let existing = this.inspections.get(lineageId);
+    if (this.behavior.blockingAttention) {
+      const requested = this.behavior.blockingAttention;
+      const client = new HarnessControlClient(
+        controlDescriptorPath(execution.lineage),
+      );
+      const result = await client.requestHumanAssistanceAndWait({
+        category: requested.category,
+        message: requested.message,
+        interaction: requested.interaction,
+        ...(requested.responseSchema === undefined
+          ? {}
+          : { responseSchema: requested.responseSchema }),
+        origin: { kind: "main_agent" },
+      });
+      const waiting = result.humanAttentionWait;
+      if (!waiting)
+        throw new Error(
+          "Fake blocking HumanAttention returned no wait result.",
+        );
+      if (waiting.outcome === "cancelled")
+        throw new OperationalExecutionError(
+          waiting.reason,
+          "terminal_not_recoverable",
+          "human_attention_cancelled",
+          undefined,
+          { sideEffectCertainty: "not_submitted", phase: "execute" },
+        );
+      this.blockingResponses.push({
+        approved: waiting.response.approved,
+        value: waiting.response.value,
+      });
+      await client.acknowledgeHumanAssistanceResponse(
+        {
+          attentionId: waiting.response.attentionId,
+          requestGeneration: waiting.response.requestGeneration,
+        },
+        waiting.deliveryAttemptId,
+      );
+      onEvent({
+        type: "inspection",
+        inspection: this.running(execution.lineage),
+      });
+    }
     const escalation =
       this.behavior.autoEscalateMaterialMissingDecision &&
       humanEscalationReason(dispatch);
@@ -250,9 +311,12 @@ export class FakeHarness implements AgentHarness {
       ...baseInspection(lineage, "waiting_for_human", "blocked"),
       attention: {
         attentionId: crypto.randomUUID(),
+        requestGeneration: 1,
         category,
         message,
         requestedAt: new Date().toISOString(),
+        responseState: "pending",
+        deliveryState: "response_not_delivered",
       },
     };
     this.publish(lineage, inspection);
@@ -269,9 +333,12 @@ export class FakeHarness implements AgentHarness {
       ...baseInspection(lineage, "waiting_for_human", "blocked", requestedAt),
       attention: {
         attentionId,
+        requestGeneration: 1,
         category: "needs_input",
         message,
         requestedAt,
+        responseState: "pending",
+        deliveryState: "response_not_delivered",
         interaction: {
           kind: "conversational_intervention",
           controlState: "intervention_pending",

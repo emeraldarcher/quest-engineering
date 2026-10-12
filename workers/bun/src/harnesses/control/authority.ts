@@ -6,7 +6,12 @@ import type {
   HarnessLineage,
 } from "../../dispatch/registry.ts";
 import type { JsonValue } from "../../protocol/types.ts";
-import type { HumanAttention, HumanInterventionLifecycle } from "../types.ts";
+import { nativeSessionPublicId } from "../native-session.ts";
+import type {
+  HumanAttention,
+  HumanAttentionWaitRecoverability,
+  HumanInterventionLifecycle,
+} from "../types.ts";
 import { writeControlDescriptor } from "./descriptor.ts";
 import {
   prepareStepResultAtomic,
@@ -24,6 +29,9 @@ import {
   type HarnessControlOperation,
   type HarnessControlResponse,
   type HarnessControlResult,
+  type HumanAttentionDeliveryReceipt,
+  type HumanAttentionResponse,
+  type HumanAttentionWaitHandle,
   type StructuredCompletionState,
 } from "./types.ts";
 
@@ -39,7 +47,39 @@ interface BoundControlContext {
   completionOperation: Promise<void> | null;
   invalidated: boolean;
   operationTail: Promise<void>;
+  attentionWaitRecoverability: HumanAttentionWaitRecoverability;
 }
+
+interface HumanAttentionWaiter {
+  contextToken: string;
+  waitHandle: HumanAttentionWaitHandle;
+  resolve(result: HarnessControlResult): void;
+  reject(error: Error): void;
+  removeAbortListener(): void;
+}
+
+export interface HumanAttentionResponseDelivery {
+  attentionId: string;
+  requestGeneration: number;
+  actionId: string;
+  runId: string;
+  occurrenceId: string;
+  attemptId: string;
+  lineageId: string;
+  nativeSessionId: string | null;
+  deliveryAttemptId: string;
+  response: HumanAttentionResponse;
+}
+
+type HumanAttentionObserver = (
+  dispatch: DispatchRecord,
+  lineage: HarnessLineage,
+) => void | Promise<void>;
+
+type HumanAttentionDeliveryReporter = (
+  receipt: HumanAttentionDeliveryReceipt,
+  request: ReturnType<DispatchRegistry["getHumanAttentionRequest"]>,
+) => void | Promise<void>;
 
 export interface HarnessControlEndpoint {
   host: "127.0.0.1";
@@ -68,6 +108,11 @@ export class HarnessControlAuthority {
   private endpoint: HarnessControlEndpoint | null = null;
   private readonly contexts = new Map<string, BoundControlContext>();
   private readonly tokenByLineage = new Map<string, string>();
+  private readonly attentionWaiters = new Map<string, HumanAttentionWaiter>();
+  private attentionObserver: HumanAttentionObserver | null = null;
+  private attentionDeliveryReporter: HumanAttentionDeliveryReporter | null =
+    null;
+  private static readonly MAX_ACTIVE_ATTENTION_WAITS = 64;
 
   constructor(
     private readonly registry: DispatchRegistry,
@@ -79,9 +124,20 @@ export class HarnessControlAuthority {
     this.endpoint = endpoint;
   }
 
+  setHumanAttentionObserver(observer: HumanAttentionObserver): void {
+    this.attentionObserver = observer;
+  }
+
+  setHumanAttentionDeliveryReporter(
+    reporter: HumanAttentionDeliveryReporter,
+  ): void {
+    this.attentionDeliveryReporter = reporter;
+  }
+
   async bind(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
+    attentionWaitRecoverability: HumanAttentionWaitRecoverability = "wait_not_recoverable",
   ): Promise<HarnessControlDescriptor> {
     if (!this.endpoint)
       throw new HarnessControlError(
@@ -94,9 +150,12 @@ export class HarnessControlAuthority {
         "Dispatch and harness lineage do not match.",
       );
     const previous = this.tokenByLineage.get(lineage.lineageId);
-    const previousContext = previous ? this.contexts.get(previous) : undefined;
-    if (previousContext) previousContext.invalidated = true;
-    if (previous) this.contexts.delete(previous);
+    if (previous) this.invalidate(lineage.lineageId);
+    await this.reconcileHumanAttentionControllerGeneration(
+      dispatch,
+      lineage,
+      Boolean(previous),
+    );
     let completion = await readStructuredCompletionState(dispatch);
     if (await hasStepResult(dispatch))
       completion = {
@@ -135,6 +194,7 @@ export class HarnessControlAuthority {
       completionOperation: null,
       invalidated: false,
       operationTail: Promise.resolve(),
+      attentionWaitRecoverability,
     };
     this.contexts.set(contextToken, context);
     this.tokenByLineage.set(lineage.lineageId, contextToken);
@@ -152,6 +212,42 @@ export class HarnessControlAuthority {
     const token = this.tokenByLineage.get(lineageId);
     const context = token ? this.contexts.get(token) : undefined;
     if (context) context.invalidated = true;
+    for (const [attentionId, waiter] of this.attentionWaiters) {
+      if (waiter.contextToken !== token) continue;
+      this.attentionWaiters.delete(attentionId);
+      waiter.removeAbortListener();
+      waiter.reject(
+        new HarnessControlError(
+          "human_attention_wait_unavailable",
+          "The exact native HumanAttention wait lost its control context.",
+        ),
+      );
+    }
+    if (context) {
+      const request = this.registry.activeHumanAttentionRequest(
+        context.dispatch.action.action_id,
+      );
+      if (request?.deliveryState === "delivery_requested") {
+        const uncertain = this.registry.markHumanAttentionDeliveryUncertain(
+          request.attentionId,
+          "The control context ended before native delivery acknowledgement.",
+        );
+        void this.reportDelivery(
+          {
+            attentionId: uncertain.attentionId,
+            requestGeneration: uncertain.requestGeneration,
+            deliveryAttemptId: uncertain.deliveryAttemptId,
+            state: "delivery_uncertain",
+            observedAt:
+              uncertain.deliveryUncertainAt ?? new Date().toISOString(),
+            reason:
+              uncertain.cancellationReason ??
+              "The control context ended before native delivery acknowledgement.",
+          },
+          uncertain,
+        );
+      }
+    }
     if (token) this.contexts.delete(token);
     this.tokenByLineage.delete(lineageId);
   }
@@ -161,6 +257,7 @@ export class HarnessControlAuthority {
     contextToken: string;
     requestId: string;
     operation: HarnessControlOperation;
+    signal?: AbortSignal;
   }): Promise<HarnessControlResult> {
     if (input.bridgeGeneration !== this.generation)
       throw new HarnessControlError(
@@ -173,6 +270,14 @@ export class HarnessControlAuthority {
         "unknown_control_context",
         "Harness control context is unknown or has been invalidated.",
       );
+    if (input.operation.type === "wait_for_human_assistance_response") {
+      this.assertCurrent(context);
+      return await this.waitForHumanAttention(
+        context,
+        input.operation.waitHandle,
+        input.signal,
+      );
+    }
     const previous = context.operationTail;
     let release: () => void = () => undefined;
     context.operationTail = new Promise<void>((resolve) => {
@@ -246,7 +351,18 @@ export class HarnessControlAuthority {
         context.lastCompletionFailure = operation.failure;
         return { accepted: true, completed: false };
       case "request_human_assistance":
-        return this.requestAttention(context, operation);
+        return this.requestAttention(context, operation, requestId);
+      case "wait_for_human_assistance_response":
+        throw new HarnessControlError(
+          "invalid_request",
+          "HumanAttention waits must use the subscription path.",
+        );
+      case "acknowledge_human_assistance_response":
+        return this.acknowledgeAttentionResponse(
+          context,
+          operation.waitHandle,
+          operation.deliveryAttemptId,
+        );
       case "resolve_human_assistance":
         return this.resolveAttention(
           context,
@@ -449,6 +565,7 @@ export class HarnessControlAuthority {
       HarnessControlOperation,
       { type: "request_human_assistance" }
     >,
+    registrationRequestId: string,
   ): Promise<HarnessControlResult> {
     const message = operation.message.trim().slice(0, 240);
     if (!message)
@@ -463,9 +580,15 @@ export class HarnessControlAuthority {
     const interaction = operation.interaction;
     const attention: HumanAttention = {
       attentionId,
+      requestGeneration: 1,
       category: operation.category,
       message,
       requestedAt,
+      responseState: "pending",
+      deliveryState: "response_not_delivered",
+      ...(operation.origin
+        ? { origin: structuredClone(operation.origin) }
+        : {}),
       ...(interaction
         ? {
             interaction: {
@@ -487,14 +610,355 @@ export class HarnessControlAuthority {
           requestedAt,
         }
       : null;
-    this.registry.updateSession(
-      context.lineageId,
-      "waiting_for_human",
+    const request = this.registry.registerHumanAttention({
+      dispatch: context.dispatch,
+      lineage: this.registry.getLineage(context.lineageId),
+      registrationRequestId,
       attention,
-      requestedAt,
       intervention,
+      request: {
+        category: operation.category,
+        message,
+        ...(operation.interaction
+          ? { interaction: operation.interaction }
+          : {}),
+        ...(operation.responseSchema !== undefined
+          ? { responseSchema: structuredClone(operation.responseSchema) }
+          : {}),
+        ...(operation.origin
+          ? { origin: structuredClone(operation.origin) }
+          : {}),
+      },
+      recoverability: context.attentionWaitRecoverability,
+      controllerGeneration: this.generation,
+    });
+    const current = this.registry.getLineage(context.lineageId);
+    const persistedAttention = current.attention;
+    if (
+      !persistedAttention ||
+      persistedAttention.attentionId !== request.attentionId
+    )
+      throw new HarnessControlError(
+        "human_attention_request_rejected",
+        "The durable HumanAttention request is no longer active.",
+      );
+    await this.reportAttention(context.dispatch, current);
+    return {
+      accepted: true,
+      attention: persistedAttention,
+      attentionWaitHandle: {
+        attentionId: request.attentionId,
+        requestGeneration: request.requestGeneration,
+      },
+      intervention,
+    };
+  }
+
+  private async waitForHumanAttention(
+    context: BoundControlContext,
+    waitHandle: HumanAttentionWaitHandle,
+    signal?: AbortSignal,
+  ): Promise<HarnessControlResult> {
+    const request = this.assertAttentionWaitBinding(context, waitHandle);
+    if (
+      request.responseState === "cancelled" ||
+      request.responseState === "obsolete"
+    )
+      return {
+        accepted: true,
+        humanAttentionWait: {
+          outcome: "cancelled",
+          reason:
+            request.cancellationReason ?? "HumanAttention request cancelled.",
+          cancelledAt: request.cancelledAt ?? new Date().toISOString(),
+        },
+      };
+    if (request.responseState === "responded")
+      return this.deliverCommittedAttentionResponse(request.attentionId);
+    if (this.attentionWaiters.has(request.attentionId))
+      throw new HarnessControlError(
+        "human_attention_wait_unavailable",
+        "The exact HumanAttention request already has an active native wait.",
+      );
+    if (
+      this.attentionWaiters.size >=
+      HarnessControlAuthority.MAX_ACTIVE_ATTENTION_WAITS
+    )
+      throw new HarnessControlError(
+        "human_attention_wait_unavailable",
+        "The Worker has reached its bounded active HumanAttention wait limit.",
+      );
+    if (signal?.aborted)
+      throw new HarnessControlError(
+        "human_attention_wait_unavailable",
+        "The native HumanAttention wait disconnected before subscription.",
+      );
+    return new Promise<HarnessControlResult>((resolve, reject) => {
+      const abort = () => {
+        const waiter = this.attentionWaiters.get(request.attentionId);
+        if (waiter?.contextToken !== context.contextToken) return;
+        this.attentionWaiters.delete(request.attentionId);
+        waiter.removeAbortListener();
+        reject(
+          new HarnessControlError(
+            "human_attention_wait_unavailable",
+            "The native HumanAttention wait disconnected; the durable request remains pending.",
+          ),
+        );
+      };
+      const removeAbortListener = () =>
+        signal?.removeEventListener("abort", abort);
+      signal?.addEventListener("abort", abort, { once: true });
+      this.attentionWaiters.set(request.attentionId, {
+        contextToken: context.contextToken,
+        waitHandle,
+        resolve,
+        reject,
+        removeAbortListener,
+      });
+    });
+  }
+
+  private assertAttentionWaitBinding(
+    context: BoundControlContext,
+    waitHandle: HumanAttentionWaitHandle,
+  ) {
+    let request: ReturnType<DispatchRegistry["getHumanAttentionRequest"]>;
+    try {
+      request = this.registry.getHumanAttentionRequest(waitHandle.attentionId);
+    } catch {
+      throw new HarnessControlError(
+        "stale_human_attention_response",
+        "HumanAttention wait handle is unknown.",
+      );
+    }
+    const lineage = this.registry.getLineage(context.lineageId);
+    if (
+      request.requestGeneration !== waitHandle.requestGeneration ||
+      request.actionId !== context.dispatch.action.action_id ||
+      request.attemptId !== context.dispatch.action.attempt_id ||
+      request.lineageId !== context.lineageId ||
+      request.harnessExecutionId !== lineage.lineageId ||
+      request.nativeSessionId !== nativeSessionPublicId(lineage.nativeSession)
+    )
+      throw new HarnessControlError(
+        "stale_human_attention_response",
+        "HumanAttention wait handle does not match the exact current execution.",
+      );
+    if (
+      request.controllerGeneration !== this.generation &&
+      request.recoverability !== "rebind_exact"
+    )
+      throw new HarnessControlError(
+        "human_attention_wait_unavailable",
+        "This adapter declares that its native HumanAttention wait cannot be rebound after Worker loss.",
+      );
+    return request;
+  }
+
+  async receiveHumanAttentionResponse(
+    input: HumanAttentionResponseDelivery,
+  ): Promise<void> {
+    const request = this.registry.recordHumanAttentionResponse(input);
+    const dispatch = this.registry.get(request.actionId);
+    await this.reportAttention(
+      dispatch,
+      this.registry.getLineage(request.lineageId),
     );
-    return { accepted: true, attention, intervention };
+    const waiter = this.attentionWaiters.get(request.attentionId);
+    if (!waiter) return;
+    this.attentionWaiters.delete(request.attentionId);
+    waiter.removeAbortListener();
+    try {
+      waiter.resolve(
+        this.deliverCommittedAttentionResponse(request.attentionId),
+      );
+      await this.reportAttention(
+        dispatch,
+        this.registry.getLineage(request.lineageId),
+      );
+    } catch (error) {
+      waiter.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  private deliverCommittedAttentionResponse(
+    attentionId: string,
+  ): HarnessControlResult {
+    const current = this.registry.getHumanAttentionRequest(attentionId);
+    if (current.deliveryState !== "response_not_delivered")
+      throw new HarnessControlError(
+        "human_attention_delivery_uncertain",
+        "HumanAttention response delivery was already requested and will not be replayed automatically.",
+      );
+    const request = this.registry.beginHumanAttentionDelivery(
+      attentionId,
+      current.requestGeneration,
+    );
+    if (!request.response || !request.deliveryAttemptId)
+      throw new HarnessControlError(
+        "human_attention_response_invalid",
+        "The committed HumanAttention response is incomplete.",
+      );
+    return {
+      accepted: true,
+      humanAttentionWait: {
+        outcome: "responded",
+        response: structuredClone(request.response),
+        deliveryAttemptId: request.deliveryAttemptId,
+      },
+    };
+  }
+
+  private async acknowledgeAttentionResponse(
+    context: BoundControlContext,
+    waitHandle: HumanAttentionWaitHandle,
+    deliveryAttemptId: string,
+  ): Promise<HarnessControlResult> {
+    this.assertAttentionWaitBinding(context, waitHandle);
+    let request: ReturnType<DispatchRegistry["getHumanAttentionRequest"]>;
+    try {
+      request = this.registry.acknowledgeHumanAttentionDelivery({
+        attentionId: waitHandle.attentionId,
+        requestGeneration: waitHandle.requestGeneration,
+        deliveryAttemptId,
+      });
+    } catch (error) {
+      throw new HarnessControlError(
+        "human_attention_delivery_uncertain",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const observedAt =
+      request.deliveryAcknowledgedAt ?? new Date().toISOString();
+    await this.reportDelivery(
+      {
+        attentionId: request.attentionId,
+        requestGeneration: request.requestGeneration,
+        deliveryAttemptId: request.deliveryAttemptId,
+        state: "delivery_acknowledged",
+        observedAt,
+      },
+      request,
+    );
+    await this.reportAttention(
+      context.dispatch,
+      this.registry.getLineage(context.lineageId),
+    );
+    return { accepted: true };
+  }
+
+  async cancelPendingHumanAttention(
+    lineageId: string,
+    reason: string,
+    state: "cancelled" | "obsolete" = "cancelled",
+    exactActionId?: string,
+  ): Promise<void> {
+    const lineage = this.registry.getLineage(lineageId);
+    const actionId = exactActionId ?? lineage.activeActionId;
+    if (!actionId) return;
+    const active = this.registry.activeHumanAttentionRequest(actionId);
+    if (!active) return;
+    const request = this.registry.cancelHumanAttention(
+      active.attentionId,
+      reason,
+      state,
+    );
+    const waiter = this.attentionWaiters.get(request.attentionId);
+    if (waiter) {
+      this.attentionWaiters.delete(request.attentionId);
+      waiter.removeAbortListener();
+      waiter.resolve({
+        accepted: true,
+        humanAttentionWait: {
+          outcome: "cancelled",
+          reason: request.cancellationReason ?? reason,
+          cancelledAt: request.cancelledAt ?? new Date().toISOString(),
+        },
+      });
+    }
+    const observedAt = request.cancelledAt ?? new Date().toISOString();
+    await this.reportDelivery(
+      {
+        attentionId: request.attentionId,
+        requestGeneration: request.requestGeneration,
+        deliveryAttemptId: request.deliveryAttemptId,
+        state,
+        observedAt,
+        reason: request.cancellationReason ?? reason,
+      },
+      request,
+    );
+    await this.reportAttention(
+      this.registry.get(actionId),
+      this.registry.getLineage(lineageId),
+    );
+  }
+
+  private async reconcileHumanAttentionControllerGeneration(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+    priorContextInvalidated: boolean,
+  ): Promise<void> {
+    const active = this.registry.activeHumanAttentionRequest(
+      dispatch.action.action_id,
+    );
+    if (!active) return;
+    if (active.deliveryState === "delivery_requested") {
+      const request = this.registry.markHumanAttentionDeliveryUncertain(
+        active.attentionId,
+        "The Worker restarted after native delivery was requested but before exact acknowledgement.",
+      );
+      await this.reportDelivery(
+        {
+          attentionId: request.attentionId,
+          requestGeneration: request.requestGeneration,
+          deliveryAttemptId: request.deliveryAttemptId,
+          state: "delivery_uncertain",
+          observedAt: request.deliveryUncertainAt ?? new Date().toISOString(),
+          ...(request.cancellationReason
+            ? { reason: request.cancellationReason }
+            : {}),
+        },
+        request,
+      );
+      await this.reportAttention(
+        dispatch,
+        this.registry.getLineage(lineage.lineageId),
+      );
+      return;
+    }
+    if (
+      active.deliveryState === "delivery_uncertain" ||
+      active.recoverability === "rebind_exact" ||
+      (!priorContextInvalidated &&
+        active.controllerGeneration === this.generation)
+    )
+      return;
+    await this.cancelPendingHumanAttention(
+      lineage.lineageId,
+      "The adapter declared that its native HumanAttention wait cannot be recovered after Worker restart.",
+      "obsolete",
+      dispatch.action.action_id,
+    );
+  }
+
+  private async reportAttention(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+  ): Promise<void> {
+    await Promise.resolve(this.attentionObserver?.(dispatch, lineage)).catch(
+      () => undefined,
+    );
+  }
+
+  private async reportDelivery(
+    receipt: HumanAttentionDeliveryReceipt,
+    request: ReturnType<DispatchRegistry["getHumanAttentionRequest"]>,
+  ): Promise<void> {
+    await Promise.resolve(
+      this.attentionDeliveryReporter?.(receipt, request),
+    ).catch(() => undefined);
   }
 
   private async resolveAttention(
@@ -508,8 +972,22 @@ export class HarnessControlAuthority {
         "invalid_attention",
         "Human attention request is stale.",
       );
-    void outcome;
-    this.registry.updateSession(context.lineageId, "running", null);
+    const active = this.registry.activeHumanAttentionRequest(
+      context.dispatch.action.action_id,
+    );
+    if (active?.attentionId === attentionId)
+      this.registry.cancelHumanAttention(
+        attentionId,
+        outcome === "completed"
+          ? "The native harness resolved the request without a Product response."
+          : "The native harness could not complete the requested human action.",
+        "obsolete",
+      );
+    else this.registry.updateSession(context.lineageId, "running", null);
+    await this.reportAttention(
+      context.dispatch,
+      this.registry.getLineage(context.lineageId),
+    );
     return { accepted: true };
   }
 

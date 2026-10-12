@@ -31,8 +31,9 @@ afterEach(async () => {
 });
 
 describe("durable dispatch registry", () => {
-  test("bootstraps only the current harness-lineage schema", async () => {
+  test("fresh state bootstraps the complete schema version two directly", async () => {
     const { root, database } = await fixture();
+    expect(DISPATCH_REGISTRY_SCHEMA_VERSION).toBe(2);
     const registry = new DispatchRegistry(database, root);
     registry.close();
 
@@ -55,6 +56,8 @@ describe("durable dispatch registry", () => {
     ).toEqual([
       "dispatches",
       "harness_lineages",
+      "human_attention_events",
+      "human_attention_requests",
       "physical_process_transitions",
     ]);
     const lineageColumns = (
@@ -88,6 +91,219 @@ describe("durable dispatch registry", () => {
       "recorded_at",
     ]);
     current.close();
+  });
+
+  test("reopens a valid schema-version-two database", async () => {
+    const { root, database } = await fixture();
+    const created = new DispatchRegistry(database, root);
+    const dispatch = created.accept(action()).dispatch;
+    created.close();
+
+    const reopened = new DispatchRegistry(database, root);
+    expect(reopened.get(dispatch.action.action_id)).toMatchObject({
+      action: { action_id: dispatch.action.action_id },
+      resultNonce: dispatch.resultNonce,
+      state: "accepted",
+    });
+    reopened.close();
+  });
+
+  test("rejects schema version one without converting rows or HumanAttention state", async () => {
+    const { root, database } = await fixture();
+    const created = new DispatchRegistry(database, root);
+    const dispatch = created.accept(action()).dispatch;
+    created.close();
+
+    const versionOne = new Database(database);
+    versionOne
+      .query(
+        "UPDATE harness_lineages SET session_state='waiting_for_human',attention_json=? WHERE lineage_id=?",
+      )
+      .run(
+        JSON.stringify({
+          attentionId: "legacy-attention",
+          category: "needs_input",
+          message: "Legacy attention projection.",
+          requestedAt: "2026-10-12T00:00:00Z",
+        }),
+        dispatch.lineageId,
+      );
+    versionOne.exec(`
+      DROP TABLE human_attention_events;
+      DROP TABLE human_attention_requests;
+      PRAGMA user_version = 1;
+    `);
+    versionOne.close();
+
+    let failure: unknown;
+    try {
+      new DispatchRegistry(database, root);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(IncompatibleWorkerDatabaseError);
+    expect(String(failure)).toContain("found schema version 1");
+    expect(String(failure)).toContain(
+      "Reset this greenfield development database",
+    );
+
+    const unchanged = new Database(database);
+    expect(unchanged.query("PRAGMA user_version").get()).toEqual({
+      user_version: 1,
+    });
+    expect(
+      (
+        unchanged
+          .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+          )
+          .all() as Array<{ name: string }>
+      ).map((row) => row.name),
+    ).toEqual([
+      "dispatches",
+      "harness_lineages",
+      "physical_process_transitions",
+    ]);
+    expect(
+      unchanged
+        .query("SELECT action_id FROM dispatches WHERE action_id=?")
+        .get(dispatch.action.action_id),
+    ).toEqual({ action_id: dispatch.action.action_id });
+    const legacyAttention = unchanged
+      .query("SELECT attention_json FROM harness_lineages WHERE lineage_id=?")
+      .get(dispatch.lineageId as string) as { attention_json: string };
+    expect(JSON.parse(legacyAttention.attention_json)).toEqual({
+      attentionId: "legacy-attention",
+      category: "needs_input",
+      message: "Legacy attention projection.",
+      requestedAt: "2026-10-12T00:00:00Z",
+    });
+    unchanged.close();
+  });
+
+  test("production registry contains no version-one schema conversion path", async () => {
+    const source = await Bun.file(
+      new URL("../src/dispatch/registry.ts", import.meta.url),
+    ).text();
+    expect(source).not.toContain("migrateVersionOneSchema");
+    expect(source).not.toMatch(/version\s*===\s*1/);
+    expect(source).not.toContain("json_set(");
+  });
+
+  test("blocking HumanAttention survives database restart and fences ambiguous delivery replay", async () => {
+    const { root, database } = await fixture();
+    let registry = new DispatchRegistry(database, root);
+    const dispatch = registry.accept(action()).dispatch;
+    if (!dispatch.lineageId) throw new Error("Expected a durable lineage.");
+    registry.occupy(dispatch.lineageId, dispatch.action.action_id);
+    registry.recordExecution(dispatch.lineageId, {
+      schemaVersion: 1,
+      harnessKind: "fake",
+      executionId: dispatch.lineageId,
+    });
+    const lineage = registry.getLineage(dispatch.lineageId);
+    const requestedAt = new Date().toISOString();
+    const attention = {
+      attentionId: "attention-restart-1",
+      requestGeneration: 1,
+      category: "needs_confirmation" as const,
+      message: "Persist this exact response wait.",
+      requestedAt,
+      responseState: "pending" as const,
+      deliveryState: "response_not_delivered" as const,
+      interaction: {
+        kind: "confirmation" as const,
+        controlState: "intervention_pending" as const,
+      },
+    };
+    registry.registerHumanAttention({
+      dispatch,
+      lineage,
+      registrationRequestId: "registration-restart-1",
+      attention,
+      intervention: null,
+      request: {
+        category: attention.category,
+        message: attention.message,
+        interaction: "confirmation",
+      },
+      recoverability: "rebind_exact",
+      controllerGeneration: "controller-1",
+    });
+    expect(() =>
+      registry.registerHumanAttention({
+        dispatch,
+        lineage,
+        registrationRequestId: "registration-conflict",
+        attention: { ...attention, attentionId: "attention-conflict" },
+        intervention: null,
+        request: { category: "needs_input", message: "conflict" },
+        recoverability: "rebind_exact",
+        controllerGeneration: "controller-1",
+      }),
+    ).toThrow("already has an active blocking");
+    registry.close();
+
+    registry = new DispatchRegistry(database, root);
+    const restored = registry.getHumanAttentionRequest(attention.attentionId);
+    expect(restored).toMatchObject({
+      actionId: dispatch.action.action_id,
+      lineageId: dispatch.lineageId,
+      harnessExecutionId: dispatch.lineageId,
+      responseState: "pending",
+      deliveryState: "response_not_delivered",
+      recoverability: "rebind_exact",
+    });
+    registry.recordHumanAttentionResponse({
+      attentionId: restored.attentionId,
+      requestGeneration: restored.requestGeneration,
+      actionId: restored.actionId,
+      runId: restored.runId,
+      occurrenceId: restored.occurrenceId,
+      attemptId: restored.attemptId,
+      lineageId: restored.lineageId,
+      nativeSessionId: restored.nativeSessionId,
+      deliveryAttemptId: "delivery-restart-1",
+      response: {
+        attentionId: restored.attentionId,
+        requestGeneration: restored.requestGeneration,
+        approved: true,
+        value: true,
+        respondedAt: new Date().toISOString(),
+      },
+    });
+    registry.beginHumanAttentionDelivery(
+      restored.attentionId,
+      restored.requestGeneration,
+    );
+    registry.close();
+
+    registry = new DispatchRegistry(database, root);
+    expect(
+      registry.getHumanAttentionRequest(restored.attentionId),
+    ).toMatchObject({
+      responseState: "responded",
+      deliveryState: "delivery_requested",
+      deliveryAttemptId: "delivery-restart-1",
+    });
+    expect(() =>
+      registry.beginHumanAttentionDelivery(
+        restored.attentionId,
+        restored.requestGeneration,
+      ),
+    ).toThrow("cannot be replayed");
+    registry.markHumanAttentionDeliveryUncertain(
+      restored.attentionId,
+      "Worker restarted after native delivery was requested.",
+    );
+    expect(
+      registry.getHumanAttentionRequest(restored.attentionId),
+    ).toMatchObject({
+      deliveryState: "delivery_uncertain",
+      cancellationReason:
+        "Worker restarted after native delivery was requested.",
+    });
+    registry.close();
   });
 
   test("rejects an obsolete development registry without converting it", async () => {
@@ -292,9 +508,12 @@ describe("durable dispatch registry", () => {
     expect(
       turnLifecycle(registry.get(dispatch.action.action_id), "unavailable", {
         attentionId: "native-step-18",
+        requestGeneration: 1,
         category: "needs_permission",
         message: "RunCommand requires approval in Antigravity.",
         requestedAt: "2026-09-16T00:00:32.000Z",
+        responseState: "pending",
+        deliveryState: "response_not_delivered",
         interaction: {
           kind: "conversational_intervention",
           controlState: "intervention_pending",

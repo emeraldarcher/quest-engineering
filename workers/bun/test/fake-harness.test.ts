@@ -3,6 +3,12 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import {
+  controlDescriptorPath,
+  HarnessControlAuthority,
+} from "../src/harnesses/control/authority.ts";
+import { HarnessControlClient } from "../src/harnesses/control/client.ts";
+import { HarnessControlServer } from "../src/harnesses/control/server.ts";
 import { FakeHarness } from "../src/harnesses/fake/adapter.ts";
 import {
   type HarnessEvent,
@@ -125,6 +131,108 @@ test("headless lifecycle and restart recovery matrix requires no terminal identi
     detail: "Fake harness session is closed.",
   });
   registry.close();
+});
+
+test("blocking HumanAttention commits, delivers, and acknowledges through the FakeHarness native callback", async () => {
+  const parent = join(process.cwd(), ".pi", "tmp");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "fake-blocking-attention-"));
+  roots.push(root);
+  const harness = new FakeHarness({ change_set: { complete: true } }, 0, {
+    blockingAttention: {
+      category: "needs_confirmation",
+      message: "Approve the deterministic fixture response.",
+      interaction: "confirmation",
+    },
+  });
+  const registry = new DispatchRegistry(
+    join(root, "state.sqlite"),
+    root,
+    harness.kind,
+    harness.capabilities,
+  );
+  const dispatch = registry.accept(action()).dispatch;
+  if (!dispatch.lineageId) throw new Error("Expected a fake lineage.");
+  registry.occupy(dispatch.lineageId, dispatch.action.action_id);
+  const initial = registry.getLineage(dispatch.lineageId);
+  const prepared = await harness.start(dispatch, initial);
+  registry.recordExecution(dispatch.lineageId, prepared.handle);
+
+  const deliveryReceipts: string[] = [];
+  const authority = new HarnessControlAuthority(registry);
+  authority.setHumanAttentionDeliveryReporter((receipt) => {
+    deliveryReceipts.push(receipt.state);
+  });
+  const server = new HarnessControlServer(authority);
+  await server.start();
+  try {
+    const lineage = registry.getLineage(dispatch.lineageId);
+    await authority.bind(
+      dispatch,
+      lineage,
+      harness.humanAttentionWaitRecoverability,
+    );
+    const operation = harness.sendInputAndCollect(
+      dispatch,
+      { ...prepared, lineage },
+      () => undefined,
+    );
+
+    let request = registry.activeHumanAttentionRequest(
+      dispatch.action.action_id,
+    );
+    for (let attempt = 0; !request && attempt < 100; attempt += 1) {
+      await Bun.sleep(1);
+      request = registry.activeHumanAttentionRequest(dispatch.action.action_id);
+    }
+    if (!request)
+      throw new Error("Fake harness did not register HumanAttention.");
+    expect(request).toMatchObject({
+      responseState: "pending",
+      deliveryState: "response_not_delivered",
+      recoverability: "rebind_exact",
+    });
+
+    await authority.receiveHumanAttentionResponse({
+      attentionId: request.attentionId,
+      requestGeneration: request.requestGeneration,
+      actionId: request.actionId,
+      runId: request.runId,
+      occurrenceId: request.occurrenceId,
+      attemptId: request.attemptId,
+      lineageId: request.lineageId,
+      nativeSessionId: request.nativeSessionId,
+      deliveryAttemptId: "delivery-fixture-1",
+      response: {
+        attentionId: request.attentionId,
+        requestGeneration: request.requestGeneration,
+        approved: true,
+        value: true,
+        respondedAt: new Date().toISOString(),
+      },
+    });
+
+    expect(await operation).toEqual({ change_set: { complete: true } });
+    expect(harness.blockingResponses).toEqual([
+      { approved: true, value: true },
+    ]);
+    expect(
+      registry.getHumanAttentionRequest(request.attentionId),
+    ).toMatchObject({
+      responseState: "responded",
+      deliveryState: "delivery_acknowledged",
+      deliveryAttemptId: "delivery-fixture-1",
+    });
+    expect(deliveryReceipts).toEqual(["delivery_acknowledged"]);
+    expect(
+      await new HarnessControlClient(
+        controlDescriptorPath(lineage),
+      ).completionStatus(),
+    ).toMatchObject({ accepted: true });
+  } finally {
+    await server.stop();
+    registry.close();
+  }
 });
 
 test("takeover-capable fake harness escalates a material missing human decision", async () => {

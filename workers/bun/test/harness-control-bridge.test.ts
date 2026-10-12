@@ -21,6 +21,7 @@ import {
 } from "../src/harnesses/control/client.ts";
 import { collectStepResult } from "../src/harnesses/control/result-envelope.ts";
 import { HarnessControlServer } from "../src/harnesses/control/server.ts";
+import { HarnessControlError } from "../src/harnesses/control/types.ts";
 import { action } from "./support.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -70,12 +71,20 @@ async function waitForCompletionPhase(
 async function bind(
   fixture: Awaited<ReturnType<typeof createFixture>>,
   input = action(),
+  attentionRecoverability:
+    | "rebind_exact"
+    | "wait_not_recoverable" = "wait_not_recoverable",
 ) {
   const accepted = fixture.registry.accept(input).dispatch;
   if (!accepted.lineageId) throw new Error("fixture has no lineage");
   fixture.registry.occupy(accepted.lineageId, input.action_id);
+  fixture.registry.recordExecution(accepted.lineageId, {
+    schemaVersion: 1,
+    harnessKind: input.execution.configuration.harness_kind,
+    executionId: accepted.lineageId,
+  });
   const lineage = fixture.registry.getLineage(accepted.lineageId);
-  await fixture.authority.bind(accepted, lineage);
+  await fixture.authority.bind(accepted, lineage, attentionRecoverability);
   return {
     dispatch: accepted,
     lineage,
@@ -336,7 +345,7 @@ test("response loss after durable acceptance reconciles the accepted result", as
           return;
         }
         socket.end(
-          `${JSON.stringify({ protocolVersion: 1, ok: true, result })}\n`,
+          `${JSON.stringify({ protocolVersion: 2, ok: true, result })}\n`,
         );
       })();
     });
@@ -654,6 +663,285 @@ test("a retained client follows atomic descriptor rotation while copied credenti
   await expect(
     new HarnessControlClient(stalePath).completionStatus(),
   ).rejects.toMatchObject({ code: "unknown_control_context" });
+});
+
+test("blocking HumanAttention rejects an unusable structured response contract", async () => {
+  const value = await createFixture();
+  const { client } = await bind(value, action(), "rebind_exact");
+  await expect(
+    client.requestHumanAssistance({
+      category: "needs_input",
+      message: "Choose one exact option.",
+      interaction: "choice",
+    }),
+  ).rejects.toMatchObject({ code: "invalid_request" });
+  await expect(
+    client.requestHumanAssistance({
+      category: "needs_input",
+      message: "Choose one exact option.",
+      interaction: "choice",
+      responseSchema: {
+        kind: "choice_form_v1",
+        questions: [],
+      },
+    }),
+  ).rejects.toMatchObject({ code: "invalid_request" });
+});
+
+test("a disconnected native wait survives controller replacement and rebinds to the exact durable request", async () => {
+  const value = await createFixture();
+  const bound = await bind(value, action(), "rebind_exact");
+  const registered = await bound.client.requestHumanAssistance({
+    category: "needs_confirmation",
+    message: "Approve restart-safe delivery.",
+    interaction: "confirmation",
+  });
+  const waitHandle = registered.attentionWaitHandle;
+  if (!waitHandle) throw new Error("Expected a durable wait handle.");
+  const interruptedWait =
+    bound.client.waitForHumanAssistanceResponse(waitHandle);
+  await Bun.sleep(1);
+  await value.server.stop();
+  const interruption = await interruptedWait.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  if (!(interruption instanceof HarnessControlError)) throw interruption;
+  expect(["invalid_bridge_response", "bridge_unavailable"]).toContain(
+    interruption.code,
+  );
+  expect(
+    value.registry.getHumanAttentionRequest(waitHandle.attentionId),
+  ).toMatchObject({
+    responseState: "pending",
+    deliveryState: "response_not_delivered",
+  });
+
+  const replacementAuthority = new HarnessControlAuthority(value.registry);
+  const replacementServer = new HarnessControlServer(replacementAuthority);
+  await replacementServer.start();
+  cleanups.push(() => replacementServer.stop());
+  const dispatch = value.registry.get(bound.dispatch.action.action_id);
+  const lineage = value.registry.getLineage(bound.lineage.lineageId);
+  await replacementAuthority.bind(dispatch, lineage, "rebind_exact");
+  const reboundClient = new HarnessControlClient(
+    controlDescriptorPath(lineage),
+  );
+  const reboundWait = reboundClient.waitForHumanAssistanceResponse(waitHandle);
+  const request = value.registry.getHumanAttentionRequest(
+    waitHandle.attentionId,
+  );
+  await replacementAuthority.receiveHumanAttentionResponse({
+    attentionId: request.attentionId,
+    requestGeneration: request.requestGeneration,
+    actionId: request.actionId,
+    runId: request.runId,
+    occurrenceId: request.occurrenceId,
+    attemptId: request.attemptId,
+    lineageId: request.lineageId,
+    nativeSessionId: request.nativeSessionId,
+    deliveryAttemptId: "delivery-after-restart",
+    response: {
+      attentionId: request.attentionId,
+      requestGeneration: request.requestGeneration,
+      approved: true,
+      value: true,
+      respondedAt: new Date().toISOString(),
+    },
+  });
+  const delivered = await reboundWait;
+  expect(delivered.humanAttentionWait).toMatchObject({
+    outcome: "responded",
+    deliveryAttemptId: "delivery-after-restart",
+    response: { approved: true, value: true },
+  });
+  await reboundClient.acknowledgeHumanAssistanceResponse(
+    waitHandle,
+    "delivery-after-restart",
+  );
+  expect(
+    value.registry.getHumanAttentionRequest(request.attentionId),
+  ).toMatchObject({
+    deliveryState: "delivery_acknowledged",
+  });
+});
+
+test("an adapter-declared nonrecoverable wait becomes obsolete after controller restart", async () => {
+  const value = await createFixture();
+  const bound = await bind(value, action(), "wait_not_recoverable");
+  const registered = await bound.client.requestHumanAssistance({
+    category: "needs_input",
+    message: "This callback cannot be rebound after restart.",
+    interaction: "text",
+    responseSchema: { kind: "text_form_v1", max_length: 100 },
+  });
+  const waitHandle = registered.attentionWaitHandle;
+  if (!waitHandle) throw new Error("Expected a durable wait handle.");
+  const interruptedWait =
+    bound.client.waitForHumanAssistanceResponse(waitHandle);
+  await Bun.sleep(1);
+  await value.server.stop();
+  await interruptedWait.catch(() => undefined);
+
+  const replacementAuthority = new HarnessControlAuthority(value.registry);
+  const replacementServer = new HarnessControlServer(replacementAuthority);
+  await replacementServer.start();
+  cleanups.push(() => replacementServer.stop());
+  const dispatch = value.registry.get(bound.dispatch.action.action_id);
+  const lineage = value.registry.getLineage(bound.lineage.lineageId);
+  await replacementAuthority.bind(dispatch, lineage, "wait_not_recoverable");
+
+  expect(
+    value.registry.getHumanAttentionRequest(waitHandle.attentionId),
+  ).toMatchObject({
+    responseState: "obsolete",
+    deliveryState: "response_not_delivered",
+  });
+  expect(value.registry.getLineage(lineage.lineageId).attention).toBeNull();
+});
+
+test("delivery without a native acknowledgement becomes uncertain and is never replayed", async () => {
+  const value = await createFixture();
+  const bound = await bind(value, action(), "rebind_exact");
+  const registered = await bound.client.requestHumanAssistance({
+    category: "needs_confirmation",
+    message: "Prove ambiguous native delivery.",
+    interaction: "confirmation",
+  });
+  const waitHandle = registered.attentionWaitHandle;
+  if (!waitHandle) throw new Error("Expected a durable wait handle.");
+  const waiting = bound.client.waitForHumanAssistanceResponse(waitHandle);
+  const request = value.registry.getHumanAttentionRequest(
+    waitHandle.attentionId,
+  );
+  await value.authority.receiveHumanAttentionResponse({
+    attentionId: request.attentionId,
+    requestGeneration: request.requestGeneration,
+    actionId: request.actionId,
+    runId: request.runId,
+    occurrenceId: request.occurrenceId,
+    attemptId: request.attemptId,
+    lineageId: request.lineageId,
+    nativeSessionId: request.nativeSessionId,
+    deliveryAttemptId: "delivery-ambiguous",
+    response: {
+      attentionId: request.attentionId,
+      requestGeneration: request.requestGeneration,
+      approved: true,
+      value: true,
+      respondedAt: new Date().toISOString(),
+    },
+  });
+  expect((await waiting).humanAttentionWait).toMatchObject({
+    outcome: "responded",
+    deliveryAttemptId: "delivery-ambiguous",
+  });
+
+  await value.authority.bind(
+    value.registry.get(bound.dispatch.action.action_id),
+    value.registry.getLineage(bound.lineage.lineageId),
+    "rebind_exact",
+  );
+  expect(
+    value.registry.getHumanAttentionRequest(request.attentionId),
+  ).toMatchObject({
+    deliveryState: "delivery_uncertain",
+  });
+  const reboundClient = new HarnessControlClient(
+    controlDescriptorPath(value.registry.getLineage(bound.lineage.lineageId)),
+  );
+  await expect(
+    reboundClient.waitForHumanAssistanceResponse(waitHandle),
+  ).rejects.toMatchObject({ code: "human_attention_delivery_uncertain" });
+});
+
+test("terminal cancellation releases the exact native wait without losing durable evidence", async () => {
+  const value = await createFixture();
+  const bound = await bind(value, action(), "rebind_exact");
+  const registered = await bound.client.requestHumanAssistance({
+    category: "needs_input",
+    message: "Wait until this Attempt is cancelled.",
+    interaction: "text",
+  });
+  const waitHandle = registered.attentionWaitHandle;
+  if (!waitHandle) throw new Error("Expected a durable wait handle.");
+  const waiting = bound.client.waitForHumanAssistanceResponse(waitHandle);
+  await Bun.sleep(1);
+  await value.authority.cancelPendingHumanAttention(
+    bound.lineage.lineageId,
+    "Product cancelled the Attempt.",
+    "cancelled",
+    bound.dispatch.action.action_id,
+  );
+  expect((await waiting).humanAttentionWait).toMatchObject({
+    outcome: "cancelled",
+    reason: "Product cancelled the Attempt.",
+  });
+  expect(
+    value.registry.getHumanAttentionRequest(waitHandle.attentionId),
+  ).toMatchObject({
+    responseState: "cancelled",
+    cancellationReason: "Product cancelled the Attempt.",
+  });
+});
+
+test("stale and conflicting HumanAttention responses cannot cross request identity", async () => {
+  const value = await createFixture();
+  const bound = await bind(value, action(), "rebind_exact");
+  const registered = await bound.client.requestHumanAssistance({
+    category: "needs_confirmation",
+    message: "Validate exact response identity.",
+    interaction: "confirmation",
+  });
+  const waitHandle = registered.attentionWaitHandle;
+  if (!waitHandle) throw new Error("Expected a durable wait handle.");
+  const request = value.registry.getHumanAttentionRequest(
+    waitHandle.attentionId,
+  );
+  const exact = {
+    attentionId: request.attentionId,
+    requestGeneration: request.requestGeneration,
+    actionId: request.actionId,
+    runId: request.runId,
+    occurrenceId: request.occurrenceId,
+    attemptId: request.attemptId,
+    lineageId: request.lineageId,
+    nativeSessionId: request.nativeSessionId,
+    deliveryAttemptId: "delivery-exact",
+    response: {
+      attentionId: request.attentionId,
+      requestGeneration: request.requestGeneration,
+      approved: true,
+      value: true,
+      respondedAt: new Date().toISOString(),
+    },
+  };
+  await expect(
+    value.authority.receiveHumanAttentionResponse({
+      ...exact,
+      requestGeneration: request.requestGeneration + 1,
+    }),
+  ).rejects.toThrow("identity is stale");
+  await expect(
+    value.authority.receiveHumanAttentionResponse({
+      ...exact,
+      nativeSessionId: "wrong-native-session",
+    }),
+  ).rejects.toThrow("identity is stale");
+  expect(
+    value.registry.getHumanAttentionRequest(request.attentionId),
+  ).toMatchObject({
+    responseState: "pending",
+  });
+
+  await value.authority.receiveHumanAttentionResponse(exact);
+  await value.authority.receiveHumanAttentionResponse(exact);
+  await expect(
+    value.authority.receiveHumanAttentionResponse({
+      ...exact,
+      deliveryAttemptId: "conflicting-delivery",
+    }),
+  ).rejects.toThrow("different authoritative response");
 });
 
 test("attention and native Stop enforcement share the same bound authority", async () => {

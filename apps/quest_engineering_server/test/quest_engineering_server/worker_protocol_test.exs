@@ -19,12 +19,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 13
+  @protocol_version 14
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v13 logical Workspace bindings" do
+  test "accepts explicit protocol v14 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -307,9 +307,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         "native_session_id" => "pi-session",
         "attention" => %{
           "attention_id" => "attention-1",
+          "request_generation" => 1,
           "category" => "needs_input",
           "message" => "Choose an option.",
           "requested_at" => "2026-09-06T00:00:00Z",
+          "response_state" => "pending",
+          "delivery_state" => "response_not_delivered",
           "interaction" => %{
             "kind" => "conversational_intervention",
             "control_state" => "intervention_pending",
@@ -457,17 +460,22 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         "worker-1",
         7,
         %{
-          id: "action-1",
+          action_id: "action-1",
           run_id: "run-1",
           occurrence_id: "occurrence-1",
-          attempt_id: "attempt-1"
-        },
-        %{
-          request_id: "response-1",
-          attention_id: "attention-1",
-          approved: true,
-          value: %{"answers" => %{"Choice" => "A"}},
-          responded_at: responded_at
+          attempt_id: "attempt-1",
+          id: "attention-1",
+          request_generation: 3,
+          session_id: "session-1",
+          native_session_id: "native-1",
+          delivery_attempt_id: "delivery-1",
+          response_request_id: "response-1",
+          response: %{
+            "approved" => true,
+            "value" => %{"answers" => %{"Choice" => "A"}}
+          },
+          response_submitted_at: responded_at,
+          response_committed_at: responded_at
         }
       )
 
@@ -482,12 +490,59 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
              "attempt_id" => "attempt-1",
              "response" => %{
                "request_id" => "response-1",
+               "request_generation" => 3,
+               "session_id" => "session-1",
+               "native_session_id" => "native-1",
+               "delivery_attempt_id" => "delivery-1",
                "attention_id" => "attention-1",
                "approved" => true,
                "value" => %{"answers" => %{"Choice" => "A"}},
-               "responded_at" => "2026-09-17T12:00:00.000000Z"
+               "responded_at" => "2026-09-17T12:00:00.000000Z",
+               "response_committed_at" => "2026-09-17T12:00:00.000000Z"
              }
            }
+  end
+
+  test "decodes exact HumanAttention delivery acknowledgement identity" do
+    payload = %{
+      "type" => "human_attention_delivery",
+      "protocol_version" => @protocol_version,
+      "worker_id" => @worker_id,
+      "connection_generation" => 7,
+      "action_id" => "action-1",
+      "run_id" => "run-1",
+      "occurrence_id" => "occurrence-1",
+      "attempt_id" => "attempt-1",
+      "session_id" => "session-1",
+      "attention_id" => "attention-1",
+      "request_generation" => 3,
+      "delivery_attempt_id" => "delivery-1",
+      "state" => "delivery_acknowledged",
+      "observed_at" => "2026-09-17T12:00:01.000000Z",
+      "reason" => nil
+    }
+
+    assert {:ok,
+            %{
+              type: :human_attention_delivery,
+              delivery: %{
+                attention_id: "attention-1",
+                request_generation: 3,
+                delivery_attempt_id: "delivery-1",
+                state: "delivery_acknowledged"
+              }
+            }} = WorkerProtocol.decode_worker_message(payload, @worker_id)
+
+    assert {:ok, %{delivery: %{state: "obsolete", delivery_attempt_id: nil}}} =
+             payload
+             |> Map.put("state", "obsolete")
+             |> Map.put("delivery_attempt_id", nil)
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+
+    assert {:error, %{field: "human_attention_delivery"}} =
+             payload
+             |> Map.put("state", "delivered")
+             |> WorkerProtocol.decode_worker_message(@worker_id)
   end
 
   test "decodes generation-bound harness setup state without persisting interaction output" do

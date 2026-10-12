@@ -91,9 +91,12 @@ defmodule QuestEngineering.Server.RunProjectionTest do
 
     attention = %{
       "attention_id" => Ecto.UUID.generate(),
+      "request_generation" => 1,
       "category" => "needs_input",
       "message" => "Choose the safe implementation.",
       "requested_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "response_state" => "pending",
+      "delivery_state" => "response_not_delivered",
       "interaction" => %{
         "kind" => "conversational_intervention",
         "control_state" => "intervention_pending",
@@ -263,6 +266,7 @@ defmodule QuestEngineering.Server.RunProjectionTest do
              "attention_requested",
              "attachment_descriptor_issued",
              "local_session_opened",
+             "attention_cancelled",
              "attention_resolved"
            ]
 

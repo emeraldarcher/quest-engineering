@@ -145,9 +145,12 @@ test("shows concurrent live sessions, waiting attention, exact open and takeover
   first.session = harnessSession("session-a", "running", null);
   second.session = harnessSession("session-b", "waiting_for_human", {
     attention_id: "attention-b",
+    request_generation: 1,
     category: "needs_permission",
     message: "Permission required to continue.",
     requested_at: "2026-09-06T00:00:00Z",
+    response_state: "pending",
+    delivery_state: "response_not_delivered",
   });
   const store = createAppStore(
     new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
@@ -199,9 +202,12 @@ test("submits exact headless structured HumanAttention without terminal takeover
   if (!step?.attempt) throw new Error("Expected an active Step attempt");
   step.session = harnessSession("session-claude", "waiting_for_human", {
     attention_id: "attention-confirm",
+    request_generation: 1,
     category: "needs_confirmation",
     message: "Approve this exact action?",
     requested_at: "2026-09-06T00:00:00Z",
+    response_state: "pending",
+    delivery_state: "response_not_delivered",
     interaction: {
       kind: "confirmation",
       control_state: "intervention_pending",
@@ -239,6 +245,42 @@ test("submits exact headless structured HumanAttention without terminal takeover
     true,
   );
   expect(screen.queryByRole("button", { name: "Take Control" })).toBeNull();
+});
+
+test("shows committed HumanAttention delivery state without accepting a duplicate response", () => {
+  const value = fixture("work-yard-running");
+  const run = requiredRun(value);
+  const step = run.steps[0];
+  if (!step?.attempt) throw new Error("Expected an active Step attempt");
+  step.session = harnessSession("session-committed", "waiting_for_human", {
+    attention_id: "attention-committed",
+    request_generation: 2,
+    category: "needs_confirmation",
+    message: "Committed response awaits native delivery.",
+    requested_at: "2026-09-06T00:00:00Z",
+    response_state: "responded",
+    delivery_state: "delivery_requested",
+    delivery_attempt_id: "delivery-1",
+    interaction: {
+      kind: "confirmation",
+      control_state: "intervention_pending",
+    },
+  });
+  step.session.capabilities.structured_confirmation = true;
+  const store = createAppStore(
+    new ApiClient({ httpBaseUrl: "http://fixture.invalid" }),
+    "ws://fixture.invalid/socket",
+    value,
+  );
+  render(WorkYardWindow, {
+    props: { store, product: value.product, onClose: vi.fn() },
+  });
+
+  expect(
+    screen.getByText("Response committed · Delivery requested"),
+  ).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Decline" })).toBeNull();
 });
 
 test("an already-open empty Work Yard selects the first realtime Run and keeps observation eligible", async () => {
@@ -665,9 +707,12 @@ test("shows conversational human control and the explicit hand-back command", as
   if (!step) throw new Error("Expected Step");
   step.session = harnessSession("session-conversation", "waiting_for_human", {
     attention_id: "attention-conversation",
+    request_generation: 1,
     category: "needs_input",
     message: "Choose a filename with Pi.",
     requested_at: "2026-09-06T00:00:00Z",
+    response_state: "pending",
+    delivery_state: "response_not_delivered",
     interaction: {
       kind: "conversational_intervention",
       control_state: "human_control",
@@ -1166,9 +1211,12 @@ function operatorSetup() {
   };
   step.session = harnessSession("session-pre-prompt", "waiting_for_human", {
     attention_id: `qe-prompt-authorization-${step.attempt.id}`,
+    request_generation: 1,
     category: "needs_confirmation",
     message: "Explicit authorization is required.",
     requested_at: "2026-09-06T00:00:00Z",
+    response_state: "pending",
+    delivery_state: "response_not_delivered",
   });
   step.session.native_identity.conversation_id = null;
   if (!step.session.attachment) throw new Error("Expected terminal attachment");

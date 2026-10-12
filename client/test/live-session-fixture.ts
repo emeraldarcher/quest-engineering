@@ -46,6 +46,7 @@ export function attachTestLiveSession(
     },
     attention: {
       attention_id: `qe-prompt-authorization-${step.attempt.id}`,
+      request_generation: 1,
       category: "needs_confirmation",
       interaction: {
         kind: "confirmation",
@@ -53,6 +54,8 @@ export function attachTestLiveSession(
       },
       message: "Explicit authorization is required.",
       requested_at: "2026-09-26T00:00:00Z",
+      response_state: "pending",
+      delivery_state: "response_not_delivered",
     },
     started_at: "2026-09-26T00:00:00Z",
     last_activity_at: "2026-09-26T00:00:01Z",

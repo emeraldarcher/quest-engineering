@@ -7,6 +7,7 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.Persistence.ExecutionSession
   alias QuestEngineering.Server.Persistence.ExecutionSessionAuditEvent
+  alias QuestEngineering.Server.Persistence.HumanAttentionRequest
   alias QuestEngineering.Server.Persistence.Worker
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Repo
@@ -23,7 +24,8 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
     with {:ok, %{worker_id: ^worker_id, action: action}} <-
            DispatchStore.fetch(session.action_id),
          :ok <- validate_action(worker_id, action, session) do
-      result = Repo.transaction(fn -> persist_session!(worker_id, generation, session) end)
+      result =
+        Repo.transaction(fn -> persist_session!(worker_id, generation, session, action) end)
 
       case result do
         {:ok, persisted} ->
@@ -47,7 +49,7 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
     end
   end
 
-  defp persist_session!(worker_id, generation, session) do
+  defp persist_session!(worker_id, generation, session, action) do
     _worker = lock_worker!(worker_id, generation)
     dispatch = lock_dispatch!(session.action_id, worker_id)
     existing = Repo.get(ExecutionSession, session.session_id)
@@ -56,22 +58,33 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
     stale = stale_update?(existing, generation, session.last_activity_at)
 
     persisted =
-      if stale,
-        do: existing,
-        else:
-          persist_changeset!(
-            existing,
-            session_attributes(
-              worker_id,
-              generation,
-              session,
-              merged_attention(existing, session.attention),
-              merged_native_session_id(existing, session.native_session_id)
-            )
+      if stale do
+        existing
+      else
+        attention =
+          merged_attention(existing, session.attention, action.id, session.session_id)
+
+        persist_changeset!(
+          existing,
+          session_attributes(
+            worker_id,
+            generation,
+            session,
+            attention,
+            merged_native_session_id(existing, session.native_session_id),
+            normalized_session_state(existing, session.state, attention)
           )
+        )
+      end
 
     Repo.update!(Changeset.change(dispatch, execution_session_id: persisted.id))
-    unless stale, do: audit_attention_transition(existing, persisted, session)
+
+    unless stale do
+      retire_replaced_attention!(existing, persisted)
+      persist_attention_request!(persisted, action)
+      audit_attention_transition(existing, persisted, session)
+    end
+
     persisted
   end
 
@@ -88,14 +101,21 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
   defp persist_changeset!(existing, attributes),
     do: Repo.update!(ExecutionSession.changeset(existing, attributes))
 
-  defp session_attributes(worker_id, generation, session, attention, native_session_id) do
+  defp session_attributes(
+         worker_id,
+         generation,
+         session,
+         attention,
+         native_session_id,
+         session_state
+       ) do
     %{
       id: session.session_id,
       worker_id: worker_id,
       current_action_id: session.action_id,
       harness_kind: session.harness_kind,
       harness_display_name: session.harness_display_name,
-      state: Atom.to_string(session.state),
+      state: session_state,
       capabilities: session.capabilities,
       terminal: session.terminal,
       native_session_id: native_session_id,
@@ -207,29 +227,141 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
   def respond_to_attention(run_id, attempt_id, session_id, response) do
     with {:ok, %{session: session, worker: worker, action: action, dispatch: dispatch}} <-
            lookup_usage(run_id, attempt_id, session_id),
-         :ok <- response_available(session, worker, action, dispatch, response),
-         :ok <-
-           WorkerConnections.send_protocol(
-             worker.id,
-             worker.connection_generation,
-             WorkerProtocol.respond_human_attention(
-               worker.id,
-               worker.connection_generation,
-               action,
-               Map.put(
-                 response,
-                 :responded_at,
-                 DateTime.utc_now() |> DateTime.truncate(:microsecond)
-               )
-             )
-           ) do
+         {:ok, committed, idempotent?} <-
+           commit_attention_response(session, action, dispatch, response),
+         {:ok, delivery_state} <-
+           request_attention_delivery(committed, session, worker, action) do
+      RunChangeNotifier.notify(run_id)
+
       {:ok,
        %{
-         request_id: response.request_id,
-         attention_id: response.attention_id,
+         request_id: committed.response_request_id,
+         attention_id: committed.id,
          session_id: session.id,
-         delivered: true
+         response_state: committed.response_state,
+         delivery_state: delivery_state,
+         delivered: delivery_state == "delivery_acknowledged",
+         idempotent_replay: idempotent?
        }}
+    end
+  end
+
+  def cancel_attention_for_action!(action_id, reason) do
+    request =
+      Repo.one(
+        from request in HumanAttentionRequest,
+          where:
+            request.action_id == ^action_id and
+              (request.response_state == "pending" or
+                 (request.response_state == "responded" and
+                    request.delivery_state != "delivery_acknowledged")),
+          lock: "FOR UPDATE"
+      )
+
+    if request do
+      cancelled_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      cancelled =
+        request
+        |> HumanAttentionRequest.changeset(%{
+          response_state: "cancelled",
+          cancelled_at: cancelled_at,
+          cancellation_reason: reason
+        })
+        |> Repo.update!()
+
+      session = Repo.get!(ExecutionSession, cancelled.session_id)
+
+      if get_in(session.attention || %{}, ["attention_id"]) == cancelled.id,
+        do: Repo.update!(Changeset.change(session, attention: nil))
+
+      audit_request!(cancelled, "attention_cancelled", cancelled_at, %{"reason" => reason})
+    end
+
+    :ok
+  end
+
+  def record_attention_delivery(worker_id, generation, delivery) do
+    result =
+      Repo.transaction(fn ->
+        worker = lock_worker!(worker_id, generation)
+        request = lock_attention_request!(delivery.attention_id)
+        validate_delivery_identity!(request, worker, delivery)
+        apply_delivery_report!(request, delivery)
+      end)
+
+    case result do
+      {:ok, request} ->
+        RunChangeNotifier.notify(request.run_id)
+        {:ok, request}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  def reconcile_attention_deliveries(worker_id, generation, deliveries) do
+    Enum.reduce_while(deliveries, {:ok, []}, fn delivery, {:ok, values} ->
+      case record_attention_delivery(
+             worker_id,
+             generation,
+             Map.put(delivery, :connection_generation, generation)
+           ) do
+        {:ok, request} -> {:cont, {:ok, [request | values]}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
+  def pending_attention_responses(worker_id, generation) do
+    Repo.transaction(fn ->
+      _worker = lock_worker!(worker_id, generation)
+
+      Repo.all(
+        from request in HumanAttentionRequest,
+          where:
+            request.worker_id == ^worker_id and request.response_state == "responded" and
+              request.delivery_state == "delivery_requested" and
+              request.delivery_requested_generation != ^generation,
+          lock: "FOR UPDATE"
+      )
+      |> Enum.each(fn request ->
+        uncertain_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+        uncertain =
+          request
+          |> HumanAttentionRequest.changeset(%{
+            delivery_state: "delivery_uncertain",
+            delivery_uncertain_at: uncertain_at,
+            cancellation_reason:
+              "Worker generation changed after native response delivery was requested."
+          })
+          |> Repo.update!()
+
+        update_session_attention!(Repo.get!(ExecutionSession, request.session_id), uncertain)
+
+        audit_request!(uncertain, "attention_delivery_uncertain", uncertain_at, %{
+          "delivery_attempt_id" => uncertain.delivery_attempt_id,
+          "reason" => uncertain.cancellation_reason
+        })
+      end)
+
+      Repo.all(
+        from request in HumanAttentionRequest,
+          where:
+            request.worker_id == ^worker_id and request.response_state == "responded" and
+              request.delivery_state == "response_not_delivered",
+          lock: "FOR UPDATE"
+      )
+      |> Enum.map(&prepare_delivery_command!(&1, generation))
+    end)
+    |> case do
+      {:ok, commands} -> {:ok, commands}
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -282,7 +414,58 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
     end
   end
 
-  defp response_available(session, worker, action, dispatch, response) do
+  defp commit_attention_response(session, action, dispatch, response) do
+    result =
+      Repo.transaction(fn ->
+        request = lock_attention_request!(response.attention_id)
+        response_available!(request, session, action, dispatch, response)
+        submitted_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        payload = %{"approved" => response.approved, "value" => response.value}
+
+        if byte_size(Jason.encode!(payload)) > 131_072,
+          do: Repo.rollback(:invalid_attention_response)
+
+        cond do
+          request.response_state == "responded" and request.response == payload and
+              request.response_request_id == response.request_id ->
+            {request, true}
+
+          request.response_state != "pending" ->
+            Repo.rollback(:stale_attention)
+
+          true ->
+            committed =
+              request
+              |> HumanAttentionRequest.changeset(%{
+                response_state: "responded",
+                response: payload,
+                response_request_id: response.request_id,
+                response_submitted_at: submitted_at,
+                response_committed_at: submitted_at,
+                delivery_state: "response_not_delivered"
+              })
+              |> Repo.update!()
+
+            update_session_attention!(session, committed)
+
+            audit_request!(
+              committed,
+              "attention_response_committed",
+              submitted_at,
+              %{"request_id" => response.request_id}
+            )
+
+            {committed, false}
+        end
+      end)
+
+    case result do
+      {:ok, {request, idempotent?}} -> {:ok, request, idempotent?}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp response_available!(request, session, action, dispatch, response) do
     interaction = get_in(session.attention || %{}, ["interaction", "kind"])
 
     capability =
@@ -294,22 +477,33 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
         _ -> nil
       end
 
-    cond do
-      worker.status != "connected" ->
-        {:error, :worker_offline}
+    valid_identity =
+      request.session_id == session.id and request.worker_id == session.worker_id and
+        request.run_id == action.run_id and request.action_id == action.id and
+        request.occurrence_id == action.occurrence_id and
+        request.attempt_id == action.attempt_id
 
-      session.last_connection_generation != worker.connection_generation ->
-        {:error, :stale_attention}
+    duplicate =
+      request.response_state == "responded" and
+        request.response == %{"approved" => response.approved, "value" => response.value} and
+        request.response_request_id == response.request_id
+
+    cond do
+      not valid_identity ->
+        Repo.rollback(:stale_attention)
+
+      duplicate ->
+        :ok
 
       session.current_action_id != action.id or not is_nil(dispatch.cancellation_requested_at) ->
-        {:error, :stale_attention}
+        Repo.rollback(:stale_attention)
 
       session.state != "waiting_for_human" or
           get_in(session.attention || %{}, ["attention_id"]) != response.attention_id ->
-        {:error, :stale_attention}
+        Repo.rollback(:stale_attention)
 
       is_nil(capability) or get_in(session.capabilities, [capability]) != true ->
-        {:error, :attention_response_unavailable}
+        Repo.rollback(:attention_response_unavailable)
 
       not valid_attention_value?(
         interaction,
@@ -317,12 +511,245 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
         response.value,
         session.attention
       ) ->
-        {:error, :invalid_attention_response}
+        Repo.rollback(:invalid_attention_response)
+
+      request.response_state == "responded" ->
+        Repo.rollback(:stale_attention)
+
+      request.response_state in ["cancelled", "obsolete"] ->
+        Repo.rollback(:stale_attention)
 
       true ->
         :ok
     end
   end
+
+  defp request_attention_delivery(request, session, worker, _action) do
+    cond do
+      request.delivery_state != "response_not_delivered" ->
+        {:ok, request.delivery_state}
+
+      worker.status != "connected" or
+          session.last_connection_generation != worker.connection_generation ->
+        {:ok, "response_not_delivered"}
+
+      true ->
+        case prepare_one_delivery(request.id, worker.connection_generation) do
+          {:ok, prepared, command} ->
+            case WorkerConnections.send_protocol(worker.id, worker.connection_generation, command) do
+              :ok ->
+                {:ok, prepared.delivery_state}
+
+              {:error, _reason} ->
+                restore_undelivered!(prepared)
+                {:ok, "response_not_delivered"}
+            end
+
+          {:error, error} ->
+            {:error, error}
+        end
+    end
+  end
+
+  defp prepare_one_delivery(attention_id, generation) do
+    Repo.transaction(fn ->
+      request = lock_attention_request!(attention_id)
+
+      if request.response_state != "responded" or
+           request.delivery_state != "response_not_delivered" do
+        Repo.rollback(:stale_attention)
+      end
+
+      prepared = prepare_delivery_request!(request, generation)
+      {prepared, WorkerProtocol.respond_human_attention(prepared.worker_id, generation, prepared)}
+    end)
+    |> case do
+      {:ok, {prepared, command}} -> {:ok, prepared, command}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp prepare_delivery_command!(request, generation) do
+    prepared = prepare_delivery_request!(request, generation)
+    WorkerProtocol.respond_human_attention(prepared.worker_id, generation, prepared)
+  end
+
+  defp prepare_delivery_request!(request, generation) do
+    requested_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    # A Worker reconciliation can prove that this exact committed response never
+    # crossed into native delivery. Reuse that durable attempt identity; a new
+    # identity would conflict with the Worker's already-committed response.
+    delivery_attempt_id = request.delivery_attempt_id || Ecto.UUID.generate()
+
+    prepared =
+      request
+      |> HumanAttentionRequest.changeset(%{
+        delivery_state: "delivery_requested",
+        delivery_attempt_id: delivery_attempt_id,
+        delivery_requested_generation: generation,
+        delivery_requested_at: requested_at
+      })
+      |> Repo.update!()
+
+    update_session_attention!(Repo.get!(ExecutionSession, prepared.session_id), prepared)
+
+    audit_request!(prepared, "attention_delivery_requested", requested_at, %{
+      "delivery_attempt_id" => delivery_attempt_id,
+      "worker_generation" => generation
+    })
+
+    prepared
+  end
+
+  defp restore_undelivered!(request) do
+    Repo.transaction(fn ->
+      current = lock_attention_request!(request.id)
+
+      if current.delivery_state == "delivery_requested" and
+           current.delivery_attempt_id == request.delivery_attempt_id do
+        restored =
+          current
+          |> HumanAttentionRequest.changeset(%{
+            delivery_state: "response_not_delivered",
+            delivery_attempt_id: nil,
+            delivery_requested_generation: nil,
+            delivery_requested_at: nil
+          })
+          |> Repo.update!()
+
+        update_session_attention!(Repo.get!(ExecutionSession, restored.session_id), restored)
+      end
+    end)
+  end
+
+  defp lock_attention_request!(attention_id) do
+    case Repo.one(
+           from request in HumanAttentionRequest,
+             where: request.id == ^attention_id,
+             lock: "FOR UPDATE"
+         ) do
+      nil -> Repo.rollback(:stale_attention)
+      request -> request
+    end
+  end
+
+  defp validate_delivery_identity!(request, worker, delivery) do
+    exact =
+      delivery.connection_generation == worker.connection_generation and
+        request.worker_id == worker.id and request.action_id == delivery.action_id and
+        request.run_id == delivery.run_id and request.occurrence_id == delivery.occurrence_id and
+        request.attempt_id == delivery.attempt_id and request.session_id == delivery.session_id and
+        request.request_generation == delivery.request_generation and
+        request.delivery_attempt_id == delivery.delivery_attempt_id
+
+    unless exact, do: Repo.rollback(:stale_attention)
+  end
+
+  defp apply_delivery_report!(request, delivery) do
+    observed_at = delivery.observed_at
+
+    effective_state =
+      if Map.get(delivery, :response_state) in ["cancelled", "obsolete"] or
+           delivery.state in ["cancelled", "obsolete"],
+         do: "cancelled",
+         else: delivery.state
+
+    attributes =
+      case effective_state do
+        "delivery_acknowledged" ->
+          if request.delivery_state not in ["delivery_requested", "delivery_acknowledged"],
+            do: Repo.rollback(:stale_attention)
+
+          %{
+            delivery_state: "delivery_acknowledged",
+            delivery_acknowledged_at: request.delivery_acknowledged_at || observed_at
+          }
+
+        "delivery_uncertain" ->
+          if request.delivery_state not in ["delivery_requested", "delivery_uncertain"],
+            do: Repo.rollback(:stale_attention)
+
+          %{
+            delivery_state: "delivery_uncertain",
+            delivery_uncertain_at: request.delivery_uncertain_at || observed_at,
+            cancellation_reason: delivery.reason
+          }
+
+        "cancelled" ->
+          if request.delivery_state == "delivery_acknowledged",
+            do: Repo.rollback(:stale_attention)
+
+          terminal_response_state =
+            Map.get(delivery, :response_state) ||
+              if(delivery.state == "obsolete", do: "obsolete", else: "cancelled")
+
+          %{
+            response_state: terminal_response_state,
+            cancelled_at: request.cancelled_at || observed_at,
+            cancellation_reason: delivery.reason
+          }
+
+        "response_not_delivered" ->
+          if request.delivery_state == "delivery_requested" do
+            %{
+              delivery_state: "response_not_delivered",
+              delivery_requested_at: nil,
+              delivery_requested_generation: nil
+            }
+          else
+            %{}
+          end
+
+        "delivery_requested" ->
+          %{}
+      end
+
+    persisted =
+      request
+      |> HumanAttentionRequest.changeset(attributes)
+      |> Repo.update!()
+
+    session = Repo.get!(ExecutionSession, request.session_id)
+
+    if effective_state in ["delivery_acknowledged", "cancelled"] and
+         get_in(session.attention || %{}, ["attention_id"]) == request.id do
+      Repo.update!(Changeset.change(session, attention: nil, state: "running"))
+    else
+      update_session_attention!(session, persisted)
+    end
+
+    event_type =
+      case effective_state do
+        "delivery_acknowledged" -> "attention_delivery_acknowledged"
+        "delivery_uncertain" -> "attention_delivery_uncertain"
+        "cancelled" -> "attention_cancelled"
+        _ -> nil
+      end
+
+    if event_type,
+      do:
+        audit_request!(persisted, event_type, observed_at, %{
+          "delivery_attempt_id" => delivery.delivery_attempt_id,
+          "reason" => delivery.reason
+        })
+
+    persisted
+  end
+
+  defp update_session_attention!(session, request) do
+    if get_in(session.attention || %{}, ["attention_id"]) == request.id do
+      attention =
+        session.attention
+        |> Map.put("response_state", request.response_state)
+        |> Map.put("delivery_state", request.delivery_state)
+        |> maybe_map_put("delivery_attempt_id", request.delivery_attempt_id)
+
+      Repo.update!(Changeset.change(session, attention: attention))
+    end
+  end
+
+  defp maybe_map_put(map, _key, nil), do: map
+  defp maybe_map_put(map, key, value), do: Map.put(map, key, value)
 
   defp valid_attention_value?(_interaction, false, value, _attention),
     do: is_nil(value)
@@ -435,18 +862,177 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
       else: :ok
   end
 
-  defp merged_attention(
-         %{attention: %{"attention_id" => id} = current},
-         %{"attention_id" => id, "interaction" => %{"control_state" => "intervention_pending"}} =
-           incoming
-       ) do
-    case get_in(current, ["interaction", "control_state"]) do
-      "human_control" -> put_in(incoming, ["interaction", "control_state"], "human_control")
-      _ -> incoming
+  defp retire_replaced_attention!(nil, _persisted), do: :ok
+
+  defp retire_replaced_attention!(existing, persisted) do
+    previous_id = get_in(existing.attention || %{}, ["attention_id"])
+    current_id = get_in(persisted.attention || %{}, ["attention_id"])
+
+    if is_binary(previous_id) and previous_id != current_id do
+      case Repo.get(HumanAttentionRequest, previous_id) do
+        %{response_state: "responded", delivery_state: state}
+        when state in ["delivery_requested", "delivery_uncertain"] ->
+          Repo.rollback(:ambiguous_attention_replacement)
+
+        %{response_state: state} = request when state in ["pending", "responded"] ->
+          obsolete_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+          obsolete =
+            request
+            |> HumanAttentionRequest.changeset(%{
+              response_state: "obsolete",
+              cancelled_at: obsolete_at,
+              cancellation_reason:
+                "Native session replaced or cleared the HumanAttention request."
+            })
+            |> Repo.update!()
+
+          audit_request!(obsolete, "attention_cancelled", obsolete_at, %{
+            "reason" => obsolete.cancellation_reason,
+            "state" => "obsolete"
+          })
+
+        _ ->
+          :ok
+      end
     end
   end
 
-  defp merged_attention(_existing, incoming), do: incoming
+  defp persist_attention_request!(%{attention: nil}, _action), do: :ok
+
+  defp persist_attention_request!(session, action) do
+    attention = session.attention
+    attention_id = attention["attention_id"]
+    # Existing non-blocking/prompt-authorization sessions predate durable request
+    # generations. Treat only that persisted compatibility shape as generation 1;
+    # protocol v14 still requires Workers to send the field explicitly.
+    request_generation = attention["request_generation"] || 1
+
+    unless is_binary(attention_id) and is_integer(request_generation) and request_generation > 0,
+      do: Repo.rollback(:invalid_attention_request)
+
+    request =
+      attention
+      |> Map.take([
+        "category",
+        "message",
+        "interaction",
+        "response_schema",
+        "origin",
+        "requested_at"
+      ])
+      |> canonical_attention_request()
+
+    if byte_size(Jason.encode!(request)) > 65_536,
+      do: Repo.rollback(:attention_request_too_large)
+
+    case Repo.get(HumanAttentionRequest, attention_id) do
+      nil ->
+        if Repo.exists?(
+             from active in HumanAttentionRequest,
+               where:
+                 active.action_id == ^action.id and
+                   (active.response_state == "pending" or
+                      (active.response_state == "responded" and
+                         active.delivery_state != "delivery_acknowledged"))
+           ),
+           do: Repo.rollback(:active_attention_exists)
+
+        surfaced_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+        HumanAttentionRequest.changeset(%{
+          id: attention_id,
+          session_id: session.id,
+          worker_id: session.worker_id,
+          run_id: action.run_id,
+          action_id: action.id,
+          occurrence_id: action.occurrence_id,
+          attempt_id: action.attempt_id,
+          native_session_id: session.native_session_id,
+          request_generation: request_generation,
+          request: request,
+          response_state: attention["response_state"] || "pending",
+          delivery_state: attention["delivery_state"] || "response_not_delivered",
+          delivery_attempt_id: attention["delivery_attempt_id"],
+          surfaced_at: surfaced_at
+        })
+        |> Repo.insert!()
+
+      existing ->
+        exact =
+          existing.session_id == session.id and existing.worker_id == session.worker_id and
+            existing.run_id == action.run_id and existing.action_id == action.id and
+            existing.occurrence_id == action.occurrence_id and
+            existing.attempt_id == action.attempt_id and
+            existing.native_session_id == session.native_session_id and
+            existing.request_generation == request_generation and existing.request == request
+
+        unless exact, do: Repo.rollback(:attention_identity_conflict)
+    end
+  end
+
+  # Conversational takeover advances this runtime control marker in the session,
+  # but it does not create a new durable question or change request identity.
+  defp canonical_attention_request(%{"interaction" => interaction} = request)
+       when is_map(interaction),
+       do: %{request | "interaction" => Map.delete(interaction, "control_state")}
+
+  defp canonical_attention_request(request), do: request
+
+  defp normalized_session_state(_existing, :waiting_for_human, nil), do: "running"
+
+  defp normalized_session_state(_existing, state, _attention), do: Atom.to_string(state)
+
+  defp merged_attention(existing, incoming, action_id, session_id) do
+    candidate = merge_native_attention(existing, incoming)
+
+    attention_id =
+      get_in(candidate || %{}, ["attention_id"]) ||
+        get_in((existing && existing.attention) || %{}, ["attention_id"])
+
+    request = is_binary(attention_id) && Repo.get(HumanAttentionRequest, attention_id)
+
+    case request do
+      %{action_id: request_action_id, session_id: request_session_id}
+      when request_action_id != action_id or request_session_id != session_id ->
+        candidate
+
+      %{delivery_state: "delivery_acknowledged"} ->
+        nil
+
+      %{response_state: "responded"} = request ->
+        projection = candidate || (existing && existing.attention)
+
+        if is_map(projection) do
+          projection
+          |> Map.put("response_state", request.response_state)
+          |> Map.put("delivery_state", request.delivery_state)
+          |> maybe_map_put("delivery_attempt_id", request.delivery_attempt_id)
+        else
+          nil
+        end
+
+      %{response_state: state} when state in ["cancelled", "obsolete"] ->
+        nil
+
+      _ ->
+        candidate
+    end
+  end
+
+  defp merge_native_attention(
+         %{attention: %{"attention_id" => id} = current},
+         %{"attention_id" => id} = incoming
+       ) do
+    if get_in(current, ["interaction", "control_state"]) == "human_control" and
+         get_in(incoming, ["interaction", "control_state"]) == "intervention_pending" do
+      put_in(incoming, ["interaction", "control_state"], "human_control")
+    else
+      incoming
+    end
+  end
+
+  defp merge_native_attention(_existing, incoming), do: incoming
 
   defp merged_native_session_id(nil, incoming), do: incoming
   defp merged_native_session_id(%{native_session_id: nil}, incoming), do: incoming
@@ -545,6 +1131,30 @@ defmodule QuestEngineering.Server.ExecutionSessionStore do
 
       true ->
         :ok
+    end
+  end
+
+  defp audit_request!(request, event_type, occurred_at, metadata) do
+    attributes = %{
+      session_id: request.session_id,
+      event_type: event_type,
+      attention_id: request.id,
+      run_id: request.run_id,
+      action_id: request.action_id,
+      occurrence_id: request.occurrence_id,
+      attempt_id: request.attempt_id,
+      metadata: metadata,
+      occurred_at: occurred_at
+    }
+
+    case Repo.insert(ExecutionSessionAuditEvent.changeset(attributes),
+           on_conflict: :nothing,
+           conflict_target:
+             {:unsafe_fragment,
+              "(session_id, event_type, attention_id) WHERE attention_id IS NOT NULL"}
+         ) do
+      {:ok, _} -> :ok
+      {:error, error} -> Repo.rollback(error)
     end
   end
 

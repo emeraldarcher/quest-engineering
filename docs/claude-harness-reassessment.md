@@ -449,29 +449,26 @@ a bridge child waits. `$.process.spawn` has streaming child-lifetime semantics:
 the child remains alive while the Mod consumes its stream, and time spent in
 Mods API calls does not consume ordinary hook CPU budget. [PIN]
 
-The current bridge does not yet support the return half. Production needs a
-generic operation with these semantics:
+The provider-neutral bridge now supports the return half through durable
+`request_human_assistance`, `wait_for_human_assistance_response`, and
+`acknowledge_human_assistance_response` operations; the client composes the
+first two as `requestHumanAssistanceAndWait`, and the bridge CLI exposes
+`local-control-wait`. The implementation atomically registers exact request
+identity, commits Product and Worker response state before delivery, requires an
+explicit native acknowledgement, persists cancellation, and makes ambiguous
+delivery non-replayable. See `docs/durable-blocking-human-attention.md`.
+[PROTO][QE]
 
-1. atomically create/idempotently recover a current HumanAttention request;
-2. keep a lineage-private request pending without a fixed ten-minute
-   `process.run` ceiling;
-3. accept a Product response only for the exact attention/generation/binding;
-4. return the bounded structured response to the waiting child;
-5. cancel and mark stale on turn/process/Run loss;
-6. never accept model-supplied QE identity;
-7. make duplicate response handling explicit.
-
-The retained fixture names this proposed operation
-`request_human_assistance_and_wait` and transport mode `local-control-wait`.
-They do not exist in production. [PROTO]
-
-Deferred HumanAttention is durable in QE authority, but the **native wait is not
-recoverable merely because the authority is durable**. If Claude Code or the
-Mod process dies mid-question, its tool-call promise dies. QE must retain the
-attention record, reject stale replies, and recover through an explicit resumed
-turn rather than silently replay the old tool call. This is weaker than the
-Agent SDK's direct callback ergonomics, though an SDK subprocess loss also needs
-recovery. [INF]
+Durable QE HumanAttention still does not make a lost **native callback**
+recoverable by assertion. If Claude Code or the Mod process dies mid-question,
+its tool-call promise dies. The generic adapter contract therefore distinguishes
+`rebind_exact` from `wait_not_recoverable`. Static analysis of the pinned Mod
+streaming spawn and budget declarations supports a live blocking callback, but
+no Claude Mod implementation or restart proof was added in the protocol work;
+a future Claude adapter must declare `wait_not_recoverable` until such proof
+exists. QE retains the request, rejects stale replies, and recovers through an
+explicit resumed turn rather than silently replaying a possibly delivered
+response. [PIN][PROTO][INF]
 
 ## Mod-to-Worker transport and state authority
 
@@ -915,9 +912,9 @@ Create **`qe-coding-execution-v4`**. Never mutate v3. V4 should contain:
 
 1. Approve this architecture and obtain a policy/legal sign-off for the intended
    local/hosted distribution model.
-2. Specify and test the provider-neutral
-   `request_human_assistance_and_wait` authority operation, cancellation, stale
-   replies, and process-loss behavior.
+2. **Completed separately:** implement and test the provider-neutral durable
+   blocking HumanAttention authority, cancellation, stale replies, delivery
+   certainty, and process-loss behavior.
 3. Spike the account-level provider context and Run-private transcript overlay
    without reading credential content; prove refresh, revocation, concurrency,
    and model-tool path denial.
@@ -930,10 +927,11 @@ Create **`qe-coding-execution-v4`**. Never mutate v3. V4 should contain:
 7. Delete the superseded SDK production path once the new single adapter is
    accepted. Do not keep dual Claude implementations for compatibility.
 
-The **minimum next implementation task** is step 2: a bounded generic control
-protocol design/test PR for blocking HumanAttention wait/response. Do not fix the
-terminal historical SDK login record and do not begin model inference as part of
-that task.
+The generic protocol prerequisite in step 2 is now implemented and documented
+in `docs/durable-blocking-human-attention.md`; it did not add a Claude adapter,
+change a profile, or use a provider. Any move to step 3 or later requires its own
+approved scope. Do not fix the terminal historical SDK login record or begin
+model inference implicitly.
 
 ## Retained prototype
 

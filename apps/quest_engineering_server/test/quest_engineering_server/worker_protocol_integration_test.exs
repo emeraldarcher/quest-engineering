@@ -8,8 +8,11 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
   alias QuestEngineering.Core.Product.ModelRef
   alias QuestEngineering.Core.Product.TacticSource.Inline
   alias QuestEngineering.Server.DispatchStore
+  alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.FakeWorker
   alias QuestEngineering.Server.LaunchQuest
+  alias QuestEngineering.Server.Persistence.ExecutionSession
+  alias QuestEngineering.Server.Persistence.HumanAttentionRequest
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
   alias QuestEngineering.Server.Persistence.RunDelivery
   alias QuestEngineering.Server.Persistence.RuntimeCodec
@@ -344,14 +347,115 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
       end
     end)
 
-    :ok = FakeWorker.resolve_attention(worker, action.id)
+    {:ok, projection} = RunProjection.get(launched.run_id)
+    [step] = projection.steps
+    session_id = step.session.id
+
+    # Product commits while the Worker is offline. No native delivery can be
+    # claimed until the exact request is reconciled on a later generation.
+    :ok = FakeWorker.disconnect(worker)
+
+    response_request_id = Ecto.UUID.generate()
+
+    assert {:ok,
+            %{
+              response_state: "responded",
+              delivery_state: "response_not_delivered",
+              delivered: false
+            }} =
+             ExecutionSessionStore.respond_to_attention(
+               launched.run_id,
+               attempt_id,
+               session_id,
+               %{
+                 attention_id: attention_id,
+                 request_id: response_request_id,
+                 approved: true,
+                 value: true
+               }
+             )
+
+    assert Repo.get!(HumanAttentionRequest, attention_id).delivery_state ==
+             "response_not_delivered"
+
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+
+    assert_eventually(fn ->
+      match?(
+        %{
+          "response" => %{
+            "attention_id" => ^attention_id,
+            "request_generation" => 1,
+            "delivery_attempt_id" => delivery_attempt_id
+          }
+        }
+        when is_binary(delivery_attempt_id),
+        FakeWorker.attention_response(worker, attention_id)
+      )
+    end)
+
+    assert Repo.get!(HumanAttentionRequest, attention_id).delivery_state ==
+             "delivery_requested"
+
+    :ok = FakeWorker.acknowledge_attention(worker, attention_id)
+
+    assert_eventually(fn ->
+      Repo.get!(HumanAttentionRequest, attention_id).delivery_state ==
+        "delivery_acknowledged"
+    end)
+
+    # A lagging native session projection cannot resurrect an acknowledged
+    # response after reconnect; the durable request lifecycle wins.
+    :ok = FakeWorker.disconnect(worker)
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    assert Repo.get!(ExecutionSession, session_id).attention == nil
+
+    assert {:ok, %{delivery_state: "delivery_acknowledged", idempotent_replay: true}} =
+             ExecutionSessionStore.respond_to_attention(
+               launched.run_id,
+               attempt_id,
+               session_id,
+               %{
+                 attention_id: attention_id,
+                 request_id: response_request_id,
+                 approved: true,
+                 value: true
+               }
+             )
+
+    assert {:error, :stale_attention} =
+             ExecutionSessionStore.respond_to_attention(
+               launched.run_id,
+               attempt_id,
+               session_id,
+               %{
+                 attention_id: attention_id,
+                 request_id: Ecto.UUID.generate(),
+                 approved: true,
+                 value: true
+               }
+             )
+
+    assert {:error, :stale_attention} =
+             ExecutionSessionStore.respond_to_attention(
+               launched.run_id,
+               attempt_id,
+               session_id,
+               %{
+                 attention_id: attention_id,
+                 request_id: Ecto.UUID.generate(),
+                 approved: false,
+                 value: nil
+               }
+             )
 
     assert_eventually(fn ->
       with {:ok, projection} <- RunProjection.get(launched.run_id),
            [step] <- projection.steps do
         match?(
           %{
-            state: "running",
             attempt: %{id: ^attempt_id},
             session: %{state: "running", attention: nil}
           },
@@ -361,6 +465,52 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
         _ -> false
       end
     end)
+
+    # A newer local cancellation fact remains independently reconcilable when
+    # the session projection is lagging behind the native request lifecycle.
+    obsolete_attention_id = Ecto.UUID.generate()
+    :ok = FakeWorker.request_attention(worker, action.id, obsolete_attention_id)
+
+    assert_eventually(fn ->
+      match?(
+        %HumanAttentionRequest{response_state: "pending"},
+        Repo.get(HumanAttentionRequest, obsolete_attention_id)
+      )
+    end)
+
+    obsolete_request = Repo.get!(HumanAttentionRequest, obsolete_attention_id)
+    {:ok, current_worker} = WorkerStore.fetch(worker_id)
+    cancelled_at = DateTime.utc_now()
+
+    assert {:ok, [%HumanAttentionRequest{response_state: "obsolete"}]} =
+             ExecutionSessionStore.reconcile_attention_deliveries(
+               worker_id,
+               current_worker.connection_generation,
+               [
+                 %{
+                   action_id: obsolete_request.action_id,
+                   run_id: obsolete_request.run_id,
+                   occurrence_id: obsolete_request.occurrence_id,
+                   attempt_id: obsolete_request.attempt_id,
+                   session_id: obsolete_request.session_id,
+                   attention_id: obsolete_attention_id,
+                   request_generation: obsolete_request.request_generation,
+                   response_state: "obsolete",
+                   delivery_state: "response_not_delivered",
+                   delivery_attempt_id: nil,
+                   response_committed_at: nil,
+                   delivery_requested_at: nil,
+                   delivery_acknowledged_at: nil,
+                   delivery_uncertain_at: nil,
+                   cancelled_at: cancelled_at,
+                   reason: "The native request was replaced before response delivery.",
+                   state: "response_not_delivered",
+                   observed_at: cancelled_at
+                 }
+               ]
+             )
+
+    assert Repo.get!(ExecutionSession, session_id).attention == nil
 
     :ok = FakeWorker.complete(worker, action.id, %{})
 

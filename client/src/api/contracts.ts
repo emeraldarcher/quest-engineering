@@ -293,9 +293,21 @@ export type HarnessSessionState =
   | "unavailable";
 export interface HumanAttention {
   attention_id: string;
+  request_generation: number;
   category: string;
   message: string;
   requested_at: string;
+  response_state: "pending" | "responded" | "cancelled" | "obsolete";
+  delivery_state:
+    | "response_not_delivered"
+    | "delivery_requested"
+    | "delivery_acknowledged"
+    | "delivery_uncertain";
+  delivery_attempt_id?: string;
+  origin?: {
+    kind: "main_agent" | "internal_agent";
+    native_agent_ref?: string;
+  };
   interaction?: {
     kind:
       | "confirmation"
