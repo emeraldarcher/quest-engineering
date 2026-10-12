@@ -27,8 +27,19 @@ try {
   } else if (mode === "local-control") {
     const operation = decodeOperation(JSON.parse(await readStdin()));
     output(await HarnessControlClient.fromEnvironment().call(operation));
+  } else if (mode === "local-control-wait") {
+    const operation = decodeOperation(JSON.parse(await readStdin()));
+    if (operation.type !== "request_human_assistance")
+      throw new Error("local-control-wait requires a HumanAttention request.");
+    output(
+      await HarnessControlClient.fromEnvironment().requestHumanAssistanceAndWait(
+        operation,
+      ),
+    );
   } else {
-    throw new Error("Usage: qe-harness-bridge hook stop | local-control");
+    throw new Error(
+      "Usage: qe-harness-bridge hook stop | local-control | local-control-wait",
+    );
   }
 } catch (error) {
   const recoverableStopInfrastructureFailure =
@@ -68,7 +79,22 @@ function decodeOperation(value: unknown): HarnessControlOperation {
       type: "complete_step",
       outputs: record(input.outputs) as Record<string, JsonValue>,
     };
-  if (input.type === "request_human_assistance")
+  if (input.type === "request_human_assistance") {
+    const interactions = [
+      "confirmation",
+      "text",
+      "choice",
+      "multiline_response",
+      "conversational_intervention",
+    ];
+    if (
+      (input.interaction !== undefined &&
+        !interactions.includes(String(input.interaction))) ||
+      (input.responseSchema !== undefined &&
+        !isJsonValue(input.responseSchema)) ||
+      (input.origin !== undefined && !validOrigin(input.origin))
+    )
+      throw new Error("HumanAttention request payload is invalid.");
     return {
       type: "request_human_assistance",
       category: String(input.category) as Extract<
@@ -76,13 +102,7 @@ function decodeOperation(value: unknown): HarnessControlOperation {
         { type: "request_human_assistance" }
       >["category"],
       message: String(input.message ?? ""),
-      ...([
-        "confirmation",
-        "text",
-        "choice",
-        "multiline_response",
-        "conversational_intervention",
-      ].includes(String(input.interaction))
+      ...(interactions.includes(String(input.interaction))
         ? {
             interaction: input.interaction as NonNullable<
               Extract<
@@ -92,11 +112,36 @@ function decodeOperation(value: unknown): HarnessControlOperation {
             >,
           }
         : {}),
-      ...(input.responseSchema !== undefined && isJsonValue(input.responseSchema)
-        ? { responseSchema: input.responseSchema }
+      ...(input.responseSchema !== undefined
+        ? { responseSchema: input.responseSchema as JsonValue }
         : {}),
+      ...(input.origin !== undefined ? { origin: input.origin } : {}),
     };
+  }
+  if (input.type === "acknowledge_human_assistance_response") {
+    const waitHandle = record(input.waitHandle);
+    return {
+      type: "acknowledge_human_assistance_response",
+      waitHandle: {
+        attentionId: String(waitHandle.attentionId ?? ""),
+        requestGeneration: Number(waitHandle.requestGeneration),
+      },
+      deliveryAttemptId: String(input.deliveryAttemptId ?? ""),
+    };
+  }
   throw new Error("Unsupported local-control operation.");
+}
+
+function validOrigin(
+  value: unknown,
+): value is { kind: "main_agent" | "internal_agent"; nativeAgentRef?: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    ["main_agent", "internal_agent"].includes(String(candidate.kind)) &&
+    (candidate.nativeAgentRef === undefined ||
+      typeof candidate.nativeAgentRef === "string")
+  );
 }
 
 function record(value: unknown): Record<string, unknown> {

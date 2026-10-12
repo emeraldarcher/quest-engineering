@@ -14,7 +14,7 @@ import {
 } from "../src/protocol/types.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v13 ResolvedExecution codec", () => {
+describe("Worker Protocol v14 ResolvedExecution codec", () => {
   test("decodes only an exact Worker-generation cancellation command", () => {
     const command = {
       type: "cancel_dispatch",
@@ -59,9 +59,14 @@ describe("Worker Protocol v13 ResolvedExecution codec", () => {
       response: {
         request_id: "response-1",
         attention_id: "attention-1",
+        request_generation: 2,
+        session_id: "session-1",
+        native_session_id: "native-1",
+        delivery_attempt_id: "delivery-1",
         approved: true,
         value: { answers: { Choice: "A" } },
         responded_at: "2026-09-17T12:00:00Z",
+        response_committed_at: "2026-09-17T12:00:00Z",
       },
     } satisfies HumanAttentionResponseCommand;
     expect(decodeHumanAttentionResponse(command, "worker-test", 7)).toEqual(
@@ -272,7 +277,7 @@ describe("Worker Protocol v13 ResolvedExecution codec", () => {
   });
 });
 
-describe("Worker Protocol v13 harness setup codec", () => {
+describe("Worker Protocol v14 harness setup codec", () => {
   test("requires the explicit exact ToolPolicy discriminator", () => {
     const input = setupCommand();
     expect(decodePrepareHarnessSetup(input, "worker-test", 7)).toEqual(input);

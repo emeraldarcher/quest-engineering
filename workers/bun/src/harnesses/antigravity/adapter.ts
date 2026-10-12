@@ -2035,11 +2035,14 @@ function nativeAttention(
       )
       .digest("hex")
       .slice(0, 24)}`,
+    requestGeneration: 1,
     category: "unknown_interactive_block",
     message:
       agent.message?.slice(0, 240) ||
       "Antigravity is waiting at a native interactive prompt.",
     requestedAt: lineage.attention?.requestedAt ?? requestedAt,
+    responseState: "pending",
+    deliveryState: "response_not_delivered",
     interaction: {
       kind: "conversational_intervention",
       controlState: "intervention_pending",

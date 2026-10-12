@@ -477,9 +477,12 @@ test("structured assistance enriches and deduplicates the current Herdr blocked 
   );
   expect(enriched.attention).toEqual({
     attentionId: generic.attention.attentionId,
+    requestGeneration: 1,
     category: "needs_confirmation",
     message: "Choose which migration strategy to use",
     requestedAt: generic.attention.requestedAt,
+    responseState: "pending",
+    deliveryState: "response_not_delivered",
   });
   registry.close();
 });

@@ -50,6 +50,7 @@ POST /runs/:id/occurrences/:occurrence_id/harness-setup
 GET  /runs/:id/occurrences/:occurrence_id/harness-setup/:setup_id/interactions/:attention_id
 POST /runs/:id/occurrences/:occurrence_id/harness-setup/:setup_id/respond
 POST /runs/:id/occurrences/:occurrence_id/harness-setup/:setup_id/cancel
+POST /runs/:id/attempts/:attempt_id/sessions/:session_id/respond-attention
 POST /runs/:id/attempts/:attempt_id/cancel
 POST /runs/:id/delivery/retry
 POST /runs/:id/cleanup
@@ -66,7 +67,14 @@ Operator eligibility is server-authoritative. A prepared pre-prompt Step recover
 
 Work Yard requires lightweight confirmation for both commands. Authorization confirmation makes the subscription-backed inference boundary explicit without referring to API credits. Cancellation confirmation states that the Attempt ends as cancelled while history is preserved. Mutation responses and subsequent realtime refetches remain authoritative; the client does not fabricate prompt, working, or cancelled lifecycle states.
 
-Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v13 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
+Blocking HumanAttention responses are also loopback-Tauri-only. The request body
+contains exact attention and idempotency IDs plus `approved` and a bounded value
+matching the projected interaction schema. Acceptance means the response was
+committed; `delivery_state` separately reports not delivered, requested,
+acknowledged, or uncertain. Product never converts a successful socket send into
+native-delivery certainty. See `docs/durable-blocking-human-attention.md`.
+
+Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v14 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
 
 `Retry Publishing` resumes the same Delivery and runs no model work. Whole-Run cleanup accepts `{ "acknowledge_unmerged": true }` when applicable and is available only after terminal failed/cancelled execution or a completed Run with safe Delivery evidence. It retires Run-owned harness panes and control authority, converges and removes the frozen execution-environment incarnation, then removes only the isolated host Run repository. Shared Herdr infrastructure and Product history remain. The response and Run detail project `cleanup.state` plus independent `harness`, `execution_environment`, and `host_run_repository` outcomes; unresolved stop observation or any earlier resource failure never claims later removal.
 

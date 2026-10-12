@@ -21,6 +21,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Persistence.ExecutionSession
   alias QuestEngineering.Server.Persistence.HarnessSetupContext
+  alias QuestEngineering.Server.Persistence.HumanAttentionRequest
   alias QuestEngineering.Server.Persistence.LaunchSnapshotCodec
   alias QuestEngineering.Server.Persistence.OccurrenceContextBinding
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
@@ -1189,7 +1190,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 13,
+                      "protocol_version" => 14,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -1436,6 +1437,11 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
                dispatch.execution.identity.attempt_id,
                cancellation_request_id
              )
+
+    assert Repo.get!(
+             HumanAttentionRequest,
+             "qe-prompt-authorization-#{dispatch.execution.identity.attempt_id}"
+           ).response_state == "cancelled"
 
     assert_receive {:worker_protocol,
                     %{
@@ -2935,7 +2941,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 13,
+                      "protocol_version" => 14,
                       "setup" => %{
                         "setup_id" => setup_id,
                         "action_id" => action_id,

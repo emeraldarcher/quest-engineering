@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { HarnessControlAuthority } from "../harnesses/control/authority.ts";
+import type { HumanAttentionDeliveryReceipt } from "../harnesses/control/types.ts";
 import { nativeSessionPublicId } from "../harnesses/native-session.ts";
 import { HarnessRegistry } from "../harnesses/registry.ts";
 import type {
@@ -53,7 +54,11 @@ export class DispatchExecutor {
   >();
   private readonly attentionResponseOperations = new Map<
     string,
-    { requestId: string; fingerprint: string; operation: Promise<void> }
+    {
+      requestId: string;
+      fingerprint: string;
+      operation: Promise<HumanAttentionDeliveryReceipt | null>;
+    }
   >();
   private readonly harnesses: HarnessRegistry;
 
@@ -183,10 +188,14 @@ export class DispatchExecutor {
 
   respondToAttention(
     command: HumanAttentionResponseCommand,
-  ): Promise<void> {
+  ): Promise<HumanAttentionDeliveryReceipt | null> {
     const fingerprint = JSON.stringify({
-      approved: command.response.approved,
-      value: command.response.value,
+      workerId: command.worker_id,
+      actionId: command.action_id,
+      runId: command.run_id,
+      occurrenceId: command.occurrence_id,
+      attemptId: command.attempt_id,
+      response: command.response,
     });
     const existing = this.attentionResponseOperations.get(
       command.response.attention_id,
@@ -214,7 +223,7 @@ export class DispatchExecutor {
 
   private async respondToAttentionOnce(
     command: HumanAttentionResponseCommand,
-  ): Promise<void> {
+  ): Promise<HumanAttentionDeliveryReceipt | null> {
     const dispatch = this.registry.get(command.action_id);
     if (
       dispatch.action.worker_id !== command.worker_id ||
@@ -227,7 +236,39 @@ export class DispatchExecutor {
       throw new Error("HumanAttention response identity is stale.");
     const lineage = this.registry.getLineage(dispatch.lineageId);
     if (lineage.attention?.attentionId !== command.response.attention_id)
-      throw new Error("HumanAttention response does not match the pending request.");
+      throw new Error(
+        "HumanAttention response does not match the pending request.",
+      );
+    const durable = this.registry.activeHumanAttentionRequest(
+      dispatch.action.action_id,
+    );
+    if (
+      durable?.attentionId === command.response.attention_id &&
+      this.control
+    ) {
+      await this.control.receiveHumanAttentionResponse({
+        attentionId: command.response.attention_id,
+        requestGeneration: command.response.request_generation,
+        actionId: command.action_id,
+        runId: command.run_id,
+        occurrenceId: command.occurrence_id,
+        attemptId: command.attempt_id,
+        lineageId: command.response.session_id,
+        nativeSessionId: command.response.native_session_id,
+        deliveryAttemptId: command.response.delivery_attempt_id,
+        response: {
+          attentionId: command.response.attention_id,
+          requestGeneration: command.response.request_generation,
+          approved: command.response.approved,
+          value: command.response.value,
+          respondedAt: command.response.response_committed_at,
+        },
+      });
+      const updated = this.registry.getLineage(lineage.lineageId);
+      await this.reportSession(dispatch, updated);
+      return null;
+    }
+
     const harness = this.harnessForLineage(lineage);
     if (!harness.respondToAttention)
       throw new Error(
@@ -249,6 +290,13 @@ export class DispatchExecutor {
       inspection.intervention,
     );
     await this.reportSession(dispatch, updated);
+    return {
+      attentionId: command.response.attention_id,
+      requestGeneration: command.response.request_generation,
+      deliveryAttemptId: command.response.delivery_attempt_id,
+      state: "delivery_acknowledged",
+      observedAt: new Date().toISOString(),
+    };
   }
 
   cleanupTargets(runId: string): HarnessCleanupTarget[] {
@@ -437,6 +485,12 @@ export class DispatchExecutor {
       cancellation_worker_generation: command.connection_generation,
       cancelled_at: cancelledAt,
     });
+    await this.control?.cancelPendingHumanAttention(
+      lineage.lineageId,
+      "Product execution cancellation made the HumanAttention request obsolete.",
+      "cancelled",
+      command.action_id,
+    );
 
     let interruptFailure: unknown;
     if (shouldInterrupt) {
@@ -565,7 +619,11 @@ export class DispatchExecutor {
         if (adoptionSource && transition?.mode === "fresh_process_fallback") {
           this.registry.occupy(lineage.lineageId, actionId);
           lineage = this.registry.getLineage(lineage.lineageId);
-          await this.control?.bind(dispatch, lineage);
+          await this.control?.bind(
+            dispatch,
+            lineage,
+            harness.humanAttentionWaitRecoverability,
+          );
           execution = await harness.start(dispatch, lineage);
         } else if (adoptionSource && !transition) {
           try {
@@ -599,19 +657,31 @@ export class DispatchExecutor {
               lineage.lineageId,
             );
             dispatch = this.registry.get(actionId);
-            await this.control?.bind(dispatch, lineage);
+            await this.control?.bind(
+              dispatch,
+              lineage,
+              harness.humanAttentionWaitRecoverability,
+            );
             execution = await harness.start(dispatch, lineage);
           }
           if (!execution) {
             lineage = this.registry.getLineage(lineage.lineageId);
             dispatch = this.registry.get(actionId);
-            await this.control?.bind(dispatch, lineage);
+            await this.control?.bind(
+              dispatch,
+              lineage,
+              harness.humanAttentionWaitRecoverability,
+            );
             execution = await this.continueExecution(dispatch, lineage);
           }
         } else {
           this.registry.occupy(lineage.lineageId, actionId);
           lineage = this.registry.getLineage(lineage.lineageId);
-          await this.control?.bind(dispatch, lineage);
+          await this.control?.bind(
+            dispatch,
+            lineage,
+            harness.humanAttentionWaitRecoverability,
+          );
           execution = await this.continueExecution(dispatch, lineage);
         }
       } else if (dispatch.action.execution.context.mode === "fresh") {
@@ -620,7 +690,11 @@ export class DispatchExecutor {
         lineage = this.registry.getLineage(dispatch.lineageId);
         this.registry.occupy(lineage.lineageId, actionId);
         lineage = this.registry.getLineage(lineage.lineageId);
-        await this.control?.bind(dispatch, lineage);
+        await this.control?.bind(
+          dispatch,
+          lineage,
+          harness.humanAttentionWaitRecoverability,
+        );
         execution = await harness.start(dispatch, lineage);
       } else if (dispatch.action.execution.context.mode === "continue_from") {
         const occurrenceId = dispatch.action.context_lineage_occurrence_id;
@@ -632,7 +706,11 @@ export class DispatchExecutor {
         dispatch = this.registry.assignLineage(actionId, lineage.lineageId);
         this.registry.occupy(lineage.lineageId, actionId);
         lineage = this.registry.getLineage(lineage.lineageId);
-        await this.control?.bind(dispatch, lineage);
+        await this.control?.bind(
+          dispatch,
+          lineage,
+          harness.humanAttentionWaitRecoverability,
+        );
         execution = await this.continueExecution(dispatch, lineage);
       } else {
         throw new Error(
@@ -712,7 +790,11 @@ export class DispatchExecutor {
       }
       const lineage = this.registry.getLineage(dispatch.lineageId);
       if (lineage.activeActionId === dispatch.action.action_id)
-        await this.control?.bind(dispatch, lineage);
+        await this.control?.bind(
+          dispatch,
+          lineage,
+          harness.humanAttentionWaitRecoverability,
+        );
       const recovered = await this.recoverExecution(lineage, dispatch);
       if (!recovered.found) throw new Error(recovered.detail);
       const recoveredNativeSession =
@@ -750,6 +832,7 @@ export class DispatchExecutor {
         await this.control?.bind(
           dispatch,
           this.registry.getLineage(lineage.lineageId),
+          harness.humanAttentionWaitRecoverability,
         );
       }
       if (isRecoverableObservationUncertainty(dispatch))
@@ -932,6 +1015,13 @@ export class DispatchExecutor {
       isUncertain(current, error),
     );
     if (failed.lineageId && failed.state !== "uncertain")
+      await this.control?.cancelPendingHumanAttention(
+        failed.lineageId,
+        "The Attempt terminalized before HumanAttention response delivery.",
+        "obsolete",
+        actionId,
+      );
+    if (failed.lineageId && failed.state !== "uncertain")
       await harness.clearActiveMetadata(
         failed,
         this.registry.getLineage(failed.lineageId),
@@ -996,6 +1086,7 @@ export class DispatchExecutor {
       "waiting_for_human",
       {
         attentionId: `qe-prompt-authorization-${dispatch.action.attempt_id}`,
+        requestGeneration: 1,
         category: "needs_confirmation",
         message:
           "Execution environment ready. Native worker prepared. Explicit authorization is required to begin Builder inference.",
@@ -1004,6 +1095,8 @@ export class DispatchExecutor {
           `qe-prompt-authorization-${dispatch.action.attempt_id}`
             ? lineage.attention.requestedAt
             : requestedAt,
+        responseState: "pending",
+        deliveryState: "response_not_delivered",
         interaction: {
           kind: "confirmation",
           controlState: "intervention_pending",

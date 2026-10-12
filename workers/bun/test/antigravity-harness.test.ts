@@ -593,9 +593,12 @@ test("inference authorization keeps the prepared MCP child across descriptor rot
     const before = await readControlDescriptor(descriptorPath);
     value.registry.updateSession(value.lineage.lineageId, "waiting_for_human", {
       attentionId: "authorize-inference",
+      requestGeneration: 1,
       category: "needs_confirmation",
       message: "Authorize Builder inference.",
       requestedAt: new Date().toISOString(),
+      responseState: "pending",
+      deliveryState: "response_not_delivered",
     });
 
     value.registry.updateSession(value.lineage.lineageId, "starting", null);

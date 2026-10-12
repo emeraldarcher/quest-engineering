@@ -104,7 +104,7 @@ defmodule QuestEngineering.Server.Persistence.ExecutionSessionAuditEvent do
     ])
     |> validate_inclusion(
       :event_type,
-      ~w(attention_requested attachment_descriptor_issued local_session_opened attention_resolved)
+      ~w(attention_requested attention_response_committed attention_delivery_requested attention_delivery_acknowledged attention_delivery_uncertain attention_cancelled attachment_descriptor_issued local_session_opened attention_resolved)
     )
     |> foreign_key_constraint(:session_id)
     |> unique_constraint([:session_id, :event_type, :attention_id],

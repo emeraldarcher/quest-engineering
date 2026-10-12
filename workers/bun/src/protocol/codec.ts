@@ -96,9 +96,26 @@ export function decodeHumanAttentionResponse(
     response: {
       request_id: string(response.request_id, "response.request_id"),
       attention_id: string(response.attention_id, "response.attention_id"),
+      request_generation: positiveInteger(
+        response.request_generation,
+        "response.request_generation",
+      ),
+      session_id: string(response.session_id, "response.session_id"),
+      native_session_id: nullableString(
+        response.native_session_id,
+        "response.native_session_id",
+      ),
+      delivery_attempt_id: string(
+        response.delivery_attempt_id,
+        "response.delivery_attempt_id",
+      ),
       approved: response.approved,
       value: response.value,
       responded_at: respondedAt,
+      response_committed_at: timestamp(
+        response.response_committed_at,
+        "response.response_committed_at",
+      ),
     },
   };
 }

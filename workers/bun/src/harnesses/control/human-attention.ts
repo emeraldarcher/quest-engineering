@@ -70,9 +70,23 @@ export class HumanAttentionCorrelator {
     const attention = structured
       ? {
           attentionId: base?.attentionId ?? structured.attentionId,
+          requestGeneration:
+            base?.requestGeneration ?? structured.requestGeneration,
           category: structured.category,
           message: structured.message,
           requestedAt: base?.requestedAt ?? structured.requestedAt,
+          responseState: base?.responseState ?? structured.responseState,
+          deliveryState: base?.deliveryState ?? structured.deliveryState,
+          ...(base?.deliveryAttemptId
+            ? { deliveryAttemptId: base.deliveryAttemptId }
+            : structured.deliveryAttemptId
+              ? { deliveryAttemptId: structured.deliveryAttemptId }
+              : {}),
+          ...(structured.origin
+            ? { origin: structured.origin }
+            : base?.origin
+              ? { origin: base.origin }
+              : {}),
           ...(structured.interaction
             ? { interaction: structured.interaction }
             : base?.interaction
@@ -86,9 +100,12 @@ export class HumanAttentionCorrelator {
         }
       : (base ?? {
           attentionId: crypto.randomUUID(),
+          requestGeneration: 1,
           category: "interactive_prompt" as const,
           message: `${input.harnessDisplayName} is waiting for input`,
           requestedAt: input.observedAt ?? new Date().toISOString(),
+          responseState: "pending" as const,
+          deliveryState: "response_not_delivered" as const,
         });
 
     this.episodes.set(input.lineageId, {

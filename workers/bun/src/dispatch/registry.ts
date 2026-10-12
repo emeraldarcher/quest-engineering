@@ -2,8 +2,13 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type {
+  DurableHumanAttentionRequest,
+  HumanAttentionResponse,
+} from "../harnesses/control/types.ts";
 import {
   type NativeSessionRef,
+  nativeSessionPublicId,
   parseNativeSessionRef,
   serializeNativeSessionRef,
   validateNativeSessionRef,
@@ -110,6 +115,37 @@ export interface PhysicalProcessTransition {
   recordedAt: string;
 }
 
+interface HumanAttentionRequestRow {
+  attention_id: string;
+  request_generation: number;
+  registration_request_id: string;
+  action_id: string;
+  run_id: string;
+  occurrence_id: string;
+  attempt_id: string;
+  lineage_id: string;
+  harness_execution_id: string;
+  native_session_id: string | null;
+  recoverability: "rebind_exact" | "wait_not_recoverable";
+  controller_generation: string;
+  request_json: string;
+  response_state: "pending" | "responded" | "cancelled" | "obsolete";
+  response_json: string | null;
+  delivery_state:
+    | "response_not_delivered"
+    | "delivery_requested"
+    | "delivery_acknowledged"
+    | "delivery_uncertain";
+  delivery_attempt_id: string | null;
+  created_at: string;
+  response_committed_at: string | null;
+  delivery_requested_at: string | null;
+  delivery_acknowledged_at: string | null;
+  delivery_uncertain_at: string | null;
+  cancelled_at: string | null;
+  cancellation_reason: string | null;
+}
+
 interface PhysicalProcessTransitionRow {
   source_action_id: string;
   source_attempt_id: string;
@@ -166,7 +202,7 @@ interface LineageRow {
   interactive_json: string | null;
 }
 
-export const DISPATCH_REGISTRY_SCHEMA_VERSION = 1 as const;
+export const DISPATCH_REGISTRY_SCHEMA_VERSION = 2 as const;
 
 export class IncompatibleContinuationConfigurationError extends Error {
   readonly code = "incompatible_continuation_configuration";
@@ -712,6 +748,399 @@ export class DispatchRegistry {
         "UPDATE harness_lineages SET last_activity_at=?,updated_at=? WHERE lineage_id=?",
       )
       .run(now(), now(), lineageId);
+  }
+
+  registerHumanAttention(input: {
+    dispatch: DispatchRecord;
+    lineage: HarnessLineage;
+    registrationRequestId: string;
+    attention: HumanAttention;
+    intervention: HumanInterventionLifecycle | null;
+    request: DurableHumanAttentionRequest["request"];
+    recoverability: DurableHumanAttentionRequest["recoverability"];
+    controllerGeneration: string;
+  }): DurableHumanAttentionRequest {
+    const requestJson = canonicalJson(input.request);
+    if (Buffer.byteLength(requestJson, "utf8") > 64 * 1024)
+      throw new Error("HumanAttention request exceeds the durable size limit.");
+    return this.db
+      .transaction(() => {
+        const existing = this.db
+          .query(
+            "SELECT * FROM human_attention_requests WHERE registration_request_id=?",
+          )
+          .get(input.registrationRequestId) as HumanAttentionRequestRow | null;
+        if (existing) {
+          const request = mapHumanAttentionRequest(existing);
+          if (
+            request.actionId !== input.dispatch.action.action_id ||
+            request.lineageId !== input.lineage.lineageId ||
+            canonicalJson(request.request) !== requestJson
+          )
+            throw new Error(
+              "HumanAttention registration request conflicts with durable identity.",
+            );
+          return request;
+        }
+        const dispatch = this.get(input.dispatch.action.action_id);
+        const lineage = this.getLineage(input.lineage.lineageId);
+        if (
+          dispatch.lineageId !== lineage.lineageId ||
+          !["accepted", "running"].includes(dispatch.state) ||
+          lineage.activeActionId !== dispatch.action.action_id ||
+          input.attention.requestGeneration !== 1
+        )
+          throw new Error("HumanAttention registration context is stale.");
+        const active = this.db
+          .query(
+            `SELECT attention_id FROM human_attention_requests
+             WHERE action_id=? AND (response_state='pending' OR
+               (response_state='responded' AND delivery_state!='delivery_acknowledged'))
+             LIMIT 1`,
+          )
+          .get(dispatch.action.action_id) as { attention_id: string } | null;
+        if (active)
+          throw new Error(
+            "This Attempt already has an active blocking HumanAttention request.",
+          );
+        this.db
+          .query(`INSERT INTO human_attention_requests
+            (attention_id,request_generation,registration_request_id,action_id,run_id,occurrence_id,attempt_id,lineage_id,harness_execution_id,native_session_id,recoverability,controller_generation,request_json,response_state,delivery_state,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(
+            input.attention.attentionId,
+            input.attention.requestGeneration,
+            input.registrationRequestId,
+            dispatch.action.action_id,
+            dispatch.action.run_id,
+            dispatch.action.occurrence_id,
+            dispatch.action.attempt_id,
+            lineage.lineageId,
+            lineage.lineageId,
+            nativeSessionPublicId(lineage.nativeSession),
+            input.recoverability,
+            input.controllerGeneration,
+            requestJson,
+            "pending",
+            "response_not_delivered",
+            input.attention.requestedAt,
+            input.attention.requestedAt,
+          );
+        this.db
+          .query(
+            "UPDATE harness_lineages SET session_state='waiting_for_human',attention_json=?,intervention_json=?,last_activity_at=?,updated_at=? WHERE lineage_id=? AND active_action_id=?",
+          )
+          .run(
+            JSON.stringify(input.attention),
+            input.intervention ? JSON.stringify(input.intervention) : null,
+            input.attention.requestedAt,
+            now(),
+            lineage.lineageId,
+            dispatch.action.action_id,
+          );
+        this.recordHumanAttentionEvent(
+          input.attention.attentionId,
+          "request_created",
+          input.attention.requestedAt,
+          {},
+        );
+        return this.getHumanAttentionRequest(input.attention.attentionId);
+      })
+      .immediate();
+  }
+
+  getHumanAttentionRequest(attentionId: string): DurableHumanAttentionRequest {
+    const row = this.db
+      .query("SELECT * FROM human_attention_requests WHERE attention_id=?")
+      .get(attentionId) as HumanAttentionRequestRow | null;
+    if (!row) throw new Error(`Unknown HumanAttention request: ${attentionId}`);
+    return mapHumanAttentionRequest(row);
+  }
+
+  activeHumanAttentionRequest(
+    actionId: string,
+  ): DurableHumanAttentionRequest | null {
+    const row = this.db
+      .query(
+        `SELECT * FROM human_attention_requests
+         WHERE action_id=? AND (response_state='pending' OR
+           (response_state='responded' AND delivery_state!='delivery_acknowledged'))
+         ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(actionId) as HumanAttentionRequestRow | null;
+    return row ? mapHumanAttentionRequest(row) : null;
+  }
+
+  recordHumanAttentionResponse(input: {
+    attentionId: string;
+    requestGeneration: number;
+    actionId: string;
+    runId: string;
+    occurrenceId: string;
+    attemptId: string;
+    lineageId: string;
+    nativeSessionId: string | null;
+    deliveryAttemptId: string;
+    response: HumanAttentionResponse;
+  }): DurableHumanAttentionRequest {
+    const responseJson = canonicalJson(input.response);
+    if (Buffer.byteLength(responseJson, "utf8") > 128 * 1024)
+      throw new Error(
+        "HumanAttention response exceeds the durable size limit.",
+      );
+    return this.db
+      .transaction(() => {
+        const current = this.getHumanAttentionRequest(input.attentionId);
+        if (
+          current.requestGeneration !== input.requestGeneration ||
+          current.actionId !== input.actionId ||
+          current.runId !== input.runId ||
+          current.occurrenceId !== input.occurrenceId ||
+          current.attemptId !== input.attemptId ||
+          current.lineageId !== input.lineageId ||
+          current.nativeSessionId !== input.nativeSessionId ||
+          current.responseState === "cancelled" ||
+          current.responseState === "obsolete"
+        )
+          throw new Error("HumanAttention response identity is stale.");
+        if (current.response) {
+          if (
+            canonicalJson(current.response) !== responseJson ||
+            current.deliveryAttemptId !== input.deliveryAttemptId
+          )
+            throw new Error(
+              "HumanAttention already has a different authoritative response.",
+            );
+          return current;
+        }
+        this.db
+          .query(`UPDATE human_attention_requests SET
+            response_state='responded',response_json=?,response_committed_at=?,delivery_state='response_not_delivered',delivery_attempt_id=?,updated_at=?
+            WHERE attention_id=? AND response_state='pending'`)
+          .run(
+            responseJson,
+            input.response.respondedAt,
+            input.deliveryAttemptId,
+            now(),
+            input.attentionId,
+          );
+        this.updateAttentionProjection(input.lineageId, input.attentionId, {
+          responseState: "responded",
+          deliveryState: "response_not_delivered",
+          deliveryAttemptId: input.deliveryAttemptId,
+        });
+        this.recordHumanAttentionEvent(
+          input.attentionId,
+          "response_committed",
+          input.response.respondedAt,
+          { deliveryAttemptId: input.deliveryAttemptId },
+        );
+        return this.getHumanAttentionRequest(input.attentionId);
+      })
+      .immediate();
+  }
+
+  beginHumanAttentionDelivery(
+    attentionId: string,
+    requestGeneration: number,
+  ): DurableHumanAttentionRequest {
+    return this.db
+      .transaction(() => {
+        const current = this.getHumanAttentionRequest(attentionId);
+        if (
+          current.requestGeneration !== requestGeneration ||
+          current.responseState !== "responded" ||
+          !current.response ||
+          !current.deliveryAttemptId
+        )
+          throw new Error(
+            "HumanAttention response is unavailable for delivery.",
+          );
+        if (current.deliveryState !== "response_not_delivered")
+          throw new Error(
+            "HumanAttention response delivery cannot be replayed.",
+          );
+        const requestedAt = now();
+        this.db
+          .query(`UPDATE human_attention_requests SET
+            delivery_state='delivery_requested',delivery_requested_at=?,updated_at=?
+            WHERE attention_id=? AND delivery_state='response_not_delivered'`)
+          .run(requestedAt, requestedAt, attentionId);
+        this.updateAttentionProjection(current.lineageId, attentionId, {
+          responseState: "responded",
+          deliveryState: "delivery_requested",
+          deliveryAttemptId: current.deliveryAttemptId,
+        });
+        this.recordHumanAttentionEvent(
+          attentionId,
+          "delivery_requested",
+          requestedAt,
+          { deliveryAttemptId: current.deliveryAttemptId },
+        );
+        return this.getHumanAttentionRequest(attentionId);
+      })
+      .immediate();
+  }
+
+  acknowledgeHumanAttentionDelivery(input: {
+    attentionId: string;
+    requestGeneration: number;
+    deliveryAttemptId: string;
+  }): DurableHumanAttentionRequest {
+    return this.db
+      .transaction(() => {
+        const current = this.getHumanAttentionRequest(input.attentionId);
+        if (
+          current.requestGeneration !== input.requestGeneration ||
+          current.deliveryAttemptId !== input.deliveryAttemptId ||
+          current.responseState !== "responded"
+        )
+          throw new Error("HumanAttention delivery acknowledgement is stale.");
+        if (current.deliveryState === "delivery_acknowledged") return current;
+        if (current.deliveryState !== "delivery_requested")
+          throw new Error(
+            "HumanAttention delivery acknowledgement is uncertain.",
+          );
+        const acknowledgedAt = now();
+        this.db
+          .query(`UPDATE human_attention_requests SET
+            delivery_state='delivery_acknowledged',delivery_acknowledged_at=?,updated_at=?
+            WHERE attention_id=? AND delivery_state='delivery_requested'`)
+          .run(acknowledgedAt, acknowledgedAt, input.attentionId);
+        this.clearAttentionProjection(current.lineageId, input.attentionId);
+        this.recordHumanAttentionEvent(
+          input.attentionId,
+          "delivery_acknowledged",
+          acknowledgedAt,
+          { deliveryAttemptId: input.deliveryAttemptId },
+        );
+        return this.getHumanAttentionRequest(input.attentionId);
+      })
+      .immediate();
+  }
+
+  markHumanAttentionDeliveryUncertain(
+    attentionId: string,
+    reason: string,
+  ): DurableHumanAttentionRequest {
+    return this.db
+      .transaction(() => {
+        const current = this.getHumanAttentionRequest(attentionId);
+        if (current.deliveryState !== "delivery_requested") return current;
+        const uncertainAt = now();
+        this.db
+          .query(`UPDATE human_attention_requests SET
+            delivery_state='delivery_uncertain',delivery_uncertain_at=?,cancellation_reason=?,updated_at=?
+            WHERE attention_id=? AND delivery_state='delivery_requested'`)
+          .run(uncertainAt, reason.slice(0, 500), uncertainAt, attentionId);
+        this.updateAttentionProjection(current.lineageId, attentionId, {
+          responseState: "responded",
+          deliveryState: "delivery_uncertain",
+          ...(current.deliveryAttemptId
+            ? { deliveryAttemptId: current.deliveryAttemptId }
+            : {}),
+        });
+        this.recordHumanAttentionEvent(
+          attentionId,
+          "delivery_uncertain",
+          uncertainAt,
+          { reason: reason.slice(0, 500) },
+        );
+        return this.getHumanAttentionRequest(attentionId);
+      })
+      .immediate();
+  }
+
+  cancelHumanAttention(
+    attentionId: string,
+    reason: string,
+    state: "cancelled" | "obsolete" = "cancelled",
+  ): DurableHumanAttentionRequest {
+    return this.db
+      .transaction(() => {
+        const current = this.getHumanAttentionRequest(attentionId);
+        if (["cancelled", "obsolete"].includes(current.responseState))
+          return current;
+        if (current.deliveryState === "delivery_acknowledged") return current;
+        const cancelledAt = now();
+        this.db
+          .query(`UPDATE human_attention_requests SET
+            response_state=?,cancelled_at=?,cancellation_reason=?,updated_at=?
+            WHERE attention_id=? AND delivery_state!='delivery_acknowledged'`)
+          .run(
+            state,
+            cancelledAt,
+            reason.slice(0, 500),
+            cancelledAt,
+            attentionId,
+          );
+        this.clearAttentionProjection(current.lineageId, attentionId);
+        this.recordHumanAttentionEvent(
+          attentionId,
+          state === "cancelled" ? "request_cancelled" : "request_obsolete",
+          cancelledAt,
+          { reason: reason.slice(0, 500) },
+        );
+        return this.getHumanAttentionRequest(attentionId);
+      })
+      .immediate();
+  }
+
+  humanAttentionReconciliation(): DurableHumanAttentionRequest[] {
+    return (
+      this.db
+        .query(
+          "SELECT * FROM human_attention_requests WHERE response_state!='pending' ORDER BY rowid",
+        )
+        .all() as HumanAttentionRequestRow[]
+    ).map(mapHumanAttentionRequest);
+  }
+
+  private updateAttentionProjection(
+    lineageId: string,
+    attentionId: string,
+    update: Pick<HumanAttention, "responseState" | "deliveryState"> & {
+      deliveryAttemptId?: string;
+    },
+  ): void {
+    const lineage = this.getLineage(lineageId);
+    if (lineage.attention?.attentionId !== attentionId) return;
+    this.db
+      .query(
+        "UPDATE harness_lineages SET attention_json=?,last_activity_at=?,updated_at=? WHERE lineage_id=?",
+      )
+      .run(
+        JSON.stringify({ ...lineage.attention, ...update }),
+        now(),
+        now(),
+        lineageId,
+      );
+  }
+
+  private clearAttentionProjection(
+    lineageId: string,
+    attentionId: string,
+  ): void {
+    const lineage = this.getLineage(lineageId);
+    if (lineage.attention?.attentionId !== attentionId) return;
+    this.db
+      .query(
+        "UPDATE harness_lineages SET session_state='running',attention_json=NULL,last_activity_at=?,updated_at=? WHERE lineage_id=?",
+      )
+      .run(now(), now(), lineageId);
+  }
+
+  private recordHumanAttentionEvent(
+    attentionId: string,
+    eventType: string,
+    occurredAt: string,
+    metadata: Record<string, JsonValue>,
+  ): void {
+    this.db
+      .query(
+        "INSERT INTO human_attention_events(attention_id,event_type,occurred_at,metadata_json) VALUES (?,?,?,?)",
+      )
+      .run(attentionId, eventType, occurredAt, JSON.stringify(metadata));
   }
 
   updateSession(
@@ -1298,6 +1727,8 @@ export class DispatchRegistry {
     const version = this.schemaVersion();
     if (tables.length === 0 && version === 0) {
       this.createCurrentSchema();
+    } else if (version === 1) {
+      this.migrateVersionOneSchema();
     } else if (version !== DISPATCH_REGISTRY_SCHEMA_VERSION) {
       throw new IncompatibleWorkerDatabaseError(
         this.databasePath,
@@ -1370,6 +1801,44 @@ export class DispatchRegistry {
       CREATE INDEX dispatches_attempt_id ON dispatches(attempt_id);
       CREATE INDEX dispatches_run_occurrence ON dispatches(run_id,occurrence_id);
       CREATE INDEX dispatches_state ON dispatches(state);
+      CREATE TABLE human_attention_requests (
+        attention_id TEXT PRIMARY KEY,
+        request_generation INTEGER NOT NULL CHECK(request_generation > 0),
+        registration_request_id TEXT NOT NULL UNIQUE,
+        action_id TEXT NOT NULL REFERENCES dispatches(action_id),
+        run_id TEXT NOT NULL,
+        occurrence_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        lineage_id TEXT NOT NULL REFERENCES harness_lineages(lineage_id),
+        harness_execution_id TEXT NOT NULL,
+        native_session_id TEXT,
+        recoverability TEXT NOT NULL CHECK(recoverability IN ('rebind_exact','wait_not_recoverable')),
+        controller_generation TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        response_state TEXT NOT NULL CHECK(response_state IN ('pending','responded','cancelled','obsolete')),
+        response_json TEXT,
+        delivery_state TEXT NOT NULL CHECK(delivery_state IN ('response_not_delivered','delivery_requested','delivery_acknowledged','delivery_uncertain')),
+        delivery_attempt_id TEXT,
+        created_at TEXT NOT NULL,
+        response_committed_at TEXT,
+        delivery_requested_at TEXT,
+        delivery_acknowledged_at TEXT,
+        delivery_uncertain_at TEXT,
+        cancelled_at TEXT,
+        cancellation_reason TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX human_attention_requests_action ON human_attention_requests(action_id,created_at);
+      CREATE UNIQUE INDEX human_attention_requests_one_active ON human_attention_requests(action_id)
+        WHERE response_state='pending' OR (response_state='responded' AND delivery_state!='delivery_acknowledged');
+      CREATE TABLE human_attention_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        attention_id TEXT NOT NULL REFERENCES human_attention_requests(attention_id),
+        event_type TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL
+      );
+      CREATE INDEX human_attention_events_request ON human_attention_events(attention_id,event_id);
       CREATE TABLE physical_process_transitions (
         target_action_id TEXT PRIMARY KEY REFERENCES dispatches(action_id),
         source_action_id TEXT NOT NULL REFERENCES dispatches(action_id),
@@ -1384,6 +1853,63 @@ export class DispatchRegistry {
       PRAGMA user_version = ${DISPATCH_REGISTRY_SCHEMA_VERSION};
       COMMIT;
     `);
+  }
+
+  private migrateVersionOneSchema(): void {
+    this.db
+      .transaction(() => {
+        this.db.exec(`
+          CREATE TABLE human_attention_requests (
+            attention_id TEXT PRIMARY KEY,
+            request_generation INTEGER NOT NULL CHECK(request_generation > 0),
+            registration_request_id TEXT NOT NULL UNIQUE,
+            action_id TEXT NOT NULL REFERENCES dispatches(action_id),
+            run_id TEXT NOT NULL,
+            occurrence_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            lineage_id TEXT NOT NULL REFERENCES harness_lineages(lineage_id),
+            harness_execution_id TEXT NOT NULL,
+            native_session_id TEXT,
+            recoverability TEXT NOT NULL CHECK(recoverability IN ('rebind_exact','wait_not_recoverable')),
+            controller_generation TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            response_state TEXT NOT NULL CHECK(response_state IN ('pending','responded','cancelled','obsolete')),
+            response_json TEXT,
+            delivery_state TEXT NOT NULL CHECK(delivery_state IN ('response_not_delivered','delivery_requested','delivery_acknowledged','delivery_uncertain')),
+            delivery_attempt_id TEXT,
+            created_at TEXT NOT NULL,
+            response_committed_at TEXT,
+            delivery_requested_at TEXT,
+            delivery_acknowledged_at TEXT,
+            delivery_uncertain_at TEXT,
+            cancelled_at TEXT,
+            cancellation_reason TEXT,
+            updated_at TEXT NOT NULL
+          );
+          CREATE INDEX human_attention_requests_action ON human_attention_requests(action_id,created_at);
+          CREATE UNIQUE INDEX human_attention_requests_one_active ON human_attention_requests(action_id)
+            WHERE response_state='pending' OR (response_state='responded' AND delivery_state!='delivery_acknowledged');
+          CREATE TABLE human_attention_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            attention_id TEXT NOT NULL REFERENCES human_attention_requests(attention_id),
+            event_type TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+          );
+          CREATE INDEX human_attention_events_request ON human_attention_events(attention_id,event_id);
+          UPDATE harness_lineages
+          SET attention_json = json_set(
+            attention_json,
+            '$.requestGeneration', COALESCE(json_extract(attention_json, '$.requestGeneration'), 1),
+            '$.responseState', COALESCE(json_extract(attention_json, '$.responseState'), 'pending'),
+            '$.deliveryState', COALESCE(json_extract(attention_json, '$.deliveryState'), 'response_not_delivered')
+          )
+          WHERE attention_json IS NOT NULL;
+          PRAGMA user_version = ${DISPATCH_REGISTRY_SCHEMA_VERSION};
+        `);
+        this.validateCurrentSchema();
+      })
+      .immediate();
   }
 
   private validateCurrentSchema(): void {
@@ -1439,6 +1965,40 @@ export class DispatchRegistry {
         "server_acknowledged_at",
         "created_at",
         "updated_at",
+      ],
+      human_attention_requests: [
+        "attention_id",
+        "request_generation",
+        "registration_request_id",
+        "action_id",
+        "run_id",
+        "occurrence_id",
+        "attempt_id",
+        "lineage_id",
+        "harness_execution_id",
+        "native_session_id",
+        "recoverability",
+        "controller_generation",
+        "request_json",
+        "response_state",
+        "response_json",
+        "delivery_state",
+        "delivery_attempt_id",
+        "created_at",
+        "response_committed_at",
+        "delivery_requested_at",
+        "delivery_acknowledged_at",
+        "delivery_uncertain_at",
+        "cancelled_at",
+        "cancellation_reason",
+        "updated_at",
+      ],
+      human_attention_events: [
+        "event_id",
+        "attention_id",
+        "event_type",
+        "occurred_at",
+        "metadata_json",
       ],
       physical_process_transitions: [
         "target_action_id",
@@ -1532,6 +2092,41 @@ function mapDispatch(row: DispatchRow): DispatchRecord {
     serverAcknowledgedAt: row.server_acknowledged_at,
   };
 }
+function mapHumanAttentionRequest(
+  row: HumanAttentionRequestRow,
+): DurableHumanAttentionRequest {
+  return {
+    attentionId: row.attention_id,
+    requestGeneration: row.request_generation,
+    registrationRequestId: row.registration_request_id,
+    actionId: row.action_id,
+    runId: row.run_id,
+    occurrenceId: row.occurrence_id,
+    attemptId: row.attempt_id,
+    lineageId: row.lineage_id,
+    harnessExecutionId: row.harness_execution_id,
+    nativeSessionId: row.native_session_id,
+    recoverability: row.recoverability,
+    controllerGeneration: row.controller_generation,
+    request: JSON.parse(
+      row.request_json,
+    ) as DurableHumanAttentionRequest["request"],
+    responseState: row.response_state,
+    response: row.response_json
+      ? (JSON.parse(row.response_json) as HumanAttentionResponse)
+      : null,
+    deliveryState: row.delivery_state,
+    deliveryAttemptId: row.delivery_attempt_id,
+    createdAt: row.created_at,
+    responseCommittedAt: row.response_committed_at,
+    deliveryRequestedAt: row.delivery_requested_at,
+    deliveryAcknowledgedAt: row.delivery_acknowledged_at,
+    deliveryUncertainAt: row.delivery_uncertain_at,
+    cancelledAt: row.cancelled_at,
+    cancellationReason: row.cancellation_reason,
+  };
+}
+
 function mapPhysicalProcessTransition(
   row: PhysicalProcessTransitionRow,
 ): PhysicalProcessTransition {

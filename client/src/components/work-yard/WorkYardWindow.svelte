@@ -950,7 +950,9 @@ function attemptOutput(attempt: RunAttempt): string {
                             {#if session.attention}<blockquote>“{session.attention.message}”</blockquote>{/if}
                             {#if session.attention && !session.attention.attention_id.startsWith("qe-prompt-authorization-")}
                               {@const interaction = session.attention.interaction?.kind}
-                              {#if interaction === "confirmation" && session.capabilities.structured_confirmation}
+                              {#if session.attention.response_state === "responded"}
+                                <small>Response committed · {humanize(session.attention.delivery_state)}</small>
+                              {:else if interaction === "confirmation" && session.capabilities.structured_confirmation}
                                 <div class="attention-response-actions">
                                   <button class="primary" disabled={busy} on:click={() => respondToAttention(step, true, true)}>Approve</button>
                                   <button class="secondary" disabled={busy} on:click={() => respondToAttention(step, false, null)}>Decline</button>

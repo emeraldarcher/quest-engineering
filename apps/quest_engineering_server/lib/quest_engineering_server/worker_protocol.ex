@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 13
+  @version 14
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -37,6 +37,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @turn_phases ~w(preparing prompt_intent waiting_for_activity working awaiting_result blocked stalled settled uncertain)
   @attention_categories ~w(needs_input needs_permission needs_authentication needs_confirmation blocked_external interactive_prompt unknown_interactive_block)
   @interaction_kinds ~w(confirmation text choice multiline_response conversational_intervention)
+  @attention_response_states ~w(pending responded cancelled obsolete)
+  @reconciled_attention_response_states ~w(responded cancelled obsolete)
+  @attention_delivery_states ~w(response_not_delivered delivery_requested delivery_acknowledged delivery_uncertain)
+  @attention_delivery_report_states ~w(delivery_acknowledged delivery_uncertain cancelled obsolete)
   @human_control_states ~w(intervention_pending human_control resuming_automation)
   @intervention_states ~w(intervention_pending resuming_automation resumed)
   @failure_classifications ~w(auto_retryable operator_recovery_required terminal_not_recoverable uncertain)
@@ -66,6 +70,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             delivery: map() | nil,
             session: map() | nil,
             sessions: [map()] | nil,
+            attention_deliveries: [map()] | nil,
             recovery: map() | nil,
             cleanup: map() | nil,
             setup: map() | nil,
@@ -88,6 +93,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :delivery,
       :session,
       :sessions,
+      :attention_deliveries,
       :recovery,
       :cleanup,
       :setup,
@@ -104,7 +110,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 13
+  @spec version() :: 14
   def version, do: @version
 
   @spec encode_tool_policy(Exact.t() | NativePermissions.t()) :: map()
@@ -350,22 +356,27 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     }
   end
 
-  def respond_human_attention(worker_id, generation, action, response) do
+  def respond_human_attention(worker_id, generation, request) do
     %{
       "type" => "respond_human_attention",
       "protocol_version" => @version,
       "worker_id" => worker_id,
       "connection_generation" => generation,
-      "action_id" => action.id,
-      "run_id" => action.run_id,
-      "occurrence_id" => action.occurrence_id,
-      "attempt_id" => action.attempt_id,
+      "action_id" => request.action_id,
+      "run_id" => request.run_id,
+      "occurrence_id" => request.occurrence_id,
+      "attempt_id" => request.attempt_id,
       "response" => %{
-        "request_id" => response.request_id,
-        "attention_id" => response.attention_id,
-        "approved" => response.approved,
-        "value" => response.value,
-        "responded_at" => DateTime.to_iso8601(response.responded_at)
+        "request_id" => request.response_request_id,
+        "attention_id" => request.id,
+        "request_generation" => request.request_generation,
+        "session_id" => request.session_id,
+        "native_session_id" => request.native_session_id,
+        "delivery_attempt_id" => request.delivery_attempt_id,
+        "approved" => request.response["approved"],
+        "value" => request.response["value"],
+        "responded_at" => DateTime.to_iso8601(request.response_submitted_at),
+        "response_committed_at" => DateTime.to_iso8601(request.response_committed_at)
       }
     }
   end
@@ -588,19 +599,66 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end
   end
 
+  defp decode_message("human_attention_delivery", worker_id, payload) do
+    with connection_generation
+         when is_integer(connection_generation) and connection_generation > 0 <-
+           payload["connection_generation"],
+         {:ok, action_id} <- required_string(payload, "action_id"),
+         {:ok, run_id} <- required_string(payload, "run_id"),
+         {:ok, occurrence_id} <- required_string(payload, "occurrence_id"),
+         {:ok, attempt_id} <- required_string(payload, "attempt_id"),
+         {:ok, session_id} <- required_string(payload, "session_id"),
+         {:ok, attention_id} <- required_string(payload, "attention_id"),
+         request_generation when is_integer(request_generation) and request_generation > 0 <-
+           payload["request_generation"],
+         {:ok, delivery_attempt_id} <- optional_string(payload["delivery_attempt_id"]),
+         state when state in @attention_delivery_report_states <- payload["state"],
+         {:ok, observed_at} <- timestamp(payload["observed_at"], "observed_at"),
+         {:ok, reason} <- optional_string(payload["reason"]) do
+      {:ok,
+       %Message{
+         type: :human_attention_delivery,
+         worker_id: worker_id,
+         action_id: action_id,
+         occurrence_id: occurrence_id,
+         attempt_id: attempt_id,
+         delivery: %{
+           connection_generation: connection_generation,
+           action_id: action_id,
+           run_id: run_id,
+           occurrence_id: occurrence_id,
+           attempt_id: attempt_id,
+           session_id: session_id,
+           attention_id: attention_id,
+           request_generation: request_generation,
+           delivery_attempt_id: delivery_attempt_id,
+           state: state,
+           observed_at: observed_at,
+           reason: reason
+         }
+       }}
+    else
+      _ -> error(:invalid_field, "human_attention_delivery")
+    end
+  end
+
   defp decode_message("reconcile_state", worker_id, %{"dispatches" => dispatches} = payload)
        when is_list(dispatches) do
     sessions = Map.get(payload, "sessions", [])
+    attention_deliveries = Map.get(payload, "human_attention_deliveries", [])
 
     with true <- is_list(sessions),
+         true <- is_list(attention_deliveries),
          {:ok, decoded} <- decode_reconcile_dispatches(dispatches),
-         {:ok, decoded_sessions} <- decode_sessions(sessions) do
+         {:ok, decoded_sessions} <- decode_sessions(sessions),
+         {:ok, decoded_deliveries} <- decode_attention_deliveries(attention_deliveries) do
       {:ok,
        %Message{
          type: :reconcile_state,
          worker_id: worker_id,
          dispatches: decoded,
-         sessions: decoded_sessions
+         sessions: decoded_sessions,
+         attention_deliveries: decoded_deliveries
        }}
     else
       false -> error(:invalid_field, "sessions", %{expected: "array"})
@@ -640,6 +698,73 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   end
 
   defp decode_human_recovery(_), do: error(:invalid_field, "recovery")
+
+  defp decode_attention_deliveries(deliveries) do
+    Enum.reduce_while(deliveries, {:ok, []}, fn value, {:ok, decoded} ->
+      case decode_attention_delivery(value) do
+        {:ok, delivery} -> {:cont, {:ok, [delivery | decoded]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
+  defp decode_attention_delivery(value) when is_map(value) do
+    with {:ok, action_id} <- required_string(value, "action_id"),
+         {:ok, run_id} <- required_string(value, "run_id"),
+         {:ok, occurrence_id} <- required_string(value, "occurrence_id"),
+         {:ok, attempt_id} <- required_string(value, "attempt_id"),
+         {:ok, session_id} <- required_string(value, "session_id"),
+         {:ok, attention_id} <- required_string(value, "attention_id"),
+         request_generation when is_integer(request_generation) and request_generation > 0 <-
+           value["request_generation"],
+         response_state when response_state in @reconciled_attention_response_states <-
+           value["response_state"],
+         delivery_state when delivery_state in @attention_delivery_states <-
+           value["delivery_state"],
+         {:ok, delivery_attempt_id} <- optional_string(value["delivery_attempt_id"]),
+         {:ok, response_committed_at} <-
+           optional_timestamp(value["response_committed_at"], "response_committed_at"),
+         {:ok, delivery_requested_at} <-
+           optional_timestamp(value["delivery_requested_at"], "delivery_requested_at"),
+         {:ok, delivery_acknowledged_at} <-
+           optional_timestamp(value["delivery_acknowledged_at"], "delivery_acknowledged_at"),
+         {:ok, delivery_uncertain_at} <-
+           optional_timestamp(value["delivery_uncertain_at"], "delivery_uncertain_at"),
+         {:ok, cancelled_at} <- optional_timestamp(value["cancelled_at"], "cancelled_at"),
+         {:ok, reason} <- optional_string(value["reason"]) do
+      {:ok,
+       %{
+         action_id: action_id,
+         run_id: run_id,
+         occurrence_id: occurrence_id,
+         attempt_id: attempt_id,
+         session_id: session_id,
+         attention_id: attention_id,
+         request_generation: request_generation,
+         response_state: response_state,
+         delivery_state: delivery_state,
+         delivery_attempt_id: delivery_attempt_id,
+         response_committed_at: response_committed_at,
+         delivery_requested_at: delivery_requested_at,
+         delivery_acknowledged_at: delivery_acknowledged_at,
+         delivery_uncertain_at: delivery_uncertain_at,
+         cancelled_at: cancelled_at,
+         reason: reason,
+         state: delivery_state,
+         observed_at:
+           delivery_acknowledged_at || delivery_uncertain_at || cancelled_at ||
+             response_committed_at || DateTime.utc_now()
+       }}
+    else
+      _ -> error(:invalid_field, "human_attention_deliveries")
+    end
+  end
+
+  defp decode_attention_delivery(_), do: error(:invalid_field, "human_attention_deliveries")
 
   defp decode_sessions(sessions) do
     Enum.reduce_while(sessions, {:ok, []}, fn value, {:ok, decoded} ->
@@ -889,34 +1014,64 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp decode_attention(
          %{
            "attention_id" => id,
+           "request_generation" => request_generation,
            "category" => category,
            "message" => message,
-           "requested_at" => requested_at
+           "requested_at" => requested_at,
+           "response_state" => response_state,
+           "delivery_state" => delivery_state
          } = value
        )
-       when is_binary(id) and id != "" and category in @attention_categories and
-              is_binary(message) and byte_size(message) > 0 and byte_size(message) <= 240 do
+       when is_binary(id) and id != "" and is_integer(request_generation) and
+              request_generation > 0 and category in @attention_categories and
+              response_state in @attention_response_states and
+              delivery_state in @attention_delivery_states and is_binary(message) and
+              byte_size(message) > 0 and
+              byte_size(message) <= 240 do
     with {:ok, timestamp} <- timestamp(requested_at, "session.attention.requested_at"),
          {:ok, interaction} <- decode_interaction(value["interaction"]),
-         {:ok, response_schema} <- decode_response_schema(value["response_schema"]) do
+         {:ok, response_schema} <- decode_response_schema(value["response_schema"]),
+         {:ok, delivery_attempt_id} <- optional_string(value["delivery_attempt_id"]),
+         {:ok, origin} <- decode_attention_origin(value["origin"]) do
       {:ok,
        %{
          "attention_id" => id,
+         "request_generation" => request_generation,
          "category" => category,
          "message" => message,
-         "requested_at" => DateTime.to_iso8601(timestamp)
+         "requested_at" => DateTime.to_iso8601(timestamp),
+         "response_state" => response_state,
+         "delivery_state" => delivery_state
        }
        |> maybe_put("interaction", interaction)
-       |> maybe_put("response_schema", response_schema)}
+       |> maybe_put("response_schema", response_schema)
+       |> maybe_put("delivery_attempt_id", delivery_attempt_id)
+       |> maybe_put("origin", origin)}
     end
   end
 
   defp decode_attention(_), do: error(:invalid_field, "session.attention")
 
+  defp decode_attention_origin(nil), do: {:ok, nil}
+
+  defp decode_attention_origin(%{"kind" => kind} = value)
+       when kind in ["main_agent", "internal_agent"] do
+    with {:ok, native_agent_ref} <- optional_string(value["native_agent_ref"]),
+         true <- is_nil(native_agent_ref) or byte_size(native_agent_ref) <= 256 do
+      {:ok,
+       %{"kind" => kind}
+       |> maybe_put("native_agent_ref", native_agent_ref)}
+    else
+      _ -> error(:invalid_field, "session.attention.origin")
+    end
+  end
+
+  defp decode_attention_origin(_), do: error(:invalid_field, "session.attention.origin")
+
   defp decode_response_schema(nil), do: {:ok, nil}
 
   defp decode_response_schema(value) do
-    if json_value?(value, 0),
+    if json_value?(value, 0) and byte_size(Jason.encode!(value)) <= 65_536,
       do: {:ok, value},
       else: error(:invalid_field, "session.attention.response_schema")
   end

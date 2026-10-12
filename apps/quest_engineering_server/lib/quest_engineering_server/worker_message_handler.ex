@@ -253,12 +253,35 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   def handle(worker_id, generation, %{type: :step_failed} = message),
     do: failure(worker_id, generation, message)
 
+  def handle(worker_id, generation, %{type: :human_attention_delivery, delivery: delivery}) do
+    with {:ok, request} <-
+           ExecutionSessionStore.record_attention_delivery(worker_id, generation, delivery) do
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "human_attention_delivery_recorded",
+         "attention_id" => request.id,
+         "delivery_state" => request.delivery_state
+       }}
+    end
+  end
+
   def handle(worker_id, generation, %{type: :reconcile_state, dispatches: dispatches} = message) do
     sessions = Map.get(message, :sessions, [])
+    attention_deliveries = Map.get(message, :attention_deliveries, [])
 
     with {:ok, _persisted_sessions} <-
            ExecutionSessionStore.reconcile(worker_id, generation, sessions || []),
-         {:ok, reconciliation} <- Reconciler.reconcile(worker_id, generation, dispatches) do
+         {:ok, _persisted_deliveries} <-
+           ExecutionSessionStore.reconcile_attention_deliveries(
+             worker_id,
+             generation,
+             attention_deliveries || []
+           ),
+         {:ok, reconciliation} <- Reconciler.reconcile(worker_id, generation, dispatches),
+         {:ok, attention_responses} <-
+           ExecutionSessionStore.pending_attention_responses(worker_id, generation) do
       _ = Dispatcher.redeliver(worker_id, generation)
       prompt_authorizations = DispatchStore.prompt_authorizations_for_worker(worker_id)
       cancellation_commands = ExecutionCancellation.pending_for_worker(worker_id, generation)
@@ -288,7 +311,8 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          "dispatch_resolutions" =>
            Enum.filter(reconciliation.observed, &Map.has_key?(&1, :resolution)),
          "prompt_authorizations" => prompt_authorizations,
-         "cancellation_commands" => cancellation_commands
+         "cancellation_commands" => cancellation_commands,
+         "human_attention_responses" => attention_responses
        }}
     end
   end

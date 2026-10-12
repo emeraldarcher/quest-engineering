@@ -29,6 +29,10 @@ import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
 import { ClaudeAgentSdkAdapter } from "./harnesses/claude-agent-sdk/adapter.ts";
 import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
 import { HarnessControlServer } from "./harnesses/control/server.ts";
+import type {
+  DurableHumanAttentionRequest,
+  HumanAttentionDeliveryReceipt,
+} from "./harnesses/control/types.ts";
 import { FakeHarness } from "./harnesses/fake/adapter.ts";
 import { nativeSessionPublicId } from "./harnesses/native-session.ts";
 import { PiHarness } from "./harnesses/pi/adapter.ts";
@@ -302,6 +306,12 @@ export class QuestEngineeringWorker {
       this.harnessControl,
       1_000,
       (dispatch) => this.handleTerminalFailure(dispatch),
+    );
+    this.harnessControl.setHumanAttentionObserver((dispatch, lineage) =>
+      this.reportHarnessSession(dispatch, lineage).then(() => undefined),
+    );
+    this.harnessControl.setHumanAttentionDeliveryReporter((receipt, request) =>
+      this.reportHumanAttentionDelivery(receipt, request),
     );
     this.cleanupCoordinator = new RunCleanupCoordinator(this.cleanups, {
       assertRunIdle: (runId) => this.assertRunIdle(runId),
@@ -667,7 +677,25 @@ export class QuestEngineeringWorker {
         this.config.workerId,
         cancellationServerGeneration(this.channel, generation),
       );
-      await this.executor.respondToAttention(response);
+      const receipt = await this.executor.respondToAttention(response);
+      if (receipt) {
+        await this.channel.sendProtocol({
+          type: "human_attention_delivery",
+          protocol_version: WORKER_PROTOCOL_VERSION,
+          worker_id: this.config.workerId,
+          connection_generation: response.connection_generation,
+          action_id: response.action_id,
+          run_id: response.run_id,
+          occurrence_id: response.occurrence_id,
+          attempt_id: response.attempt_id,
+          session_id: response.response.session_id,
+          attention_id: receipt.attentionId,
+          request_generation: receipt.requestGeneration,
+          delivery_attempt_id: receipt.deliveryAttemptId,
+          state: receipt.state,
+          observed_at: receipt.observedAt,
+        });
+      }
       return;
     }
     if (message.type === "authorize_dispatch_prompt") {
@@ -979,6 +1007,29 @@ export class QuestEngineeringWorker {
         worker_id: this.config.workerId,
         dispatches,
         sessions,
+        human_attention_deliveries: this.registry
+          .humanAttentionReconciliation()
+          .map((request) => ({
+            action_id: request.actionId,
+            run_id: request.runId,
+            occurrence_id: request.occurrenceId,
+            attempt_id: request.attemptId,
+            session_id: request.lineageId,
+            attention_id: request.attentionId,
+            request_generation: request.requestGeneration,
+            response_state: request.responseState as
+              | "responded"
+              | "cancelled"
+              | "obsolete",
+            delivery_state: request.deliveryState,
+            delivery_attempt_id: request.deliveryAttemptId,
+            response_committed_at: request.responseCommittedAt,
+            delivery_requested_at: request.deliveryRequestedAt,
+            delivery_acknowledged_at: request.deliveryAcknowledgedAt,
+            delivery_uncertain_at: request.deliveryUncertainAt,
+            cancelled_at: request.cancelledAt,
+            reason: request.cancellationReason,
+          })),
       });
       if (response.result !== "reconciled")
         throw new Error(
@@ -1015,6 +1066,19 @@ export class QuestEngineeringWorker {
           );
           await this.executor.cancel(cancellation);
         }
+      }
+
+      const attentionResponses = Array.isArray(
+        response.human_attention_responses,
+      )
+        ? response.human_attention_responses
+        : [];
+      for (const command of attentionResponses) {
+        if (command && typeof command === "object")
+          await this.handleProtocol(
+            command as Record<string, unknown>,
+            generation,
+          );
       }
 
       const resolutions = Array.isArray(response.dispatch_resolutions)
@@ -1677,6 +1741,38 @@ export class QuestEngineeringWorker {
     return operation;
   }
 
+  private async reportHumanAttentionDelivery(
+    receipt: HumanAttentionDeliveryReceipt,
+    request: DurableHumanAttentionRequest,
+  ): Promise<void> {
+    const connectionGeneration = this.channel.currentServerGeneration();
+    if (!this.controlPlaneReady() || connectionGeneration === null) {
+      this.markReconciliationDirty();
+      return;
+    }
+    try {
+      await this.channel.sendProtocol({
+        type: "human_attention_delivery",
+        protocol_version: WORKER_PROTOCOL_VERSION,
+        worker_id: this.config.workerId,
+        connection_generation: connectionGeneration,
+        action_id: request.actionId,
+        run_id: request.runId,
+        occurrence_id: request.occurrenceId,
+        attempt_id: request.attemptId,
+        session_id: request.lineageId,
+        attention_id: receipt.attentionId,
+        request_generation: receipt.requestGeneration,
+        delivery_attempt_id: receipt.deliveryAttemptId,
+        state: receipt.state,
+        observed_at: receipt.observedAt,
+        ...(receipt.reason ? { reason: receipt.reason } : {}),
+      });
+    } catch {
+      this.markReconciliationDirty();
+    }
+  }
+
   private async report(
     dispatch: ReconcileDispatch,
     type: DispatchReportType,
@@ -1806,9 +1902,28 @@ function harnessSessionPayload(
     attention: lineage.attention
       ? {
           attention_id: lineage.attention.attentionId,
+          request_generation: lineage.attention.requestGeneration,
           category: lineage.attention.category,
           message: lineage.attention.message,
           requested_at: lineage.attention.requestedAt,
+          response_state: lineage.attention.responseState,
+          delivery_state: lineage.attention.deliveryState,
+          ...(lineage.attention.deliveryAttemptId
+            ? { delivery_attempt_id: lineage.attention.deliveryAttemptId }
+            : {}),
+          ...(lineage.attention.origin
+            ? {
+                origin: {
+                  kind: lineage.attention.origin.kind,
+                  ...(lineage.attention.origin.nativeAgentRef
+                    ? {
+                        native_agent_ref:
+                          lineage.attention.origin.nativeAgentRef,
+                      }
+                    : {}),
+                },
+              }
+            : {}),
           ...(lineage.attention.interaction
             ? {
                 interaction: {
