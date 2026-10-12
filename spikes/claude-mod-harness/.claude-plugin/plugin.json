@@ -1,0 +1,6 @@
+{
+  "name": "qe-control-spike",
+  "version": "0.0.0",
+  "description": "Zero-inference spike for a Quest Engineering Claude Code Mod control bridge",
+  "author": { "name": "Quest Engineering" }
+}

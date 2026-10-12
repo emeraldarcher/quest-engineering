@@ -1,0 +1,4 @@
+{
+  "description": "QE control bridge Mod spike",
+  "modules": ["./register.ts"]
+}
