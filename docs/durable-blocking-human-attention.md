@@ -173,7 +173,7 @@ old callback is never replayed automatically.
 - Worker dispatch SQLite schema: 2
 
 Protocol peers fail closed unless they implement the durable identity and
-delivery-state contract. An exact Worker SQLite schema 1 database migrates in
-place by adding the two attention tables and backfilling lifecycle defaults on
-legacy attention projections while preserving dispatch/lineage records;
-malformed or other-version development databases still fail closed.
+delivery-state contract. Worker SQLite has one complete schema-version-2
+bootstrap. Obsolete versions and malformed development databases fail closed
+with the standard greenfield reset instruction; QE performs no legacy row or
+schema conversion.

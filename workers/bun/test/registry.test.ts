@@ -31,8 +31,9 @@ afterEach(async () => {
 });
 
 describe("durable dispatch registry", () => {
-  test("bootstraps only the current harness-lineage schema", async () => {
+  test("fresh state bootstraps the complete schema version two directly", async () => {
     const { root, database } = await fixture();
+    expect(DISPATCH_REGISTRY_SCHEMA_VERSION).toBe(2);
     const registry = new DispatchRegistry(database, root);
     registry.close();
 
@@ -92,7 +93,22 @@ describe("durable dispatch registry", () => {
     current.close();
   });
 
-  test("migrates the exact version-one dispatch schema without changing existing execution records", async () => {
+  test("reopens a valid schema-version-two database", async () => {
+    const { root, database } = await fixture();
+    const created = new DispatchRegistry(database, root);
+    const dispatch = created.accept(action()).dispatch;
+    created.close();
+
+    const reopened = new DispatchRegistry(database, root);
+    expect(reopened.get(dispatch.action.action_id)).toMatchObject({
+      action: { action_id: dispatch.action.action_id },
+      resultNonce: dispatch.resultNonce,
+      state: "accepted",
+    });
+    reopened.close();
+  });
+
+  test("rejects schema version one without converting rows or HumanAttention state", async () => {
     const { root, database } = await fixture();
     const created = new DispatchRegistry(database, root);
     const dispatch = created.accept(action()).dispatch;
@@ -119,26 +135,59 @@ describe("durable dispatch registry", () => {
     `);
     versionOne.close();
 
-    const migrated = new DispatchRegistry(database, root);
-    expect(migrated.get(dispatch.action.action_id)).toMatchObject({
-      action: { action_id: dispatch.action.action_id },
-      resultNonce: dispatch.resultNonce,
-      state: "accepted",
+    let failure: unknown;
+    try {
+      new DispatchRegistry(database, root);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(IncompatibleWorkerDatabaseError);
+    expect(String(failure)).toContain("found schema version 1");
+    expect(String(failure)).toContain(
+      "Reset this greenfield development database",
+    );
+
+    const unchanged = new Database(database);
+    expect(unchanged.query("PRAGMA user_version").get()).toEqual({
+      user_version: 1,
     });
     expect(
-      migrated.getLineage(dispatch.lineageId as string).attention,
-    ).toMatchObject({
+      (
+        unchanged
+          .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+          )
+          .all() as Array<{ name: string }>
+      ).map((row) => row.name),
+    ).toEqual([
+      "dispatches",
+      "harness_lineages",
+      "physical_process_transitions",
+    ]);
+    expect(
+      unchanged
+        .query("SELECT action_id FROM dispatches WHERE action_id=?")
+        .get(dispatch.action.action_id),
+    ).toEqual({ action_id: dispatch.action.action_id });
+    const legacyAttention = unchanged
+      .query("SELECT attention_json FROM harness_lineages WHERE lineage_id=?")
+      .get(dispatch.lineageId as string) as { attention_json: string };
+    expect(JSON.parse(legacyAttention.attention_json)).toEqual({
       attentionId: "legacy-attention",
-      requestGeneration: 1,
-      responseState: "pending",
-      deliveryState: "response_not_delivered",
+      category: "needs_input",
+      message: "Legacy attention projection.",
+      requestedAt: "2026-10-12T00:00:00Z",
     });
-    const verified = new Database(database);
-    expect(verified.query("PRAGMA user_version").get()).toEqual({
-      user_version: DISPATCH_REGISTRY_SCHEMA_VERSION,
-    });
-    verified.close();
-    migrated.close();
+    unchanged.close();
+  });
+
+  test("production registry contains no version-one schema conversion path", async () => {
+    const source = await Bun.file(
+      new URL("../src/dispatch/registry.ts", import.meta.url),
+    ).text();
+    expect(source).not.toContain("migrateVersionOneSchema");
+    expect(source).not.toMatch(/version\s*===\s*1/);
+    expect(source).not.toContain("json_set(");
   });
 
   test("blocking HumanAttention survives database restart and fences ambiguous delivery replay", async () => {

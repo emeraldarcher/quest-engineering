@@ -1727,8 +1727,6 @@ export class DispatchRegistry {
     const version = this.schemaVersion();
     if (tables.length === 0 && version === 0) {
       this.createCurrentSchema();
-    } else if (version === 1) {
-      this.migrateVersionOneSchema();
     } else if (version !== DISPATCH_REGISTRY_SCHEMA_VERSION) {
       throw new IncompatibleWorkerDatabaseError(
         this.databasePath,
@@ -1853,63 +1851,6 @@ export class DispatchRegistry {
       PRAGMA user_version = ${DISPATCH_REGISTRY_SCHEMA_VERSION};
       COMMIT;
     `);
-  }
-
-  private migrateVersionOneSchema(): void {
-    this.db
-      .transaction(() => {
-        this.db.exec(`
-          CREATE TABLE human_attention_requests (
-            attention_id TEXT PRIMARY KEY,
-            request_generation INTEGER NOT NULL CHECK(request_generation > 0),
-            registration_request_id TEXT NOT NULL UNIQUE,
-            action_id TEXT NOT NULL REFERENCES dispatches(action_id),
-            run_id TEXT NOT NULL,
-            occurrence_id TEXT NOT NULL,
-            attempt_id TEXT NOT NULL,
-            lineage_id TEXT NOT NULL REFERENCES harness_lineages(lineage_id),
-            harness_execution_id TEXT NOT NULL,
-            native_session_id TEXT,
-            recoverability TEXT NOT NULL CHECK(recoverability IN ('rebind_exact','wait_not_recoverable')),
-            controller_generation TEXT NOT NULL,
-            request_json TEXT NOT NULL,
-            response_state TEXT NOT NULL CHECK(response_state IN ('pending','responded','cancelled','obsolete')),
-            response_json TEXT,
-            delivery_state TEXT NOT NULL CHECK(delivery_state IN ('response_not_delivered','delivery_requested','delivery_acknowledged','delivery_uncertain')),
-            delivery_attempt_id TEXT,
-            created_at TEXT NOT NULL,
-            response_committed_at TEXT,
-            delivery_requested_at TEXT,
-            delivery_acknowledged_at TEXT,
-            delivery_uncertain_at TEXT,
-            cancelled_at TEXT,
-            cancellation_reason TEXT,
-            updated_at TEXT NOT NULL
-          );
-          CREATE INDEX human_attention_requests_action ON human_attention_requests(action_id,created_at);
-          CREATE UNIQUE INDEX human_attention_requests_one_active ON human_attention_requests(action_id)
-            WHERE response_state='pending' OR (response_state='responded' AND delivery_state!='delivery_acknowledged');
-          CREATE TABLE human_attention_events (
-            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            attention_id TEXT NOT NULL REFERENCES human_attention_requests(attention_id),
-            event_type TEXT NOT NULL,
-            occurred_at TEXT NOT NULL,
-            metadata_json TEXT NOT NULL
-          );
-          CREATE INDEX human_attention_events_request ON human_attention_events(attention_id,event_id);
-          UPDATE harness_lineages
-          SET attention_json = json_set(
-            attention_json,
-            '$.requestGeneration', COALESCE(json_extract(attention_json, '$.requestGeneration'), 1),
-            '$.responseState', COALESCE(json_extract(attention_json, '$.responseState'), 'pending'),
-            '$.deliveryState', COALESCE(json_extract(attention_json, '$.deliveryState'), 'response_not_delivered')
-          )
-          WHERE attention_json IS NOT NULL;
-          PRAGMA user_version = ${DISPATCH_REGISTRY_SCHEMA_VERSION};
-        `);
-        this.validateCurrentSchema();
-      })
-      .immediate();
   }
 
   private validateCurrentSchema(): void {
