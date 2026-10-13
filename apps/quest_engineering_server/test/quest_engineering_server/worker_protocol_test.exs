@@ -19,12 +19,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 14
+  @protocol_version 15
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v14 logical Workspace bindings" do
+  test "accepts explicit protocol v15 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -32,6 +32,51 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert hello.capabilities["tags"] == ["fake"]
     assert hello.capabilities["features"] == ["run_delivery_v1"]
     assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
+  end
+
+  test "ProviderAccount environment reports preserve only exact credential-free fences" do
+    payload = %{
+      "type" => "provider_account_environment_state",
+      "protocol_version" => @protocol_version,
+      "worker_id" => @worker_id,
+      "environment" => %{
+        "provider_account_id" => "account-1",
+        "credential_generation" => 2,
+        "worker_generation" => 7,
+        "operation_id" => "operation-1",
+        "physical_state" => "available",
+        "event_type" => "environment_ensured",
+        "backend_kind" => "fake-account",
+        "environment_id" => "environment-1",
+        "incarnation" => "incarnation-1",
+        "error_code" => nil,
+        "error_message" => nil,
+        "canary_persisted" => true,
+        "observed_at" => "2026-10-14T00:00:00.000000Z"
+      }
+    }
+
+    assert {:ok, message} = WorkerProtocol.decode_worker_message(payload, @worker_id)
+    assert message.type == :provider_account_environment_state
+    assert message.account_environment.credential_generation == 2
+    assert message.account_environment.worker_generation == 7
+    assert message.account_environment.canary_persisted
+    refute Map.has_key?(message.account_environment, :credential)
+
+    credential =
+      put_in(
+        payload,
+        ["environment", "credential"],
+        "must-not-cross-the-boundary"
+      )
+
+    assert {:error, %{code: :invalid_field}} =
+             WorkerProtocol.decode_worker_message(credential, @worker_id)
+
+    stale = put_in(payload, ["environment", "worker_generation"], 0)
+
+    assert {:error, %{code: :invalid_field}} =
+             WorkerProtocol.decode_worker_message(stale, @worker_id)
   end
 
   test "accepts structured execution-environment capabilities and rejects malformed evidence" do

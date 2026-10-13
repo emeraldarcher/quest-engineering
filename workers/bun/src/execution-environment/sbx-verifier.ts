@@ -33,6 +33,7 @@ import {
 import type { DurableEnvironmentRecord } from "./store.ts";
 import type {
   EnvironmentCapability,
+  EnvironmentOwner,
   EnvironmentReadinessDiagnostic,
 } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
@@ -217,10 +218,10 @@ export interface SbxEnvironmentVerifier {
 }
 
 interface OwnershipMarker {
-  schemaVersion: 1;
+  schemaVersion: 2;
   backendKind: "sbx";
   workerId: string;
-  runId: string;
+  owner: EnvironmentOwner;
   environmentId: string;
   displayName: string;
   incarnation: string;
@@ -466,16 +467,29 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       executable: "/usr/bin/python3",
       args: [
         "-c",
-        "import json,os; keys=['QE_ENVIRONMENT_INCARNATION','QE_ENVIRONMENT_PROFILE_DIGEST','QE_ENVIRONMENT_SPEC_DIGEST','QE_RUN_ID','QE_WORKER_ID']; print(json.dumps({k:os.environ.get(k) for k in keys},separators=(',',':')))",
+        "import json,os; keys=['QE_ENVIRONMENT_INCARNATION','QE_ENVIRONMENT_PROFILE_DIGEST','QE_ENVIRONMENT_SPEC_DIGEST','QE_ENVIRONMENT_OWNER_TYPE','QE_RUN_ID','QE_PROVIDER_ACCOUNT_ID','QE_PROVIDER_ACCOUNT_CREDENTIAL_GENERATION','QE_WORKER_ID']; print(json.dumps({k:os.environ.get(k) for k in keys},separators=(',',':')))",
       ],
     });
     const value = parseObject(result.stdout, "creation identity");
+    const ownerExpected: Record<string, string> =
+      record.owner.kind === "run"
+        ? {
+            QE_ENVIRONMENT_OWNER_TYPE: "run",
+            QE_RUN_ID: record.owner.runId,
+          }
+        : {
+            QE_ENVIRONMENT_OWNER_TYPE: "provider_account",
+            QE_PROVIDER_ACCOUNT_ID: record.owner.providerAccountId,
+            QE_PROVIDER_ACCOUNT_CREDENTIAL_GENERATION: String(
+              record.owner.credentialGeneration,
+            ),
+          };
     const expected: Record<string, string> = {
       QE_ENVIRONMENT_INCARNATION: record.incarnation,
       QE_ENVIRONMENT_PROFILE_DIGEST: record.profileDigest,
       QE_ENVIRONMENT_SPEC_DIGEST: record.specDigest,
-      QE_RUN_ID: record.runId,
       QE_WORKER_ID: record.workerId,
+      ...ownerExpected,
     };
     if (
       Object.entries(expected).some(
@@ -688,7 +702,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
         executable: "/usr/bin/node",
         args: [
           "-e",
-          "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const x=`/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-${a}/claude`; const w=fs.statSync(process.env.W); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime:x,sha256:c.createHash('sha256').update(fs.readFileSync(x)).digest('hex'),wrapperExecutable:w.isFile()&&(w.mode&0o111)!==0}));",
+          "const fs=require('node:fs'),c=require('node:crypto'); const p=JSON.parse(fs.readFileSync(process.env.P,'utf8')); const a=process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':''; if(!a)process.exit(41); const x='/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk-linux-'+a+'/claude'; const w=fs.statSync(process.env.W); console.log(JSON.stringify({sdk:p.version,code:p.claudeCodeVersion,arch:a,runtime:x,sha256:c.createHash('sha256').update(fs.readFileSync(x)).digest('hex'),wrapperExecutable:w.isFile()&&(w.mode&0o111)!==0}));",
         ],
         environment: {
           P: SBX_CLAUDE_SDK_PACKAGE_JSON,
@@ -967,10 +981,10 @@ function ownershipMarker(
   if (!record.environmentId && record.state !== "creating")
     throw identityMismatch("Durable environment record has no physical ID.");
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     backendKind: "sbx",
     workerId: record.workerId,
-    runId: record.runId,
+    owner: structuredClone(record.owner),
     environmentId: sandbox.id,
     displayName: sandbox.name,
     incarnation: record.incarnation,
@@ -982,13 +996,32 @@ function ownershipMarker(
 
 function decodeMarker(value: unknown): OwnershipMarker {
   const marker = parseObject(value, "ownership marker value");
-  if (marker.schemaVersion !== 1 || marker.backendKind !== "sbx")
+  if (marker.schemaVersion !== 2 || marker.backendKind !== "sbx")
     throw identityMismatch("Guest ownership marker schema is incompatible.");
+  const ownerValue = parseObject(marker.owner, "marker.owner");
+  const owner: EnvironmentOwner =
+    ownerValue.kind === "run"
+      ? { kind: "run", runId: text(ownerValue.runId, "marker.owner.runId") }
+      : ownerValue.kind === "provider_account"
+        ? {
+            kind: "provider_account",
+            providerAccountId: text(
+              ownerValue.providerAccountId,
+              "marker.owner.providerAccountId",
+            ),
+            credentialGeneration: positiveInteger(
+              ownerValue.credentialGeneration,
+              "marker.owner.credentialGeneration",
+            ),
+          }
+        : (() => {
+            throw identityMismatch("Guest ownership marker owner is invalid.");
+          })();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     backendKind: "sbx",
     workerId: text(marker.workerId, "marker.workerId"),
-    runId: text(marker.runId, "marker.runId"),
+    owner,
     environmentId: text(marker.environmentId, "marker.environmentId"),
     displayName: text(marker.displayName, "marker.displayName"),
     incarnation: text(marker.incarnation, "marker.incarnation"),
@@ -1032,6 +1065,12 @@ function number(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isFinite(value))
     throw unhealthy(`${label} must be a finite number.`);
   return value;
+}
+
+function positiveInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1)
+    throw unhealthy(`${label} must be a positive integer.`);
+  return value as number;
 }
 
 function boolean(value: unknown, label: string): boolean {

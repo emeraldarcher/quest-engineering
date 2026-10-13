@@ -225,6 +225,7 @@ class ProbeClient extends FakeSbxClient {
             QE_ENVIRONMENT_INCARNATION: "incarnation-verifier",
             QE_ENVIRONMENT_PROFILE_DIGEST: "sha256:profile",
             QE_ENVIRONMENT_SPEC_DIGEST: "spec-verifier",
+            QE_ENVIRONMENT_OWNER_TYPE: "run",
             QE_RUN_ID: "run-verifier",
             QE_WORKER_ID: "worker-verifier",
           })}\n`,
@@ -474,7 +475,7 @@ function record(): DurableEnvironmentRecord {
     recordId: "record-verifier",
     backendKind: "sbx",
     workerId: "worker-verifier",
-    runId: "run-verifier",
+    owner: { kind: "run", runId: "run-verifier" },
     displayName: sandbox.name,
     environmentId: sandbox.id,
     incarnation: "incarnation-verifier",
@@ -500,13 +501,13 @@ function record(): DurableEnvironmentRecord {
 
 function marker() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     backendKind: "sbx",
     environmentId: sandbox.id,
     displayName: sandbox.name,
     incarnation: "incarnation-verifier",
     workerId: "worker-verifier",
-    runId: "run-verifier",
+    owner: { kind: "run", runId: "run-verifier" },
     profileId: "qe-execution-v1",
     profileDigest: "sha256:profile",
     specDigest: "spec-verifier",

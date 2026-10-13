@@ -30,6 +30,12 @@ export async function cleanupExecutionEnvironment(
   backend: ExecutionEnvironmentBackend,
   target: EnvironmentRef,
 ): Promise<RunEnvironmentCleanupOutcome> {
+  // This is the Run cleanup entrypoint, not a generic owner teardown API.
+  if (target.owner.kind !== "run")
+    return failure(
+      "environment_owner_mismatch",
+      "Run cleanup cannot remove a ProviderAccount-owned environment.",
+    );
   try {
     // Stream transport belongs to the environment lifecycle owner. Retire all
     // current-generation attachments before any stop/remove boundary.

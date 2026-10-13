@@ -9,6 +9,13 @@ defmodule QuestEngineering.ServerWeb.Router do
     pipe_through :api
 
     get "/health", HealthController, :show
+
+    get "/provider-accounts", ProviderAccountController, :index
+    post "/provider-accounts", ProviderAccountController, :create
+    get "/provider-accounts/:id", ProviderAccountController, :show
+    get "/provider-accounts/:id/events", ProviderAccountController, :events
+    post "/provider-accounts/:id/actions/:action", ProviderAccountController, :lifecycle_action
+
     get "/workspaces", ProductController, :index
     get "/workspaces/:id", ProductController, :show
     post "/workspaces", ProductController, :create

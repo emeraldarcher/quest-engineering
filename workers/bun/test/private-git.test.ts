@@ -540,7 +540,8 @@ async function environmentFixture(root: string, runId: string) {
 function environmentSpec(runId: string): EnvironmentSpec {
   return {
     workerId: "worker-private-git-test",
-    runId,
+    owner: { kind: "run", runId },
+    layout: { kind: "run" },
     workspace: {
       workspaceId: "workspace-private-git-test",
       projectId: "project-private-git-test",

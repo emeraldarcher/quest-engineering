@@ -64,6 +64,7 @@ import type {
   RunWorktreeRecord,
   RunWorktreeRegistry,
 } from "../workspace/run-worktrees.ts";
+import { runIdFromRef, runOwner, sameEnvironmentOwner } from "./ownership.ts";
 import { resolveRunExecutionProfile } from "./profile-resolution.ts";
 import {
   cleanupExecutionEnvironment,
@@ -560,7 +561,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     const attestation = {
       schemaVersion: 1,
       workerId: lease.ref.workerId,
-      runId: lease.ref.runId,
+      runId: runIdFromRef(lease.ref),
       environmentId: lease.ref.environmentId,
       incarnation: lease.ref.incarnation,
       profileId: lease.ref.profile.id,
@@ -980,7 +981,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     const attestation = {
       schemaVersion: 1,
       workerId: lease.ref.workerId,
-      runId: lease.ref.runId,
+      runId: runIdFromRef(lease.ref),
       environmentId: lease.ref.environmentId,
       incarnation: lease.ref.incarnation,
       profileId: lease.ref.profile.id,
@@ -1291,7 +1292,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     if (
       !context ||
       context.dispatch.action.action_id !== input.dispatch.action.action_id ||
-      context.lease.ref.runId !== input.dispatch.action.run_id
+      runIdFromRef(context.lease.ref) !== input.dispatch.action.run_id
     )
       throw new Error(
         "No exact active SBX/private-Git completion context exists.",
@@ -1351,14 +1352,23 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   }
 
   currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
-    return this.backend.currentEnvironment(runId);
+    return this.backend.currentEnvironment(runOwner(runId));
   }
 
   async cleanupEnvironment(
     target: EnvironmentRef,
   ): Promise<RunEnvironmentCleanupOutcome> {
+    if (target.owner.kind !== "run")
+      return {
+        state: "failed",
+        issue: {
+          code: "environment_owner_mismatch",
+          message: "Run cleanup cannot target a ProviderAccount environment.",
+        },
+      };
+    const targetRunId = target.owner.runId;
     const ownedContexts = [...this.contexts.entries()].filter(
-      ([, context]) => context.dispatch.action.run_id === target.runId,
+      ([, context]) => context.dispatch.action.run_id === targetRunId,
     );
     await Promise.all(
       ownedContexts.map(([, context]) => context.relay?.stop()),
@@ -2001,7 +2011,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   }): EnvironmentSpec {
     return {
       workerId: this.config.workerId,
-      runId: input.runId,
+      owner: runOwner(input.runId),
+      layout: { kind: "run" },
       workspace: {
         workspaceId: input.workspaceId,
         access: input.access,
@@ -2419,7 +2430,7 @@ function sameEnvironmentRef(
     left.environmentId === right.environmentId &&
     left.incarnation === right.incarnation &&
     left.workerId === right.workerId &&
-    left.runId === right.runId &&
+    sameEnvironmentOwner(left.owner, right.owner) &&
     left.profile.id === right.profile.id &&
     left.profile.digest === right.profile.digest
   );

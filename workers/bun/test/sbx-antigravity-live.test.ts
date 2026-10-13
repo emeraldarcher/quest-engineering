@@ -38,7 +38,8 @@ test.skipIf(!enabled)(
     });
     const spec: EnvironmentSpec = {
       workerId,
-      runId,
+      owner: { kind: "run", runId },
+      layout: { kind: "run" },
       workspace: {
         workspaceId: `workspace-${runId}`,
         access: "none",

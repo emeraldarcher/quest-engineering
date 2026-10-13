@@ -15,6 +15,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.HarnessSetupStore
   alias QuestEngineering.Server.OperationalFailure
   alias QuestEngineering.Server.OperationalRecovery
+  alias QuestEngineering.Server.Product.ProviderAccounts
   alias QuestEngineering.Server.ProductChangeNotifier
   alias QuestEngineering.Server.Reconciler
   alias QuestEngineering.Server.RunChangeNotifier
@@ -267,11 +268,33 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     end
   end
 
+  def handle(worker_id, generation, %{
+        type: :provider_account_environment_state,
+        account_environment: environment
+      }) do
+    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, result} <-
+           ProviderAccounts.apply_environment_report(Map.put(environment, :worker_id, worker_id)) do
+      ProductChangeNotifier.notify(["provider_accounts"])
+
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "provider_account_environment_recorded",
+         "disposition" => result |> elem(0) |> Atom.to_string()
+       }}
+    end
+  end
+
   def handle(worker_id, generation, %{type: :reconcile_state, dispatches: dispatches} = message) do
     sessions = Map.get(message, :sessions, [])
     attention_deliveries = Map.get(message, :attention_deliveries, [])
+    account_environments = Map.get(message, :account_environments, [])
 
-    with {:ok, _persisted_sessions} <-
+    with {:ok, _account_results} <-
+           reconcile_account_environments(worker_id, account_environments || []),
+         {:ok, _persisted_sessions} <-
            ExecutionSessionStore.reconcile(worker_id, generation, sessions || []),
          {:ok, _persisted_deliveries} <-
            ExecutionSessionStore.reconcile_attention_deliveries(
@@ -287,7 +310,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
       cancellation_commands = ExecutionCancellation.pending_for_worker(worker_id, generation)
       Scheduler.wake_all()
       Enum.each(Reconciler.run_ids_for_worker(worker_id), &RunChangeNotifier.notify/1)
-      ProductChangeNotifier.notify(["quests", "runs"])
+      ProductChangeNotifier.notify(["quests", "runs", "provider_accounts"])
 
       {:ok,
        %{
@@ -315,6 +338,16 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          "human_attention_responses" => attention_responses
        }}
     end
+  end
+
+  defp reconcile_account_environments(worker_id, environments) do
+    Enum.reduce_while(environments, {:ok, []}, fn environment, {:ok, results} ->
+      case ProviderAccounts.apply_environment_report(Map.put(environment, :worker_id, worker_id)) do
+        {:ok, result} -> {:cont, {:ok, [result | results]}}
+        {:error, %{code: :not_found}} -> {:cont, {:ok, results}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp completion(worker_id, generation, message) do

@@ -8,6 +8,7 @@ import {
   type HarnessLineage,
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
+import { runIdFromRef } from "../../execution-environment/ownership.ts";
 import type {
   PreparedSbxHarnessExecution,
   SbxRunExecutionManager,
@@ -1871,7 +1872,7 @@ function interactivePromptBinding(
     identity.occurrence_id !== dispatch.action.occurrence_id ||
     identity.attempt_id !== dispatch.action.attempt_id ||
     sbx.lease.ref.workerId !== workerId ||
-    sbx.lease.ref.runId !== dispatch.action.run_id ||
+    runIdFromRef(sbx.lease.ref) !== dispatch.action.run_id ||
     (retainedRef && ref.sessionName !== retainedRef.sessionName) ||
     (retainedRef?.sessionIncarnation &&
       ref.sessionIncarnation !== retainedRef.sessionIncarnation) ||

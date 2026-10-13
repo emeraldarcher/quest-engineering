@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, posix, resolve } from "node:path";
+import {
+  copyEnvironmentOwner,
+  environmentOwnerKey,
+  sameEnvironmentOwner,
+  validateEnvironmentOwner,
+} from "./ownership.ts";
 import type {
   SbxClient,
   SbxNativeVersion,
@@ -54,6 +60,7 @@ import type {
   EnvironmentFileWrite,
   EnvironmentInspection,
   EnvironmentLease,
+  EnvironmentOwner,
   EnvironmentProfileIdentity,
   EnvironmentReadiness,
   EnvironmentRef,
@@ -113,7 +120,7 @@ export interface SbxExecutionEnvironmentBackendOptions {
   ) => Promise<StreamedProcessTransport>;
 }
 
-/** Durable Run-owned Docker Sandboxes lifecycle. Not wired to dispatch through Phase 3. */
+/** Durable typed-owner Docker Sandboxes lifecycle. */
 export class SbxExecutionEnvironmentBackend
   implements ExecutionEnvironmentBackend
 {
@@ -239,8 +246,10 @@ export class SbxExecutionEnvironmentBackend
     return inspectSbxReadiness(this.client, this.versionPolicy);
   }
 
-  async currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
-    const record = this.store.current(this.kind, this.options.workerId, runId);
+  async currentEnvironment(
+    owner: EnvironmentOwner,
+  ): Promise<EnvironmentRef | null> {
+    const record = this.store.current(this.kind, this.options.workerId, owner);
     if (!record) return null;
     if (
       record.profileId !== this.profile.id ||
@@ -248,7 +257,7 @@ export class SbxExecutionEnvironmentBackend
     )
       throw new EnvironmentBackendError(
         "environment_spec_mismatch",
-        "Current Run environment belongs to another immutable profile.",
+        "Current environment belongs to another immutable profile.",
         "inspect",
       );
     return refFor(record);
@@ -257,7 +266,7 @@ export class SbxExecutionEnvironmentBackend
   async ensure(spec: EnvironmentSpec): Promise<EnvironmentLease> {
     this.validateSpec(spec, "ensure");
     await verifySbxProfileAssets(this.executionProfile);
-    const owner = ownerKey(spec.workerId, spec.runId);
+    const owner = ownerKey(spec.workerId, spec.owner);
     return this.withOwner(owner, async () => {
       const readiness = await this.requireReadiness("ensure");
       const native = await this.requireNativeVersion("ensure");
@@ -267,8 +276,8 @@ export class SbxExecutionEnvironmentBackend
         recordId: randomUUID(),
         backendKind: this.kind,
         workerId: spec.workerId,
-        runId: spec.runId,
-        displayName: sbxEnvironmentName(spec.workerId, spec.runId),
+        owner: copyEnvironmentOwner(spec.owner),
+        displayName: sbxEnvironmentName(spec.workerId, spec.owner),
         incarnation: randomUUID(),
         profileId: spec.profile.id,
         profileDigest: spec.profile.digest,
@@ -290,7 +299,7 @@ export class SbxExecutionEnvironmentBackend
   ): Promise<EnvironmentLease> {
     this.validateSpec(spec, "recover");
     await verifySbxProfileAssets(this.executionProfile);
-    return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+    return this.withOwner(ownerKey(ref.workerId, ref.owner), async () => {
       const record = this.requireCurrentRef(ref, "recover");
       const digest = environmentSpecDigest(spec);
       this.assertRecordSpec(record, spec, digest, "recover");
@@ -433,7 +442,7 @@ export class SbxExecutionEnvironmentBackend
   }
 
   async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
-    return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+    return this.withOwner(ownerKey(ref.workerId, ref.owner), async () => {
       const record = this.requireCurrentRef(ref, "stop");
       await this.streamedProcesses.retire(ref);
       const existing = this.store.latestStopAttempt(record.recordId);
@@ -510,7 +519,7 @@ export class SbxExecutionEnvironmentBackend
   }
 
   async reconcileStop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
-    return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+    return this.withOwner(ownerKey(ref.workerId, ref.owner), async () => {
       const record = this.requireCurrentRef(ref, "reconcile_stop");
       const attempt = this.store.latestStopAttempt(record.recordId);
       if (!attempt || attempt.reopened) {
@@ -522,7 +531,7 @@ export class SbxExecutionEnvironmentBackend
   }
 
   async remove(ref: EnvironmentRef): Promise<void> {
-    await this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+    await this.withOwner(ownerKey(ref.workerId, ref.owner), async () => {
       const historical = this.store.byRef(ref);
       if (historical?.retiredAt) {
         if (
@@ -657,7 +666,7 @@ export class SbxExecutionEnvironmentBackend
       const latest = this.store.current(
         this.kind,
         record.workerId,
-        record.runId,
+        record.owner,
       );
       if (
         latest?.state === "creating" &&
@@ -673,7 +682,7 @@ export class SbxExecutionEnvironmentBackend
     record = this.store.current(
       this.kind,
       record.workerId,
-      record.runId,
+      record.owner,
     ) as DurableEnvironmentRecord;
 
     let sandbox = await this.findUnboundSandbox(record);
@@ -1259,7 +1268,7 @@ export class SbxExecutionEnvironmentBackend
         operation,
       );
     const historical = this.store.byRef(ref);
-    const current = this.store.current(this.kind, ref.workerId, ref.runId);
+    const current = this.store.current(this.kind, ref.workerId, ref.owner);
     if (!historical)
       throw new EnvironmentBackendError(
         current ? "stale_environment_ref" : "environment_not_found",
@@ -1275,7 +1284,7 @@ export class SbxExecutionEnvironmentBackend
     )
       throw new EnvironmentBackendError(
         "stale_environment_ref",
-        "Environment ref is not the current Run incarnation.",
+        "Environment ref is not the current owner incarnation.",
         operation,
       );
     return current;
@@ -1289,14 +1298,14 @@ export class SbxExecutionEnvironmentBackend
   ): void {
     if (
       record.workerId !== spec.workerId ||
-      record.runId !== spec.runId ||
+      !sameEnvironmentOwner(record.owner, spec.owner) ||
       record.profileId !== spec.profile.id ||
       record.profileDigest !== spec.profile.digest ||
       record.specDigest !== digest
     )
       throw new EnvironmentBackendError(
         "environment_spec_mismatch",
-        "Current Run environment does not match the exact requested spec/profile.",
+        "Current owner environment does not match the exact requested spec/profile.",
         operation,
       );
   }
@@ -1305,6 +1314,22 @@ export class SbxExecutionEnvironmentBackend
     spec: EnvironmentSpec,
     operation: EnvironmentBackendOperation,
   ): void {
+    validateEnvironmentOwner(spec.owner);
+    const runLayout =
+      spec.owner.kind === "run" &&
+      spec.layout.kind === "run" &&
+      "workspace" in spec;
+    const accountLayout =
+      spec.owner.kind === "provider_account" &&
+      spec.layout.kind === "provider_account" &&
+      spec.layout.version === "provider-account-cell-v1" &&
+      !("workspace" in spec);
+    if (!runLayout && !accountLayout)
+      throw new EnvironmentBackendError(
+        "invalid_environment_spec",
+        "Environment layout must match its typed owner.",
+        operation,
+      );
     if (spec.workerId !== this.options.workerId)
       throw new EnvironmentBackendError(
         "invalid_environment_spec",
@@ -1330,6 +1355,7 @@ export class SbxExecutionEnvironmentBackend
         operation,
       );
     if (
+      "workspace" in spec &&
       spec.workspace.materialization.kind !== "disposable_fixture" &&
       spec.workspace.materialization.kind !== "frozen_import"
     )
@@ -1748,6 +1774,13 @@ export class SbxExecutionEnvironmentBackend
   private resumeDurableStopReconciliation(): void {
     if (this.closed || !this.backgroundStopReconciliation) return;
     for (const record of this.store.list()) {
+      if (
+        record.backendKind !== this.kind ||
+        record.workerId !== this.options.workerId ||
+        record.profileId !== this.profile.id ||
+        record.profileDigest !== this.profile.digest
+      )
+        continue;
       const attempt = this.store.latestStopAttempt(record.recordId);
       if (!attempt || attempt.confirmed || attempt.reopened) continue;
       this.scheduleStopReconciliation(record, {
@@ -1865,7 +1898,7 @@ export class SbxExecutionEnvironmentBackend
       const current = this.store.current(
         this.kind,
         record.workerId,
-        record.runId,
+        record.owner,
       );
       if (!current || current.recordId !== record.recordId) return null;
       if (current.environmentId) return current;
@@ -1931,16 +1964,30 @@ function locateSandbox(
   return { kind: "exact", sandbox: byId };
 }
 
+function ownerEnvironment(
+  record: DurableEnvironmentRecord,
+): Record<string, string> {
+  return record.owner.kind === "run"
+    ? { QE_ENVIRONMENT_OWNER_TYPE: "run", QE_RUN_ID: record.owner.runId }
+    : {
+        QE_ENVIRONMENT_OWNER_TYPE: "provider_account",
+        QE_PROVIDER_ACCOUNT_ID: record.owner.providerAccountId,
+        QE_PROVIDER_ACCOUNT_CREDENTIAL_GENERATION: String(
+          record.owner.credentialGeneration,
+        ),
+      };
+}
+
 function creationEnvironment(
   record: DurableEnvironmentRecord,
 ): Record<string, string> {
   return {
     ...SBX_DISABLED_CREDENTIAL_ENVIRONMENT,
+    ...ownerEnvironment(record),
     HOME: SBX_GUEST_PATHS.home,
     QE_ENVIRONMENT_INCARNATION: record.incarnation,
     QE_ENVIRONMENT_PROFILE_DIGEST: record.profileDigest,
     QE_ENVIRONMENT_SPEC_DIGEST: record.specDigest,
-    QE_RUN_ID: record.runId,
     QE_WORKER_ID: record.workerId,
   };
 }
@@ -1949,12 +1996,12 @@ function leaseEnvironment(
   record: DurableEnvironmentRecord,
 ): Record<string, string> {
   return {
+    ...ownerEnvironment(record),
     HOME: SBX_GUEST_PATHS.home,
     QE_ENVIRONMENT_ID: record.environmentId as string,
     QE_ENVIRONMENT_INCARNATION: record.incarnation,
     QE_ENVIRONMENT_PROFILE_DIGEST: record.profileDigest,
     QE_ENVIRONMENT_SPEC_DIGEST: record.specDigest,
-    QE_RUN_ID: record.runId,
     QE_WORKER_ID: record.workerId,
   };
 }
@@ -1970,27 +2017,36 @@ function refFor(record: DurableEnvironmentRecord): EnvironmentRef {
     environmentId: record.environmentId,
     incarnation: record.incarnation,
     workerId: record.workerId,
-    runId: record.runId,
+    owner: copyEnvironmentOwner(record.owner),
     profile: { id: record.profileId, digest: record.profileDigest },
   };
 }
 
-export function sbxEnvironmentName(workerId: string, runId: string): string {
+export function sbxEnvironmentName(
+  workerId: string,
+  ownerOrRunId: EnvironmentOwner | string,
+): string {
+  const owner: EnvironmentOwner =
+    typeof ownerOrRunId === "string"
+      ? { kind: "run", runId: ownerOrRunId }
+      : ownerOrRunId;
+  const identity = owner.kind === "run" ? owner.runId : owner.providerAccountId;
+  const fallback = owner.kind === "run" ? "run" : "account";
   const readable =
-    runId
+    identity
       .toLowerCase()
       .replace(/[^a-z0-9.-]+/g, "-")
       .replace(/^[.-]+|[.-]+$/g, "")
-      .slice(0, 24) || "run";
+      .slice(0, 24) || fallback;
   const hash = createHash("sha256")
-    .update(`${workerId}\0${runId}`)
+    .update(`${workerId}\0${environmentOwnerKey(owner)}`)
     .digest("hex")
     .slice(0, 12);
-  return `qe-run-${readable}-${hash}`;
+  return `qe-${owner.kind === "run" ? "run" : "account"}-${readable}-${hash}`;
 }
 
-function ownerKey(workerId: string, runId: string): string {
-  return `${workerId}\0${runId}`;
+function ownerKey(workerId: string, owner: EnvironmentOwner): string {
+  return `${workerId}\0${environmentOwnerKey(owner)}`;
 }
 
 function detachedReconciliation(

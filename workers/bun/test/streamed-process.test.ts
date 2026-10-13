@@ -291,7 +291,7 @@ test("Run teardown retires streams before environment stop/remove", async () => 
   expect(value.transport.disconnected).toBe(true);
   expect(await process.exit).toEqual({ kind: "signaled", signal: "SIGTERM" });
   expect(
-    await value.backend.currentEnvironment(value.lease.ref.runId),
+    await value.backend.currentEnvironment(value.lease.ref.owner),
   ).toBeNull();
 });
 
@@ -390,7 +390,8 @@ async function turn(): Promise<void> {
 function spec(runId: string) {
   return {
     workerId: "worker-streamed-test",
-    runId,
+    owner: { kind: "run" as const, runId },
+    layout: { kind: "run" as const },
     workspace: {
       workspaceId: `workspace-${runId}`,
       access: "read_write" as const,

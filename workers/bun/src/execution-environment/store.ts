@@ -1,12 +1,20 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  copyEnvironmentOwner,
+  environmentOwnerGeneration,
+  environmentOwnerId,
+} from "./ownership.ts";
 import type {
   EnvironmentCapability,
   EnvironmentLifecycleState,
+  EnvironmentOwner,
   EnvironmentReadinessDiagnostic,
   EnvironmentRef,
 } from "./types.ts";
+
+export const EXECUTION_ENVIRONMENT_SCHEMA_VERSION = 3;
 
 export type DurableEnvironmentState = "creating" | EnvironmentLifecycleState;
 
@@ -14,7 +22,7 @@ export interface DurableEnvironmentRecord {
   recordId: string;
   backendKind: string;
   workerId: string;
-  runId: string;
+  owner: EnvironmentOwner;
   displayName: string;
   environmentId: string | null;
   incarnation: string;
@@ -73,7 +81,7 @@ export interface EnvironmentCreationIntent {
   recordId: string;
   backendKind: string;
   workerId: string;
-  runId: string;
+  owner: EnvironmentOwner;
   displayName: string;
   incarnation: string;
   profileId: string;
@@ -99,7 +107,9 @@ interface EnvironmentRow {
   record_id: string;
   backend_kind: string;
   worker_id: string;
-  run_id: string;
+  owner_type: EnvironmentOwner["kind"];
+  owner_id: string;
+  owner_generation: number | null;
   display_name: string;
   environment_id: string | null;
   incarnation: string;
@@ -137,7 +147,7 @@ export class ExecutionEnvironmentStore {
     this.db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     );
-    this.migrate();
+    this.bootstrapCurrentSchema();
   }
 
   close(): void {
@@ -153,21 +163,23 @@ export class ExecutionEnvironmentStore {
         const existing = this.current(
           intent.backendKind,
           intent.workerId,
-          intent.runId,
+          intent.owner,
         );
         if (existing) return { created: false, record: existing };
         const timestamp = this.now();
         this.db
           .query(
             `INSERT INTO execution_environments
-            (record_id,backend_kind,worker_id,run_id,display_name,environment_id,incarnation,profile_id,profile_digest,spec_digest,state,creation_token,creator_pid,marker_digest,native_version,native_revision,native_api_version,native_agent,capabilities_json,diagnostics_json,created_at,updated_at,last_verified_at,retired_at)
-            VALUES (?,?,?,?,?,NULL,?,?,?,?,'creating',?,?,NULL,?,?,?,NULL,'[]','[]',?,?,NULL,NULL)`,
+            (record_id,backend_kind,worker_id,owner_type,owner_id,owner_generation,display_name,environment_id,incarnation,profile_id,profile_digest,spec_digest,state,creation_token,creator_pid,marker_digest,native_version,native_revision,native_api_version,native_agent,capabilities_json,diagnostics_json,created_at,updated_at,last_verified_at,retired_at)
+            VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,'creating',?,?,NULL,?,?,?,NULL,'[]','[]',?,?,NULL,NULL)`,
           )
           .run(
             intent.recordId,
             intent.backendKind,
             intent.workerId,
-            intent.runId,
+            intent.owner.kind,
+            environmentOwnerId(intent.owner),
+            environmentOwnerGeneration(intent.owner),
             intent.displayName,
             intent.incarnation,
             intent.profileId,
@@ -181,10 +193,7 @@ export class ExecutionEnvironmentStore {
             timestamp,
             timestamp,
           );
-        return {
-          created: true,
-          record: this.required(intent.recordId),
-        };
+        return { created: true, record: this.required(intent.recordId) };
       })
       .immediate();
   }
@@ -192,25 +201,37 @@ export class ExecutionEnvironmentStore {
   current(
     backendKind: string,
     workerId: string,
-    runId: string,
+    owner: EnvironmentOwner,
   ): DurableEnvironmentRecord | null {
     const row = this.db
       .query(
-        "SELECT * FROM execution_environments WHERE backend_kind=? AND worker_id=? AND run_id=? AND retired_at IS NULL",
+        `SELECT * FROM execution_environments
+         WHERE backend_kind=? AND worker_id=? AND owner_type=? AND owner_id=?
+           AND owner_generation IS ? AND retired_at IS NULL`,
       )
-      .get(backendKind, workerId, runId) as EnvironmentRow | null;
+      .get(
+        backendKind,
+        workerId,
+        owner.kind,
+        environmentOwnerId(owner),
+        environmentOwnerGeneration(owner),
+      ) as EnvironmentRow | null;
     return row ? mapRow(row) : null;
   }
 
   byRef(ref: EnvironmentRef): DurableEnvironmentRecord | null {
     const row = this.db
       .query(
-        "SELECT * FROM execution_environments WHERE backend_kind=? AND worker_id=? AND run_id=? AND environment_id=? AND incarnation=?",
+        `SELECT * FROM execution_environments
+         WHERE backend_kind=? AND worker_id=? AND owner_type=? AND owner_id=?
+           AND owner_generation IS ? AND environment_id=? AND incarnation=?`,
       )
       .get(
         ref.backendKind,
         ref.workerId,
-        ref.runId,
+        ref.owner.kind,
+        environmentOwnerId(ref.owner),
+        environmentOwnerGeneration(ref.owner),
         ref.environmentId,
         ref.incarnation,
       ) as EnvironmentRow | null;
@@ -225,6 +246,25 @@ export class ExecutionEnvironmentStore {
         )
         .all() as EnvironmentRow[]
     ).map(mapRow);
+  }
+
+  writeDeterministicCanary(recordId: string, value: string): void {
+    this.required(recordId);
+    this.db
+      .query(
+        `INSERT INTO execution_environment_canaries(record_id,value,updated_at)
+         VALUES (?,?,?) ON CONFLICT(record_id) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .run(recordId, value, this.now());
+  }
+
+  readDeterministicCanary(recordId: string): string | null {
+    const row = this.db
+      .query(
+        "SELECT value FROM execution_environment_canaries WHERE record_id=?",
+      )
+      .get(recordId) as { value: string } | null;
+    return row?.value ?? null;
   }
 
   acquireCreationOwnership(input: {
@@ -509,98 +549,118 @@ export class ExecutionEnvironmentStore {
     return mapRow(row);
   }
 
-  private migrate(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS execution_environment_schema_migrations (
-        version INTEGER PRIMARY KEY,
-        applied_at TEXT NOT NULL
-      );
-    `);
-    const applied = new Set(
-      (
+  private bootstrapCurrentSchema(): void {
+    const hasVersionTable = Boolean(
+      this.db
+        .query(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='execution_environment_schema_migrations'",
+        )
+        .get(),
+    );
+    if (hasVersionTable) {
+      const versions = (
         this.db
           .query(
             "SELECT version FROM execution_environment_schema_migrations ORDER BY version",
           )
           .all() as Array<{ version: number }>
-      ).map((row) => row.version),
-    );
-    if (!applied.has(1))
-      this.db
-        .transaction(() => {
-          this.db.exec(`
-            CREATE TABLE execution_environments (
-              record_id TEXT PRIMARY KEY,
-              backend_kind TEXT NOT NULL,
-              worker_id TEXT NOT NULL,
-              run_id TEXT NOT NULL,
-              display_name TEXT NOT NULL,
-              environment_id TEXT,
-              incarnation TEXT NOT NULL,
-              profile_id TEXT NOT NULL,
-              profile_digest TEXT NOT NULL,
-              spec_digest TEXT NOT NULL,
-              state TEXT NOT NULL CHECK(state IN ('creating','running','stopped','removed','missing','incompatible','degraded')),
-              creation_token TEXT NOT NULL,
-              creator_pid INTEGER NOT NULL,
-              marker_digest TEXT,
-              native_version TEXT,
-              native_revision TEXT,
-              native_api_version TEXT,
-              native_agent TEXT,
-              capabilities_json TEXT NOT NULL DEFAULT '[]',
-              diagnostics_json TEXT NOT NULL DEFAULT '[]',
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              last_verified_at TEXT,
-              retired_at TEXT
-            );
-            CREATE UNIQUE INDEX execution_environments_current_owner
-              ON execution_environments(backend_kind,worker_id,run_id)
-              WHERE retired_at IS NULL;
-            CREATE UNIQUE INDEX execution_environments_current_name
-              ON execution_environments(backend_kind,display_name)
-              WHERE retired_at IS NULL;
-            CREATE UNIQUE INDEX execution_environments_physical_identity
-              ON execution_environments(backend_kind,environment_id)
-              WHERE environment_id IS NOT NULL;
-          `);
-          this.db
-            .query(
-              "INSERT INTO execution_environment_schema_migrations(version,applied_at) VALUES (1,?)",
-            )
-            .run(this.now());
-        })
-        .immediate();
-    if (!applied.has(2))
-      this.db
-        .transaction(() => {
-          this.db.exec(`
-            CREATE TABLE execution_environment_stop_events (
-              event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-              record_id TEXT NOT NULL REFERENCES execution_environments(record_id),
-              stop_id TEXT NOT NULL,
-              event_type TEXT NOT NULL CHECK(event_type IN (
-                'stop_intent_recorded','stop_invocation_started',
-                'stop_invocation_acknowledged','stop_invocation_ambiguous',
-                'stop_invocation_not_started','stop_reconcile_started',
-                'stop_still_in_progress','stop_observation_unavailable',
-                'stop_confirmed','stop_identity_mismatch',
-                'stop_environment_absent','stop_cycle_reopened'
-              )),
-              details_json TEXT NOT NULL DEFAULT '{}',
-              occurred_at TEXT NOT NULL
-            );
-            CREATE INDEX execution_environment_stop_record
-              ON execution_environment_stop_events(record_id,event_id);
-          `);
-          this.db
-            .query(
-              "INSERT INTO execution_environment_schema_migrations(version,applied_at) VALUES (2,?)",
-            )
-            .run(this.now());
-        })
-        .immediate();
+      ).map((row) => row.version);
+      if (
+        versions.length !== 1 ||
+        versions[0] !== EXECUTION_ENVIRONMENT_SCHEMA_VERSION
+      )
+        throw new Error(
+          `Execution environment database schema is obsolete (found ${versions.join(",") || "none"}, expected ${EXECUTION_ENVIRONMENT_SCHEMA_VERSION}); reset the Worker data database.`,
+        );
+      return;
+    }
+
+    const legacyTable = this.db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='execution_environments'",
+      )
+      .get();
+    if (legacyTable)
+      throw new Error(
+        `Execution environment database schema is obsolete (expected ${EXECUTION_ENVIRONMENT_SCHEMA_VERSION}); reset the Worker data database.`,
+      );
+
+    this.db
+      .transaction(() => {
+        this.db.exec(`
+          CREATE TABLE execution_environment_schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+          );
+          CREATE TABLE execution_environments (
+            record_id TEXT PRIMARY KEY,
+            backend_kind TEXT NOT NULL,
+            worker_id TEXT NOT NULL,
+            owner_type TEXT NOT NULL CHECK(owner_type IN ('run','provider_account')),
+            owner_id TEXT NOT NULL,
+            owner_generation INTEGER,
+            display_name TEXT NOT NULL,
+            environment_id TEXT,
+            incarnation TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            profile_digest TEXT NOT NULL,
+            spec_digest TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('creating','running','stopped','removed','missing','incompatible','degraded')),
+            creation_token TEXT NOT NULL,
+            creator_pid INTEGER NOT NULL,
+            marker_digest TEXT,
+            native_version TEXT,
+            native_revision TEXT,
+            native_api_version TEXT,
+            native_agent TEXT,
+            capabilities_json TEXT NOT NULL DEFAULT '[]',
+            diagnostics_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_verified_at TEXT,
+            retired_at TEXT,
+            CHECK((owner_type='run' AND owner_generation IS NULL) OR
+                  (owner_type='provider_account' AND owner_generation IS NOT NULL AND owner_generation > 0))
+          );
+          CREATE UNIQUE INDEX execution_environments_current_owner
+            ON execution_environments(backend_kind,worker_id,owner_type,owner_id,COALESCE(owner_generation,0))
+            WHERE retired_at IS NULL;
+          CREATE UNIQUE INDEX execution_environments_current_name
+            ON execution_environments(backend_kind,display_name)
+            WHERE retired_at IS NULL;
+          CREATE UNIQUE INDEX execution_environments_physical_identity
+            ON execution_environments(backend_kind,environment_id)
+            WHERE environment_id IS NOT NULL;
+          CREATE TABLE execution_environment_stop_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_id TEXT NOT NULL REFERENCES execution_environments(record_id),
+            stop_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN (
+              'stop_intent_recorded','stop_invocation_started',
+              'stop_invocation_acknowledged','stop_invocation_ambiguous',
+              'stop_invocation_not_started','stop_reconcile_started',
+              'stop_still_in_progress','stop_observation_unavailable',
+              'stop_confirmed','stop_identity_mismatch',
+              'stop_environment_absent','stop_cycle_reopened'
+            )),
+            details_json TEXT NOT NULL DEFAULT '{}',
+            occurred_at TEXT NOT NULL
+          );
+          CREATE INDEX execution_environment_stop_record
+            ON execution_environment_stop_events(record_id,event_id);
+          CREATE TABLE execution_environment_canaries (
+            record_id TEXT PRIMARY KEY REFERENCES execution_environments(record_id),
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+        `);
+        this.db
+          .query(
+            "INSERT INTO execution_environment_schema_migrations(version,applied_at) VALUES (?,?)",
+          )
+          .run(EXECUTION_ENVIRONMENT_SCHEMA_VERSION, this.now());
+      })
+      .immediate();
   }
 }
 
@@ -616,11 +676,19 @@ function mapStopEvent(row: StopEventRow): DurableStopEvent {
 }
 
 function mapRow(row: EnvironmentRow): DurableEnvironmentRecord {
+  const owner: EnvironmentOwner =
+    row.owner_type === "run"
+      ? { kind: "run", runId: row.owner_id }
+      : {
+          kind: "provider_account",
+          providerAccountId: row.owner_id,
+          credentialGeneration: row.owner_generation as number,
+        };
   return {
     recordId: row.record_id,
     backendKind: row.backend_kind,
     workerId: row.worker_id,
-    runId: row.run_id,
+    owner: copyEnvironmentOwner(owner),
     displayName: row.display_name,
     environmentId: row.environment_id,
     incarnation: row.incarnation,

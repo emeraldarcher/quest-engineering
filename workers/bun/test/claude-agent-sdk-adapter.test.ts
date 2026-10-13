@@ -121,7 +121,7 @@ async function fixture(
     environmentId: "environment-a",
     incarnation: "incarnation-a",
     workerId: "worker-test",
-    runId: accepted.action.run_id,
+    owner: { kind: "run", runId: accepted.action.run_id },
     profile: {
       id: "qe-coding-execution-v3",
       digest: `sha256:${"a".repeat(64)}`,
@@ -1096,7 +1096,7 @@ function bindingState(): ClaudeTransportState {
     environmentId: "environment-a",
     incarnation: "incarnation-a",
     workerId: "worker-test",
-    runId: "run-1",
+    owner: { kind: "run", runId: "run-1" },
     profile: {
       id: "qe-coding-execution-v3",
       digest: `sha256:${"a".repeat(64)}`,

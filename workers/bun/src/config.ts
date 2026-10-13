@@ -73,9 +73,7 @@ export interface WorkerConfig {
   /** Nonterminal liveness threshold; crossing it never authorizes a retry. */
   promptActivityStallMs?: number;
   provider: "pi" | "fake";
-  enabledHarnesses?: Array<
-    "pi" | "antigravity" | "claude_agent_sdk" | "fake"
-  >;
+  enabledHarnesses?: Array<"pi" | "antigravity" | "claude_agent_sdk" | "fake">;
   fakeOutputs: Record<string, JsonValue>;
   fakeDelayMs: number;
   gitAuthorName?: string;
@@ -148,9 +146,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const enabledHarnesses =
     provider === "fake"
       ? (["fake"] as const)
-      : harnesses(
-          env.QE_WORKER_HARNESSES ?? "pi,antigravity",
-        );
+      : harnesses(env.QE_WORKER_HARNESSES ?? "pi,antigravity");
   const terminalHarnessEnabled = enabledHarnesses.some(
     (kind) => kind === "pi" || kind === "antigravity",
   );
@@ -589,9 +585,7 @@ function harnesses(
     values.length === 0 ||
     !values.every(
       (item) =>
-        item === "pi" ||
-        item === "antigravity" ||
-        item === "claude_agent_sdk",
+        item === "pi" || item === "antigravity" || item === "claude_agent_sdk",
     )
   )
     throw new Error(

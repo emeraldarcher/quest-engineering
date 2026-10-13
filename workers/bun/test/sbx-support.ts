@@ -29,7 +29,7 @@ import type { DurableEnvironmentRecord } from "../src/execution-environment/stor
 import type {
   EnvironmentCommand,
   EnvironmentCommandResult,
-  EnvironmentSpec,
+  RunEnvironmentSpec,
 } from "../src/execution-environment/types.ts";
 
 export interface FakeSbxState {
@@ -344,10 +344,11 @@ export class FakeSbxVerifier implements SbxEnvironmentVerifier {
 export function sbxSpec(
   runId: string,
   workerId = "worker-sbx-test",
-): EnvironmentSpec {
+): RunEnvironmentSpec {
   return {
     workerId,
-    runId,
+    owner: { kind: "run", runId },
+    layout: { kind: "run" },
     workspace: {
       workspaceId: `workspace-${runId}`,
       projectId: "project-sbx-fixture",

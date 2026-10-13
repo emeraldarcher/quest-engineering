@@ -22,6 +22,7 @@ import {
 } from "../src/execution-environment/sbx-profile.ts";
 import { ExecutionEnvironmentStore } from "../src/execution-environment/store.ts";
 import { environmentSpecDigest } from "../src/execution-environment/tracked-backend.ts";
+import type { ProviderAccountEnvironmentSpec } from "../src/execution-environment/types.ts";
 import { EnvironmentBackendError } from "../src/execution-environment/types.ts";
 import { executionEnvironmentConformance } from "./execution-environment-conformance.ts";
 import {
@@ -85,6 +86,33 @@ test("durable Worker restart adopts exact physical environment without duplicati
   expect((await recovered.exec(sbxCommand("preserved"))).stdout).toBe(
     "preserved\n",
   );
+});
+
+test("SBX durably owns a ProviderAccount generation without a Run workspace", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const first = backend(root, state);
+  const spec = accountSpec("account-sbx", 3);
+  const original = await first.ensure(spec);
+
+  expect(original.ref.owner).toEqual({
+    kind: "provider_account",
+    providerAccountId: "account-sbx",
+    credentialGeneration: 3,
+  });
+  expect(state.createRequests[0]?.environment).toMatchObject({
+    QE_ENVIRONMENT_OWNER_TYPE: "provider_account",
+    QE_PROVIDER_ACCOUNT_ID: "account-sbx",
+    QE_PROVIDER_ACCOUNT_CREDENTIAL_GENERATION: "3",
+  });
+  expect(state.createRequests[0]?.environment).not.toHaveProperty("QE_RUN_ID");
+
+  await first.close();
+  backends.splice(backends.indexOf(first), 1);
+  const restarted = backend(root, state);
+  const adopted = await restarted.recover(original.ref, spec);
+  expect(adopted.ref).toEqual(original.ref);
+  expect(state.createCalls).toBe(1);
 });
 
 test("SBX streamed process is non-PTY, fenced, Run-owned, and restart-classified without fake stdio recovery", async () => {
@@ -197,7 +225,7 @@ test("repository-owned Pi kit provisions one sandbox-scoped host resolver before
   const lease = await value.ensure(spec);
   const environmentName = sbxEnvironmentName(
     lease.ref.workerId,
-    lease.ref.runId,
+    lease.ref.owner,
   );
   expect(state.createRequests[0]).toMatchObject({
     name: environmentName,
@@ -260,7 +288,7 @@ test("failed adoption preserves a pre-existing conflicting sandbox", async () =>
   const root = await tempRoot();
   const state = fakeSbxState();
   const spec = sbxSpec("run-foreign-conflict");
-  const name = sbxEnvironmentName(spec.workerId, spec.runId);
+  const name = sbxEnvironmentName(spec.workerId, spec.owner);
   state.sandboxes.set(name, {
     name,
     id: "00000000-0000-4000-8000-000000000888",
@@ -309,14 +337,14 @@ test("dead creator reconciliation adopts an exact name and creation identity", a
   const root = await tempRoot();
   const state = fakeSbxState();
   const spec = sbxSpec("run-dead-creator");
-  const name = sbxEnvironmentName(spec.workerId, spec.runId);
+  const name = sbxEnvironmentName(spec.workerId, spec.owner);
   const environmentId = "00000000-0000-4000-8000-000000000999";
   const store = new ExecutionEnvironmentStore(root);
   store.claimCreation({
     recordId: "record-dead-creator",
     backendKind: "sbx",
     workerId: spec.workerId,
-    runId: spec.runId,
+    owner: structuredClone(spec.owner),
     displayName: name,
     incarnation: "incarnation-dead-creator",
     profileId: spec.profile.id,
@@ -346,7 +374,7 @@ test("dead creator reconciliation adopts an exact name and creation identity", a
     environmentId,
     incarnation: "incarnation-dead-creator",
     workerId: spec.workerId,
-    runId: spec.runId,
+    owner: structuredClone(spec.owner),
     profile: SBX_EXECUTION_PROFILE_V1,
   });
   expect(state.createCalls).toBe(0);
@@ -512,7 +540,7 @@ test("acknowledged stop with running readback is stopping and never replays", as
     code: "environment_not_usable",
   });
   expect(
-    store.current("sbx", lease.ref.workerId, lease.ref.runId),
+    store.current("sbx", lease.ref.workerId, lease.ref.owner),
   ).toMatchObject({
     state: "running",
     diagnostics: [expect.objectContaining({ code: "stop_still_in_progress" })],
@@ -574,7 +602,7 @@ test("inventory timeout after acknowledged stop is observation unavailable, not 
   });
   expect(client.invocationCalls).toBe(1);
   expect(
-    store.current("sbx", lease.ref.workerId, lease.ref.runId),
+    store.current("sbx", lease.ref.workerId, lease.ref.owner),
   ).toMatchObject({
     state: "degraded",
     diagnostics: [
@@ -898,6 +926,28 @@ class StopScenarioClient extends FakeSbxClient {
         ["stop", sandboxName],
       );
   }
+}
+
+function accountSpec(
+  providerAccountId: string,
+  credentialGeneration: number,
+): ProviderAccountEnvironmentSpec {
+  const runSpec = sbxSpec("unused-account-template");
+  return {
+    workerId: runSpec.workerId,
+    owner: {
+      kind: "provider_account",
+      providerAccountId,
+      credentialGeneration,
+    },
+    layout: { kind: "provider_account", version: "provider-account-cell-v1" },
+    profile: runSpec.profile,
+    resourcePolicy: runSpec.resourcePolicy,
+    networkRequirements: [],
+    credentialGrants: [],
+    controlChannels: [],
+    requiredCapabilities: runSpec.requiredCapabilities,
+  };
 }
 
 function fakeClockStore(root: string): ExecutionEnvironmentStore {

@@ -60,10 +60,34 @@ export interface EnvironmentControlChannelRequirement {
   required: boolean;
 }
 
-export interface EnvironmentSpec {
-  /** Authoritative Worker and Run ownership; never model supplied. */
+export type EnvironmentOwner =
+  | { kind: "run"; runId: string }
+  | {
+      kind: "provider_account";
+      providerAccountId: string;
+      /** Semantic credential epoch; a stale epoch is a different owner. */
+      credentialGeneration: number;
+    };
+
+interface EnvironmentSpecBase {
+  /** Authoritative Worker and typed semantic owner; never model supplied. */
   workerId: string;
-  runId: string;
+  owner: EnvironmentOwner;
+  profile: EnvironmentProfileIdentity;
+  /** Versioned policy identity; concrete limits are resolved outside model input. */
+  resourcePolicy: {
+    id: string;
+    digest: string;
+  };
+  networkRequirements: readonly EnvironmentNetworkRequirement[];
+  credentialGrants: readonly CredentialGrantDescriptor[];
+  controlChannels: readonly EnvironmentControlChannelRequirement[];
+  requiredCapabilities: readonly EnvironmentCapabilityRequirement[];
+}
+
+export interface RunEnvironmentSpec extends EnvironmentSpecBase {
+  owner: Extract<EnvironmentOwner, { kind: "run" }>;
+  layout: { kind: "run" };
   workspace: {
     workspaceId: string;
     projectId?: string;
@@ -77,25 +101,27 @@ export interface EnvironmentSpec {
       };
     };
   };
-  profile: EnvironmentProfileIdentity;
-  /** Versioned policy identity; concrete limits are resolved outside model input. */
-  resourcePolicy: {
-    id: string;
-    digest: string;
-  };
-  networkRequirements: readonly EnvironmentNetworkRequirement[];
-  credentialGrants: readonly CredentialGrantDescriptor[];
-  controlChannels: readonly EnvironmentControlChannelRequirement[];
-  requiredCapabilities: readonly EnvironmentCapabilityRequirement[];
 }
 
-/** Opaque physical identity. Run identity and physical incarnation stay distinct. */
+export interface ProviderAccountEnvironmentSpec extends EnvironmentSpecBase {
+  owner: Extract<EnvironmentOwner, { kind: "provider_account" }>;
+  layout: {
+    kind: "provider_account";
+    version: "provider-account-cell-v1";
+  };
+}
+
+export type EnvironmentSpec =
+  | RunEnvironmentSpec
+  | ProviderAccountEnvironmentSpec;
+
+/** Opaque physical identity. Semantic ownership and physical incarnation stay distinct. */
 export interface EnvironmentRef {
   backendKind: string;
   environmentId: string;
   incarnation: string;
   workerId: string;
-  runId: string;
+  owner: EnvironmentOwner;
   profile: EnvironmentProfileIdentity;
 }
 
@@ -239,7 +265,7 @@ export interface StreamedProcessInfrastructureEvent {
   observedAt: string;
   backendKind: string;
   workerId: string;
-  runId: string;
+  owner: EnvironmentOwner;
   environmentId: string;
   incarnation: string;
   processGeneration?: string;
@@ -430,18 +456,15 @@ export interface EnvironmentLease {
 export interface ExecutionEnvironmentBackend {
   readonly kind: string;
   readiness(): Promise<EnvironmentReadiness>;
-  /**
-   * Return the exact current durable Run-owned incarnation, or null only when
-   * the backend's ownership authority proves that the Run has none.
-   */
-  currentEnvironment(runId: string): Promise<EnvironmentRef | null>;
+  /** Return the exact current durable incarnation for one typed owner. */
+  currentEnvironment(owner: EnvironmentOwner): Promise<EnvironmentRef | null>;
   ensure(spec: EnvironmentSpec): Promise<EnvironmentLease>;
   recover(
     ref: EnvironmentRef,
     spec: EnvironmentSpec,
   ): Promise<EnvironmentLease>;
   inspect(ref: EnvironmentRef): Promise<EnvironmentInspection>;
-  /** Retire all attached streamed processes for this exact Run incarnation. */
+  /** Retire all attached streamed processes for this exact incarnation. */
   retireStreamedProcesses(ref: EnvironmentRef): Promise<void>;
   /** Record intent, invoke the destructive provider operation at most once, then read back once. */
   stop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
@@ -449,6 +472,8 @@ export interface ExecutionEnvironmentBackend {
   reconcileStop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
   /** Remove only this stopped incarnation; resolve only after authoritative absence evidence. */
   remove(ref: EnvironmentRef): Promise<void>;
+  /** Release Worker-local handles without changing physical ownership. */
+  close?(): Promise<void>;
 }
 
 export type EnvironmentBackendErrorCode =

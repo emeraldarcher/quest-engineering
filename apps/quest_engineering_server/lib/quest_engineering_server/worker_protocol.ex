@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 14
+  @version 15
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -49,6 +49,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @host_cleanup_states ~w(retained cleanup_requested removed failed)
   @setup_states ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required cancellation_requested ready failed uncertain cancelled invalidated)
   @setup_invocation_states ~w(not_requested requested acknowledged settled uncertain)
+  @provider_account_environment_states ~w(pending available stopped missing degraded removing removed)
+  @provider_account_environment_events ~w(environment_ensured environment_stopped environment_removed environment_missing environment_degraded environment_reconciled canary_written canary_read)
 
   defmodule Message do
     @moduledoc false
@@ -74,6 +76,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             recovery: map() | nil,
             cleanup: map() | nil,
             setup: map() | nil,
+            account_environment: map() | nil,
+            account_environments: [map()] | nil,
             ephemeral: String.t() | nil
           }
 
@@ -97,6 +101,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :recovery,
       :cleanup,
       :setup,
+      :account_environment,
+      :account_environments,
       :ephemeral
     ]
   end
@@ -110,7 +116,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 14
+  @spec version() :: 15
   def version, do: @version
 
   @spec encode_tool_policy(Exact.t() | NativePermissions.t()) :: map()
@@ -160,11 +166,23 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     |> maybe_put("connection_generation", connection_generation)
   end
 
-  def reconcile_request(worker_id) do
+  def reconcile_request(worker_id, connection_generation, provider_accounts \\ []) do
     %{
       "type" => "reconcile_request",
       "protocol_version" => @version,
-      "worker_id" => worker_id
+      "worker_id" => worker_id,
+      "provider_accounts" => Enum.map(provider_accounts, &provider_account_payload/1)
+    }
+    |> maybe_put("connection_generation", connection_generation)
+  end
+
+  def provider_account_environment(worker_id, connection_generation, desired) do
+    %{
+      "type" => "reconcile_provider_account_environment",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => connection_generation,
+      "provider_account" => provider_account_payload(desired)
     }
   end
 
@@ -642,26 +660,44 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end
   end
 
+  defp decode_message("provider_account_environment_state", worker_id, %{
+         "environment" => environment
+       }) do
+    with {:ok, decoded} <- decode_provider_account_environment(environment) do
+      {:ok,
+       %Message{
+         type: :provider_account_environment_state,
+         worker_id: worker_id,
+         account_environment: decoded
+       }}
+    end
+  end
+
   defp decode_message("reconcile_state", worker_id, %{"dispatches" => dispatches} = payload)
        when is_list(dispatches) do
     sessions = Map.get(payload, "sessions", [])
     attention_deliveries = Map.get(payload, "human_attention_deliveries", [])
+    account_environments = Map.get(payload, "provider_account_environments", [])
 
     with true <- is_list(sessions),
          true <- is_list(attention_deliveries),
+         true <- is_list(account_environments),
          {:ok, decoded} <- decode_reconcile_dispatches(dispatches),
          {:ok, decoded_sessions} <- decode_sessions(sessions),
-         {:ok, decoded_deliveries} <- decode_attention_deliveries(attention_deliveries) do
+         {:ok, decoded_deliveries} <- decode_attention_deliveries(attention_deliveries),
+         {:ok, decoded_account_environments} <-
+           decode_provider_account_environments(account_environments) do
       {:ok,
        %Message{
          type: :reconcile_state,
          worker_id: worker_id,
          dispatches: decoded,
          sessions: decoded_sessions,
-         attention_deliveries: decoded_deliveries
+         attention_deliveries: decoded_deliveries,
+         account_environments: decoded_account_environments
        }}
     else
-      false -> error(:invalid_field, "sessions", %{expected: "array"})
+      false -> error(:invalid_field, "reconcile_state", %{expected: "arrays"})
       {:error, _} = error -> error
     end
   end
@@ -671,6 +707,75 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_message(type, _worker_id, _payload),
     do: error(:unknown_message_type, "type", %{received: type})
+
+  defp decode_provider_account_environments(values) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, decoded} ->
+      case decode_provider_account_environment(value) do
+        {:ok, item} -> {:cont, {:ok, [item | decoded]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
+  defp decode_provider_account_environment(value) when is_map(value) do
+    with :ok <-
+           exact_map_keys(
+             value,
+             ~w(provider_account_id credential_generation worker_generation operation_id physical_state event_type backend_kind environment_id incarnation error_code error_message canary_persisted observed_at)
+           ),
+         {:ok, provider_account_id} <- required_string(value, "provider_account_id"),
+         {:ok, operation_id} <- required_string(value, "operation_id"),
+         credential_generation
+         when is_integer(credential_generation) and credential_generation > 0 <-
+           value["credential_generation"],
+         worker_generation when is_integer(worker_generation) and worker_generation > 0 <-
+           value["worker_generation"],
+         physical_state when physical_state in @provider_account_environment_states <-
+           value["physical_state"],
+         event_type when event_type in @provider_account_environment_events <- value["event_type"],
+         {:ok, backend_kind} <- optional_string(value["backend_kind"]),
+         {:ok, environment_id} <- optional_string(value["environment_id"]),
+         {:ok, incarnation} <- optional_string(value["incarnation"]),
+         true <- is_nil(environment_id) == is_nil(incarnation),
+         true <- is_nil(environment_id) or not is_nil(backend_kind),
+         {:ok, error_code} <- optional_string(value["error_code"]),
+         {:ok, error_message} <- optional_string(value["error_message"]),
+         canary_persisted when is_boolean(canary_persisted) <- value["canary_persisted"],
+         {:ok, observed_at} <- timestamp(value["observed_at"], "observed_at") do
+      {:ok,
+       %{
+         provider_account_id: provider_account_id,
+         credential_generation: credential_generation,
+         worker_generation: worker_generation,
+         operation_id: operation_id,
+         physical_state: physical_state,
+         event_type: event_type,
+         backend_kind: backend_kind,
+         environment_id: environment_id,
+         incarnation: incarnation,
+         error_code: error_code,
+         error_message: error_message,
+         canary_persisted: canary_persisted,
+         observed_at: observed_at
+       }}
+    else
+      _ -> error(:invalid_field, "environment")
+    end
+  end
+
+  defp decode_provider_account_environment(_value),
+    do: error(:invalid_field, "environment")
+
+  defp exact_map_keys(value, expected) do
+    if MapSet.new(Map.keys(value)) == MapSet.new(expected),
+      do: :ok,
+      else: error(:invalid_field, "environment", %{expected: expected})
+  end
 
   defp decode_human_recovery(value) when is_map(value) do
     with {:ok, request_id} <- required_string(value, "request_id"),
@@ -2041,6 +2146,20 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "retained_lineage_id" => recovery.retained_lineage_id,
       "source_attempt_id" => recovery.source_attempt_id,
       "request_id" => recovery.request_id
+    }
+  end
+
+  defp provider_account_payload(value) do
+    %{
+      "provider_account_id" => value.provider_account_id,
+      "provider_key" => value.provider_key,
+      "credential_generation" => value.credential_generation,
+      "worker_generation" => value.worker_generation,
+      "operation_id" => value.operation_id,
+      "desired_state" => value.desired_state,
+      "expected_backend_kind" => value.expected_backend_kind,
+      "expected_environment_id" => value.expected_environment_id,
+      "expected_incarnation" => value.expected_incarnation
     }
   end
 

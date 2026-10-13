@@ -54,7 +54,7 @@ interface ExecutionEnvironmentBackend {
   readonly kind: string;
 
   readiness(): Promise<EnvironmentReadiness>;
-  currentEnvironment(runId: string): Promise<EnvironmentRef | null>;
+  currentEnvironment(owner: EnvironmentOwner): Promise<EnvironmentRef | null>;
   ensure(spec: EnvironmentSpec): Promise<EnvironmentLease>;
   recover(ref: EnvironmentRef, spec: EnvironmentSpec): Promise<EnvironmentLease>;
   inspect(ref: EnvironmentRef): Promise<EnvironmentInspection>;
@@ -65,11 +65,11 @@ interface ExecutionEnvironmentBackend {
 }
 ```
 
-`currentEnvironment` returns the exact current durable Run-owned incarnation, or `null` only when backend ownership authority proves there is none. `ensure` is Run-scoped and exact-spec idempotent. Reusing a Run environment with any changed spec field fails closed. `recover` accepts only the current exact ref, exact incarnation, and exact spec. `retireStreamedProcesses` closes Worker-local stream attachments and requests bounded physical termination for processes owned by that exact incarnation; stale refs fail before process control. `stop` durably records intent, crosses a provider-specific destructive boundary at most once for that stop cycle, and returns a provider-neutral projection with independent `intent`, `invocation`, `observation`, and aggregate `state` fields. `reconcileStop` is identity-fenced and read-only: it may inspect authoritative provider state but must never replay the destructive request. A pending stop immediately fences the lease. A confirmed stop retains identity; explicit SBX `recover` or `ensure` starts and re-verifies that same incarnation and opens a new lifecycle cycle. `remove` targets only that stopped incarnation and resolves only after authoritative absence evidence; it refuses unresolved stop cycles because removal would discard reconciliation identity. A later `ensure` creates a new physical identity/incarnation and fences every old ref and lease. Removed refs are stale for every operation except idempotent repeated removal.
+`currentEnvironment` returns the exact current durable incarnation for a typed `Run` or `ProviderAccount` owner, or `null` only when backend ownership authority proves there is none. `ensure` is owner-scoped and exact-spec idempotent. Reusing an owner environment with any changed spec field fails closed. `recover` accepts only the current exact ref, exact incarnation, and exact spec. `retireStreamedProcesses` closes Worker-local stream attachments and requests bounded physical termination for processes owned by that exact incarnation; stale refs fail before process control. `stop` durably records intent, crosses a provider-specific destructive boundary at most once for that stop cycle, and returns a provider-neutral projection with independent `intent`, `invocation`, `observation`, and aggregate `state` fields. `reconcileStop` is identity-fenced and read-only: it may inspect authoritative provider state but must never replay the destructive request. A pending stop immediately fences the lease. A confirmed stop retains identity; explicit SBX `recover` or `ensure` starts and re-verifies that same incarnation and opens a new lifecycle cycle. `remove` targets only that stopped incarnation and resolves only after authoritative absence evidence; it refuses unresolved stop cycles because removal would discard reconciliation identity. A later `ensure` creates a new physical identity/incarnation and fences every old ref and lease. Removed refs are stale for every operation except idempotent repeated removal.
 
 ## Explicit whole-Run teardown
 
-Product cleanup freezes the Run worktree identity, all known Run-owned PhysicalLineage, pane, agent, native-session, Herdr-incarnation, and control-authority identities, and the exact current `EnvironmentRef` before physical teardown. The Worker retires exact harness control and closes Run-owned panes without stopping the shared Herdr session/server. Only after harness retirement does the backend-neutral coordinator call `stop` once or `reconcileStop` read-only when durable intent already exists. It removes the environment only after authoritative stopped/absent evidence, then removes the isolated host Run repository. A stale or replacement incarnation fails closed and is never followed.
+Product cleanup freezes the Run worktree identity, all known Run-owned PhysicalLineage, pane, agent, native-session, Herdr-incarnation, and control-authority identities, and the exact current `EnvironmentRef` before physical teardown. The Worker retires exact harness control and closes Run-owned panes without stopping the shared Herdr session/server. Only after harness retirement does the backend-neutral coordinator call `stop` once or `reconcileStop` read-only when durable intent already exists. It removes the environment only after authoritative stopped/absent evidence, then removes the isolated host Run repository. A stale or replacement incarnation fails closed and is never followed. The Run-cleanup entrypoint explicitly rejects `ProviderAccount` ownership before any destructive call; account teardown uses its own Product-authorized lifecycle. See [`provider-accounts.md`](provider-accounts.md).
 
 The three outcomes are durable and independent: harness `retained | retiring | retired | unavailable`, execution environment `cleanup_requested | stopping | stopped | removed | uncertain | failed`, and host repository `retained | cleanup_requested | removed | failed`. A Worker restart resumes these projections from SQLite. Environment uncertainty or failure blocks host-repository removal; harness unavailability blocks both environment and host removal. Runtime status, semantic artifacts and Change Sets, Delivery/export/PR evidence, Quest history, and append-only session evidence are retained.
 
@@ -79,10 +79,10 @@ The SBX implementation persists restart-safe ownership before physical creation 
 
 `EnvironmentSpec` contains physical requirements derived from authoritative Worker/QE state:
 
-- Worker and Run identity;
-- logical Workspace and optional Project identity;
-- workspace access and materialization kind;
-- immutable source identity and frozen base identity;
+- Worker identity and a typed Run-or-ProviderAccount owner;
+- positive credential generation for a ProviderAccount owner;
+- Run layout: logical Workspace/optional Project identity, access, materialization, immutable source, and frozen base;
+- ProviderAccount layout: the versioned account-cell layout without a Run workspace;
 - pinned profile ID and digest;
 - pinned resource-policy ID and digest;
 - capability-oriented network requirements;
@@ -102,7 +102,7 @@ Network requirements identify purposes such as QE control, provider egress, regi
 - opaque environment ID;
 - physical incarnation;
 - owning Worker ID;
-- owning Run ID; and
+- exact typed semantic owner (`Run` or `ProviderAccount` plus credential generation); and
 - exact profile identity.
 
 The opaque environment ID is not a mutable display name and does not assume an SBX CLI naming convention. `EnvironmentInspection` reports the exact ref, lifecycle state, usability, canonical spec digest, path map, and advertised capabilities.
@@ -202,15 +202,15 @@ The Phase-2 backend uses the installed `sbx` CLI through one structured client b
 
 The JSON boundary treats stdout and stderr as separate byte streams and normally requires all stdout to be exactly one JSON document. SBX v0.43.0 has one command-specific exception: its once-per-24-hour update check can append an 84-column `Docker Sandboxes Update Available` box to successful non-TTY `sbx version --json` stdout. The parser accepts only the exact anchored box shape, validates its running version against the JSON client/server version, and validates the release tag inside the fixed release-notes URL. The historical one-line version update notice remains accepted only at an outer boundary, with at most its exact yellow SGR wrapper. No framing exception applies to `ls`, policy, settings, or MCP output. Unknown text, altered boxes, generic ANSI presentation, mixed line endings in diagnostic framing, truncated JSON, and multiple JSON documents fail closed.
 
-Ownership is persisted under the configured Worker data root in `execution-environments.sqlite` with SQLite WAL, `synchronous=FULL`, forward schema migration, and unique current `{backend, Worker, Run}`, display-name, and physical-ID constraints. An intent containing a random incarnation and creation token commits before `sbx create`. Same-Run operations serialize in-process; separate processes coordinate through the intent's PID/token and SQLite. A live creator is allowed to finish, a dead creator can be taken over, and a lost create response is reconciled only through the deterministic name plus creation identity. History is retired, not overwritten.
+Ownership is persisted under the configured Worker data root in `execution-environments.sqlite` with SQLite WAL, `synchronous=FULL`, current-only schema version 3, and unique current `{backend, Worker, typed owner}`, display-name, and physical-ID constraints. Stale schema versions are rejected rather than migrated in place. An intent containing a random incarnation and creation token commits before `sbx create`. Same-owner operations serialize in-process; separate processes coordinate through the intent's PID/token and SQLite. A live creator is allowed to finish, a dead creator can be taken over, and a lost create response is reconciled only through the deterministic name plus creation identity. History is retired, not overwritten.
 
 Adoption authority is the conjunction of:
 
 1. the current, unretired durable Worker record and exact spec/profile digest;
 2. native inventory with the same immutable UUID, deterministic name, and profile-selected native agent (`shell` for `qe-execution-v1`, `qe-pi-execution-v2` for Pi); and
-3. a guest marker containing Worker, Run, environment UUID/name, incarnation, profile, and spec identity.
+3. a guest marker containing Worker, exact typed owner, environment UUID/name, incarnation, profile, and spec identity.
 
-The backend never adopts by name alone after physical binding. Missing environments, duplicate names, UUID/name conflicts, marker conflicts, incompatible specs, and ambiguous creation fail closed. Stop is recoverable and state-preserving. Schema migration 2 adds append-only stop events. `stop_intent_recorded` commits before any provider call; `stop_invocation_started` is an atomic claim committed in the CLI pre-spawn callback; and acknowledged, ambiguous, or known-unsent outcomes commit after return or error. A crash after the claim is conservatively ambiguous. Calls finding an existing unresolved cycle perform observation only and cannot issue another `sbx stop`.
+The backend never adopts by name alone after physical binding. Missing environments, duplicate names, UUID/name conflicts, marker conflicts, incompatible specs, and ambiguous creation fail closed. Stop is recoverable and state-preserving. The current-only schema retains the append-only stop events introduced in version 2 while adding typed ownership in version 3. `stop_intent_recorded` commits before any provider call; `stop_invocation_started` is an atomic claim committed in the CLI pre-spawn callback; and acknowledged, ambiguous, or known-unsent outcomes commit after return or error. A crash after the claim is conservatively ambiguous. Calls finding an existing unresolved cycle perform observation only and cannot issue another `sbx stop`.
 
 SBX v0.43's local CLI exposes `stop` (state-preserving), `ls --json` (authoritative retained inventory), and `run` (restart). It exposes no supported wait handle or operation-status command. The release binary contains an internal operation RPC, but QE does not depend on an undocumented interface. The CLI owns its daemon RPC and normally waits for local shutdown; QE bounds that one child process at 30 seconds. Timing out or losing the CLI response makes invocation ambiguous, not failed. Read-only `ls --json` calls are independently capped at five seconds, so inventory timeout is observation failure only. Authoritative exact `stopped` or exact absence converges cleanup; `running` or transitional state remains stopping/uncertain; UUID/name/agent mismatch fails closed.
 

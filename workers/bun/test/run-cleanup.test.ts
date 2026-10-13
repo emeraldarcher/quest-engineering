@@ -5,6 +5,7 @@ import { cleanupExecutionEnvironment } from "../src/execution-environment/run-cl
 import {
   EnvironmentBackendError,
   type EnvironmentInspection,
+  type EnvironmentOwner,
   type EnvironmentReadiness,
   type EnvironmentRef,
   type EnvironmentSpec,
@@ -43,7 +44,7 @@ const target: EnvironmentRef = {
   environmentId: "environment-cleanup",
   incarnation: "incarnation-cleanup",
   workerId: "worker-cleanup",
-  runId: request.runId,
+  owner: { kind: "run", runId: request.runId },
   profile: { id: "profile-cleanup", digest: "digest-cleanup" },
 };
 
@@ -63,8 +64,10 @@ class ScriptedBackend implements ExecutionEnvironmentBackend {
   async readiness(): Promise<EnvironmentReadiness> {
     throw new Error("unused");
   }
-  async currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
-    if (runId !== target.runId) return null;
+  async currentEnvironment(
+    owner: EnvironmentOwner,
+  ): Promise<EnvironmentRef | null> {
+    if (owner.kind !== "run" || owner.runId !== request.runId) return null;
     if (this.state.removed) return null;
     return this.state.physical === "replacement"
       ? {
@@ -244,7 +247,8 @@ async function fixture(
           }
         : { state: "retired" };
     },
-    currentEnvironment: (runId) => backend.currentEnvironment(runId),
+    currentEnvironment: (runId) =>
+      backend.currentEnvironment({ kind: "run", runId }),
     cleanupEnvironment: async (ref) => {
       events.push("environment_advance");
       return cleanupExecutionEnvironment(backend, ref);
