@@ -71,7 +71,7 @@ ID, incarnation, and profile.
 PostgreSQL owns:
 
 - `provider_accounts` — current semantic Product state;
-- `provider_account_environments` — current desired/observed physical binding;
+- `provider_account_environments` — current desired/observed physical binding. Its durable `desired_environment_state` (`available | stopped | removed`) is independent from `physical_state`; pending or intermediate observations never erase operator intent;
 - `provider_account_lifecycle_events` — append-only lifecycle and fencing
   evidence.
 

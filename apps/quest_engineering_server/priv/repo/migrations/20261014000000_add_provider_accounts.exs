@@ -49,6 +49,7 @@ defmodule QuestEngineering.Server.Repo.Migrations.AddProviderAccounts do
 
       add :worker_generation, :bigint
       add :operation_id, :text, null: false
+      add :desired_environment_state, :text, null: false
       add :backend_kind, :text
       add :environment_id, :text
       add :incarnation, :text
@@ -75,6 +76,12 @@ defmodule QuestEngineering.Server.Repo.Migrations.AddProviderAccounts do
              :provider_account_environments,
              :provider_account_environment_worker_generation_positive,
              check: "worker_generation IS NULL OR worker_generation > 0"
+           )
+
+    create constraint(
+             :provider_account_environments,
+             :provider_account_environment_desired_state_valid,
+             check: "desired_environment_state IN ('available','stopped','removed')"
            )
 
     create constraint(

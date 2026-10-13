@@ -49,6 +49,7 @@ defmodule QuestEngineering.Server.ProviderAccountApi.View do
       worker_id: value.worker_id,
       worker_generation: value.worker_generation,
       operation_id: value.operation_id,
+      desired_state: value.desired_environment_state,
       backend_kind: value.backend_kind,
       environment_id: value.environment_id,
       incarnation: value.incarnation,

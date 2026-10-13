@@ -3,6 +3,7 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
 
   alias QuestEngineering.Server.Product.ProviderAccounts
   alias QuestEngineering.Server.WorkerMessageHandler
+  alias QuestEngineering.Server.WorkerProtocol
   alias QuestEngineering.Server.WorkerStore
 
   test "generation, Worker generation, operation, and incarnation are exact fences" do
@@ -67,6 +68,7 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
     assert stop_environment.incarnation == "incarnation-1"
 
     assert [desired] = ProviderAccounts.desired_for_worker(worker.id)
+    assert desired.desired_state == "stopped"
     assert desired.expected_backend_kind == "fake-account"
     assert desired.expected_environment_id == "environment-1"
     assert desired.expected_incarnation == "incarnation-1"
@@ -107,6 +109,177 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
              "credential_generation_advanced",
              "environment_ensured"
            ]
+  end
+
+  test "durable desired targets remain distinct from pending and intermediate observations" do
+    {:ok, worker} =
+      WorkerStore.register("account-worker-intent", capabilities(), Ecto.UUID.generate())
+
+    assert {:ok, {account, initial_environment}} =
+             ProviderAccounts.create(
+               %{provider_key: "fake", worker_id: worker.id},
+               worker.connection_generation
+             )
+
+    assert initial_environment.desired_environment_state == "available"
+    assert initial_environment.physical_state == "pending"
+
+    available_command = encoded_desired(worker.id, worker.connection_generation)
+    assert available_command["desired_state"] == "available"
+    assert available_command["operation_id"] == initial_environment.operation_id
+
+    assert {:ok, {:applied, available, available_environment}} =
+             ProviderAccounts.apply_environment_report(
+               report(account, initial_environment, "environment-intent", "incarnation-intent")
+             )
+
+    assert available.environment_state == :available
+    assert available_environment.desired_environment_state == "available"
+
+    assert {:ok, {stopping, stop_environment}} =
+             ProviderAccounts.begin_environment_operation(
+               account.id,
+               "stopped",
+               worker.connection_generation
+             )
+
+    assert stopping.environment_state == :pending
+    assert stop_environment.physical_state == "pending"
+    assert stop_environment.desired_environment_state == "stopped"
+
+    stop_command = encoded_desired(worker.id, worker.connection_generation)
+    assert stop_command["desired_state"] == "stopped"
+    assert stop_command["operation_id"] == stop_environment.operation_id
+    assert stop_command == encoded_desired(worker.id, worker.connection_generation)
+
+    still_available_report =
+      account
+      |> report(stop_environment, "environment-intent", "incarnation-intent")
+      |> Map.merge(%{
+        physical_state: "available",
+        event_type: "environment_reconciled"
+      })
+
+    assert {:ok, {:applied, converging_stop, intermediate_stop}} =
+             ProviderAccounts.apply_environment_report(still_available_report)
+
+    assert converging_stop.environment_state == :pending
+    assert intermediate_stop.physical_state == "available"
+    assert intermediate_stop.desired_environment_state == "stopped"
+
+    assert encoded_desired(worker.id, worker.connection_generation)["desired_state"] ==
+             "stopped"
+
+    stopped_report = %{
+      still_available_report
+      | physical_state: "stopped",
+        event_type: "environment_stopped",
+        observed_at: DateTime.utc_now()
+    }
+
+    assert {:ok, {:applied, stopped, converged_stop}} =
+             ProviderAccounts.apply_environment_report(stopped_report)
+
+    assert stopped.environment_state == :stopped
+    assert converged_stop.desired_environment_state == "stopped"
+
+    assert encoded_desired(worker.id, worker.connection_generation)["operation_id"] ==
+             stop_environment.operation_id
+
+    assert {:ok, {removing, remove_environment}} =
+             ProviderAccounts.begin_environment_operation(
+               account.id,
+               "removed",
+               worker.connection_generation
+             )
+
+    assert removing.environment_state == :removing
+    assert remove_environment.physical_state == "removing"
+    assert remove_environment.desired_environment_state == "removed"
+
+    remove_command = encoded_desired(worker.id, worker.connection_generation)
+    assert remove_command["desired_state"] == "removed"
+    assert remove_command["operation_id"] == remove_environment.operation_id
+
+    still_stopped_report = %{
+      stopped_report
+      | operation_id: remove_environment.operation_id,
+        physical_state: "stopped",
+        event_type: "environment_reconciled",
+        observed_at: DateTime.utc_now()
+    }
+
+    assert {:ok, {:applied, converging_remove, intermediate_remove}} =
+             ProviderAccounts.apply_environment_report(still_stopped_report)
+
+    assert converging_remove.environment_state == :removing
+    assert intermediate_remove.physical_state == "stopped"
+    assert intermediate_remove.desired_environment_state == "removed"
+
+    assert encoded_desired(worker.id, worker.connection_generation)["desired_state"] ==
+             "removed"
+
+    removed_report = %{
+      still_stopped_report
+      | physical_state: "removed",
+        event_type: "environment_removed",
+        observed_at: DateTime.utc_now()
+    }
+
+    assert {:ok, {:applied, removed, converged_remove}} =
+             ProviderAccounts.apply_environment_report(removed_report)
+
+    assert removed.environment_state == :removed
+    assert converged_remove.physical_state == "removed"
+    assert converged_remove.desired_environment_state == "removed"
+
+    final_command = encoded_desired(worker.id, worker.connection_generation)
+    assert final_command["desired_state"] == "removed"
+    assert final_command["operation_id"] == remove_environment.operation_id
+  end
+
+  test "Product reconstruction and disconnect preserve persisted stop and remove targets" do
+    {:ok, worker} =
+      WorkerStore.register("account-worker-restart", capabilities(), Ecto.UUID.generate())
+
+    assert {:ok, {account, initial_environment}} =
+             ProviderAccounts.create(
+               %{provider_key: "fake", worker_id: worker.id},
+               worker.connection_generation
+             )
+
+    assert {:ok, {:applied, _, _}} =
+             ProviderAccounts.apply_environment_report(
+               report(account, initial_environment, "environment-restart", "incarnation-restart")
+             )
+
+    assert {:ok, {_stopping, stop_environment}} =
+             ProviderAccounts.begin_environment_operation(
+               account.id,
+               "stopped",
+               worker.connection_generation
+             )
+
+    reconstructed_stop =
+      Task.async(fn -> encoded_desired(worker.id, worker.connection_generation) end)
+      |> Task.await()
+
+    assert reconstructed_stop["desired_state"] == "stopped"
+    assert reconstructed_stop["operation_id"] == stop_environment.operation_id
+
+    assert {:ok, {disconnected, remove_environment}} =
+             ProviderAccounts.disconnect(account.id, worker.connection_generation)
+
+    assert disconnected.lifecycle_state == :disconnected
+    assert disconnected.environment_state == :removing
+    assert remove_environment.desired_environment_state == "removed"
+
+    reconstructed_remove =
+      Task.async(fn -> encoded_desired(worker.id, worker.connection_generation) end)
+      |> Task.await()
+
+    assert reconstructed_remove["desired_state"] == "removed"
+    assert reconstructed_remove["operation_id"] == remove_environment.operation_id
   end
 
   test "backend observation without a physical identity never creates a partial command fence" do
@@ -169,6 +342,15 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
     assert {:ok, _second, untouched} = ProviderAccounts.get_with_environment(second.id)
     assert untouched.environment_id == nil
     assert untouched.operation_id == second_environment.operation_id
+  end
+
+  defp encoded_desired(worker_id, worker_generation) do
+    desired = ProviderAccounts.desired_for_worker(worker_id)
+
+    worker_id
+    |> WorkerProtocol.reconcile_request(worker_generation, desired)
+    |> Map.fetch!("provider_accounts")
+    |> List.first()
   end
 
   defp report(account, environment, environment_id, incarnation) do

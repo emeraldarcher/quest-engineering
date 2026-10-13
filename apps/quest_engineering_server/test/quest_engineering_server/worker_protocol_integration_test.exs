@@ -96,6 +96,13 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
 
     assert {:ok, {:applied, _, _}} = ProviderAccounts.apply_environment_report(first_report)
 
+    assert {:ok, {_stopping, stop_environment}} =
+             ProviderAccounts.begin_environment_operation(
+               account.id,
+               "stopped",
+               first_worker.connection_generation
+             )
+
     :ok = FakeWorker.disconnect(worker)
     :ok = FakeWorker.connect(worker)
     assert_eventually(fn -> FakeWorker.connected?(worker) end)
@@ -119,6 +126,8 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     end)
 
     [desired] = FakeWorker.provider_accounts(worker)
+    assert desired["desired_state"] == "stopped"
+    assert desired["operation_id"] != stop_environment.operation_id
 
     :ok =
       FakeWorker.send_message(worker, %{

@@ -60,6 +60,7 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountEnvironment do
     field :worker_id, :string
     field :worker_generation, :integer
     field :operation_id, :string
+    field :desired_environment_state, :string
     field :backend_kind, :string
     field :environment_id, :string
     field :incarnation, :string
@@ -79,6 +80,7 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountEnvironment do
       :worker_id,
       :worker_generation,
       :operation_id,
+      :desired_environment_state,
       :backend_kind,
       :environment_id,
       :incarnation,
@@ -93,10 +95,12 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountEnvironment do
       :credential_generation,
       :worker_id,
       :operation_id,
+      :desired_environment_state,
       :physical_state
     ])
     |> validate_number(:credential_generation, greater_than: 0)
     |> validate_number(:worker_generation, greater_than: 0)
+    |> validate_inclusion(:desired_environment_state, ~w(available stopped removed))
     |> validate_inclusion(
       :physical_state,
       ~w(pending available stopped missing degraded removing removed)

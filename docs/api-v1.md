@@ -26,7 +26,7 @@ GET  /provider-accounts/:id/events
 POST /provider-accounts/:id/actions/:action
 ```
 
-Create accepts `provider_key`, `worker_id`, and optional `display_name`; all credential/token/secret fields are rejected. Actions are `invalidate | disconnect | reconnect | rotate | start | stop | remove`. Mutations return `202` because durable Product intent and Worker physical convergence are separate. Readiness separately projects semantic account state, physical environment state, `authentication=not_checked`, and `inference=not_evaluated`. See [`provider-accounts.md`](provider-accounts.md).
+Create accepts `provider_key`, `worker_id`, and optional `display_name`; all credential/token/secret fields are rejected. Actions are `invalidate | disconnect | reconnect | rotate | start | stop | remove`. Mutations return `202` because durable Product intent and Worker physical convergence are separate. The environment projection exposes durable `desired_state` independently from observed `physical_state`; pending convergence therefore retains whether the target is `available`, `stopped`, or `removed`. Readiness separately projects semantic account state, physical environment state, `authentication=not_checked`, and `inference=not_evaluated`. See [`provider-accounts.md`](provider-accounts.md).
 
 ## Product definitions and Quest lifecycle
 

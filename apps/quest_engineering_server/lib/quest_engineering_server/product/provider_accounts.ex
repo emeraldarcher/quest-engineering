@@ -104,6 +104,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
                worker_id: account.worker_id,
                worker_generation: worker_generation,
                operation_id: operation_id,
+               desired_environment_state: "available",
                physical_state: "pending"
              })
              |> Repo.insert(),
@@ -117,11 +118,25 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
     |> unwrap_transaction()
   end
 
-  def semantic_transition(id, target) when target in [:connected, :invalid, :disconnected] do
+  def semantic_transition(id, target) when target in [:connected, :invalid] do
     Repo.transaction(fn ->
       with {:ok, account} <- locked_account(id),
            {:ok, next} <- DomainAccount.transition(to_domain(account), target, DateTime.utc_now()) do
         persist_semantic_transition(account, next, target)
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction()
+  end
+
+  @doc "Atomically disconnects an account and persists its removed environment target."
+  def disconnect(id, worker_generation) do
+    Repo.transaction(fn ->
+      with {:ok, account} <- locked_account(id),
+           {:ok, next} <-
+             DomainAccount.transition(to_domain(account), :disconnected, DateTime.utc_now()) do
+        persist_disconnection(account, next, worker_generation)
       else
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -145,7 +160,13 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
              })
              |> Repo.update(),
            {:ok, environment} <-
-             upsert_environment(updated, operation_id, worker_generation, "pending"),
+             upsert_environment(
+               updated,
+               operation_id,
+               worker_generation,
+               "available",
+               "pending"
+             ),
            {:ok, _event} <-
              insert_event(
                updated,
@@ -220,6 +241,29 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
     end
   end
 
+  defp persist_disconnection(account, next, worker_generation) do
+    with {:ok, updated} <-
+           account
+           |> ProviderAccount.changeset(%{
+             lifecycle_state: Atom.to_string(next.lifecycle_state),
+             environment_state: Atom.to_string(next.environment_state),
+             authentication_state: "not_checked"
+           })
+           |> Repo.update(),
+         {:ok, _event} <-
+           insert_event(
+             updated,
+             Repo.get(ProviderAccountEnvironment, account.id),
+             "account_disconnected",
+             DateTime.utc_now(),
+             %{}
+           ) do
+      persist_environment_operation(updated, "removed", worker_generation)
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
   defp begin_locked_environment_operation(id, desired_state, worker_generation) do
     case locked_account(id) do
       {:ok, account} -> persist_environment_operation(account, desired_state, worker_generation)
@@ -238,7 +282,14 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
       end
 
     with {:ok, environment} <-
-           upsert_environment(account, operation_id, worker_generation, pending, identity_mode),
+           upsert_environment(
+             account,
+             operation_id,
+             worker_generation,
+             desired_state,
+             pending,
+             identity_mode
+           ),
          {:ok, updated} <-
            account
            |> ProviderAccount.changeset(%{environment_state: pending})
@@ -293,6 +344,10 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
 
   defp persist_environment_report(account, environment, report, environment_id, incarnation) do
     physical_state = fetch(report, :physical_state)
+
+    projected_state =
+      projected_environment_state(environment.desired_environment_state, physical_state)
+
     observed_at = parse_timestamp(fetch(report, :observed_at))
     canary_persisted = fetch(report, :canary_persisted) == true
 
@@ -311,7 +366,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
            |> Repo.update(),
          {:ok, updated_account} <-
            account
-           |> ProviderAccount.changeset(%{environment_state: physical_state})
+           |> ProviderAccount.changeset(%{environment_state: projected_state})
            |> Repo.update(),
          {:ok, _event} <-
            insert_event(
@@ -347,7 +402,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
          account,
          operation_id,
          worker_generation,
-         state,
+         desired_state,
+         physical_state,
          identity_mode \\ :reset
        ) do
     attrs =
@@ -357,7 +413,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
         worker_id: account.worker_id,
         worker_generation: worker_generation,
         operation_id: operation_id,
-        physical_state: state,
+        desired_environment_state: desired_state,
+        physical_state: physical_state,
         last_error_code: nil,
         last_error_message: nil,
         canary_persisted: false,
@@ -422,13 +479,6 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   end
 
   defp desired_payload(account, environment) do
-    desired_state =
-      case environment.physical_state do
-        state when state in ["removing", "removed"] -> "removed"
-        "stopped" -> "stopped"
-        _ -> "available"
-      end
-
     {expected_backend_kind, expected_environment_id, expected_incarnation} =
       expected_physical_identity(environment)
 
@@ -439,12 +489,23 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
       worker_id: account.worker_id,
       worker_generation: environment.worker_generation,
       operation_id: environment.operation_id,
-      desired_state: desired_state,
+      desired_state: environment.desired_environment_state,
       expected_backend_kind: expected_backend_kind,
       expected_environment_id: expected_environment_id,
       expected_incarnation: expected_incarnation
     }
   end
+
+  defp projected_environment_state(desired_state, physical_state)
+       when desired_state == physical_state,
+       do: physical_state
+
+  defp projected_environment_state(_desired_state, physical_state)
+       when physical_state in ["missing", "degraded"],
+       do: physical_state
+
+  defp projected_environment_state("removed", _physical_state), do: "removing"
+  defp projected_environment_state(_desired_state, _physical_state), do: "pending"
 
   def expected_physical_identity(%{
         backend_kind: backend_kind,

@@ -43,6 +43,7 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
                  "inference" => "not_evaluated"
                },
                "environment" => %{
+                 "desired_state" => "available",
                  "physical_state" => "pending",
                  "environment_id" => nil,
                  "incarnation" => nil
@@ -92,6 +93,44 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
 
     refute response_contains_secret_field?(created)
     refute response_contains_secret_field?(%{"events" => events})
+  end
+
+  test "ProviderAccount API projects durable stop and remove targets separately from convergence" do
+    worker_id = "provider-account-api-intent-#{System.unique_integer([:positive])}"
+    {:ok, _worker} = WorkerStore.register(worker_id, capabilities(), Ecto.UUID.generate())
+
+    assert %{"provider_account" => %{"id" => id}} =
+             build_conn()
+             |> put_req_header("content-type", "application/json")
+             |> post("/api/v1/provider-accounts", %{
+               provider_key: "provider-neutral",
+               worker_id: worker_id
+             })
+             |> json_response(202)
+
+    assert %{
+             "provider_account" => %{
+               "environment" => %{
+                 "desired_state" => "stopped",
+                 "physical_state" => "pending"
+               }
+             }
+           } =
+             build_conn()
+             |> post("/api/v1/provider-accounts/#{id}/actions/stop")
+             |> json_response(202)
+
+    assert %{
+             "provider_account" => %{
+               "environment" => %{
+                 "desired_state" => "removed",
+                 "physical_state" => "removing"
+               }
+             }
+           } =
+             build_conn()
+             |> post("/api/v1/provider-accounts/#{id}/actions/remove")
+             |> json_response(202)
   end
 
   test "ProviderAccount API rejects credentials, unknown fields, actions, and identities" do

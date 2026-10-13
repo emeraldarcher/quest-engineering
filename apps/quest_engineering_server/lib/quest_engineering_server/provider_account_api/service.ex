@@ -23,7 +23,7 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
              %{provider_key: provider_key, worker_id: worker_id, display_name: display_name},
              generation
            ) do
-      dispatch(account, environment, "available")
+      dispatch(account, environment)
       {:ok, account, environment}
     end
   end
@@ -46,17 +46,15 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
   end
 
   defp perform_action(account, "disconnect", generation) do
-    with {:ok, _updated} <- ProviderAccounts.semantic_transition(account.id, :disconnected),
-         {:ok, {updated, environment}} <-
-           ProviderAccounts.begin_environment_operation(account.id, "removed", generation) do
-      dispatch(updated, environment, "removed")
+    with {:ok, {updated, environment}} <- ProviderAccounts.disconnect(account.id, generation) do
+      dispatch(updated, environment)
       {:ok, updated, environment}
     end
   end
 
   defp perform_action(account, action, generation) when action in ["reconnect", "rotate"] do
     with {:ok, {updated, environment}} <- ProviderAccounts.next_generation(account.id, generation) do
-      dispatch(updated, environment, "available")
+      dispatch(updated, environment)
       {:ok, updated, environment}
     end
   end
@@ -66,14 +64,14 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
 
     with {:ok, {updated, environment}} <-
            ProviderAccounts.begin_environment_operation(account.id, desired, generation) do
-      dispatch(updated, environment, desired)
+      dispatch(updated, environment)
       {:ok, updated, environment}
     end
   end
 
-  defp dispatch(_account, %{worker_generation: nil}, _desired), do: :offline
+  defp dispatch(_account, %{worker_generation: nil}), do: :offline
 
-  defp dispatch(account, environment, desired) do
+  defp dispatch(account, environment) do
     {expected_backend_kind, expected_environment_id, expected_incarnation} =
       ProviderAccounts.expected_physical_identity(environment)
 
@@ -87,7 +85,7 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
           credential_generation: account.credential_generation,
           worker_generation: environment.worker_generation,
           operation_id: environment.operation_id,
-          desired_state: desired,
+          desired_state: environment.desired_environment_state,
           expected_backend_kind: expected_backend_kind,
           expected_environment_id: expected_environment_id,
           expected_incarnation: expected_incarnation
