@@ -2,6 +2,7 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
   @moduledoc "ProviderAccount Phase-A application service. No credential material is accepted."
 
   alias QuestEngineering.Server.Product.ProviderAccounts
+  alias QuestEngineering.Server.Product.ProviderAccountSetups
   alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerProtocol
 
@@ -11,6 +12,59 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
   def list, do: {:ok, ProviderAccounts.list()}
   def get(id), do: ProviderAccounts.get_with_environment(id)
   def events(id), do: {:ok, ProviderAccounts.events(id)}
+  def setup_attempts(id), do: {:ok, ProviderAccountSetups.list(id)}
+
+  def authorize_setup(id, %{"request_id" => request_id, "confirmed" => true} = params)
+      when map_size(params) == 2 and is_binary(request_id) and request_id != "" do
+    with {:ok, {attempt, _authorization, idempotent?}} <-
+           ProviderAccountSetups.authorize(id, request_id),
+         :ok <- ProviderAccountSetups.deliver(attempt) do
+      {:ok, attempt, ProviderAccountSetups.attention_for_attempt(attempt.id), idempotent?}
+    end
+  end
+
+  def authorize_setup(_id, _params), do: malformed(%{path: ["request_id"]})
+
+  def setup_interaction(id, attempt_id, generation, attention_id),
+    do: ProviderAccountSetups.interaction(id, attempt_id, generation, attention_id)
+
+  def respond_setup(id, attempt_id, params) when is_map(params) do
+    with :ok <-
+           exact_keys(
+             params,
+             ~w(setup_generation attention_id request_id value),
+             ~w(setup_generation attention_id request_id value)
+           ),
+         generation when is_integer(generation) and generation > 0 <- params["setup_generation"],
+         {:ok, attention_id} <- required_string(params, "attention_id"),
+         {:ok, request_id} <- required_string(params, "request_id"),
+         value when is_binary(value) and byte_size(value) <= 8_192 <- params["value"],
+         {:ok, attempt, attention} <-
+           ProviderAccountSetups.respond(
+             id,
+             attempt_id,
+             generation,
+             attention_id,
+             request_id,
+             value
+           ) do
+      {:ok, attempt, attention}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> malformed(%{path: []})
+    end
+  end
+
+  def respond_setup(_id, _attempt_id, _params), do: malformed(%{path: []})
+
+  def cancel_setup(id, attempt_id, %{"request_id" => request_id} = params)
+      when map_size(params) == 1 and is_binary(request_id) and request_id != "" do
+    with {:ok, attempt} <- ProviderAccountSetups.cancel(id, attempt_id, request_id) do
+      {:ok, attempt, ProviderAccountSetups.attention_for_attempt(attempt.id)}
+    end
+  end
+
+  def cancel_setup(_id, _attempt_id, _params), do: malformed(%{path: ["request_id"]})
 
   def create(params) when is_map(params) do
     with :ok <- exact_keys(params, @create_keys, ~w(provider_key worker_id)),
@@ -31,8 +85,19 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
   def create(_params), do: malformed(%{path: []})
 
   def action(id, action) when action in @actions do
-    with {:ok, account, _environment} <- ProviderAccounts.get_with_environment(id) do
+    with {:ok, account, _environment} <- ProviderAccounts.get_with_environment(id),
+         false <- ProviderAccountSetups.active_for_account?(id) do
       perform_action(account, action, connected_generation(account.worker_id))
+    else
+      true ->
+        {:error,
+         %{
+           code: :provider_account_setup_active,
+           details: %{provider_account_id: id, action: action}
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -82,7 +147,7 @@ defmodule QuestEngineering.Server.ProviderAccountApi.Service do
         %{
           provider_account_id: account.id,
           provider_key: account.provider_key,
-          credential_generation: account.credential_generation,
+          credential_generation: environment.credential_generation,
           worker_generation: environment.worker_generation,
           operation_id: environment.operation_id,
           desired_state: environment.desired_environment_state,

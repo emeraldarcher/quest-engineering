@@ -23,6 +23,7 @@ defmodule QuestEngineering.ServerWeb.Endpoint do
     pass: ["application/json"],
     json_decoder: Phoenix.json_library()
 
+  plug QuestEngineering.ServerWeb.ProviderAccountSetupInputFilter
   plug Plug.Head
   plug QuestEngineering.ServerWeb.Router
 end

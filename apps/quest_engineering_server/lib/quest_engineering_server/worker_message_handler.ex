@@ -16,7 +16,9 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.OperationalFailure
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Product.ProviderAccounts
+  alias QuestEngineering.Server.Product.ProviderAccountSetups
   alias QuestEngineering.Server.ProductChangeNotifier
+  alias QuestEngineering.Server.ProviderAccountSetupInteractions
   alias QuestEngineering.Server.Reconciler
   alias QuestEngineering.Server.RunChangeNotifier
   alias QuestEngineering.Server.RunWorkspaceStore
@@ -269,6 +271,49 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   end
 
   def handle(worker_id, generation, %{
+        type: :provider_account_setup_state,
+        provider_account_setup: setup,
+        ephemeral: ephemeral
+      }) do
+    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, attempt} <- ProviderAccountSetups.record(worker_id, generation, setup),
+         :ok <- relay_provider_account_setup_output(attempt, ephemeral) do
+      if attempt.state in ["succeeded", "failed", "uncertain", "cancelled", "invalidated"],
+        do: ProviderAccountSetupInteractions.clear(attempt.id)
+
+      ProductChangeNotifier.notify(["provider_accounts"])
+
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "provider_account_setup_recorded",
+         "setup_attempt_id" => attempt.id,
+         "setup_generation" => attempt.setup_generation,
+         "state" => attempt.state
+       }}
+    end
+  end
+
+  def handle(worker_id, generation, %{
+        type: :provider_account_setup_input_delivery,
+        setup_delivery: delivery
+      }) do
+    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, request} <-
+           ProviderAccountSetups.record_input_delivery(worker_id, generation, delivery) do
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "provider_account_setup_input_delivery_recorded",
+         "attention_id" => request.id,
+         "delivery_state" => request.delivery_state
+       }}
+    end
+  end
+
+  def handle(worker_id, generation, %{
         type: :provider_account_environment_state,
         account_environment: environment
       }) do
@@ -291,9 +336,12 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
     sessions = Map.get(message, :sessions, [])
     attention_deliveries = Map.get(message, :attention_deliveries, [])
     account_environments = Map.get(message, :account_environments, [])
+    account_setups = Map.get(message, :provider_account_setups, [])
 
     with {:ok, _account_results} <-
            reconcile_account_environments(worker_id, account_environments || []),
+         {:ok, _setup_results} <-
+           reconcile_provider_account_setups(worker_id, generation, account_setups || []),
          {:ok, _persisted_sessions} <-
            ExecutionSessionStore.reconcile(worker_id, generation, sessions || []),
          {:ok, _persisted_deliveries} <-
@@ -338,6 +386,16 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
          "human_attention_responses" => attention_responses
        }}
     end
+  end
+
+  defp reconcile_provider_account_setups(worker_id, generation, setups) do
+    Enum.reduce_while(setups, {:ok, []}, fn setup, {:ok, results} ->
+      case ProviderAccountSetups.record(worker_id, generation, setup) do
+        {:ok, result} -> {:cont, {:ok, [result | results]}}
+        {:error, %{code: :provider_account_setup_not_found}} -> {:cont, {:ok, results}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp reconcile_account_environments(worker_id, environments) do
@@ -459,6 +517,24 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
       "worktree_id" => worktree_id
     }
   end
+
+  defp relay_provider_account_setup_output(attempt, ephemeral)
+       when is_map(ephemeral) and attempt.state == "human_interaction_required" and
+              is_binary(attempt.attention_id) and is_binary(attempt.process_generation) do
+    case ProviderAccountSetupInteractions.decrypt_and_put(
+           attempt.id,
+           attempt.setup_generation,
+           attempt.attention_id,
+           attempt.process_generation,
+           ephemeral
+         ) do
+      :ok -> :ok
+      {:error, code} -> {:error, %{type: code, details: %{setup_attempt_id: attempt.id}}}
+    end
+  end
+
+  defp relay_provider_account_setup_output(_attempt, nil), do: :ok
+  defp relay_provider_account_setup_output(_attempt, _ephemeral), do: :ok
 
   defp delivery_response(result, delivery_id) do
     %{

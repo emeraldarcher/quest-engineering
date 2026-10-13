@@ -145,10 +145,50 @@ defmodule QuestEngineering.ServerWeb.Api do
             ],
        do: {400, to_string(code), "The harness setup request is malformed.", [], %{}}
 
+  defp error_view(%{code: :provider_account_setup_not_found, details: details}),
+    do:
+      {404, "provider_account_setup_not_found", "The setup attempt was not found.", [],
+       safe(details)}
+
+  defp error_view(%{code: code, details: details})
+       when code in [
+              :invalid_provider_account_setup,
+              :invalid_provider_account_setup_response,
+              :invalid_provider_account_setup_cancellation,
+              :invalid_provider_account_setup_delivery
+            ],
+       do:
+         {400, to_string(code), "The ProviderAccount setup request is malformed.", [],
+          safe(details)}
+
+  defp error_view(%{code: code, details: details})
+       when code in [
+              :provider_account_environment_missing,
+              :provider_account_setup_active,
+              :provider_account_setup_ineligible,
+              :provider_account_setup_not_cancellable,
+              :setup_already_authorized,
+              :setup_attention_identity_mismatch,
+              :setup_attention_not_found,
+              :setup_authorization_missing,
+              :setup_cancellation_conflict,
+              :setup_request_conflict,
+              :setup_worker_unavailable,
+              :stale_provider_account_setup_response
+            ],
+       do:
+         {409, to_string(code), "The ProviderAccount setup request conflicts with current state.",
+          [], safe(details)}
+
   defp error_view(:setup_interaction_unavailable),
     do:
       {409, "setup_interaction_unavailable",
        "The ephemeral provider setup interaction is no longer available.", [], %{}}
+
+  defp error_view(:local_provider_account_setup_unavailable),
+    do:
+      {409, "local_provider_account_setup_unavailable",
+       "ProviderAccount setup is available only to a direct loopback desktop client.", [], %{}}
 
   defp error_view(:local_harness_setup_unavailable),
     do:

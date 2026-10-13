@@ -16,6 +16,8 @@ import {
   type Loadout,
   type LocalSessionAttachmentDescriptor,
   nullableString,
+  type ProviderAccount,
+  type ProviderAccountSetupAttempt,
   type Quest,
   type QuestPreview,
   type Reasoning,
@@ -139,6 +141,118 @@ export class ApiClient {
       `/workspaces/${workspaceId}/bindings`,
       { candidate_id: candidateId },
       (value) => asRecord(value, "binding").binding,
+    );
+  listProviderAccounts = () =>
+    this.get("/provider-accounts", (value) =>
+      list(value, "provider_accounts", decodeProviderAccount),
+    );
+  getProviderAccount = (id: string) =>
+    this.get(`/provider-accounts/${encodeURIComponent(id)}`, (value) =>
+      decodeProviderAccount(
+        asRecord(value, "provider account").provider_account,
+      ),
+    );
+  createProviderAccount = (input: {
+    provider_key: string;
+    worker_id: string;
+    display_name?: string;
+  }) =>
+    this.post("/provider-accounts", input, (value) =>
+      decodeProviderAccount(
+        asRecord(value, "provider account").provider_account,
+      ),
+    );
+  listProviderAccountSetupAttempts = (providerAccountId: string) =>
+    this.get(
+      `/provider-accounts/${encodeURIComponent(providerAccountId)}/setup-attempts`,
+      (value) =>
+        list(value, "setup_attempts", decodeProviderAccountSetupAttempt),
+    );
+  authorizeProviderAccountSetup = (
+    providerAccountId: string,
+    requestId: string,
+  ) =>
+    this.post(
+      `/provider-accounts/${encodeURIComponent(providerAccountId)}/setup-attempts`,
+      { request_id: requestId, confirmed: true },
+      (value) =>
+        decodeProviderAccountSetupAttempt(
+          asRecord(value, "provider account setup").setup_attempt,
+        ),
+      undefined,
+      true,
+    );
+  getProviderAccountSetupInteraction = async (
+    providerAccountId: string,
+    setupAttemptId: string,
+    setupGeneration: number,
+    attentionId: string,
+  ) => {
+    const encryption = await interactionEncryptionKey();
+    const interaction = await this.get(
+      `/provider-accounts/${encodeURIComponent(providerAccountId)}/setup-attempts/${encodeURIComponent(setupAttemptId)}/interactions/${encodeURIComponent(attentionId)}?generation=${setupGeneration}`,
+      (value) => {
+        const decoded = asRecord(
+          asRecord(value, "provider account setup interaction").interaction,
+          "provider account setup interaction",
+        );
+        return {
+          output: decodeSealedInteractionOutput(decoded.output),
+          expires_at: asString(
+            decoded.expires_at,
+            "provider account setup interaction",
+          ),
+        };
+      },
+      undefined,
+      true,
+      { "x-qe-interaction-public-key": encryption.publicKey },
+    );
+    return {
+      output: await decryptInteractionOutput(
+        interaction.output,
+        encryption.privateKey,
+      ),
+      expires_at: interaction.expires_at,
+    };
+  };
+  respondProviderAccountSetup = (
+    providerAccountId: string,
+    setupAttemptId: string,
+    setupGeneration: number,
+    attentionId: string,
+    requestId: string,
+    value: string,
+  ) =>
+    this.post(
+      `/provider-accounts/${encodeURIComponent(providerAccountId)}/setup-attempts/${encodeURIComponent(setupAttemptId)}/respond`,
+      {
+        setup_generation: setupGeneration,
+        attention_id: attentionId,
+        request_id: requestId,
+        value,
+      },
+      (response) =>
+        decodeProviderAccountSetupAttempt(
+          asRecord(response, "provider account setup").setup_attempt,
+        ),
+      undefined,
+      true,
+    );
+  cancelProviderAccountSetup = (
+    providerAccountId: string,
+    setupAttemptId: string,
+    requestId: string,
+  ) =>
+    this.post(
+      `/provider-accounts/${encodeURIComponent(providerAccountId)}/setup-attempts/${encodeURIComponent(setupAttemptId)}/cancel`,
+      { request_id: requestId },
+      (response) =>
+        decodeProviderAccountSetupAttempt(
+          asRecord(response, "provider account setup").setup_attempt,
+        ),
+      undefined,
+      true,
     );
   listExecutionOptions = () =>
     this.get("/execution-options", (value) =>
@@ -466,6 +580,7 @@ export class ApiClient {
     decode: (value: unknown) => T,
     signal?: AbortSignal,
     localOnly = false,
+    additionalHeaders: Record<string, string> = {},
   ): Promise<T> {
     if (localOnly && !this.config.localTauriClient)
       throw new ApiError(
@@ -477,9 +592,10 @@ export class ApiClient {
       {
         method: "GET",
         ...(signal ? { signal } : {}),
-        ...(localOnly
-          ? { headers: { "x-quest-engineering-local-client": "tauri" } }
-          : {}),
+        headers: {
+          ...additionalHeaders,
+          ...(localOnly ? { "x-quest-engineering-local-client": "tauri" } : {}),
+        },
       },
       decode,
     );
@@ -568,6 +684,93 @@ export class ApiClient {
   }
 }
 
+interface SealedInteractionOutput {
+  encryptedKey: string;
+  iv: string;
+  ciphertext: string;
+  tag: string;
+}
+
+async function interactionEncryptionKey(): Promise<{
+  publicKey: string;
+  privateKey: CryptoKey;
+}> {
+  const pair = (await crypto.subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt", "decrypt"],
+  )) as CryptoKeyPair;
+  const publicKey = await crypto.subtle.exportKey("spki", pair.publicKey);
+  return {
+    publicKey: bytesToBase64(new Uint8Array(publicKey)),
+    privateKey: pair.privateKey,
+  };
+}
+
+function decodeSealedInteractionOutput(
+  value: unknown,
+): SealedInteractionOutput {
+  const output = asRecord(value, "provider account setup sealed interaction");
+  if (output.version !== "rsa-oaep-sha256-aes-256-gcm-v1")
+    throw new Error(
+      "Unsupported ProviderAccount setup interaction encryption.",
+    );
+  return {
+    encryptedKey: asString(output.encrypted_key, "sealed interaction key"),
+    iv: asString(output.iv, "sealed interaction iv"),
+    ciphertext: asString(output.ciphertext, "sealed interaction ciphertext"),
+    tag: asString(output.tag, "sealed interaction tag"),
+  };
+}
+
+async function decryptInteractionOutput(
+  output: SealedInteractionOutput,
+  privateKey: CryptoKey,
+): Promise<string> {
+  const rawKey = await crypto.subtle.decrypt(
+    { name: "RSA-OAEP" },
+    privateKey,
+    base64ToBytes(output.encryptedKey),
+  );
+  const key = await crypto.subtle.importKey(
+    "raw",
+    rawKey,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"],
+  );
+  const ciphertext = base64ToBytes(output.ciphertext);
+  const tag = base64ToBytes(output.tag);
+  const sealed = new Uint8Array(ciphertext.byteLength + tag.byteLength);
+  sealed.set(ciphertext);
+  sealed.set(tag, ciphertext.byteLength);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(output.iv), tagLength: 128 },
+    key,
+    sealed,
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+function bytesToBase64(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(value);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let index = 0; index < binary.length; index += 1)
+    bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
 function list<T>(
   value: unknown,
   key: string,
@@ -575,6 +778,281 @@ function list<T>(
 ): T[] {
   return asArray(asRecord(value, key)[key], key).map(decode);
 }
+function decodeProviderAccount(value: unknown): ProviderAccount {
+  const account = asRecord(value, "provider account");
+  const readiness = asRecord(account.readiness, "provider account readiness");
+  const environment =
+    account.environment === null
+      ? null
+      : asRecord(account.environment, "provider account environment");
+  const error =
+    !environment || environment.last_error === null
+      ? null
+      : asRecord(environment.last_error, "provider account environment error");
+  return {
+    id: asString(account.id, "provider account"),
+    provider_key: asString(account.provider_key, "provider account"),
+    display_name: nullableString(account.display_name, "provider account"),
+    worker_id: asString(account.worker_id, "provider account"),
+    credential_generation: asNumber(
+      account.credential_generation,
+      "provider account",
+    ),
+    lifecycle_state: asString(
+      account.lifecycle_state,
+      "provider account",
+    ) as ProviderAccount["lifecycle_state"],
+    readiness: {
+      semantic: asString(readiness.semantic, "provider account readiness"),
+      environment: asString(
+        readiness.environment,
+        "provider account readiness",
+      ),
+      authentication: asString(
+        readiness.authentication,
+        "provider account readiness",
+      ),
+      inference: asString(
+        readiness.inference,
+        "provider account readiness",
+      ) as "not_evaluated",
+    },
+    environment: environment
+      ? {
+          credential_generation: asNumber(
+            environment.credential_generation,
+            "provider account environment",
+          ),
+          worker_id: asString(
+            environment.worker_id,
+            "provider account environment",
+          ),
+          worker_generation:
+            environment.worker_generation === null
+              ? null
+              : asNumber(
+                  environment.worker_generation,
+                  "provider account environment",
+                ),
+          operation_id: asString(
+            environment.operation_id,
+            "provider account environment",
+          ),
+          desired_state: asString(
+            environment.desired_state,
+            "provider account environment",
+          ) as NonNullable<ProviderAccount["environment"]>["desired_state"],
+          backend_kind: nullableString(
+            environment.backend_kind,
+            "provider account environment",
+          ),
+          environment_id: nullableString(
+            environment.environment_id,
+            "provider account environment",
+          ),
+          incarnation: nullableString(
+            environment.incarnation,
+            "provider account environment",
+          ),
+          physical_state: asString(
+            environment.physical_state,
+            "provider account environment",
+          ),
+          durable_canary_persisted: asBoolean(
+            environment.durable_canary_persisted,
+            "provider account environment",
+          ),
+          last_error: error
+            ? {
+                code: asString(
+                  error.code,
+                  "provider account environment error",
+                ),
+                message: asString(
+                  error.message,
+                  "provider account environment error",
+                ),
+              }
+            : null,
+          observed_at: nullableString(
+            environment.observed_at,
+            "provider account environment",
+          ),
+        }
+      : null,
+    authenticated_at: nullableString(
+      account.authenticated_at,
+      "provider account",
+    ),
+    last_validated_at: nullableString(
+      account.last_validated_at,
+      "provider account",
+    ),
+    inserted_at: asString(account.inserted_at, "provider account"),
+    updated_at: asString(account.updated_at, "provider account"),
+  };
+}
+
+function decodeProviderAccountSetupAttempt(
+  value: unknown,
+): ProviderAccountSetupAttempt {
+  const attempt = asRecord(value, "provider account setup");
+  const process =
+    attempt.process === null
+      ? null
+      : asRecord(attempt.process, "provider account setup process");
+  const attention =
+    attempt.attention === null
+      ? null
+      : asRecord(attempt.attention, "provider account setup attention");
+  const validation = asRecord(
+    attempt.validation,
+    "provider account setup validation",
+  );
+  const failure =
+    attempt.failure === null
+      ? null
+      : asRecord(attempt.failure, "provider account setup failure");
+  return {
+    id: asString(attempt.id, "provider account setup"),
+    provider_account_id: asString(
+      attempt.provider_account_id,
+      "provider account setup",
+    ),
+    setup_generation: asNumber(
+      attempt.setup_generation,
+      "provider account setup",
+    ),
+    credential_generation_before: asNumber(
+      attempt.credential_generation_before,
+      "provider account setup",
+    ),
+    credential_generation_after:
+      attempt.credential_generation_after === null
+        ? null
+        : asNumber(
+            attempt.credential_generation_after,
+            "provider account setup",
+          ),
+    environment_generation: asNumber(
+      attempt.environment_generation,
+      "provider account setup",
+    ),
+    worker_id: asString(attempt.worker_id, "provider account setup"),
+    worker_generation: asNumber(
+      attempt.worker_generation,
+      "provider account setup",
+    ),
+    state: asString(
+      attempt.state,
+      "provider account setup",
+    ) as ProviderAccountSetupAttempt["state"],
+    invocation_state: asString(
+      attempt.invocation_state,
+      "provider account setup",
+    ) as ProviderAccountSetupAttempt["invocation_state"],
+    process: process
+      ? {
+          backend_process_id: asString(
+            process.backend_process_id,
+            "provider account setup process",
+          ),
+          process_start_identity: asString(
+            process.process_start_identity,
+            "provider account setup process",
+          ),
+          process_generation: asString(
+            process.process_generation,
+            "provider account setup process",
+          ),
+          executable: asString(
+            process.executable,
+            "provider account setup process",
+          ),
+        }
+      : null,
+    attention: attention
+      ? {
+          attention_id: asString(
+            attention.attention_id,
+            "provider account setup attention",
+          ),
+          request_generation: asNumber(
+            attention.request_generation,
+            "provider account setup attention",
+          ),
+          kind: asString(
+            attention.kind,
+            "provider account setup attention",
+          ) as "provider_authentication",
+          message: asString(
+            attention.message,
+            "provider account setup attention",
+          ),
+          response_state: asString(
+            attention.response_state,
+            "provider account setup attention",
+          ) as NonNullable<
+            ProviderAccountSetupAttempt["attention"]
+          >["response_state"],
+          delivery_state: asString(
+            attention.delivery_state,
+            "provider account setup attention",
+          ) as NonNullable<
+            ProviderAccountSetupAttempt["attention"]
+          >["delivery_state"],
+          delivery_attempt_id: nullableString(
+            attention.delivery_attempt_id,
+            "provider account setup attention",
+          ),
+          surfaced_at: asString(
+            attention.surfaced_at,
+            "provider account setup attention",
+          ),
+        }
+      : null,
+    validation: {
+      state: asString(validation.state, "provider account setup validation"),
+      identity: nullableString(
+        validation.identity,
+        "provider account setup validation",
+      ),
+      validated_at: nullableString(
+        validation.validated_at,
+        "provider account setup validation",
+      ),
+    },
+    failure: failure
+      ? {
+          code: asString(failure.code, "provider account setup failure"),
+          message: asString(failure.message, "provider account setup failure"),
+        }
+      : null,
+    authorized_at: asString(attempt.authorized_at, "provider account setup"),
+    invocation_requested_at: nullableString(
+      attempt.invocation_requested_at,
+      "provider account setup",
+    ),
+    invocation_acknowledged_at: nullableString(
+      attempt.invocation_acknowledged_at,
+      "provider account setup",
+    ),
+    interaction_required_at: nullableString(
+      attempt.interaction_required_at,
+      "provider account setup",
+    ),
+    succeeded_at: nullableString(
+      attempt.succeeded_at,
+      "provider account setup",
+    ),
+    cancelled_at: nullableString(
+      attempt.cancelled_at,
+      "provider account setup",
+    ),
+    updated_at: asString(attempt.updated_at, "provider account setup"),
+  };
+}
+
 function decodeClass(value: unknown): ClassDefinition {
   const x = asRecord(value, "class");
   return {

@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 15 as const;
+export const WORKER_PROTOCOL_VERSION = 16 as const;
 
 export type JsonValue =
   | string
@@ -201,6 +201,91 @@ export interface RespondHarnessSetupCommand {
   attention_id: string;
   request_id: string;
   value: string;
+}
+
+export type ProviderAccountSetupState =
+  | "authorized"
+  | "preparing"
+  | "invocation_requested"
+  | "invocation_acknowledged"
+  | "human_interaction_required"
+  | "validating"
+  | "succeeded"
+  | "failed"
+  | "uncertain"
+  | "cancellation_requested"
+  | "cancelled"
+  | "invalidated";
+
+export type ProviderAccountSetupInvocationState =
+  | "not_requested"
+  | "requested"
+  | "acknowledged"
+  | "settled"
+  | "uncertain";
+
+export interface ProviderAccountSetupValidation {
+  state:
+    | "not_checked"
+    | "authenticated"
+    | "authentication_required"
+    | "inspection_unavailable"
+    | "incompatible_status";
+  identity: string | null;
+}
+
+export interface ProviderAccountSetupCommand {
+  type: "prepare_provider_account_setup";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  setup: {
+    setup_attempt_id: string;
+    provider_account_id: string;
+    setup_generation: number;
+    authorization_id: string;
+    authorization_kind: "provider_account_setup";
+    authorized_at: string;
+    credential_generation: number;
+    environment_generation: number;
+    worker_generation: number;
+    environment_operation_id: string;
+    provider_key: string;
+    environment: {
+      backend_kind: string;
+      environment_id: string;
+      incarnation: string;
+    };
+    interaction_public_key: string;
+    state: ProviderAccountSetupState;
+    invocation_state: ProviderAccountSetupInvocationState;
+    cancellation_request_id: string | null;
+  };
+}
+
+export interface RespondProviderAccountSetupCommand {
+  type: "respond_provider_account_setup";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  setup_attempt_id: string;
+  setup_generation: number;
+  attention_id: string;
+  process_generation: string;
+  request_generation: number;
+  delivery_attempt_id: string;
+  value: string;
+}
+
+export interface CancelProviderAccountSetupCommand {
+  type: "cancel_provider_account_setup";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  setup_attempt_id: string;
+  setup_generation: number;
+  process_generation: string | null;
+  request_id: string;
 }
 
 export interface HumanAttentionResponseCommand {
@@ -478,6 +563,7 @@ export interface WorkerCapabilities {
     | "live_execution_sessions_v1"
     | "run_bound_harness_setup_v1"
     | "provider_account_environments_v1"
+    | "provider_account_setup_v1"
   >;
   workspace_bindings: Array<{
     binding_id: string;

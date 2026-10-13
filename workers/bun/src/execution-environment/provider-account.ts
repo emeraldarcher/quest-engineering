@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { WorkerConfig } from "../config.ts";
+import { FakeStreamedProcessTransport } from "./fake.ts";
 import { providerAccountOwner, sameEnvironmentOwner } from "./ownership.ts";
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
@@ -10,15 +11,51 @@ import {
   type DurableEnvironmentRecord,
   ExecutionEnvironmentStore,
 } from "./store.ts";
+import { StreamedProcessManager } from "./streamed-process.ts";
 import type {
   EnvironmentOwner,
   EnvironmentRef,
   ExecutionEnvironmentBackend,
   ProviderAccountEnvironmentSpec,
+  StreamedProcess,
+  StreamedProcessHandle,
+  StreamedProcessReconciliation,
 } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
 
 const CANARY_FILENAME = "provider-account-canary-v1";
+const FAKE_AUTH_FILENAME = "provider-account-fake-auth-v1.json";
+const FAKE_LOGIN_PROGRAM = [
+  "import json,os,sys",
+  "marker,account,setup,identity=sys.argv[1:5]",
+  "prompt={'kind':'fake_provider_login','url':'https://fake-provider.invalid/device','code':setup[-8:]} ",
+  "sys.stdout.write(json.dumps(prompt,separators=(',',':'))+'\\n');sys.stdout.flush()",
+  "value=sys.stdin.readline()",
+  "if not value: sys.exit(2)",
+  "tmp=marker+'.tmp'",
+  "with open(tmp,'w',encoding='utf-8') as handle: json.dump({'contract':'qe-fake-provider-auth-v1','account':account,'setup':setup,'identity':identity},handle,separators=(',',':'))",
+  "os.chmod(tmp,0o600);os.replace(tmp,marker)",
+].join("\n");
+const FAKE_STATUS_PROGRAM = [
+  "import json,sys",
+  "marker,account,setup,identity=sys.argv[1:5]",
+  "try:",
+  " value=json.load(open(marker,'r',encoding='utf-8'))",
+  "except Exception: sys.exit(1)",
+  "expected={'contract':'qe-fake-provider-auth-v1','account':account,'setup':setup,'identity':identity}",
+  "if value!=expected: sys.exit(2)",
+  "sys.stdout.write(identity+'\\n')",
+].join("\n");
+
+export interface ProviderAccountSetupRuntimeIdentity {
+  setupAttemptId: string;
+  setupGeneration: number;
+  providerAccountId: string;
+  environmentGeneration: number;
+  backendKind: string;
+  environmentId: string;
+  environmentIncarnation: string;
+}
 
 export type ProviderAccountEnvironmentDesiredState =
   | "available"
@@ -94,6 +131,8 @@ export class ProviderAccountEnvironmentManager {
     ProviderAccountEnvironmentReport
   >();
   private readonly accountTails = new Map<string, Promise<void>>();
+  private readonly fakeAuthenticatedSetups = new Set<string>();
+  private readonly fakeSetupProcesses: StreamedProcessManager;
   private closed = false;
 
   constructor(
@@ -118,6 +157,17 @@ export class ProviderAccountEnvironmentManager {
             resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY,
           }));
     this.clock = options.clock ?? (() => new Date());
+    this.fakeSetupProcesses = new StreamedProcessManager({
+      backendKind: "fake-account",
+      validate: (ref) => {
+        const record = this.store.byRef(ref);
+        if (!record || record.retiredAt || record.state !== "running")
+          throw new EnvironmentBackendError(
+            "stale_environment_ref",
+            "The fake ProviderAccount environment is not available.",
+          );
+      },
+    });
   }
 
   async apply(
@@ -215,9 +265,106 @@ export class ProviderAccountEnvironmentManager {
     });
   }
 
+  async spawnSetupProcess(
+    identity: ProviderAccountSetupRuntimeIdentity,
+  ): Promise<StreamedProcess> {
+    const record = this.setupRecord(identity);
+    const ref = recordRef(record);
+    const validationIdentity = setupValidationIdentity(identity);
+    if (this.fake) {
+      const paths = fakePaths(ref);
+      return this.fakeSetupProcesses.spawn(
+        ref,
+        paths,
+        {
+          executable: "/usr/bin/qe-fake-provider-login",
+          args: [],
+          cwd: paths.state,
+          environment: {},
+        },
+        {},
+        async (context) =>
+          new DeterministicFakeLoginTransport(
+            context.processGeneration,
+            identity.setupAttemptId,
+            () => this.fakeAuthenticatedSetups.add(validationIdentity),
+          ),
+      );
+    }
+    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+      ref,
+      this.setupSpec(identity),
+    );
+    return lease.spawnStreamed(
+      {
+        executable: "/usr/bin/python3",
+        args: [
+          "-u",
+          "-c",
+          FAKE_LOGIN_PROGRAM,
+          `${lease.paths.state}/${FAKE_AUTH_FILENAME}`,
+          identity.providerAccountId,
+          identity.setupAttemptId,
+          validationIdentity,
+        ],
+        cwd: lease.paths.state,
+        environment: {},
+      },
+      { bufferBytes: 32 * 1024, acknowledgementTimeoutMs: 5_000 },
+    );
+  }
+
+  async reconcileSetupProcess(
+    identity: ProviderAccountSetupRuntimeIdentity,
+    handle: StreamedProcessHandle,
+  ): Promise<StreamedProcessReconciliation> {
+    const record = this.setupRecord(identity);
+    const ref = recordRef(record);
+    if (this.fake) return this.fakeSetupProcesses.reconcile(handle);
+    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+      ref,
+      this.setupSpec(identity),
+    );
+    return lease.reconcileStreamedProcess(handle);
+  }
+
+  async validateSetup(
+    identity: ProviderAccountSetupRuntimeIdentity,
+  ): Promise<{ authenticated: boolean; identity: string | null }> {
+    const record = this.setupRecord(identity);
+    const validationIdentity = setupValidationIdentity(identity);
+    if (this.fake)
+      return this.fakeAuthenticatedSetups.has(validationIdentity)
+        ? { authenticated: true, identity: validationIdentity }
+        : { authenticated: false, identity: null };
+    const ref = recordRef(record);
+    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+      ref,
+      this.setupSpec(identity),
+    );
+    const result = await lease.exec({
+      executable: "/usr/bin/python3",
+      args: [
+        "-c",
+        FAKE_STATUS_PROGRAM,
+        `${lease.paths.state}/${FAKE_AUTH_FILENAME}`,
+        identity.providerAccountId,
+        identity.setupAttemptId,
+        validationIdentity,
+      ],
+      cwd: lease.paths.state,
+      environment: {},
+      timeoutMs: 10_000,
+    });
+    return result.exitCode === 0 && result.stdout.trim() === validationIdentity
+      ? { authenticated: true, identity: validationIdentity }
+      : { authenticated: false, identity: null };
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.fakeSetupProcesses.shutdown();
     if (this.backend) await this.backend.close?.();
     else this.store.close();
   }
@@ -491,6 +638,56 @@ export class ProviderAccountEnvironmentManager {
     );
   }
 
+  private setupRecord(
+    identity: ProviderAccountSetupRuntimeIdentity,
+  ): DurableEnvironmentRecord {
+    const owner = providerAccountOwner(
+      identity.providerAccountId,
+      identity.environmentGeneration,
+    );
+    const record = this.store.current(
+      this.fake ? "fake-account" : "sbx",
+      this.config.workerId,
+      owner,
+    );
+    if (
+      !record ||
+      record.retiredAt ||
+      record.state !== "running" ||
+      record.backendKind !== identity.backendKind ||
+      record.environmentId !== identity.environmentId ||
+      record.incarnation !== identity.environmentIncarnation
+    )
+      throw new EnvironmentBackendError(
+        "environment_identity_mismatch",
+        "ProviderAccount setup does not match the exact available environment.",
+      );
+    return record;
+  }
+
+  private setupSpec(
+    identity: ProviderAccountSetupRuntimeIdentity,
+  ): ProviderAccountEnvironmentSpec {
+    return {
+      workerId: this.config.workerId,
+      owner: providerAccountOwner(
+        identity.providerAccountId,
+        identity.environmentGeneration,
+      ),
+      layout: { kind: "provider_account", version: "provider-account-cell-v1" },
+      profile: SBX_SHELL_PROFILE.identity,
+      resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
+      networkRequirements: [],
+      credentialGrants: [],
+      controlChannels: [],
+      requiredCapabilities: [
+        { kind: "environment_persistence", mode: "verified" },
+        { kind: "credentials", mode: "none" },
+        { kind: "network_policy", mode: "deny_all" },
+      ],
+    };
+  }
+
   private async withAccount<T>(
     providerAccountId: string,
     operation: () => Promise<T>,
@@ -720,6 +917,73 @@ function ownerKey(owner: EnvironmentOwner): string {
 
 function canaryValue(owner: EnvironmentOwner): string {
   return `qe-provider-account-canary-v1:${digest(ownerKey(owner))}`;
+}
+
+function setupValidationIdentity(
+  identity: ProviderAccountSetupRuntimeIdentity,
+): string {
+  return `qe-fake-auth-v1:${digest(
+    [
+      identity.providerAccountId,
+      identity.environmentGeneration,
+      identity.backendKind,
+      identity.environmentId,
+      identity.environmentIncarnation,
+      identity.setupAttemptId,
+      identity.setupGeneration,
+    ].join("\0"),
+  )}`;
+}
+
+function fakePaths(ref: EnvironmentRef) {
+  const root = `/fake/provider-accounts/${ref.environmentId}/${ref.incarnation}`;
+  return {
+    workspace: `${root}/workspace`,
+    state: `${root}/state`,
+    control: `${root}/control`,
+    home: `${root}/home`,
+    cache: `${root}/cache`,
+    temp: `${root}/tmp`,
+  };
+}
+
+class DeterministicFakeLoginTransport extends FakeStreamedProcessTransport {
+  private settled = false;
+
+  constructor(
+    processGeneration: string,
+    setupAttemptId: string,
+    private readonly onAuthenticated: () => void,
+  ) {
+    super({
+      backendProcessId: `fake-login-${processGeneration}`,
+      processStartIdentity: `fake-login-start-${processGeneration}`,
+      observedExecutable: "/usr/bin/qe-fake-provider-login",
+    });
+    queueMicrotask(() =>
+      this.emitStdout(
+        new TextEncoder().encode(
+          `${JSON.stringify({
+            kind: "fake_provider_login",
+            url: "https://fake-provider.invalid/device",
+            code: setupAttemptId.slice(-8),
+          })}\n`,
+        ),
+      ),
+    );
+  }
+
+  override async write(writeId: string, data: Uint8Array) {
+    const outcome = await super.write(writeId, data);
+    if (outcome.certainty === "acknowledged" && !this.settled) {
+      this.settled = true;
+      this.onAuthenticated();
+      this.emitEof("stdout");
+      this.emitEof("stderr");
+      this.emitExit({ kind: "exited", exitCode: 0 });
+    }
+    return outcome;
+  }
 }
 
 function digest(value: string): string {

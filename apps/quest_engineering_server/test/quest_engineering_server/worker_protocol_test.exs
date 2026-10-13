@@ -19,12 +19,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 15
+  @protocol_version 16
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v15 logical Workspace bindings" do
+  test "accepts explicit protocol v16 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -32,6 +32,156 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert hello.capabilities["tags"] == ["fake"]
     assert hello.capabilities["features"] == ["run_delivery_v1"]
     assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
+  end
+
+  test "ProviderAccount setup reports carry exact safe fences and sealed ephemeral bytes" do
+    sealed_output = %{
+      "version" => "rsa-oaep-sha256-aes-256-gcm-v1",
+      "encrypted_key" => Base.encode64("encrypted-key"),
+      "iv" => Base.encode64(:binary.copy(<<1>>, 12)),
+      "ciphertext" => Base.encode64("sealed interaction"),
+      "tag" => Base.encode64(:binary.copy(<<2>>, 16))
+    }
+
+    payload = %{
+      "type" => "provider_account_setup_state",
+      "protocol_version" => @protocol_version,
+      "worker_id" => @worker_id,
+      "setup_attempt_id" => "setup-1",
+      "provider_account_id" => "account-1",
+      "setup_generation" => 2,
+      "credential_generation" => 3,
+      "environment_generation" => 1,
+      "worker_generation" => 7,
+      "environment_operation_id" => "environment-operation-1",
+      "backend_kind" => "fake-account",
+      "environment_id" => "environment-1",
+      "environment_incarnation" => "incarnation-1",
+      "state" => "human_interaction_required",
+      "invocation_state" => "acknowledged",
+      "process" => %{
+        "backend_process_id" => "pid-1",
+        "process_start_identity" => "start-1",
+        "process_generation" => "process-1",
+        "executable" => "/usr/bin/qe-fake-provider-login"
+      },
+      "attention" => %{
+        "attention_id" => "attention-1",
+        "kind" => "provider_authentication",
+        "message" => "Complete deterministic sign-in."
+      },
+      "validation" => nil,
+      "failure_code" => nil,
+      "observed_at" => "2026-10-15T00:00:00Z",
+      "ephemeral_output" => sealed_output
+    }
+
+    assert {:ok,
+            %{
+              type: :provider_account_setup_state,
+              provider_account_setup: %{
+                setup_attempt_id: "setup-1",
+                credential_generation: 3,
+                environment_generation: 1,
+                state: "human_interaction_required"
+              },
+              ephemeral: ^sealed_output
+            }} = WorkerProtocol.decode_worker_message(payload, @worker_id)
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             payload
+             |> Map.put("credential", "forbidden")
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             payload
+             |> Map.put("ephemeral_output", "plaintext is forbidden")
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             payload
+             |> Map.put("state", "succeeded")
+             |> Map.put("attention", nil)
+             |> Map.put("ephemeral_output", nil)
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+  end
+
+  test "ProviderAccount setup input delivery is fenced by the exact process generation" do
+    payload = %{
+      "type" => "provider_account_setup_input_delivery",
+      "protocol_version" => @protocol_version,
+      "worker_id" => @worker_id,
+      "setup_attempt_id" => "setup-1",
+      "setup_generation" => 2,
+      "attention_id" => "attention-1",
+      "process_generation" => "process-1",
+      "delivery_attempt_id" => "delivery-1",
+      "state" => "delivery_acknowledged",
+      "observed_at" => "2026-10-15T00:00:00Z"
+    }
+
+    assert {:ok,
+            %{
+              type: :provider_account_setup_input_delivery,
+              setup_delivery: %{process_generation: "process-1"}
+            }} = WorkerProtocol.decode_worker_message(payload, @worker_id)
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             payload
+             |> Map.delete("process_generation")
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+  end
+
+  test "ProviderAccount setup commands encode exact authorization and environment identity" do
+    command =
+      WorkerProtocol.provider_account_setup(@worker_id, 7, %{
+        setup_attempt_id: "setup-1",
+        provider_account_id: "account-1",
+        setup_generation: 2,
+        authorization_id: "authorization-1",
+        authorized_at: ~U[2026-10-15 00:00:00Z],
+        credential_generation: 3,
+        environment_generation: 1,
+        worker_generation: 7,
+        environment_operation_id: "environment-operation-1",
+        provider_key: "fake",
+        backend_kind: "fake-account",
+        environment_id: "environment-1",
+        environment_incarnation: "incarnation-1",
+        interaction_public_key: "test-public-key",
+        state: "authorized",
+        invocation_state: "not_requested",
+        cancellation_request_id: nil
+      })
+
+    assert command == %{
+             "type" => "prepare_provider_account_setup",
+             "protocol_version" => 16,
+             "worker_id" => @worker_id,
+             "connection_generation" => 7,
+             "setup" => %{
+               "setup_attempt_id" => "setup-1",
+               "provider_account_id" => "account-1",
+               "setup_generation" => 2,
+               "authorization_id" => "authorization-1",
+               "authorization_kind" => "provider_account_setup",
+               "authorized_at" => "2026-10-15T00:00:00Z",
+               "credential_generation" => 3,
+               "environment_generation" => 1,
+               "worker_generation" => 7,
+               "environment_operation_id" => "environment-operation-1",
+               "provider_key" => "fake",
+               "environment" => %{
+                 "backend_kind" => "fake-account",
+                 "environment_id" => "environment-1",
+                 "incarnation" => "incarnation-1"
+               },
+               "interaction_public_key" => "test-public-key",
+               "state" => "authorized",
+               "invocation_state" => "not_requested",
+               "cancellation_request_id" => nil
+             }
+           }
   end
 
   test "ProviderAccount environment reports preserve only exact credential-free fences" do

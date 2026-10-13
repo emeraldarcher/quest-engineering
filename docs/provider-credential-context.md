@@ -93,7 +93,7 @@ The clean baseline satisfies the requested prerequisites:
   gateway, profile, federation, and cloud-provider selectors. [QE]
 - The current authentication setup is Run/PhysicalLineage-bound. This report
   supersedes that **future target**, but does not modify it. [QE]
-- Harness Control is version 2 and Worker Protocol is version 15. Protocol v15 adds credential-free ProviderAccount environment lifecycle messages; it does not add provider authentication or credential transfer. [QE]
+- Harness Control remains version 2 and Worker Protocol is version 16. Protocol v15 added credential-free ProviderAccount environment lifecycle; v16 adds only deterministic-fake, account-scoped setup authority/reconciliation and ephemeral interaction. It adds no real provider authentication or credential transfer. [QE]
 - Setup authorization and inference authorization remain separate. [QE][REC]
 - Subscription-token proxying, API-key fallback, credential parsing, and
   modified Claude authentication remain prohibited. [REC]
@@ -665,22 +665,23 @@ Automatic cloud backup or cross-Worker credential sync is out of scope. A local
 system backup may physically contain the SBX disk under the user's host security
 policy; QE does not export a portable credential bundle.
 
-## Protocol consequences (future; not implemented here)
+## Protocol consequences
 
-A future protocol version must add strict messages for:
+Worker Protocol v16 now implements the Phase-B subset for account inventory,
+deterministic-fake connect/reauthentication setup attempts, account-scoped safe
+HumanAttention, ephemeral interaction correlation, environment/process identity,
+and setup lifecycle/reconciliation. Later phases must still add strict messages
+for:
 
-- ProviderAccount inventory/readiness projection;
-- connect/reauthenticate/validate/disconnect commands;
-- setup authorization and setup-attempt lifecycle;
-- account-scoped HumanAttention and ephemeral sensitive input correlation;
-- account-environment identity/incarnation and generation fencing;
+- real-provider connect/reauthenticate/validate/disconnect commands;
 - Run-to-ProviderAccount binding/preparation;
 - exclusive provider-process admission; and
 - account process -> Worker -> Run tool operations, cancellation, results, and
   uncertainty.
 
-Worker Protocol 14 and Harness Control 2 remain unchanged by this research PR.
-The implementation will require an explicit Worker Protocol bump. The local
+Harness Control 2 remains unchanged. Phase B made the explicit Worker Protocol
+v16 bump; later protocol work must not overload account setup with Run or broker
+semantics. The local
 account/Run tool transport should be versioned separately from Product protocol;
 it must not overload Harness Control with credential semantics.
 

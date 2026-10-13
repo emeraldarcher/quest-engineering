@@ -47,10 +47,14 @@ import type { AgentHarness } from "./harnesses/types.ts";
 import {
   decodeCancelDispatch,
   decodeCancelHarnessSetup,
+  decodeCancelProviderAccountSetup,
   decodeExecuteAction,
   decodeHumanAttentionResponse,
   decodePrepareHarnessSetup,
+  decodePrepareProviderAccountSetup,
+  decodeProviderAccountSetupReconciliation,
   decodeRespondHarnessSetup,
+  decodeRespondProviderAccountSetup,
 } from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
@@ -60,6 +64,8 @@ import type {
   WorkerCapabilities,
 } from "./protocol/types.ts";
 import { WORKER_PROTOCOL_VERSION } from "./protocol/types.ts";
+import { ProviderAccountSetupCoordinator } from "./provider-account-setup.ts";
+import { ProviderAccountSetupStore } from "./provider-account-setup-store.ts";
 import {
   RunCleanupCoordinator,
   type RunCleanupRequest,
@@ -112,6 +118,7 @@ export class QuestEngineeringWorker {
   private readonly herdr: WorkerInfrastructure | null;
   private readonly sbxExecutionManager: SbxRunExecutionManager | null;
   private readonly providerAccountEnvironments: ProviderAccountEnvironmentManager;
+  private readonly providerAccountSetups: ProviderAccountSetupCoordinator;
   private readonly desiredProviderAccounts = new Map<
     string,
     ProviderAccountEnvironmentCommand
@@ -195,6 +202,28 @@ export class QuestEngineeringWorker {
         : null;
     this.providerAccountEnvironments = new ProviderAccountEnvironmentManager(
       config,
+    );
+    this.providerAccountSetups = new ProviderAccountSetupCoordinator(
+      new ProviderAccountSetupStore(config.dataRoot),
+      this.providerAccountEnvironments,
+      (report) =>
+        this.channel
+          .sendProtocol({
+            type: "provider_account_setup_state",
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            worker_id: this.config.workerId,
+            ...report,
+          })
+          .then(() => undefined),
+      (delivery) =>
+        this.channel
+          .sendProtocol({
+            type: "provider_account_setup_input_delivery",
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            worker_id: this.config.workerId,
+            ...delivery,
+          })
+          .then(() => undefined),
     );
     const harnesses: AgentHarness[] =
       dependencies.harnesses ??
@@ -531,6 +560,7 @@ export class QuestEngineeringWorker {
     }
     await this.harnessControlServer.stop();
     this.setupCoordinator.close();
+    await this.providerAccountSetups.close();
     await this.providerAccountEnvironments.close();
     await this.sbxExecutionManager?.close();
     this.registry.close();
@@ -658,6 +688,34 @@ export class QuestEngineeringWorker {
         actionId,
         failure as Record<string, JsonValue>,
       );
+      return;
+    }
+    if (message.type === "prepare_provider_account_setup") {
+      await this.awaitClaimReadiness(generation);
+      const command = decodePrepareProviderAccountSetup(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.providerAccountSetups.prepare(command);
+      return;
+    }
+    if (message.type === "respond_provider_account_setup") {
+      const command = decodeRespondProviderAccountSetup(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.providerAccountSetups.respond(command);
+      return;
+    }
+    if (message.type === "cancel_provider_account_setup") {
+      const command = decodeCancelProviderAccountSetup(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.providerAccountSetups.cancel(command);
       return;
     }
     if (message.type === "prepare_harness_setup") {
@@ -819,15 +877,25 @@ export class QuestEngineeringWorker {
       return;
     }
     if (message.type === "reconcile_request") {
+      const serverGeneration = cancellationServerGeneration(
+        this.channel,
+        generation,
+      );
       const commands = decodeProviderAccountReconciliation(
         message,
         this.config.workerId,
-        cancellationServerGeneration(this.channel, generation),
+        serverGeneration,
+      );
+      const setupCommands = decodeProviderAccountSetupReconciliation(
+        message.provider_account_setups ?? [],
+        this.config.workerId,
+        serverGeneration,
       );
       this.desiredProviderAccounts.clear();
       for (const command of commands)
         this.desiredProviderAccounts.set(command.providerAccountId, command);
       await this.providerAccountEnvironments.reconcile(commands);
+      await this.providerAccountSetups.reconcile(setupCommands);
       await this.reconcileControlPlane(generation);
     }
   }
@@ -891,6 +959,7 @@ export class QuestEngineeringWorker {
     // retained from the prior socket before the server sends this generation's
     // reconcile_request.
     this.desiredProviderAccounts.clear();
+    this.providerAccountSetups.resetConnectionAuthority();
     const operation = this.initializeRegistration(response, generation);
     this.registration = { generation, operation };
     return operation;
@@ -1049,6 +1118,7 @@ export class QuestEngineeringWorker {
         provider_account_environments: this.providerAccountEnvironments
           .reportsFor([...this.desiredProviderAccounts.values()])
           .map(providerAccountEnvironmentPayload),
+        provider_account_setups: this.providerAccountSetups.reports(),
         human_attention_deliveries: this.registry
           .humanAttentionReconciliation()
           .map((request) => ({

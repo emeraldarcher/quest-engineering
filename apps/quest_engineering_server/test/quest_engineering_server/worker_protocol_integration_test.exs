@@ -132,7 +132,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     :ok =
       FakeWorker.send_message(worker, %{
         "type" => "provider_account_environment_state",
-        "protocol_version" => 15,
+        "protocol_version" => 16,
         "worker_id" => worker_id,
         "environment" =>
           first_report
@@ -146,7 +146,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     :ok =
       FakeWorker.send_message(worker, %{
         "type" => "provider_account_environment_state",
-        "protocol_version" => 15,
+        "protocol_version" => 16,
         "worker_id" => worker_id,
         "environment" => %{
           "provider_account_id" => account.id,

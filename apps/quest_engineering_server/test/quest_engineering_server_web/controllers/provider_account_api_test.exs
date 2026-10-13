@@ -4,6 +4,11 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
   import Phoenix.ConnTest
   import Plug.Conn
 
+  alias QuestEngineering.Server.Product.ProviderAccounts
+  alias QuestEngineering.Server.Product.ProviderAccountSetups
+  alias QuestEngineering.Server.ProviderAccountSetupInteractions
+  alias QuestEngineering.Server.Repo
+  alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerStore
   alias QuestEngineering.ServerWeb.Endpoint
 
@@ -133,6 +138,221 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
              |> json_response(202)
   end
 
+  test "ProviderAccount setup API is local, account-scoped, and never persists interaction bytes" do
+    worker_id = "provider-account-setup-api-#{System.unique_integer([:positive])}"
+    connection_id = Ecto.UUID.generate()
+    {:ok, worker} = WorkerStore.register(worker_id, capabilities(), connection_id)
+    {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
+
+    :ok =
+      WorkerConnections.activate(
+        worker.id,
+        connection_id,
+        worker.connection_generation,
+        self()
+      )
+
+    {:ok, {account, pending}} =
+      ProviderAccounts.create(
+        %{provider_key: "fake", worker_id: worker.id},
+        worker.connection_generation
+      )
+
+    {:ok, {:applied, account, environment}} =
+      ProviderAccounts.apply_environment_report(%{
+        provider_account_id: account.id,
+        credential_generation: pending.credential_generation,
+        worker_id: worker.id,
+        worker_generation: pending.worker_generation,
+        operation_id: pending.operation_id,
+        physical_state: "available",
+        event_type: "environment_ensured",
+        backend_kind: "fake-account",
+        environment_id: "setup-api-environment",
+        incarnation: "setup-api-incarnation",
+        error_code: nil,
+        error_message: nil,
+        canary_persisted: true,
+        observed_at: DateTime.utc_now()
+      })
+
+    request_id = Ecto.UUID.generate()
+
+    assert %{"error" => %{"code" => "local_provider_account_setup_unavailable"}} =
+             build_conn()
+             |> post("/api/v1/provider-accounts/#{account.id}/setup-attempts", %{
+               request_id: request_id,
+               confirmed: true
+             })
+             |> json_response(409)
+
+    assert %{"setup_attempt" => %{"id" => attempt_id, "state" => "authorized"}} =
+             local_conn()
+             |> post("/api/v1/provider-accounts/#{account.id}/setup-attempts", %{
+               request_id: request_id,
+               confirmed: true
+             })
+             |> json_response(202)
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_provider_account_setup",
+                      "protocol_version" => 16,
+                      "setup" => %{
+                        "setup_attempt_id" => ^attempt_id,
+                        "provider_account_id" => account_id,
+                        "authorization_kind" => "provider_account_setup",
+                        "environment" => %{
+                          "environment_id" => "setup-api-environment",
+                          "incarnation" => "setup-api-incarnation"
+                        }
+                      }
+                    }}
+
+    assert account_id == account.id
+
+    assert %{"error" => %{"code" => "setup_already_authorized"}} =
+             local_conn()
+             |> post("/api/v1/provider-accounts/#{account.id}/setup-attempts", %{
+               request_id: Ecto.UUID.generate(),
+               confirmed: true
+             })
+             |> json_response(409)
+
+    assert %{"error" => %{"code" => "provider_account_setup_active"}} =
+             build_conn()
+             |> post("/api/v1/provider-accounts/#{account.id}/actions/stop")
+             |> json_response(409)
+
+    attempt = ProviderAccountSetups.fetch(attempt_id)
+    process_generation = Ecto.UUID.generate()
+    attention_id = Ecto.UUID.generate()
+
+    assert {:ok, waiting} =
+             ProviderAccountSetups.record(
+               worker.id,
+               worker.connection_generation,
+               %{
+                 setup_attempt_id: attempt.id,
+                 provider_account_id: account.id,
+                 setup_generation: attempt.setup_generation,
+                 credential_generation: attempt.credential_generation_before,
+                 environment_generation: attempt.environment_generation,
+                 worker_generation: attempt.worker_generation,
+                 environment_operation_id: attempt.environment_operation_id,
+                 backend_kind: environment.backend_kind,
+                 environment_id: environment.environment_id,
+                 environment_incarnation: environment.incarnation,
+                 state: "human_interaction_required",
+                 invocation_state: "acknowledged",
+                 process: %{
+                   backend_process_id: "setup-api-pid",
+                   process_start_identity: "setup-api-start",
+                   process_generation: process_generation,
+                   executable: "/usr/bin/qe-fake-provider-login"
+                 },
+                 attention: %{
+                   attention_id: attention_id,
+                   kind: "provider_authentication",
+                   message: "Complete deterministic sign-in."
+                 },
+                 validation: nil,
+                 failure_code: nil,
+                 observed_at: DateTime.utc_now()
+               }
+             )
+
+    ephemeral = "https://fake-provider.invalid/device?code=ephemeral-only"
+
+    :ok =
+      ProviderAccountSetupInteractions.put(
+        waiting.id,
+        waiting.setup_generation,
+        attention_id,
+        process_generation,
+        ephemeral
+      )
+
+    {client_public_key, client_private_key} = interaction_encryption_key()
+    telemetry_id = {__MODULE__, make_ref()}
+    test_process = self()
+
+    :ok =
+      :telemetry.attach(
+        telemetry_id,
+        [:phoenix, :endpoint, :stop],
+        fn _event, _measurements, metadata, destination ->
+          send(destination, {:provider_account_endpoint_telemetry, metadata})
+        end,
+        test_process
+      )
+
+    on_exit(fn -> :telemetry.detach(telemetry_id) end)
+
+    interaction_conn =
+      local_conn()
+      |> put_req_header("x-qe-interaction-public-key", client_public_key)
+      |> get(
+        "/api/v1/provider-accounts/#{account.id}/setup-attempts/#{attempt_id}/interactions/#{attention_id}?generation=#{waiting.setup_generation}"
+      )
+
+    assert ["no-store"] = get_resp_header(interaction_conn, "cache-control")
+    refute interaction_conn.resp_body =~ ephemeral
+
+    assert %{"interaction" => %{"output" => sealed_output}} =
+             json_response(interaction_conn, 200)
+
+    assert decrypt_interaction(sealed_output, client_private_key) == ephemeral
+    assert_receive {:provider_account_endpoint_telemetry, interaction_telemetry}
+    refute inspect(interaction_telemetry, limit: :infinity) =~ ephemeral
+
+    sensitive_input = "fake-sensitive-input-never-durable"
+
+    response_conn =
+      local_conn()
+      |> post(
+        "/api/v1/provider-accounts/#{account.id}/setup-attempts/#{attempt_id}/respond",
+        %{
+          setup_generation: waiting.setup_generation,
+          attention_id: attention_id,
+          request_id: Ecto.UUID.generate(),
+          value: sensitive_input
+        }
+      )
+
+    refute inspect(response_conn.params) =~ sensitive_input
+    refute inspect(response_conn.body_params) =~ sensitive_input
+    assert_receive {:provider_account_endpoint_telemetry, response_telemetry}
+    refute inspect(response_telemetry, limit: :infinity) =~ sensitive_input
+
+    assert %{
+             "setup_attempt" => %{
+               "id" => ^attempt_id,
+               "attention" => %{
+                 "response_state" => "responded",
+                 "delivery_state" => "delivery_requested"
+               }
+             }
+           } = json_response(response_conn, 200)
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "respond_provider_account_setup",
+                      "setup_attempt_id" => ^attempt_id,
+                      "attention_id" => ^attention_id,
+                      "process_generation" => ^process_generation,
+                      "value" => ^sensitive_input
+                    }}
+
+    refute durable_setup_text_contains?(sensitive_input)
+    refute durable_setup_text_contains?(ephemeral)
+
+    assert %{"setup_attempts" => [%{"id" => ^attempt_id}]} =
+             build_conn()
+             |> get("/api/v1/provider-accounts/#{account.id}/setup-attempts")
+             |> json_response(200)
+  end
+
   test "ProviderAccount API rejects credentials, unknown fields, actions, and identities" do
     worker_id = "provider-account-api-validation-#{System.unique_integer([:positive])}"
     {:ok, _worker} = WorkerStore.register(worker_id, capabilities(), Ecto.UUID.generate())
@@ -159,6 +379,61 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
              |> json_response(400)
   end
 
+  defp local_conn do
+    build_conn()
+    |> Map.put(:host, "localhost")
+    |> Map.put(:remote_ip, {127, 0, 0, 1})
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("x-quest-engineering-local-client", "tauri")
+  end
+
+  defp interaction_encryption_key do
+    private_key = :public_key.generate_key({:rsa, 2048, 65_537})
+    public_key = {:RSAPublicKey, elem(private_key, 2), elem(private_key, 3)}
+
+    {:SubjectPublicKeyInfo, der, :not_encrypted} =
+      :public_key.pem_entry_encode(:SubjectPublicKeyInfo, public_key)
+
+    {Base.encode64(der), private_key}
+  end
+
+  defp decrypt_interaction(sealed, private_key) do
+    key =
+      sealed["encrypted_key"]
+      |> Base.decode64!()
+      |> :public_key.decrypt_private(private_key,
+        rsa_pad: :rsa_pkcs1_oaep_padding,
+        rsa_oaep_md: :sha256
+      )
+
+    :crypto.crypto_one_time_aead(
+      :aes_256_gcm,
+      key,
+      Base.decode64!(sealed["iv"]),
+      Base.decode64!(sealed["ciphertext"]),
+      "",
+      Base.decode64!(sealed["tag"]),
+      false
+    )
+  end
+
+  defp durable_setup_text_contains?(value) do
+    sql = """
+    SELECT EXISTS (
+      SELECT 1 FROM provider_account_setup_attempts WHERE row_to_json(provider_account_setup_attempts)::text LIKE $1
+      UNION ALL
+      SELECT 1 FROM provider_account_setup_authorizations WHERE row_to_json(provider_account_setup_authorizations)::text LIKE $1
+      UNION ALL
+      SELECT 1 FROM provider_account_setup_events WHERE row_to_json(provider_account_setup_events)::text LIKE $1
+      UNION ALL
+      SELECT 1 FROM provider_account_human_attention_requests WHERE row_to_json(provider_account_human_attention_requests)::text LIKE $1
+    )
+    """
+
+    %{rows: [[result]]} = Repo.query!(sql, ["%#{value}%"])
+    result
+  end
+
   defp response_contains_secret_field?(value) when is_map(value) do
     Enum.any?(value, fn {key, nested} ->
       key in ["credential", "credentials", "secret", "token"] or
@@ -177,7 +452,7 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
       "arch" => "test",
       "max_concurrency" => 1,
       "tags" => [],
-      "features" => ["provider_account_environments_v1"],
+      "features" => ["provider_account_environments_v1", "provider_account_setup_v1"],
       "workspace_bindings" => [],
       "executors" => [
         %{

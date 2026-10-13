@@ -13,7 +13,10 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   alias QuestEngineering.Server.Persistence.ProviderAccount
   alias QuestEngineering.Server.Persistence.ProviderAccountEnvironment
   alias QuestEngineering.Server.Persistence.ProviderAccountLifecycleEvent
+  alias QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt
   alias QuestEngineering.Server.Repo
+
+  @active_setup_states ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required validating cancellation_requested)
 
   @type error :: %{code: atom(), details: map()}
 
@@ -30,6 +33,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
       record -> {:ok, to_domain(record)}
     end
   end
+
+  def to_domain_record(%ProviderAccount{} = record), do: to_domain(record)
 
   def get_with_environment(id) when is_binary(id) do
     with {:ok, account} <- get(id) do
@@ -121,6 +126,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   def semantic_transition(id, target) when target in [:connected, :invalid] do
     Repo.transaction(fn ->
       with {:ok, account} <- locked_account(id),
+           :ok <- ensure_no_active_setup(account.id),
            {:ok, next} <- DomainAccount.transition(to_domain(account), target, DateTime.utc_now()) do
         persist_semantic_transition(account, next, target)
       else
@@ -134,6 +140,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   def disconnect(id, worker_generation) do
     Repo.transaction(fn ->
       with {:ok, account} <- locked_account(id),
+           :ok <- ensure_no_active_setup(account.id),
            {:ok, next} <-
              DomainAccount.transition(to_domain(account), :disconnected, DateTime.utc_now()) do
         persist_disconnection(account, next, worker_generation)
@@ -148,6 +155,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   def next_generation(id, worker_generation) do
     Repo.transaction(fn ->
       with {:ok, account} <- locked_account(id),
+           :ok <- ensure_no_active_setup(account.id),
            next = DomainAccount.next_credential_generation(to_domain(account), DateTime.utc_now()),
            operation_id = Ecto.UUID.generate(),
            {:ok, updated} <-
@@ -265,8 +273,10 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   end
 
   defp begin_locked_environment_operation(id, desired_state, worker_generation) do
-    case locked_account(id) do
-      {:ok, account} -> persist_environment_operation(account, desired_state, worker_generation)
+    with {:ok, account} <- locked_account(id),
+         :ok <- ensure_no_active_setup(account.id) do
+      persist_environment_operation(account, desired_state, worker_generation)
+    else
       {:error, reason} -> Repo.rollback(reason)
     end
   end
@@ -292,7 +302,15 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
            ),
          {:ok, updated} <-
            account
-           |> ProviderAccount.changeset(%{environment_state: pending})
+           |> ProviderAccount.changeset(
+             if(desired_state == "removed",
+               do: %{
+                 environment_state: pending,
+                 authentication_state: "authentication_required"
+               },
+               else: %{environment_state: pending}
+             )
+           )
            |> Repo.update(),
          {:ok, _event} <-
            insert_event(
@@ -384,7 +402,6 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
 
   defp current_report?(account, environment, report) do
     account.worker_id == fetch(report, :worker_id) and
-      account.credential_generation == fetch(report, :credential_generation) and
       environment.worker_id == fetch(report, :worker_id) and
       environment.credential_generation == fetch(report, :credential_generation) and
       environment.worker_generation == fetch(report, :worker_generation) and
@@ -406,10 +423,18 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
          physical_state,
          identity_mode \\ :reset
        ) do
+    existing = Repo.get(ProviderAccountEnvironment, account.id)
+
+    environment_generation =
+      case {identity_mode, existing} do
+        {:preserve, %{credential_generation: generation}} -> generation
+        _ -> account.credential_generation
+      end
+
     attrs =
       %{
         provider_account_id: account.id,
-        credential_generation: account.credential_generation,
+        credential_generation: environment_generation,
         worker_id: account.worker_id,
         worker_generation: worker_generation,
         operation_id: operation_id,
@@ -422,7 +447,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
       }
       |> maybe_reset_physical_identity(identity_mode)
 
-    case Repo.get(ProviderAccountEnvironment, account.id) do
+    case existing do
       nil -> %ProviderAccountEnvironment{}
       environment -> environment
     end
@@ -459,6 +484,23 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
     |> Repo.insert(on_conflict: :nothing)
   end
 
+  defp ensure_no_active_setup(provider_account_id) do
+    if Repo.exists?(
+         from attempt in ProviderAccountSetupAttempt,
+           where:
+             attempt.provider_account_id == ^provider_account_id and
+               attempt.state in ^@active_setup_states
+       ) do
+      {:error,
+       %{
+         code: :provider_account_setup_active,
+         details: %{provider_account_id: provider_account_id}
+       }}
+    else
+      :ok
+    end
+  end
+
   defp locked_account(id) do
     case Repo.one(from account in ProviderAccount, where: account.id == ^id, lock: "FOR UPDATE") do
       nil -> {:error, %{code: :not_found, details: %{provider_account_id: id}}}
@@ -485,7 +527,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
     %{
       provider_account_id: account.id,
       provider_key: account.provider_key,
-      credential_generation: account.credential_generation,
+      credential_generation: environment.credential_generation,
       worker_id: account.worker_id,
       worker_generation: environment.worker_generation,
       operation_id: environment.operation_id,
@@ -527,6 +569,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
       lifecycle_state: lifecycle_state(record.lifecycle_state),
       environment_state: environment_state(record.environment_state),
       authentication_state: authentication_state(record.authentication_state),
+      authenticated_at: record.authenticated_at,
+      last_validated_at: record.last_validated_at,
       inserted_at: record.inserted_at,
       updated_at: record.updated_at
     }
@@ -546,6 +590,14 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   defp environment_state("removed"), do: :removed
 
   defp authentication_state("not_checked"), do: :not_checked
+  defp authentication_state("setup_authorized"), do: :setup_authorized
+  defp authentication_state("setup_in_progress"), do: :setup_in_progress
+  defp authentication_state("interaction_required"), do: :interaction_required
+  defp authentication_state("validating"), do: :validating
+  defp authentication_state("authenticated"), do: :authenticated
+  defp authentication_state("authentication_required"), do: :authentication_required
+  defp authentication_state("inspection_unavailable"), do: :inspection_unavailable
+  defp authentication_state("invalid"), do: :invalid
 
   defp parse_timestamp(%DateTime{} = value), do: value
 
