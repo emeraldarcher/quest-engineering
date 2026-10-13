@@ -13,8 +13,8 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.DeliveryStore
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.ExecutionCancellation
-  alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionOptions
+  alias QuestEngineering.Server.ExecutionRecovery
   alias QuestEngineering.Server.ExecutionSessionStore
   alias QuestEngineering.Server.HarnessSetupStore
   alias QuestEngineering.Server.LaunchQuest
@@ -1190,7 +1190,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 15,
+                      "protocol_version" => 16,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -2941,7 +2941,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 15,
+                      "protocol_version" => 16,
                       "setup" => %{
                         "setup_id" => setup_id,
                         "action_id" => action_id,

@@ -9,13 +9,16 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
   alias QuestEngineering.Server.DispatchStore
   alias QuestEngineering.Server.LaunchQuest
   alias QuestEngineering.Server.Persistence.ProductWorkspace
+  alias QuestEngineering.Server.Persistence.ProviderAccountEnvironment
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RunWorkspaceAssignment
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceCandidate
   alias QuestEngineering.Server.Persistence.WorkspaceBindingAttempt
+  alias QuestEngineering.Server.Product.ProviderAccountSetups
   alias QuestEngineering.Server.Product.Repository, as: Products
+  alias QuestEngineering.Server.ProviderAccountApi.Service, as: ProviderAccountService
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RuntimeStore
   alias QuestEngineering.Server.WorkerConnections
@@ -28,7 +31,16 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
     :ok
   end
 
-  test "real Bun Worker v4 provisions a Run worktree before Product execution" do
+  @tag timeout: 120_000
+  test "real Bun Worker completes zero-Run ProviderAccount setup and restart reconciliation" do
+    if System.get_env("QE_LIVE_SBX") == "1" do
+      run_live_provider_account_setup()
+    else
+      IO.puts("ProviderAccount Product/Bun integration skipped: set QE_LIVE_SBX=1")
+    end
+  end
+
+  test "real Bun Worker v16 provisions a Run worktree before Product execution" do
     case System.find_executable("bun") do
       nil ->
         IO.puts("Bun Worker protocol integration skipped: bun executable is unavailable")
@@ -601,6 +613,232 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         assert_eventually(fn ->
           match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
         end)
+    end
+  end
+
+  defp run_live_provider_account_setup do
+    bun = System.find_executable("bun") || raise "bun is required for live ProviderAccount setup"
+    root = Path.expand("../../../..", __DIR__)
+    worker_id = "bun-account-setup-#{System.unique_integer([:positive])}"
+    worker_root = Path.join(root, ".pi/tmp/#{worker_id}")
+    started_at = System.monotonic_time(:millisecond)
+    File.mkdir_p!(worker_root)
+    start_supervised!(QuestEngineering.Server.WorkerConnections)
+
+    start_worker = fn ->
+      open_worker_process(
+        bun,
+        [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+        root,
+        [
+          {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+          {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+          {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+          {~c"QE_ALLOWED_ROOTS_JSON", ~c"[]"},
+          {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
+          {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+          {~c"QE_WORKER_PROVIDER", ~c"fake"},
+          {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"},
+          {~c"QE_RECONNECT_MS", ~c"25"}
+        ]
+      )
+    end
+
+    first_port = start_worker.()
+    first_pid = worker_process_pid(first_port)
+
+    on_exit(fn ->
+      stop_worker_process(first_port, worker_id, first_pid)
+      File.rm_rf!(worker_root)
+    end)
+
+    assert_eventually(fn -> worker_ready?(worker_id, 1) end, 800)
+    zero_run_counts = run_authority_counts()
+    assert Enum.all?(zero_run_counts, fn {_table, count} -> count == 0 end)
+
+    assert {:ok, account, _pending_environment} =
+             ProviderAccountService.create(%{
+               "provider_key" => "deterministic-fake",
+               "display_name" => "Phase B real Worker proof",
+               "worker_id" => worker_id
+             })
+
+    assert_eventually(fn -> environment_available?(account.id) end, 2_400)
+    initial_environment = Repo.get!(ProviderAccountEnvironment, account.id)
+    initial_identity = physical_identity(initial_environment)
+    request_id = Ecto.UUID.generate()
+
+    assert {:ok, attempt, nil, false} =
+             ProviderAccountService.authorize_setup(account.id, %{
+               "request_id" => request_id,
+               "confirmed" => true
+             })
+
+    assert_eventually(
+      fn ->
+        match?(
+          %{state: "human_interaction_required"},
+          ProviderAccountSetups.fetch(attempt.id)
+        )
+      end,
+      800
+    )
+
+    attention = ProviderAccountSetups.attention_for_attempt(attempt.id)
+    assert attention.provider_account_id == account.id
+
+    assert_eventually(
+      fn ->
+        match?(
+          {:ok, %{output: output}} when is_binary(output) and byte_size(output) > 0,
+          ProviderAccountSetups.interaction(
+            account.id,
+            attempt.id,
+            attempt.setup_generation,
+            attention.id
+          )
+        )
+      end,
+      800
+    )
+
+    {:ok, %{output: sensitive_output}} =
+      ProviderAccountSetups.interaction(
+        account.id,
+        attempt.id,
+        attempt.setup_generation,
+        attention.id
+      )
+
+    assert sensitive_output =~ "https://fake-provider.invalid/device"
+    sensitive_input = "phase-b-sensitive-#{Ecto.UUID.generate()}"
+
+    assert {:ok, _responding_attempt, responding_attention} =
+             ProviderAccountService.respond_setup(account.id, attempt.id, %{
+               "setup_generation" => attempt.setup_generation,
+               "attention_id" => attention.id,
+               "request_id" => Ecto.UUID.generate(),
+               "value" => sensitive_input
+             })
+
+    assert responding_attention.delivery_state == "delivery_requested"
+
+    assert_eventually(
+      fn -> match?(%{state: "succeeded"}, ProviderAccountSetups.fetch(attempt.id)) end,
+      800
+    )
+
+    {:ok, authenticated_account, retained_environment} = ProviderAccountService.get(account.id)
+    assert authenticated_account.authentication_state == :authenticated
+    assert authenticated_account.credential_generation == 2
+    assert retained_environment.credential_generation == 1
+    assert physical_identity(retained_environment) == initial_identity
+    refute ProviderAccountSetups.active_for_account?(account.id)
+    assert run_authority_counts() == zero_run_counts
+    refute_durable_setup_value(sensitive_input)
+    refute_durable_setup_value("https://fake-provider.invalid/device")
+    refute_worker_state_value(worker_root, sensitive_input)
+    refute_worker_state_value(worker_root, "https://fake-provider.invalid/device")
+
+    stop_worker_process(first_port, worker_id)
+
+    assert_eventually(fn ->
+      match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
+    end)
+
+    second_port = start_worker.()
+    second_pid = worker_process_pid(second_port)
+    on_exit(fn -> stop_worker_process(second_port, worker_id, second_pid) end)
+    assert_eventually(fn -> worker_ready?(worker_id, 2) end, 800)
+    assert_eventually(fn -> environment_available?(account.id) end, 800)
+
+    {:ok, restarted_account, restarted_environment} = ProviderAccountService.get(account.id)
+    assert restarted_account.authentication_state == :authenticated
+    assert restarted_account.credential_generation == 2
+    assert physical_identity(restarted_environment) == initial_identity
+    assert run_authority_counts() == zero_run_counts
+
+    assert {:ok, _removing_account, _removing_environment} =
+             ProviderAccountService.action(account.id, "remove")
+
+    assert_eventually(
+      fn ->
+        match?(
+          %{physical_state: "removed"},
+          Repo.get(ProviderAccountEnvironment, account.id)
+        )
+      end,
+      2_400
+    )
+
+    {:ok, removed_account, _removed_environment} = ProviderAccountService.get(account.id)
+    assert removed_account.authentication_state == :authentication_required
+    assert removed_account.credential_generation == 2
+
+    stop_worker_process(second_port, worker_id)
+    assert System.monotonic_time(:millisecond) - started_at < 120_000
+  end
+
+  defp environment_available?(account_id) do
+    match?(
+      %{physical_state: "available", canary_persisted: true},
+      Repo.get(ProviderAccountEnvironment, account_id)
+    )
+  end
+
+  defp physical_identity(environment) do
+    {environment.backend_kind, environment.environment_id, environment.incarnation}
+  end
+
+  defp run_authority_counts do
+    for table <- [
+          "product_workspaces",
+          "product_quests",
+          "runtime_runs",
+          "quest_launches",
+          "scheduled_action_executions",
+          "operational_attempt_attributions"
+        ],
+        into: %{} do
+      %{rows: [[count]]} = Repo.query!("SELECT count(*) FROM #{table}")
+      {table, count}
+    end
+  end
+
+  defp refute_durable_setup_value(value) do
+    for table <- [
+          "provider_accounts",
+          "provider_account_environments",
+          "provider_account_setup_attempts",
+          "provider_account_setup_authorizations",
+          "provider_account_setup_events",
+          "provider_account_human_attention_requests"
+        ] do
+      %{rows: columns} =
+        Repo.query!(
+          "SELECT column_name FROM information_schema.columns " <>
+            "WHERE table_schema='public' AND table_name=$1 " <>
+            "AND data_type IN ('character varying','text','json','jsonb')",
+          [table]
+        )
+
+      predicates =
+        Enum.map_join(columns, " OR ", fn [column] ->
+          "position($1 in coalesce(#{column}::text,'')) > 0"
+        end)
+
+      if predicates != "" do
+        %{rows: [[count]]} =
+          Repo.query!("SELECT count(*) FROM #{table} WHERE #{predicates}", [value])
+
+        assert count == 0
+      end
+    end
+  end
+
+  defp refute_worker_state_value(root, value) do
+    for path <- Path.wildcard(Path.join(root, "**/*sqlite*")), File.regular?(path) do
+      assert :binary.match(File.read!(path), value) == :nomatch
     end
   end
 

@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 15
+  @version 16
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -51,6 +51,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @setup_invocation_states ~w(not_requested requested acknowledged settled uncertain)
   @provider_account_environment_states ~w(pending available stopped missing degraded removing removed)
   @provider_account_environment_events ~w(environment_ensured environment_stopped environment_removed environment_missing environment_degraded environment_reconciled canary_written canary_read)
+  @provider_account_setup_states ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required validating succeeded failed uncertain cancellation_requested cancelled invalidated)
+  @provider_account_setup_invocation_states ~w(not_requested requested acknowledged settled uncertain)
+  @provider_account_setup_validation_states ~w(not_checked authenticated authentication_required inspection_unavailable incompatible_status)
 
   defmodule Message do
     @moduledoc false
@@ -78,6 +81,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             setup: map() | nil,
             account_environment: map() | nil,
             account_environments: [map()] | nil,
+            provider_account_setup: map() | nil,
+            provider_account_setups: [map()] | nil,
+            setup_delivery: map() | nil,
             ephemeral: String.t() | nil
           }
 
@@ -103,6 +109,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :setup,
       :account_environment,
       :account_environments,
+      :provider_account_setup,
+      :provider_account_setups,
+      :setup_delivery,
       :ephemeral
     ]
   end
@@ -116,7 +125,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 15
+  @spec version() :: 16
   def version, do: @version
 
   @spec encode_tool_policy(Exact.t() | NativePermissions.t()) :: map()
@@ -166,12 +175,19 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     |> maybe_put("connection_generation", connection_generation)
   end
 
-  def reconcile_request(worker_id, connection_generation, provider_accounts \\ []) do
+  def reconcile_request(
+        worker_id,
+        connection_generation,
+        provider_accounts \\ [],
+        provider_account_setups \\ []
+      ) do
     %{
       "type" => "reconcile_request",
       "protocol_version" => @version,
       "worker_id" => worker_id,
-      "provider_accounts" => Enum.map(provider_accounts, &provider_account_payload/1)
+      "provider_accounts" => Enum.map(provider_accounts, &provider_account_payload/1),
+      "provider_account_setups" =>
+        Enum.map(provider_account_setups, &provider_account_setup_payload/1)
     }
     |> maybe_put("connection_generation", connection_generation)
   end
@@ -183,6 +199,71 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "worker_id" => worker_id,
       "connection_generation" => connection_generation,
       "provider_account" => provider_account_payload(desired)
+    }
+  end
+
+  def prepare_provider_account_setup(worker, attempt, authorization, interaction_public_key) do
+    provider_account_setup(
+      worker.id,
+      worker.connection_generation,
+      %{
+        setup_attempt_id: attempt.id,
+        provider_account_id: attempt.provider_account_id,
+        setup_generation: attempt.setup_generation,
+        authorization_id: authorization.id,
+        authorized_at: authorization.authorized_at,
+        credential_generation: attempt.credential_generation_before,
+        environment_generation: attempt.environment_generation,
+        worker_generation: attempt.worker_generation,
+        environment_operation_id: attempt.environment_operation_id,
+        provider_key: attempt.provider_key,
+        backend_kind: attempt.backend_kind,
+        environment_id: attempt.environment_id,
+        environment_incarnation: attempt.environment_incarnation,
+        interaction_public_key: interaction_public_key,
+        state: attempt.state,
+        invocation_state: attempt.invocation_state,
+        cancellation_request_id: attempt.cancellation_request_id
+      }
+    )
+  end
+
+  def provider_account_setup(worker_id, connection_generation, setup) do
+    %{
+      "type" => "prepare_provider_account_setup",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => connection_generation,
+      "setup" => provider_account_setup_payload(setup)
+    }
+  end
+
+  def respond_provider_account_setup(worker_id, generation, attempt, attention, value) do
+    %{
+      "type" => "respond_provider_account_setup",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "setup_attempt_id" => attempt.id,
+      "setup_generation" => attempt.setup_generation,
+      "attention_id" => attention.id,
+      "process_generation" => attempt.process_generation,
+      "request_generation" => attention.request_generation,
+      "delivery_attempt_id" => attention.delivery_attempt_id,
+      "value" => value
+    }
+  end
+
+  def cancel_provider_account_setup(worker_id, generation, attempt, request_id) do
+    %{
+      "type" => "cancel_provider_account_setup",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "setup_attempt_id" => attempt.id,
+      "setup_generation" => attempt.setup_generation,
+      "process_generation" => attempt.process_generation,
+      "request_id" => request_id
     }
   end
 
@@ -660,6 +741,52 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     end
   end
 
+  defp decode_message("provider_account_setup_state", worker_id, payload) do
+    with {:ok, setup} <- decode_provider_account_setup(payload) do
+      {:ok,
+       %Message{
+         type: :provider_account_setup_state,
+         worker_id: worker_id,
+         provider_account_setup: setup,
+         ephemeral: Map.get(payload, "ephemeral_output")
+       }}
+    end
+  end
+
+  defp decode_message("provider_account_setup_input_delivery", worker_id, payload) do
+    with :ok <-
+           exact_map_keys(
+             Map.drop(payload, ["type", "protocol_version", "worker_id"]),
+             ~w(setup_attempt_id setup_generation attention_id process_generation delivery_attempt_id state observed_at),
+             "provider_account_setup_input_delivery"
+           ),
+         {:ok, setup_attempt_id} <- required_string(payload, "setup_attempt_id"),
+         setup_generation when is_integer(setup_generation) and setup_generation > 0 <-
+           payload["setup_generation"],
+         {:ok, attention_id} <- required_string(payload, "attention_id"),
+         {:ok, process_generation} <- required_string(payload, "process_generation"),
+         {:ok, delivery_attempt_id} <- required_string(payload, "delivery_attempt_id"),
+         state when state in ~w(delivery_acknowledged delivery_uncertain) <- payload["state"],
+         {:ok, observed_at} <- timestamp(payload["observed_at"], "observed_at") do
+      {:ok,
+       %Message{
+         type: :provider_account_setup_input_delivery,
+         worker_id: worker_id,
+         setup_delivery: %{
+           setup_attempt_id: setup_attempt_id,
+           setup_generation: setup_generation,
+           attention_id: attention_id,
+           process_generation: process_generation,
+           delivery_attempt_id: delivery_attempt_id,
+           state: state,
+           observed_at: observed_at
+         }
+       }}
+    else
+      _ -> error(:invalid_field, "provider_account_setup_input_delivery")
+    end
+  end
+
   defp decode_message("provider_account_environment_state", worker_id, %{
          "environment" => environment
        }) do
@@ -678,15 +805,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     sessions = Map.get(payload, "sessions", [])
     attention_deliveries = Map.get(payload, "human_attention_deliveries", [])
     account_environments = Map.get(payload, "provider_account_environments", [])
+    account_setups = Map.get(payload, "provider_account_setups", [])
 
     with true <- is_list(sessions),
          true <- is_list(attention_deliveries),
          true <- is_list(account_environments),
+         true <- is_list(account_setups),
          {:ok, decoded} <- decode_reconcile_dispatches(dispatches),
          {:ok, decoded_sessions} <- decode_sessions(sessions),
          {:ok, decoded_deliveries} <- decode_attention_deliveries(attention_deliveries),
          {:ok, decoded_account_environments} <-
-           decode_provider_account_environments(account_environments) do
+           decode_provider_account_environments(account_environments),
+         {:ok, decoded_account_setups} <- decode_provider_account_setups(account_setups) do
       {:ok,
        %Message{
          type: :reconcile_state,
@@ -694,7 +824,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          dispatches: decoded,
          sessions: decoded_sessions,
          attention_deliveries: decoded_deliveries,
-         account_environments: decoded_account_environments
+         account_environments: decoded_account_environments,
+         provider_account_setups: decoded_account_setups
        }}
     else
       false -> error(:invalid_field, "reconcile_state", %{expected: "arrays"})
@@ -771,10 +902,157 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp decode_provider_account_environment(_value),
     do: error(:invalid_field, "environment")
 
-  defp exact_map_keys(value, expected) do
+  defp decode_provider_account_setups(values) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, decoded} ->
+      case decode_provider_account_setup(value) do
+        {:ok, item} -> {:cont, {:ok, [item | decoded]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
+  defp decode_provider_account_setup(value) when is_map(value) do
+    report = Map.drop(value, ["type", "protocol_version", "worker_id"])
+
+    with :ok <-
+           exact_map_keys(
+             report,
+             ~w(setup_attempt_id provider_account_id setup_generation credential_generation environment_generation worker_generation environment_operation_id backend_kind environment_id environment_incarnation state invocation_state process attention validation failure_code observed_at ephemeral_output),
+             "provider_account_setup_state"
+           ),
+         {:ok, setup_attempt_id} <- required_string(report, "setup_attempt_id"),
+         {:ok, provider_account_id} <- required_string(report, "provider_account_id"),
+         setup_generation when is_integer(setup_generation) and setup_generation > 0 <-
+           report["setup_generation"],
+         credential_generation
+         when is_integer(credential_generation) and credential_generation > 0 <-
+           report["credential_generation"],
+         environment_generation
+         when is_integer(environment_generation) and environment_generation > 0 <-
+           report["environment_generation"],
+         worker_generation when is_integer(worker_generation) and worker_generation > 0 <-
+           report["worker_generation"],
+         {:ok, environment_operation_id} <- required_string(report, "environment_operation_id"),
+         {:ok, backend_kind} <- required_string(report, "backend_kind"),
+         {:ok, environment_id} <- required_string(report, "environment_id"),
+         {:ok, environment_incarnation} <-
+           required_string(report, "environment_incarnation"),
+         state when state in @provider_account_setup_states <- report["state"],
+         invocation when invocation in @provider_account_setup_invocation_states <-
+           report["invocation_state"],
+         {:ok, process} <- decode_provider_account_setup_process(report["process"]),
+         {:ok, attention} <- decode_provider_account_setup_attention(report["attention"]),
+         {:ok, validation} <- decode_provider_account_setup_validation(report["validation"]),
+         {:ok, failure_code} <- optional_string(report["failure_code"]),
+         {:ok, observed_at} <- timestamp(report["observed_at"], "observed_at"),
+         :ok <- validate_sealed_provider_account_setup_output(report["ephemeral_output"]),
+         true <- state != "succeeded" or match?(%{state: "authenticated"}, validation),
+         true <- is_nil(attention) or state == "human_interaction_required",
+         true <- is_nil(report["ephemeral_output"]) or not is_nil(attention) do
+      {:ok,
+       %{
+         setup_attempt_id: setup_attempt_id,
+         provider_account_id: provider_account_id,
+         setup_generation: setup_generation,
+         credential_generation: credential_generation,
+         environment_generation: environment_generation,
+         worker_generation: worker_generation,
+         environment_operation_id: environment_operation_id,
+         backend_kind: backend_kind,
+         environment_id: environment_id,
+         environment_incarnation: environment_incarnation,
+         state: state,
+         invocation_state: invocation,
+         process: process,
+         attention: attention,
+         validation: validation,
+         failure_code: failure_code,
+         observed_at: observed_at
+       }}
+    else
+      _ -> error(:invalid_field, "provider_account_setup_state")
+    end
+  end
+
+  defp decode_provider_account_setup(_value),
+    do: error(:invalid_field, "provider_account_setup_state")
+
+  defp decode_provider_account_setup_process(nil), do: {:ok, nil}
+
+  defp decode_provider_account_setup_process(value) when is_map(value) do
+    with :ok <-
+           exact_map_keys(
+             value,
+             ~w(backend_process_id process_start_identity process_generation executable),
+             "process"
+           ),
+         {:ok, backend_process_id} <- required_string(value, "backend_process_id"),
+         {:ok, process_start_identity} <- required_string(value, "process_start_identity"),
+         {:ok, process_generation} <- required_string(value, "process_generation"),
+         {:ok, executable} <- required_string(value, "executable") do
+      {:ok,
+       %{
+         backend_process_id: backend_process_id,
+         process_start_identity: process_start_identity,
+         process_generation: process_generation,
+         executable: executable
+       }}
+    else
+      _ -> error(:invalid_field, "process")
+    end
+  end
+
+  defp decode_provider_account_setup_process(_value), do: error(:invalid_field, "process")
+
+  defp decode_provider_account_setup_attention(nil), do: {:ok, nil}
+
+  defp decode_provider_account_setup_attention(value) when is_map(value) do
+    with :ok <-
+           exact_map_keys(value, ~w(attention_id kind message), "attention"),
+         {:ok, attention_id} <- required_string(value, "attention_id"),
+         "provider_authentication" <- value["kind"],
+         {:ok, message} <- required_string(value, "message"),
+         true <- byte_size(message) <= 2_048 do
+      {:ok,
+       %{
+         attention_id: attention_id,
+         kind: "provider_authentication",
+         message: message
+       }}
+    else
+      _ -> error(:invalid_field, "attention")
+    end
+  end
+
+  defp decode_provider_account_setup_attention(_value), do: error(:invalid_field, "attention")
+
+  defp decode_provider_account_setup_validation(nil), do: {:ok, nil}
+
+  defp decode_provider_account_setup_validation(value) when is_map(value) do
+    with :ok <- exact_map_keys(value, ~w(state identity), "validation"),
+         state when state in @provider_account_setup_validation_states <- value["state"],
+         {:ok, identity} <- optional_string(value["identity"]),
+         true <- state != "authenticated" or is_binary(identity) do
+      {:ok, %{state: state, identity: identity}}
+    else
+      _ -> error(:invalid_field, "validation")
+    end
+  end
+
+  defp decode_provider_account_setup_validation(_value),
+    do: error(:invalid_field, "validation")
+
+  defp exact_map_keys(value, expected), do: exact_map_keys(value, expected, "environment")
+
+  defp exact_map_keys(value, expected, field) do
     if MapSet.new(Map.keys(value)) == MapSet.new(expected),
       do: :ok,
-      else: error(:invalid_field, "environment", %{expected: expected})
+      else: error(:invalid_field, field, %{expected: expected})
   end
 
   defp decode_human_recovery(value) when is_map(value) do
@@ -1083,6 +1361,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_terminal(nil), do: {:ok, nil}
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp decode_terminal(
          %{
            "attachment_mode" => "local_native_terminal",
@@ -1116,6 +1395,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_attention(nil), do: {:ok, nil}
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp decode_attention(
          %{
            "attention_id" => id,
@@ -1762,11 +2042,38 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp validate_ephemeral_setup_output(_), do: :error
 
+  defp validate_sealed_provider_account_setup_output(nil), do: :ok
+
+  defp validate_sealed_provider_account_setup_output(value) when is_map(value) do
+    with :ok <-
+           exact_map_keys(
+             value,
+             ~w(version encrypted_key iv ciphertext tag),
+             "ephemeral_output"
+           ),
+         "rsa-oaep-sha256-aes-256-gcm-v1" <- value["version"],
+         {:ok, encrypted_key} <- Base.decode64(value["encrypted_key"] || ""),
+         true <- byte_size(encrypted_key) in 1..512,
+         {:ok, iv} <- Base.decode64(value["iv"] || ""),
+         true <- byte_size(iv) == 12,
+         {:ok, ciphertext} <- Base.decode64(value["ciphertext"] || ""),
+         true <- byte_size(ciphertext) <= 16_384,
+         {:ok, tag} <- Base.decode64(value["tag"] || ""),
+         true <- byte_size(tag) == 16 do
+      :ok
+    else
+      _ -> :error
+    end
+  end
+
+  defp validate_sealed_provider_account_setup_output(_), do: :error
+
   defp validate_capabilities(capabilities)
        when is_map(capabilities) and not is_map_key(capabilities, "harness_setups") do
     validate_capabilities(Map.put(capabilities, "harness_setups", []))
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp validate_capabilities(
          %{
            "os" => os,
@@ -1827,31 +2134,31 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp validate_harness_setups(setups) do
     Enum.reduce_while(setups, {:ok, []}, fn setup, {:ok, validated} ->
-      case setup do
-        %{
-          "setup_kind" => "provider_authentication",
-          "setup_available" => true,
-          "authentication" => "context_required"
-        } ->
-          case validate_executor(setup) do
-            {:ok, executor} ->
-              value =
-                executor
-                |> Map.put("setup_kind", "provider_authentication")
-                |> Map.put("setup_available", true)
-                |> Map.put("authentication", "context_required")
-
-              {:cont, {:ok, validated ++ [value]}}
-
-            error ->
-              {:halt, error}
-          end
-
-        _ ->
-          {:halt, error(:invalid_capabilities, "capabilities.harness_setups")}
+      case validate_harness_setup(setup) do
+        {:ok, value} -> {:cont, {:ok, validated ++ [value]}}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
+
+  defp validate_harness_setup(
+         %{
+           "setup_kind" => "provider_authentication",
+           "setup_available" => true,
+           "authentication" => "context_required"
+         } = setup
+       ) do
+    with {:ok, executor} <- validate_executor(setup) do
+      {:ok,
+       executor
+       |> Map.put("setup_kind", "provider_authentication")
+       |> Map.put("setup_available", true)
+       |> Map.put("authentication", "context_required")}
+    end
+  end
+
+  defp validate_harness_setup(_setup),
+    do: error(:invalid_capabilities, "capabilities.harness_setups")
 
   defp validate_executor(
          %{
@@ -2160,6 +2467,31 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "expected_backend_kind" => value.expected_backend_kind,
       "expected_environment_id" => value.expected_environment_id,
       "expected_incarnation" => value.expected_incarnation
+    }
+  end
+
+  defp provider_account_setup_payload(value) do
+    %{
+      "setup_attempt_id" => value.setup_attempt_id,
+      "provider_account_id" => value.provider_account_id,
+      "setup_generation" => value.setup_generation,
+      "authorization_id" => value.authorization_id,
+      "authorization_kind" => "provider_account_setup",
+      "authorized_at" => DateTime.to_iso8601(value.authorized_at),
+      "credential_generation" => value.credential_generation,
+      "environment_generation" => value.environment_generation,
+      "worker_generation" => value.worker_generation,
+      "environment_operation_id" => value.environment_operation_id,
+      "provider_key" => value.provider_key,
+      "environment" => %{
+        "backend_kind" => value.backend_kind,
+        "environment_id" => value.environment_id,
+        "incarnation" => value.environment_incarnation
+      },
+      "interaction_public_key" => value.interaction_public_key,
+      "state" => value.state,
+      "invocation_state" => value.invocation_state,
+      "cancellation_request_id" => value.cancellation_request_id
     }
   end
 

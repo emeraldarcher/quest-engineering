@@ -2,12 +2,15 @@ import {
   type ArtifactInstance,
   type CancelDispatch,
   type CancelHarnessSetupCommand,
+  type CancelProviderAccountSetupCommand,
   type ExecuteAction,
   type HumanAttentionResponseCommand,
   isJsonValue,
   type PrepareHarnessSetupCommand,
+  type ProviderAccountSetupCommand,
   type ResolvedExecution,
   type RespondHarnessSetupCommand,
+  type RespondProviderAccountSetupCommand,
   WORKER_PROTOCOL_VERSION,
   type WorkspaceAccess,
 } from "./types.ts";
@@ -19,6 +22,283 @@ export class ProtocolDecodeError extends Error {
   ) {
     super(`${field}: ${message}`);
   }
+}
+
+export function decodePrepareProviderAccountSetup(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): ProviderAccountSetupCommand {
+  const payload = record(value, "message");
+  exactKeys(
+    payload,
+    ["type", "protocol_version", "worker_id", "connection_generation", "setup"],
+    "message",
+  );
+  exact(payload.type, "prepare_provider_account_setup", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  const setup = record(payload.setup, "setup");
+  exact(
+    setup.authorization_kind,
+    "provider_account_setup",
+    "setup.authorization_kind",
+  );
+  exactKeys(
+    setup,
+    [
+      "setup_attempt_id",
+      "provider_account_id",
+      "setup_generation",
+      "authorization_id",
+      "authorization_kind",
+      "authorized_at",
+      "credential_generation",
+      "environment_generation",
+      "worker_generation",
+      "environment_operation_id",
+      "provider_key",
+      "environment",
+      "interaction_public_key",
+      "state",
+      "invocation_state",
+      "cancellation_request_id",
+    ],
+    "setup",
+  );
+  exact(setup.worker_generation, expectedGeneration, "setup.worker_generation");
+  const authorizedAt = timestamp(setup.authorized_at, "setup.authorized_at");
+  const environment = record(setup.environment, "setup.environment");
+  exactKeys(
+    environment,
+    ["backend_kind", "environment_id", "incarnation"],
+    "setup.environment",
+  );
+  return {
+    type: "prepare_provider_account_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    setup: {
+      setup_attempt_id: string(
+        setup.setup_attempt_id,
+        "setup.setup_attempt_id",
+      ),
+      provider_account_id: string(
+        setup.provider_account_id,
+        "setup.provider_account_id",
+      ),
+      setup_generation: positiveInteger(
+        setup.setup_generation,
+        "setup.setup_generation",
+      ),
+      authorization_id: string(
+        setup.authorization_id,
+        "setup.authorization_id",
+      ),
+      authorization_kind: "provider_account_setup",
+      authorized_at: authorizedAt,
+      credential_generation: positiveInteger(
+        setup.credential_generation,
+        "setup.credential_generation",
+      ),
+      environment_generation: positiveInteger(
+        setup.environment_generation,
+        "setup.environment_generation",
+      ),
+      worker_generation: expectedGeneration,
+      environment_operation_id: string(
+        setup.environment_operation_id,
+        "setup.environment_operation_id",
+      ),
+      provider_key: string(setup.provider_key, "setup.provider_key"),
+      environment: {
+        backend_kind: string(
+          environment.backend_kind,
+          "setup.environment.backend_kind",
+        ),
+        environment_id: string(
+          environment.environment_id,
+          "setup.environment.environment_id",
+        ),
+        incarnation: string(
+          environment.incarnation,
+          "setup.environment.incarnation",
+        ),
+      },
+      interaction_public_key: string(
+        setup.interaction_public_key,
+        "setup.interaction_public_key",
+      ),
+      state: oneOf(
+        setup.state,
+        [
+          "authorized",
+          "preparing",
+          "invocation_requested",
+          "invocation_acknowledged",
+          "human_interaction_required",
+          "validating",
+          "succeeded",
+          "failed",
+          "uncertain",
+          "cancellation_requested",
+          "cancelled",
+          "invalidated",
+        ] as const,
+        "setup.state",
+      ),
+      invocation_state: oneOf(
+        setup.invocation_state,
+        [
+          "not_requested",
+          "requested",
+          "acknowledged",
+          "settled",
+          "uncertain",
+        ] as const,
+        "setup.invocation_state",
+      ),
+      cancellation_request_id: nullableString(
+        setup.cancellation_request_id,
+        "setup.cancellation_request_id",
+      ),
+    },
+  };
+}
+
+export function decodeRespondProviderAccountSetup(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): RespondProviderAccountSetupCommand {
+  const payload = record(value, "message");
+  exactKeys(
+    payload,
+    [
+      "type",
+      "protocol_version",
+      "worker_id",
+      "connection_generation",
+      "setup_attempt_id",
+      "setup_generation",
+      "attention_id",
+      "process_generation",
+      "request_generation",
+      "delivery_attempt_id",
+      "value",
+    ],
+    "message",
+  );
+  exact(payload.type, "respond_provider_account_setup", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  return {
+    type: "respond_provider_account_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    setup_attempt_id: string(payload.setup_attempt_id, "setup_attempt_id"),
+    setup_generation: positiveInteger(
+      payload.setup_generation,
+      "setup_generation",
+    ),
+    attention_id: string(payload.attention_id, "attention_id"),
+    process_generation: string(
+      payload.process_generation,
+      "process_generation",
+    ),
+    request_generation: positiveInteger(
+      payload.request_generation,
+      "request_generation",
+    ),
+    delivery_attempt_id: string(
+      payload.delivery_attempt_id,
+      "delivery_attempt_id",
+    ),
+    value: boundedText(payload.value, "value", 8_192),
+  };
+}
+
+export function decodeCancelProviderAccountSetup(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): CancelProviderAccountSetupCommand {
+  const payload = record(value, "message");
+  exactKeys(
+    payload,
+    [
+      "type",
+      "protocol_version",
+      "worker_id",
+      "connection_generation",
+      "setup_attempt_id",
+      "setup_generation",
+      "process_generation",
+      "request_id",
+    ],
+    "message",
+  );
+  exact(payload.type, "cancel_provider_account_setup", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  return {
+    type: "cancel_provider_account_setup",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    setup_attempt_id: string(payload.setup_attempt_id, "setup_attempt_id"),
+    setup_generation: positiveInteger(
+      payload.setup_generation,
+      "setup_generation",
+    ),
+    process_generation: nullableString(
+      payload.process_generation,
+      "process_generation",
+    ),
+    request_id: string(payload.request_id, "request_id"),
+  };
+}
+
+export function decodeProviderAccountSetupReconciliation(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): ProviderAccountSetupCommand[] {
+  if (!Array.isArray(value))
+    throw new ProtocolDecodeError(
+      "provider_account_setups",
+      "must be an array",
+    );
+  return value.map((setup) =>
+    decodePrepareProviderAccountSetup(
+      {
+        type: "prepare_provider_account_setup",
+        protocol_version: WORKER_PROTOCOL_VERSION,
+        worker_id: expectedWorkerId,
+        connection_generation: expectedGeneration,
+        setup,
+      },
+      expectedWorkerId,
+      expectedGeneration,
+    ),
+  );
 }
 
 export function decodeCancelDispatch(
@@ -705,6 +985,19 @@ function record(value: unknown, field: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new ProtocolDecodeError(field, "must be an object");
   return value as Record<string, unknown>;
+}
+function exactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+  field: string,
+): void {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (
+    actual.length !== wanted.length ||
+    actual.some((key, index) => key !== wanted[index])
+  )
+    throw new ProtocolDecodeError(field, "has unexpected or missing fields");
 }
 function string(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0)

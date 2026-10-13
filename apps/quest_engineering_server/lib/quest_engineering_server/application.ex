@@ -17,7 +17,8 @@ defmodule QuestEngineering.Server.Application do
     infrastructure = [
       QuestEngineering.Server.Repo,
       {Phoenix.PubSub, name: QuestEngineering.Server.PubSub},
-      QuestEngineering.Server.HarnessSetupInteractions
+      QuestEngineering.Server.HarnessSetupInteractions,
+      QuestEngineering.Server.ProviderAccountSetupInteractions
     ]
 
     background_services =

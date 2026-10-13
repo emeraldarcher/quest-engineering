@@ -22,6 +22,9 @@ config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]
 
+# ProviderAccount setup interaction responses use the generic `value` field.
+# Filter it before Phoenix can format controller or channel parameters.
+config :phoenix, :filter_parameters, ["password", "value"]
 config :phoenix, :json_library, Jason
 
 import_config "#{config_env()}.exs"

@@ -16,7 +16,7 @@ POST   /workspaces/:id/bindings
 
 The domain and API retain `Workspace`; ordinary UI calls it a **Project**. Workspace binding projection is `unbound | preparing | ready | attention_required | offline`. A binding request is durable before Worker delivery, and failure details are bounded Product-safe values.
 
-## ProviderAccounts (Phase A)
+## ProviderAccounts (Phases A–B)
 
 ```text
 GET  /provider-accounts
@@ -24,9 +24,16 @@ POST /provider-accounts
 GET  /provider-accounts/:id
 GET  /provider-accounts/:id/events
 POST /provider-accounts/:id/actions/:action
+GET  /provider-accounts/:id/setup-attempts
+POST /provider-accounts/:id/setup-attempts
+GET  /provider-accounts/:id/setup-attempts/:attempt_id/interactions/:attention_id
+POST /provider-accounts/:id/setup-attempts/:attempt_id/respond
+POST /provider-accounts/:id/setup-attempts/:attempt_id/cancel
 ```
 
-Create accepts `provider_key`, `worker_id`, and optional `display_name`; all credential/token/secret fields are rejected. Actions are `invalidate | disconnect | reconnect | rotate | start | stop | remove`. Mutations return `202` because durable Product intent and Worker physical convergence are separate. The environment projection exposes durable `desired_state` independently from observed `physical_state`; pending convergence therefore retains whether the target is `available`, `stopped`, or `removed`. Readiness separately projects semantic account state, physical environment state, `authentication=not_checked`, and `inference=not_evaluated`. See [`provider-accounts.md`](provider-accounts.md).
+Create accepts `provider_key`, `worker_id`, and optional `display_name`; all credential/token/secret fields are rejected. Actions are `invalidate | disconnect | reconnect | rotate | start | stop | remove`. Environment mutations return `202` because durable Product intent and Worker physical convergence are separate. The environment projection exposes durable `desired_state` independently from observed `physical_state`; pending convergence therefore retains whether the target is `available`, `stopped`, or `removed`.
+
+Setup authorization requires loopback Tauri and exactly `{request_id, confirmed: true}`. It creates an account-scoped setup attempt and no Run/Action/Runtime Attempt. Setup list/projection contains only safe authorization, physical/process fences, HumanAttention state, input-delivery certainty, validation class, and timestamps. Interaction GET is process-generation-bound expiring memory, requires an ephemeral SPKI RSA public key in `x-qe-interaction-public-key`, and returns hybrid-sealed output that the typed client decrypts in memory. Respond accepts exact setup/attention/request identity and a bounded ephemeral string; only delivery metadata is persisted. Cancel is idempotent by request ID. No setup endpoint authorizes inference. Readiness independently projects semantic, environment, authentication, and `inference=not_evaluated` layers. Successful deterministic fake setup advances credential generation after validation while retaining the same environment owner generation and physical incarnation. See [`provider-accounts.md`](provider-accounts.md).
 
 ## Product definitions and Quest lifecycle
 
@@ -86,7 +93,7 @@ committed; `delivery_state` separately reports not delivered, requested,
 acknowledged, or uncertain. Product never converts a successful socket send into
 native-delivery certainty. See `docs/durable-blocking-human-attention.md`.
 
-Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v15 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
+Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v16 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
 
 `Retry Publishing` resumes the same Delivery and runs no model work. Whole-Run cleanup accepts `{ "acknowledge_unmerged": true }` when applicable and is available only after terminal failed/cancelled execution or a completed Run with safe Delivery evidence. It retires Run-owned harness panes and control authority, converges and removes the frozen execution-environment incarnation, then removes only the isolated host Run repository. Shared Herdr infrastructure and Product history remain. The response and Run detail project `cleanup.state` plus independent `harness`, `execution_environment`, and `host_run_repository` outcomes; unresolved stop observation or any earlier resource failure never claims later removal.
 

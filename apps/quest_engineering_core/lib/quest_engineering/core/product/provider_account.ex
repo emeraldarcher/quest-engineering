@@ -36,7 +36,17 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
     :removing,
     :removed
   ]
-  @authentication_states [:not_checked]
+  @authentication_states [
+    :not_checked,
+    :setup_authorized,
+    :setup_in_progress,
+    :interaction_required,
+    :validating,
+    :authenticated,
+    :authentication_required,
+    :inspection_unavailable,
+    :invalid
+  ]
 
   @enforce_keys [
     :id,
@@ -58,6 +68,8 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
     :lifecycle_state,
     :environment_state,
     :authentication_state,
+    :authenticated_at,
+    :last_validated_at,
     :inserted_at,
     :updated_at
   ]
@@ -72,7 +84,16 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
           | :degraded
           | :removing
           | :removed
-  @type authentication_state :: :not_checked
+  @type authentication_state ::
+          :not_checked
+          | :setup_authorized
+          | :setup_in_progress
+          | :interaction_required
+          | :validating
+          | :authenticated
+          | :authentication_required
+          | :inspection_unavailable
+          | :invalid
   @type t :: %__MODULE__{
           id: ProviderAccountId.t(),
           provider_key: String.t(),
@@ -82,6 +103,8 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
           lifecycle_state: lifecycle_state(),
           environment_state: environment_state(),
           authentication_state: authentication_state(),
+          authenticated_at: DateTime.t() | nil,
+          last_validated_at: DateTime.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -108,6 +131,20 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
       match?(%DateTime{}, account.inserted_at),
       match?(%DateTime{}, account.updated_at)
     ])
+  end
+
+  @doc "Records a validated setup result without changing the physical environment lifecycle."
+  @spec authenticated(t(), DateTime.t()) :: t()
+  def authenticated(%__MODULE__{} = account, %DateTime{} = now) do
+    %{
+      account
+      | credential_generation: account.credential_generation + 1,
+        lifecycle_state: :connected,
+        authentication_state: :authenticated,
+        authenticated_at: now,
+        last_validated_at: now,
+        updated_at: now
+    }
   end
 
   @doc "Starts a new credential epoch; the stable account identity is unchanged."

@@ -13,6 +13,8 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccount do
     field :lifecycle_state, :string
     field :environment_state, :string
     field :authentication_state, :string
+    field :authenticated_at, :utc_datetime_usec
+    field :last_validated_at, :utc_datetime_usec
     timestamps(type: :utc_datetime_usec)
   end
 
@@ -26,7 +28,9 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccount do
       :credential_generation,
       :lifecycle_state,
       :environment_state,
-      :authentication_state
+      :authentication_state,
+      :authenticated_at,
+      :last_validated_at
     ])
     |> validate_required([
       :id,
@@ -43,7 +47,10 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccount do
       :environment_state,
       ~w(unassigned pending available stopped missing degraded removing removed)
     )
-    |> validate_inclusion(:authentication_state, ["not_checked"])
+    |> validate_inclusion(
+      :authentication_state,
+      ~w(not_checked setup_authorized setup_in_progress interaction_required validating authenticated authentication_required inspection_unavailable invalid)
+    )
     |> foreign_key_constraint(:worker_id)
   end
 end

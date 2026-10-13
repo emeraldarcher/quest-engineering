@@ -247,6 +247,102 @@ export interface StarterCrewResult {
   tactic: Tactic;
 }
 
+export interface ProviderAccountSetupAttempt {
+  id: string;
+  provider_account_id: string;
+  setup_generation: number;
+  credential_generation_before: number;
+  credential_generation_after: number | null;
+  environment_generation: number;
+  worker_id: string;
+  worker_generation: number;
+  state:
+    | "authorized"
+    | "preparing"
+    | "invocation_requested"
+    | "invocation_acknowledged"
+    | "human_interaction_required"
+    | "validating"
+    | "succeeded"
+    | "failed"
+    | "uncertain"
+    | "cancellation_requested"
+    | "cancelled"
+    | "invalidated";
+  invocation_state:
+    | "not_requested"
+    | "requested"
+    | "acknowledged"
+    | "settled"
+    | "uncertain";
+  process: {
+    backend_process_id: string;
+    process_start_identity: string;
+    process_generation: string;
+    executable: string;
+  } | null;
+  attention: {
+    attention_id: string;
+    request_generation: number;
+    kind: "provider_authentication";
+    message: string;
+    response_state: "pending" | "responded" | "cancelled" | "obsolete";
+    delivery_state:
+      | "response_not_delivered"
+      | "delivery_requested"
+      | "delivery_acknowledged"
+      | "delivery_uncertain";
+    delivery_attempt_id: string | null;
+    surfaced_at: string;
+  } | null;
+  validation: {
+    state: string;
+    identity: string | null;
+    validated_at: string | null;
+  };
+  failure: { code: string; message: string } | null;
+  authorized_at: string;
+  invocation_requested_at: string | null;
+  invocation_acknowledged_at: string | null;
+  interaction_required_at: string | null;
+  succeeded_at: string | null;
+  cancelled_at: string | null;
+  updated_at: string;
+}
+
+export interface ProviderAccount {
+  id: string;
+  provider_key: string;
+  display_name: string | null;
+  worker_id: string;
+  credential_generation: number;
+  lifecycle_state: "connected" | "invalid" | "disconnected";
+  readiness: {
+    semantic: string;
+    environment: string;
+    authentication: string;
+    inference: "not_evaluated";
+  };
+  environment: {
+    credential_generation: number;
+    worker_id: string;
+    worker_generation: number | null;
+    operation_id: string;
+    desired_state: "available" | "stopped" | "removed";
+    backend_kind: string | null;
+    environment_id: string | null;
+    incarnation: string | null;
+    physical_state: string;
+    durable_canary_persisted: boolean;
+    last_error: { code: string; message: string } | null;
+    observed_at: string | null;
+  } | null;
+  authenticated_at: string | null;
+  last_validated_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
 export type AccountAvailability =
   | "verified_available"
   | "verified_unavailable"

@@ -14,6 +14,21 @@ defmodule QuestEngineering.ServerWeb.Router do
     post "/provider-accounts", ProviderAccountController, :create
     get "/provider-accounts/:id", ProviderAccountController, :show
     get "/provider-accounts/:id/events", ProviderAccountController, :events
+    get "/provider-accounts/:id/setup-attempts", ProviderAccountController, :setup_attempts
+    post "/provider-accounts/:id/setup-attempts", ProviderAccountController, :authorize_setup
+
+    get "/provider-accounts/:id/setup-attempts/:attempt_id/interactions/:attention_id",
+        ProviderAccountController,
+        :setup_interaction
+
+    post "/provider-accounts/:id/setup-attempts/:attempt_id/respond",
+         ProviderAccountController,
+         :respond_setup
+
+    post "/provider-accounts/:id/setup-attempts/:attempt_id/cancel",
+         ProviderAccountController,
+         :cancel_setup
+
     post "/provider-accounts/:id/actions/:action", ProviderAccountController, :lifecycle_action
 
     get "/workspaces", ProductController, :index
