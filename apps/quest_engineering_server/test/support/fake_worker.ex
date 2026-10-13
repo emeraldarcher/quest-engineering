@@ -168,6 +168,7 @@ defmodule QuestEngineering.Server.FakeWorker do
   def connected?(worker), do: GenServer.call(worker, :connected?)
   def registration_error(worker), do: GenServer.call(worker, :registration_error)
   def known_dispatches(worker), do: GenServer.call(worker, :known_dispatches)
+  def provider_accounts(worker), do: GenServer.call(worker, :provider_accounts)
   def send_message(worker, message), do: GenServer.call(worker, {:send_message, message})
 
   def execution_count(worker, action_id),
@@ -203,7 +204,7 @@ defmodule QuestEngineering.Server.FakeWorker do
         options
         |> Keyword.get(:capabilities, default_capabilities())
         |> Map.put_new("workspace_bindings", []),
-      protocol_version: Keyword.get(options, :protocol_version, 14),
+      protocol_version: Keyword.get(options, :protocol_version, 15),
       hello_payload: Keyword.get(options, :hello_payload),
       url: Keyword.get(options, :url, "ws://127.0.0.1:4002/worker/websocket"),
       token: Keyword.get(options, :token, "development-worker-token"),
@@ -218,6 +219,7 @@ defmodule QuestEngineering.Server.FakeWorker do
       attention_responses: %{},
       attention_deliveries: %{},
       worktrees: %{},
+      provider_accounts: [],
       execution_counts: %{},
       drop_ack?: false,
       drop_completion?: false,
@@ -263,6 +265,7 @@ defmodule QuestEngineering.Server.FakeWorker do
   def handle_call(:connected?, _from, state), do: {:reply, state.ready?, state}
   def handle_call(:registration_error, _from, state), do: {:reply, state.last_error, state}
   def handle_call(:known_dispatches, _from, state), do: {:reply, state.known, state}
+  def handle_call(:provider_accounts, _from, state), do: {:reply, state.provider_accounts, state}
 
   def handle_call({:send_message, message}, _from, state),
     do: {:reply, :ok, send_protocol(state, message)}
@@ -581,13 +584,16 @@ defmodule QuestEngineering.Server.FakeWorker do
     end
   end
 
-  defp handle_protocol(%{"type" => "reconcile_request"}, state) do
+  defp handle_protocol(%{"type" => "reconcile_request"} = request, state) do
     dispatches = state.known |> Map.values() |> Enum.map(&state_payload/1)
     sessions = Map.values(state.sessions)
     attention_deliveries = Map.values(state.attention_deliveries)
+    provider_accounts = Map.get(request, "provider_accounts", [])
 
     reconciled =
-      send_protocol(state, %{
+      state
+      |> Map.put(:provider_accounts, provider_accounts)
+      |> send_protocol(%{
         "type" => "reconcile_state",
         "protocol_version" => state.protocol_version,
         "worker_id" => state.worker_id,

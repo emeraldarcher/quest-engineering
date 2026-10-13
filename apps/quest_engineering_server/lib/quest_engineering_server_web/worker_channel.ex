@@ -5,6 +5,7 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
 
   require Logger
 
+  alias QuestEngineering.Server.Product.ProviderAccounts
   alias QuestEngineering.Server.RunWorkspaceProvisioner
   alias QuestEngineering.Server.RunWorkspaceStore
   alias QuestEngineering.Server.WorkerConnections
@@ -97,7 +98,21 @@ defmodule QuestEngineering.ServerWeb.WorkerChannel do
 
   def handle_info(:request_reconciliation, socket) do
     worker_id = socket.assigns.worker_id
-    push(socket, "protocol", WorkerProtocol.reconcile_request(worker_id))
+    generation = socket.assigns.connection_generation
+
+    case ProviderAccounts.prepare_worker_reconciliation(worker_id, generation) do
+      {:ok, provider_accounts} ->
+        push(
+          socket,
+          "protocol",
+          WorkerProtocol.reconcile_request(worker_id, generation, provider_accounts)
+        )
+
+      {:error, error} ->
+        Logger.error("ProviderAccount reconciliation preparation failed: #{inspect(error)}")
+        Process.send_after(self(), :request_reconciliation, 1_000)
+    end
+
     {:noreply, socket}
   end
 

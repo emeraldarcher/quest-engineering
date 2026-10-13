@@ -245,7 +245,7 @@ test("teardown health never rewrites completed Product export but active loss ne
       environmentId,
       incarnation: `incarnation-${environmentId}`,
       workerId: "worker-stop-semantics",
-      runId,
+      owner: { kind: "run", runId },
       profile: { id: "qe-coding-execution-v1", digest: "profile" },
     }) as EnvironmentRef;
   const workspace = (lineageId: string) =>
@@ -343,7 +343,7 @@ test("SBX Run execution store preserves host tree continuity while rotating Acti
     environmentName: "qe-run-1",
     incarnation: "incarnation-1",
     workerId: "worker-1",
-    runId: "run-1",
+    owner: { kind: "run", runId: "run-1" },
     profile: { id: "qe-pi-execution-v1", digest: "profile" },
     specDigest: "spec",
   } as EnvironmentRef;

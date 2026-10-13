@@ -22,6 +22,11 @@ import {
   type HarnessLineage,
   turnLifecycle,
 } from "./dispatch/registry.ts";
+import {
+  type ProviderAccountEnvironmentCommand,
+  ProviderAccountEnvironmentManager,
+  type ProviderAccountEnvironmentReport,
+} from "./execution-environment/provider-account.ts";
 import { SbxRunExecutionManager } from "./execution-environment/sbx-run.ts";
 import { HarnessSetupCoordinator } from "./harness-setup.ts";
 import { HarnessSetupStore } from "./harness-setup-store.ts";
@@ -106,6 +111,11 @@ export class QuestEngineeringWorker {
   private readonly capabilities: WorkerCapabilities;
   private readonly herdr: WorkerInfrastructure | null;
   private readonly sbxExecutionManager: SbxRunExecutionManager | null;
+  private readonly providerAccountEnvironments: ProviderAccountEnvironmentManager;
+  private readonly desiredProviderAccounts = new Map<
+    string,
+    ProviderAccountEnvironmentCommand
+  >();
   private stopping = false;
   private initialization: Promise<void> | null = null;
   private shutdown: Promise<void> | null = null;
@@ -183,6 +193,9 @@ export class QuestEngineeringWorker {
       )
         ? new SbxRunExecutionManager(config, this.worktrees)
         : null;
+    this.providerAccountEnvironments = new ProviderAccountEnvironmentManager(
+      config,
+    );
     const harnesses: AgentHarness[] =
       dependencies.harnesses ??
       (config.provider === "fake"
@@ -518,6 +531,7 @@ export class QuestEngineeringWorker {
     }
     await this.harnessControlServer.stop();
     this.setupCoordinator.close();
+    await this.providerAccountEnvironments.close();
     await this.sbxExecutionManager?.close();
     this.registry.close();
     this.cleanups.close();
@@ -590,6 +604,18 @@ export class QuestEngineeringWorker {
     if (message.type === "cleanup_run_resources") {
       const request = decodeRunCleanupRequest(message.cleanup);
       await this.startRunCleanup(request, true);
+      return;
+    }
+    if (message.type === "reconcile_provider_account_environment") {
+      await this.awaitClaimReadiness(generation);
+      const command = decodeProviderAccountEnvironmentCommand(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      this.desiredProviderAccounts.set(command.providerAccountId, command);
+      const report = await this.providerAccountEnvironments.apply(command);
+      await this.reportProviderAccountEnvironment(report);
       return;
     }
     if (message.type === "inspect_run_delivery") {
@@ -793,6 +819,15 @@ export class QuestEngineeringWorker {
       return;
     }
     if (message.type === "reconcile_request") {
+      const commands = decodeProviderAccountReconciliation(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      this.desiredProviderAccounts.clear();
+      for (const command of commands)
+        this.desiredProviderAccounts.set(command.providerAccountId, command);
+      await this.providerAccountEnvironments.reconcile(commands);
       await this.reconcileControlPlane(generation);
     }
   }
@@ -852,6 +887,10 @@ export class QuestEngineeringWorker {
     generation: number,
   ): Promise<void> {
     this.readyGeneration = null;
+    // Account commands are connection-generation fenced. Never publish reports
+    // retained from the prior socket before the server sends this generation's
+    // reconcile_request.
+    this.desiredProviderAccounts.clear();
     const operation = this.initializeRegistration(response, generation);
     this.registration = { generation, operation };
     return operation;
@@ -1007,6 +1046,9 @@ export class QuestEngineeringWorker {
         worker_id: this.config.workerId,
         dispatches,
         sessions,
+        provider_account_environments: this.providerAccountEnvironments
+          .reportsFor([...this.desiredProviderAccounts.values()])
+          .map(providerAccountEnvironmentPayload),
         human_attention_deliveries: this.registry
           .humanAttentionReconciliation()
           .map((request) => ({
@@ -1329,6 +1371,21 @@ export class QuestEngineeringWorker {
       await this.cleanupCoordinator.reconcilePending();
     } finally {
       this.cleanupScanActive = false;
+    }
+  }
+
+  private async reportProviderAccountEnvironment(
+    report: ProviderAccountEnvironmentReport,
+  ): Promise<void> {
+    try {
+      await this.channel.sendProtocol({
+        type: "provider_account_environment_state",
+        protocol_version: WORKER_PROTOCOL_VERSION,
+        worker_id: this.config.workerId,
+        environment: providerAccountEnvironmentPayload(report),
+      });
+    } catch {
+      this.markReconciliationDirty();
     }
   }
 
@@ -1818,6 +1875,124 @@ export class QuestEngineeringWorker {
       return false;
     }
   }
+}
+
+export function decodeProviderAccountReconciliation(
+  value: Record<string, unknown>,
+  workerId: string,
+  workerGeneration: number,
+): ProviderAccountEnvironmentCommand[] {
+  if (value.worker_id !== workerId)
+    throw new Error(
+      "ProviderAccount reconciliation Worker identity is invalid.",
+    );
+  if (value.connection_generation !== workerGeneration)
+    throw new Error("ProviderAccount reconciliation generation is stale.");
+  if (!Array.isArray(value.provider_accounts))
+    throw new Error("ProviderAccount reconciliation payload is invalid.");
+  return value.provider_accounts.map((account) =>
+    decodeProviderAccountDesired(account, workerGeneration),
+  );
+}
+
+export function decodeProviderAccountEnvironmentCommand(
+  value: Record<string, unknown>,
+  workerId: string,
+  workerGeneration: number,
+): ProviderAccountEnvironmentCommand {
+  if (
+    value.worker_id !== workerId ||
+    value.connection_generation !== workerGeneration
+  )
+    throw new Error("ProviderAccount command generation is stale.");
+  return decodeProviderAccountDesired(value.provider_account, workerGeneration);
+}
+
+function decodeProviderAccountDesired(
+  value: unknown,
+  workerGeneration: number,
+): ProviderAccountEnvironmentCommand {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("ProviderAccount environment payload is invalid.");
+  const account = value as Record<string, unknown>;
+  const expectedKeys = [
+    "provider_account_id",
+    "provider_key",
+    "credential_generation",
+    "worker_generation",
+    "operation_id",
+    "desired_state",
+    "expected_backend_kind",
+    "expected_environment_id",
+    "expected_incarnation",
+  ];
+  if (
+    Object.keys(account).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !Object.hasOwn(account, key))
+  )
+    throw new Error("ProviderAccount environment payload is invalid.");
+  const expectedValues = [
+    account.expected_backend_kind,
+    account.expected_environment_id,
+    account.expected_incarnation,
+  ];
+  const expectedPhysicalIdentity = expectedValues.every((item) => item === null)
+    ? null
+    : expectedValues.every(
+          (item) => typeof item === "string" && item.length > 0,
+        )
+      ? {
+          backendKind: account.expected_backend_kind as string,
+          environmentId: account.expected_environment_id as string,
+          incarnation: account.expected_incarnation as string,
+        }
+      : undefined;
+  const command = {
+    providerAccountId: account.provider_account_id,
+    providerKey: account.provider_key,
+    credentialGeneration: account.credential_generation,
+    workerGeneration: account.worker_generation,
+    operationId: account.operation_id,
+    desiredState: account.desired_state,
+    expectedPhysicalIdentity,
+  };
+  if (
+    typeof command.providerAccountId !== "string" ||
+    !command.providerAccountId ||
+    typeof command.providerKey !== "string" ||
+    !command.providerKey ||
+    !Number.isSafeInteger(command.credentialGeneration) ||
+    (command.credentialGeneration as number) < 1 ||
+    command.workerGeneration !== workerGeneration ||
+    typeof command.operationId !== "string" ||
+    !command.operationId ||
+    command.expectedPhysicalIdentity === undefined ||
+    !["available", "stopped", "removed"].includes(
+      command.desiredState as string,
+    )
+  )
+    throw new Error("ProviderAccount environment identity is invalid.");
+  return command as ProviderAccountEnvironmentCommand;
+}
+
+function providerAccountEnvironmentPayload(
+  report: ProviderAccountEnvironmentReport,
+): Record<string, unknown> {
+  return {
+    provider_account_id: report.providerAccountId,
+    credential_generation: report.credentialGeneration,
+    worker_generation: report.workerGeneration,
+    operation_id: report.operationId,
+    physical_state: report.physicalState,
+    event_type: report.eventType,
+    backend_kind: report.backendKind,
+    environment_id: report.environmentId,
+    incarnation: report.incarnation,
+    error_code: report.errorCode,
+    error_message: report.errorMessage,
+    observed_at: report.observedAt,
+    canary_persisted: report.canaryPersisted,
+  };
 }
 
 function decodeRunCleanupRequest(value: unknown): RunCleanupRequest {

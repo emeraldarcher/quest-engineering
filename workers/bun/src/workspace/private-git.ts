@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { runIdFromRef } from "../execution-environment/ownership.ts";
 import type {
   EnvironmentCommandResult,
   EnvironmentLease,
@@ -272,7 +273,7 @@ export class PrivateGitWorkspaceManager {
         environmentId: input.lease.ref.environmentId,
         incarnation: input.lease.ref.incarnation,
         workerId: input.lease.ref.workerId,
-        runId: input.lease.ref.runId,
+        runId: runIdFromRef(input.lease.ref),
         repositoryId: bundle.identity.repositoryId,
         sourceDigest: bundle.sourceDigest,
         sourceJson: bundle.sourceJson,
@@ -723,7 +724,7 @@ export class PrivateGitWorkspaceManager {
       environmentId: input.lease.ref.environmentId,
       incarnation: input.lease.ref.incarnation,
       workerId: input.lease.ref.workerId,
-      runId: input.lease.ref.runId,
+      runId: runIdFromRef(input.lease.ref),
       physicalLineageId: input.physicalLineageId,
       access: input.access,
       guestPath,
@@ -1022,7 +1023,7 @@ export class PrivateGitWorkspaceManager {
       environmentId: lease.ref.environmentId,
       incarnation: lease.ref.incarnation,
       workerId: lease.ref.workerId,
-      runId: lease.ref.runId,
+      runId: runIdFromRef(lease.ref),
       repositoryId: manifest.repository.repositoryId,
       sourceDigest: manifest.sourceDigest,
       sourceJson: canonicalJson(manifest.repository),
@@ -2185,7 +2186,7 @@ function assertLeaseOwnsRecord(
     record.environmentId !== lease.ref.environmentId ||
     record.incarnation !== lease.ref.incarnation ||
     record.workerId !== lease.ref.workerId ||
-    record.runId !== lease.ref.runId
+    record.runId !== runIdFromRef(lease.ref)
   )
     throw coded(
       "private_repository_mismatch",

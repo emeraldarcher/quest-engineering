@@ -231,17 +231,29 @@ function parseProcess(value: unknown): StreamedProcessHandle {
       typeof value.observedExecutable !== "string")
   )
     invalid();
-  exact(value.environment, [
-    "workerId",
-    "runId",
-    "environmentId",
-    "incarnation",
-    "backendKind",
-    "profile",
-  ]);
+  const legacyRunId = value.environment.runId;
+  const typedOwner = value.environment.owner;
+  if (typedOwner === undefined)
+    exact(value.environment, [
+      "workerId",
+      "runId",
+      "environmentId",
+      "incarnation",
+      "backendKind",
+      "profile",
+    ]);
+  else
+    exact(value.environment, [
+      "workerId",
+      "owner",
+      "environmentId",
+      "incarnation",
+      "backendKind",
+      "profile",
+    ]);
   if (
     !token(value.environment.workerId) ||
-    !token(value.environment.runId) ||
+    (!token(legacyRunId) && !runOwner(typedOwner)) ||
     !token(value.environment.environmentId) ||
     !token(value.environment.incarnation) ||
     !token(value.environment.backendKind) ||
@@ -254,7 +266,22 @@ function parseProcess(value: unknown): StreamedProcessHandle {
     typeof value.environment.profile.digest !== "string"
   )
     invalid();
-  return structuredClone(value) as unknown as StreamedProcessHandle;
+  const normalized = structuredClone(value);
+  if (typedOwner === undefined) {
+    delete normalized.runId;
+    normalized.owner = { kind: "run", runId: legacyRunId };
+  }
+  return normalized as unknown as StreamedProcessHandle;
+}
+
+function runOwner(value: unknown): boolean {
+  if (!record(value)) return false;
+  try {
+    exact(value, ["kind", "runId"]);
+  } catch {
+    return false;
+  }
+  return value.kind === "run" && token(value.runId);
 }
 
 function exact(

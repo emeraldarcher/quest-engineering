@@ -93,7 +93,7 @@ The clean baseline satisfies the requested prerequisites:
   gateway, profile, federation, and cloud-provider selectors. [QE]
 - The current authentication setup is Run/PhysicalLineage-bound. This report
   supersedes that **future target**, but does not modify it. [QE]
-- Harness Control is version 2 and Worker Protocol is version 14. [QE]
+- Harness Control is version 2 and Worker Protocol is version 15. Protocol v15 adds credential-free ProviderAccount environment lifecycle messages; it does not add provider authentication or credential transfer. [QE]
 - Setup authorization and inference authorization remain separate. [QE][REC]
 - Subscription-token proxying, API-key fallback, credential parsing, and
   modified Claude authentication remain prohibited. [REC]

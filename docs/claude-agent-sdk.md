@@ -89,7 +89,7 @@ Login and the already-working headless wrapper share the same physical primitive
 
 The QE transport requirement is conclusively non-PTY: `spawnStreamed()` uses `sbx exec --interactive` without `--tty`, and the real-SBX fake-target proof observes `isatty(0/1/2) == false`. Whether pinned Claude Code 2.1.292's **real** `auth login` independently requires a TTY remains unknown: official browser/code-paste documentation does not state such a requirement, and this fix was forbidden from invoking real login to test it. QE therefore makes no unsupported TTY compatibility claim and does not weaken the accepted headless transport. A future fresh, explicitly authorized acceptance is the boundary that can establish provider behavior.
 
-Worker Protocol v14 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
+Worker Protocol v15 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
 
 1. Global disposable discovery verifies only immutable artifacts and publishes a `harness_setups` capability with `authentication: context_required`; it never publishes a globally ready Claude executor.
 2. The normal Run workspace lifecycle first selects one setup-capable Worker and provisions the durable Run worktree. Work Yard then offers a separate “Set up subscription” action for the pending occurrence.

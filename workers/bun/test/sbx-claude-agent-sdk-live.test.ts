@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { runIdFromRef } from "../src/execution-environment/ownership.ts";
 import { SbxExecutionEnvironmentBackend } from "../src/execution-environment/sbx-backend.ts";
 import type {
   SbxClient,
@@ -216,13 +217,13 @@ test.skipIf(!setupLaunchLive)(
         setupId: "fake-local-setup",
         setupGeneration: 1,
         actionId: "fake-local-action",
-        runId: lease.ref.runId,
+        runId: runIdFromRef(lease.ref),
         occurrenceId: "fake-local-occurrence",
         memberKey: "operator",
         harnessKind: "claude_agent_sdk",
         physicalLineageId: "fake-local-lineage",
         logicalLineageId: "fake-local-logical-lineage",
-        workspaceId: lease.ref.runId,
+        workspaceId: runIdFromRef(lease.ref),
         worktreeId: "fake-local-worktree",
         workspaceBindingId: "fake-local-binding",
         canonicalRoot: "/fake/local-only",
@@ -372,7 +373,7 @@ test.skipIf(!setupLaunchLive)(
         timeoutMs: 30_000,
       });
       expect(credentialMetadata.exitCode).toBe(0);
-      const removedRunId = lease.ref.runId;
+      const removedOwner = structuredClone(lease.ref.owner);
       let stop = await backend.stop(lease.ref);
       for (
         let attempt = 0;
@@ -384,7 +385,7 @@ test.skipIf(!setupLaunchLive)(
       }
       expect(stop.state).toBe("stopped");
       await backend.remove(lease.ref);
-      expect(await backend.currentEnvironment(removedRunId)).toBeNull();
+      expect(await backend.currentEnvironment(removedOwner)).toBeNull();
       lease = null;
       console.log(
         JSON.stringify({
@@ -698,10 +699,10 @@ function markerFor(
   sandbox: SbxSandboxSummary,
 ) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     backendKind: "sbx",
     workerId: record.workerId,
-    runId: record.runId,
+    owner: structuredClone(record.owner),
     environmentId: sandbox.id,
     displayName: sandbox.name,
     incarnation: record.incarnation,
@@ -752,7 +753,8 @@ function claudeProofSpec(
 ): EnvironmentSpec {
   return {
     workerId,
-    runId,
+    owner: { kind: "run", runId },
+    layout: { kind: "run" },
     workspace: {
       workspaceId: runId,
       access: "none",

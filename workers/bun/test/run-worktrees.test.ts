@@ -171,7 +171,10 @@ test("bounded whole-Run cleanup physically retires owned resources and preserves
       return { state: "retired" };
     },
     currentEnvironment: () =>
-      backend.currentEnvironment(worktreeRequest.run_id),
+      backend.currentEnvironment({
+        kind: "run",
+        runId: worktreeRequest.run_id,
+      }),
     cleanupEnvironment: async (ref) => {
       events.push("environment");
       const outcome = await cleanupExecutionEnvironment(backend, ref);
@@ -278,7 +281,8 @@ function request(id: string, workspaceId: string, bindingId: string) {
 function cleanupSpec(runId: string): EnvironmentSpec {
   return {
     workerId: "worktree-test",
-    runId,
+    owner: { kind: "run", runId },
+    layout: { kind: "run" },
     workspace: {
       workspaceId: workspace(1),
       access: "read_write",

@@ -132,7 +132,7 @@ test("configuration identity fences subscription mode and environment policy wit
     environmentId: "environment-1",
     incarnation: "incarnation-1",
     workerId: "worker-1",
-    runId: "run-1",
+    owner: { kind: "run", runId: "run-1" },
     profile: {
       id: "qe-coding-execution-v3",
       digest:

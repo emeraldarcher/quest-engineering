@@ -1190,7 +1190,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 14,
+                      "protocol_version" => 15,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -2941,7 +2941,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 14,
+                      "protocol_version" => 15,
                       "setup" => %{
                         "setup_id" => setup_id,
                         "action_id" => action_id,

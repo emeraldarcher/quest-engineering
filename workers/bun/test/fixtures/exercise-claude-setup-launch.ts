@@ -57,7 +57,7 @@ const environment: EnvironmentRef = {
   environmentId: "fake-setup-environment",
   incarnation: "fake-setup-incarnation",
   workerId,
-  runId: command.setup.run_id,
+  owner: { kind: "run", runId: command.setup.run_id },
   profile: { ...command.setup.profile },
 };
 const processFixture = createFakeGuestProcess(environment, runtimeExecutable);

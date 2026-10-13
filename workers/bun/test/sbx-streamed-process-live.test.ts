@@ -145,7 +145,7 @@ test.skipIf(!live)(
         ),
       ).toBe(true);
       expect(
-        await backend.currentEnvironment(environmentSpec.runId),
+        await backend.currentEnvironment(environmentSpec.owner),
       ).toBeNull();
       ref = null;
       expect(events.map((event) => event.event)).toEqual(

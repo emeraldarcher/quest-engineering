@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve as resolvePath } from "node:path";
 import {
+  copyEnvironmentOwner,
+  environmentOwnerKey,
+  environmentOwnerLabel,
+  sameEnvironmentOwner,
+  validateEnvironmentOwner,
+} from "./ownership.ts";
+import {
   StreamedProcessManager,
   type StreamedProcessSpawnContext,
   type StreamedProcessTransport,
@@ -16,6 +23,7 @@ import type {
   EnvironmentFileWrite,
   EnvironmentInspection,
   EnvironmentLease,
+  EnvironmentOwner,
   EnvironmentPathMap,
   EnvironmentRef,
   EnvironmentSpec,
@@ -74,15 +82,18 @@ export abstract class TrackedExecutionEnvironmentBackend
 
   abstract readiness(): ReturnType<ExecutionEnvironmentBackend["readiness"]>;
 
-  async currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
+  async currentEnvironment(
+    owner: EnvironmentOwner,
+  ): Promise<EnvironmentRef | null> {
     await this.beforeOperation("inspect");
+    validateEnvironmentOwner(owner);
     const matches = [...this.currentByOwner.entries()].flatMap(
-      ([owner, key]) => {
-        const binding = this.records.get(key);
+      ([key, refKeyValue]) => {
+        const binding = this.records.get(refKeyValue);
         return binding &&
-          binding.ref.runId === runId &&
+          sameEnvironmentOwner(binding.ref.owner, owner) &&
           binding.state !== "removed" &&
-          owner === ownerKey(binding.ref.workerId, binding.ref.runId)
+          key === ownerKey(binding.ref.workerId, binding.ref.owner)
           ? [binding]
           : [];
       },
@@ -90,7 +101,7 @@ export abstract class TrackedExecutionEnvironmentBackend
     if (matches.length > 1)
       throw new EnvironmentBackendError(
         "environment_identity_mismatch",
-        `Run ${runId} has conflicting current environment ownership.`,
+        `${environmentOwnerLabel(owner)} has conflicting current environment ownership.`,
         "inspect",
       );
     return matches[0] ? copyRef(matches[0].ref) : null;
@@ -100,7 +111,7 @@ export abstract class TrackedExecutionEnvironmentBackend
     await this.beforeOperation("ensure");
     const snapshot = copySpec(spec);
     validateSpec(snapshot);
-    const owner = ownerKey(snapshot.workerId, snapshot.runId);
+    const owner = ownerKey(snapshot.workerId, snapshot.owner);
     return this.withOwner(owner, async () => {
       const currentKey = this.currentByOwner.get(owner);
       const current = currentKey ? this.records.get(currentKey) : undefined;
@@ -174,7 +185,7 @@ export abstract class TrackedExecutionEnvironmentBackend
 
   async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
     await this.beforeOperation("stop");
-    return this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+    return this.withOwner(ownerKey(ref.workerId, ref.owner), async () => {
       const binding = this.resolve(ref, "stop");
       if (binding.state === "removed")
         throw new EnvironmentBackendError(
@@ -210,7 +221,7 @@ export abstract class TrackedExecutionEnvironmentBackend
 
   async remove(ref: EnvironmentRef): Promise<void> {
     await this.beforeOperation("remove");
-    await this.withOwner(ownerKey(ref.workerId, ref.runId), async () => {
+    await this.withOwner(ownerKey(ref.workerId, ref.owner), async () => {
       const binding = this.resolve(ref, "remove");
       if (binding.state !== "removed") {
         await this.streamedProcesses.retire(binding.ref);
@@ -228,17 +239,17 @@ export abstract class TrackedExecutionEnvironmentBackend
     generation: number,
   ): EnvironmentRef {
     const logical = digest(
-      `${this.kind}\0${this.backendInstanceId}\0${spec.workerId}\0${spec.runId}`,
+      `${this.kind}\0${this.backendInstanceId}\0${spec.workerId}\0${environmentOwnerKey(spec.owner)}`,
     ).slice(0, 24);
     const incarnation = digest(
-      `${this.backendInstanceId}\0${spec.workerId}\0${spec.runId}\0${generation}`,
+      `${this.backendInstanceId}\0${spec.workerId}\0${environmentOwnerKey(spec.owner)}\0${generation}`,
     ).slice(0, 24);
     return {
       backendKind: this.kind,
       environmentId: `${this.kind}-${logical}-${generation}`,
       incarnation: `${this.kind}-incarnation-${incarnation}`,
       workerId: spec.workerId,
-      runId: spec.runId,
+      owner: copyEnvironmentOwner(spec.owner),
       profile: { ...spec.profile },
     };
   }
@@ -391,7 +402,7 @@ export abstract class TrackedExecutionEnvironmentBackend
         `Environment ref belongs to ${requested.backendKind}, not ${this.kind}.`,
         operation,
       );
-    const owner = ownerKey(requested.workerId, requested.runId);
+    const owner = ownerKey(requested.workerId, requested.owner);
     const requestedKey = refKey(requested);
     const binding = this.records.get(requestedKey);
     const currentKey = this.currentByOwner.get(owner);
@@ -399,7 +410,7 @@ export abstract class TrackedExecutionEnvironmentBackend
       if (currentKey)
         throw new EnvironmentBackendError(
           "stale_environment_ref",
-          `Environment ref is not the current incarnation for Run ${requested.runId}.`,
+          `Environment ref is not the current incarnation for ${environmentOwnerLabel(requested.owner)}.`,
           operation,
         );
       throw new EnvironmentBackendError(
@@ -415,7 +426,7 @@ export abstract class TrackedExecutionEnvironmentBackend
     )
       throw new EnvironmentBackendError(
         "stale_environment_ref",
-        `Environment ref is not the current incarnation for Run ${requested.runId}.`,
+        `Environment ref is not the current incarnation for ${environmentOwnerLabel(requested.owner)}.`,
         operation,
       );
     return binding;
@@ -429,7 +440,7 @@ export abstract class TrackedExecutionEnvironmentBackend
     if (binding.specJson !== canonicalJson(spec))
       throw new EnvironmentBackendError(
         "incompatible_environment_spec",
-        `Run ${spec.runId} already has an environment with a different exact spec.`,
+        `${environmentOwnerLabel(spec.owner)} already has an environment with a different exact spec.`,
         operation,
       );
   }
@@ -483,27 +494,45 @@ export function environmentSpecDigest(spec: EnvironmentSpec): string {
 }
 
 function validateSpec(spec: EnvironmentSpec): void {
-  for (const [name, value] of [
+  validateEnvironmentOwner(spec.owner);
+  const runLayout =
+    spec.owner.kind === "run" &&
+    spec.layout.kind === "run" &&
+    "workspace" in spec;
+  const accountLayout =
+    spec.owner.kind === "provider_account" &&
+    spec.layout.kind === "provider_account" &&
+    spec.layout.version === "provider-account-cell-v1" &&
+    !("workspace" in spec);
+  if (!runLayout && !accountLayout)
+    throw new EnvironmentBackendError(
+      "invalid_environment_spec",
+      "Environment layout must match its typed owner.",
+    );
+  const values: Array<readonly [string, string]> = [
     ["workerId", spec.workerId],
-    ["runId", spec.runId],
-    ["workspace.workspaceId", spec.workspace.workspaceId],
-    [
-      "workspace.materialization.sourceIdentity",
-      spec.workspace.materialization.sourceIdentity,
-    ],
-    [
-      "workspace.materialization.frozenBase.kind",
-      spec.workspace.materialization.frozenBase.kind,
-    ],
-    [
-      "workspace.materialization.frozenBase.value",
-      spec.workspace.materialization.frozenBase.value,
-    ],
     ["profile.id", spec.profile.id],
     ["profile.digest", spec.profile.digest],
     ["resourcePolicy.id", spec.resourcePolicy.id],
     ["resourcePolicy.digest", spec.resourcePolicy.digest],
-  ] as const) {
+  ];
+  if ("workspace" in spec)
+    values.push(
+      ["workspace.workspaceId", spec.workspace.workspaceId],
+      [
+        "workspace.materialization.sourceIdentity",
+        spec.workspace.materialization.sourceIdentity,
+      ],
+      [
+        "workspace.materialization.frozenBase.kind",
+        spec.workspace.materialization.frozenBase.kind,
+      ],
+      [
+        "workspace.materialization.frozenBase.value",
+        spec.workspace.materialization.frozenBase.value,
+      ],
+    );
+  for (const [name, value] of values) {
     if (typeof value !== "string" || value.length === 0)
       throw new EnvironmentBackendError(
         "invalid_environment_spec",
@@ -553,7 +582,7 @@ function validateCreatedRef(
   if (
     ref.backendKind !== backendKind ||
     ref.workerId !== spec.workerId ||
-    ref.runId !== spec.runId ||
+    !sameEnvironmentOwner(ref.owner, spec.owner) ||
     canonicalJson(ref.profile) !== canonicalJson(spec.profile) ||
     !ref.environmentId ||
     !ref.incarnation
@@ -653,8 +682,8 @@ function fileReceipt(path: string, data: Uint8Array): EnvironmentFileReceipt {
   };
 }
 
-function ownerKey(workerId: string, runId: string): string {
-  return `${workerId}\0${runId}`;
+function ownerKey(workerId: string, owner: EnvironmentOwner): string {
+  return `${workerId}\0${environmentOwnerKey(owner)}`;
 }
 
 function refKey(ref: EnvironmentRef): string {

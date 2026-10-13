@@ -16,6 +16,18 @@ POST   /workspaces/:id/bindings
 
 The domain and API retain `Workspace`; ordinary UI calls it a **Project**. Workspace binding projection is `unbound | preparing | ready | attention_required | offline`. A binding request is durable before Worker delivery, and failure details are bounded Product-safe values.
 
+## ProviderAccounts (Phase A)
+
+```text
+GET  /provider-accounts
+POST /provider-accounts
+GET  /provider-accounts/:id
+GET  /provider-accounts/:id/events
+POST /provider-accounts/:id/actions/:action
+```
+
+Create accepts `provider_key`, `worker_id`, and optional `display_name`; all credential/token/secret fields are rejected. Actions are `invalidate | disconnect | reconnect | rotate | start | stop | remove`. Mutations return `202` because durable Product intent and Worker physical convergence are separate. Readiness separately projects semantic account state, physical environment state, `authentication=not_checked`, and `inference=not_evaluated`. See [`provider-accounts.md`](provider-accounts.md).
+
 ## Product definitions and Quest lifecycle
 
 Classes, Loadouts, Squads, reusable Tactics, and Quests retain CRUD and archival. A Loadout contains only `harness`, provider-qualified `model`, nullable `reasoning`, authored `tool_policy`, and `workspace_access`; behavior remains on Class and task instructions on Step. `tool_policy` is either `{kind: "exact", tools: [...]}` or `{kind: "native_permissions"}`. `tool_enforcement` is not authored. `reasoning: null` asserts that the selected model explicitly does not support effort control. `/execution-options` returns harness-scoped model labels, `reasoning_capability`, supported policy, resolved enforcement guarantee, read-only current QE semantic capability profile, and availability. Per-Attempt provenance freezes the authored policy, resolved enforcement, and exact QE semantic capability profile resolved by the adapter. The `tool_profile` and `resolved_tool_profile` IDs are QE semantic capabilities, not necessarily a raw inventory of every internal native harness tool. Preview remains side-effect free.
@@ -74,7 +86,7 @@ committed; `delivery_state` separately reports not delivered, requested,
 acknowledged, or uncertain. Product never converts a successful socket send into
 native-delivery certainty. See `docs/durable-blocking-human-attention.md`.
 
-Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v14 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
+Cancellation is an authorized local-desktop Product operation. `POST /runs/:id/attempts/:attempt_id/cancel` requires the same loopback Tauri boundary as Open Session and a body containing exact `occurrence_id`, unique `request_id`, and optional `reason`. Acceptance returns `cancellation_requested` with `sent | pending` delivery; this is not terminal success. Phoenix persists intent before sending one generation-fenced Worker Protocol v15 `cancel_dispatch`. The existing Worker executor interrupts the exact lineage and reports `execution_cancelled`; only then does the Run/Step project `cancelled`, release capacity, retain the Run worktree/private Git history, and retire result authority. Retries return the original provenance, disconnected Workers receive the command during reconciliation, uncertain Attempts require their existing recovery flow, and an already-terminal Attempt is a non-mutating `already_terminal` result.
 
 `Retry Publishing` resumes the same Delivery and runs no model work. Whole-Run cleanup accepts `{ "acknowledge_unmerged": true }` when applicable and is available only after terminal failed/cancelled execution or a completed Run with safe Delivery evidence. It retires Run-owned harness panes and control authority, converges and removes the frozen execution-environment incarnation, then removes only the isolated host Run repository. Shared Herdr infrastructure and Product history remain. The response and Run detail project `cleanup.state` plus independent `harness`, `execution_environment`, and `host_run_repository` outcomes; unresolved stop observation or any earlier resource failure never claims later removal.
 

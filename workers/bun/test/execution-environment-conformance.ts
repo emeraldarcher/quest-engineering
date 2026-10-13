@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { sameEnvironmentOwner } from "../src/execution-environment/ownership.ts";
 import type {
   EnvironmentCommand,
   EnvironmentCommandResult,
@@ -82,7 +83,7 @@ export function executionEnvironmentConformance(
     ]);
     expect(second.ref).toEqual(first.ref);
     expect(second.paths).toEqual(first.paths);
-    expect(await backend.currentEnvironment(primarySpec.runId)).toEqual(
+    expect(await backend.currentEnvironment(primarySpec.owner)).toEqual(
       first.ref,
     );
 
@@ -165,7 +166,7 @@ export function executionEnvironmentConformance(
     expect(restarted.ref).toEqual(lease.ref);
     await backend.remove(lease.ref);
     await backend.remove(lease.ref);
-    expect(await backend.currentEnvironment(primarySpec.runId)).toBeNull();
+    expect(await backend.currentEnvironment(primarySpec.owner)).toBeNull();
     await expect(backend.inspect(lease.ref)).rejects.toMatchObject({
       code: "stale_environment_ref",
     });
@@ -183,7 +184,9 @@ export function executionEnvironmentConformance(
     const replacement = await backend.ensure(primarySpec);
     expect(replacement.ref.environmentId).not.toBe(first.ref.environmentId);
     expect(replacement.ref.incarnation).not.toBe(first.ref.incarnation);
-    expect(replacement.ref.runId).toBe(first.ref.runId);
+    expect(sameEnvironmentOwner(replacement.ref.owner, first.ref.owner)).toBe(
+      true,
+    );
 
     await expect(backend.inspect(first.ref)).rejects.toMatchObject({
       code: "stale_environment_ref",
@@ -237,7 +240,9 @@ export function executionEnvironmentConformance(
       backend.ensure(primarySpec),
       backend.ensure(secondarySpec),
     ]);
-    expect(primary.ref.runId).not.toBe(secondary.ref.runId);
+    expect(sameEnvironmentOwner(primary.ref.owner, secondary.ref.owner)).toBe(
+      false,
+    );
     expect(primary.ref.environmentId).not.toBe(secondary.ref.environmentId);
     if (!fixture.pathsAreNamespaceLocal)
       expect(primary.paths.workspace).not.toBe(secondary.paths.workspace);

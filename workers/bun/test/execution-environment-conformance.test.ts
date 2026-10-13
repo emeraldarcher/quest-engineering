@@ -191,11 +191,13 @@ function hostNative(): HostNativeExecutionEnvironmentBackend {
 }
 
 function paths(environmentSpec: EnvironmentSpec): EnvironmentPathMap {
+  if (environmentSpec.owner.kind !== "run")
+    throw new Error("Run spec required");
   const root = join(
     process.cwd(),
     ".pi",
     "test-environments",
-    environmentSpec.runId,
+    environmentSpec.owner.runId,
   );
   const home = process.env.HOME ?? process.cwd();
   return {
@@ -223,7 +225,8 @@ function expectedResult(label: string): EnvironmentCommandResult {
 function spec(runId: string): EnvironmentSpec {
   return {
     workerId: "worker-conformance",
-    runId,
+    owner: { kind: "run", runId },
+    layout: { kind: "run" },
     workspace: {
       workspaceId: `workspace-${runId}`,
       projectId: "project-conformance",

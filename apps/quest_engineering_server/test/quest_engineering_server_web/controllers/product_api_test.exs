@@ -300,7 +300,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 14,
+                      "protocol_version" => 15,
                       "worker_id" => ^worker_id,
                       "connection_generation" => generation
                     } = setup_command}
@@ -397,7 +397,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
                  "environmentId" => "fake-setup-environment",
                  "incarnation" => "fake-setup-incarnation",
                  "workerId" => worker.id,
-                 "runId" => run_id,
+                 "owner" => %{"kind" => "run", "runId" => run_id},
                  "profile" => %{
                    "id" => "qe-coding-execution-v3",
                    "digest" =>

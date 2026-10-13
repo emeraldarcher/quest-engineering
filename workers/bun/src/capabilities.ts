@@ -187,6 +187,7 @@ export function workerCapabilities(
       "workspace_binding_status_v1",
       "live_execution_sessions_v1",
       "run_bound_harness_setup_v1",
+      "provider_account_environments_v1",
     ],
     workspace_bindings: config.workspaceBindings.map((binding) => ({
       ...binding,

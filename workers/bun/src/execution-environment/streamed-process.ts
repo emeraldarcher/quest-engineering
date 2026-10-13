@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
+import { sameEnvironmentOwner } from "./ownership.ts";
 import type {
   EnvironmentBackendErrorCode,
   EnvironmentBackendOperation,
@@ -539,7 +540,7 @@ export class StreamedProcessManager {
       | "observedAt"
       | "backendKind"
       | "workerId"
-      | "runId"
+      | "owner"
       | "environmentId"
       | "incarnation"
     > = {},
@@ -549,7 +550,7 @@ export class StreamedProcessManager {
       observedAt: this.now().toISOString(),
       backendKind: this.options.backendKind,
       workerId: ref.workerId,
-      runId: ref.runId,
+      owner: structuredClone(ref.owner),
       environmentId: ref.environmentId,
       incarnation: ref.incarnation,
       ...details,
@@ -869,7 +870,7 @@ export function sameRef(left: EnvironmentRef, right: EnvironmentRef): boolean {
     left.environmentId === right.environmentId &&
     left.incarnation === right.incarnation &&
     left.workerId === right.workerId &&
-    left.runId === right.runId &&
+    sameEnvironmentOwner(left.owner, right.owner) &&
     left.profile.id === right.profile.id &&
     left.profile.digest === right.profile.digest
   );

@@ -16,7 +16,9 @@ test("environment store bootstraps a clean versioned SQLite schema", async () =>
   const store = new ExecutionEnvironmentStore(root);
   const claimed = store.claimCreation(intent("record-1", "incarnation-1"));
   expect(claimed.created).toBe(true);
-  expect(store.current("sbx", "worker-store", "run-store")).toMatchObject({
+  expect(
+    store.current("sbx", "worker-store", { kind: "run", runId: "run-store" }),
+  ).toMatchObject({
     recordId: "record-1",
     state: "creating",
     environmentId: null,
@@ -31,7 +33,7 @@ test("environment store bootstraps a clean versioned SQLite schema", async () =>
         "SELECT version FROM execution_environment_schema_migrations ORDER BY version",
       )
       .all(),
-  ).toEqual([{ version: 1 }, { version: 2 }]);
+  ).toEqual([{ version: 3 }]);
   const columns = db
     .query("PRAGMA table_info(execution_environments)")
     .all() as Array<{ name: string }>;
@@ -40,7 +42,7 @@ test("environment store bootstraps a clean versioned SQLite schema", async () =>
   db.close();
 });
 
-test("environment migration preserves unrelated representative Worker data", async () => {
+test("current schema bootstrap preserves unrelated representative Worker data", async () => {
   const root = await tempRoot();
   const path = join(root, "execution-environments.sqlite");
   const old = new Database(path, { create: true });
@@ -99,10 +101,10 @@ test("stop events are append-only and invocation claim is exactly once", async (
   expect(
     store.stopEvents("record-stop").map((event) => event.occurredAt),
   ).toEqual([
+    "2026-01-01T00:00:00.002Z",
     "2026-01-01T00:00:00.003Z",
     "2026-01-01T00:00:00.004Z",
     "2026-01-01T00:00:00.005Z",
-    "2026-01-01T00:00:00.006Z",
   ]);
   store.close();
 });
@@ -130,9 +132,10 @@ test("retirement preserves incarnation history and permits one new current recor
     "incarnation-2",
   ]);
   expect(store.list()[0]?.retiredAt).not.toBeNull();
-  expect(store.current("sbx", "worker-store", "run-store")?.recordId).toBe(
-    "record-2",
-  );
+  expect(
+    store.current("sbx", "worker-store", { kind: "run", runId: "run-store" })
+      ?.recordId,
+  ).toBe("record-2");
   store.close();
 });
 
@@ -141,7 +144,7 @@ function intent(recordId: string, incarnation: string) {
     recordId,
     backendKind: "sbx",
     workerId: "worker-store",
-    runId: "run-store",
+    owner: { kind: "run" as const, runId: "run-store" },
     displayName: "qe-run-store-123456789abc",
     incarnation,
     profileId: "qe-execution-v1",

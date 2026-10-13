@@ -5,6 +5,10 @@ import {
   type HarnessLineage,
   physicalConfiguration,
 } from "../../dispatch/registry.ts";
+import {
+  runIdFromRef,
+  sameEnvironmentOwner,
+} from "../../execution-environment/ownership.ts";
 import type {
   PreparedSbxHarnessExecution,
   PreparedSbxHarnessSetup,
@@ -1441,7 +1445,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       binding.profileDigest !== binding.process.environment.profile.digest ||
       binding.wrapperExecutable !== binding.process.executable ||
       (dispatch &&
-        (binding.process.environment.runId !== dispatch.action.run_id ||
+        (runIdFromRef(binding.process.environment) !== dispatch.action.run_id ||
           binding.configurationIdentity !== configurationIdentity(dispatch))) ||
       lineage.harnessKind !== this.kind
     )
@@ -1554,7 +1558,10 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       supplied.process.observedExecutable !==
         active.binding.process.observedExecutable ||
       supplied.process.environment.workerId !== environment.workerId ||
-      supplied.process.environment.runId !== environment.runId ||
+      !sameEnvironmentOwner(
+        supplied.process.environment.owner,
+        environment.owner,
+      ) ||
       supplied.process.environment.environmentId !==
         environment.environmentId ||
       supplied.process.environment.incarnation !== environment.incarnation ||
@@ -1566,7 +1573,7 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
       active.binding.configurationIdentity !==
         configurationIdentity(dispatch) ||
       environment.workerId !== this.config.workerId ||
-      environment.runId !== dispatch.action.run_id ||
+      runIdFromRef(environment) !== dispatch.action.run_id ||
       environment.environmentId !== currentEnvironment.environmentId ||
       environment.incarnation !== currentEnvironment.incarnation ||
       environment.profile.id !== currentEnvironment.profile.id ||

@@ -5,6 +5,7 @@ import type {
   PrivateGitChangeExport,
   PrivateLineageWorkspace,
 } from "../workspace/private-git.ts";
+import { sameEnvironmentOwner } from "./ownership.ts";
 import type { EnvironmentRef } from "./types.ts";
 
 export interface SbxLaunchProvenance {
@@ -304,7 +305,7 @@ function sameEnvironment(left: EnvironmentRef, right: EnvironmentRef): boolean {
     left.environmentId === right.environmentId &&
     left.incarnation === right.incarnation &&
     left.workerId === right.workerId &&
-    left.runId === right.runId &&
+    sameEnvironmentOwner(left.owner, right.owner) &&
     left.profile.id === right.profile.id &&
     left.profile.digest === right.profile.digest
   );

@@ -18,6 +18,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
   alias QuestEngineering.Server.Persistence.RuntimeCodec
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
+  alias QuestEngineering.Server.Product.ProviderAccounts
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunProjection
@@ -61,6 +62,111 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     assert_eventually(fn -> FakeWorker.connected?(second) end)
     assert_eventually(fn -> not FakeWorker.connected?(first) end)
     assert {:ok, %{connection_generation: 2, max_concurrency: 3}} = WorkerStore.fetch(worker_id)
+  end
+
+  test "ProviderAccount reconnect sends current fences and rejects prior-generation reports",
+       context do
+    worker_id = unique("worker-provider-account")
+    worker = start_worker(worker_id, context.workspace_root)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+    assert {:ok, first_worker} = WorkerStore.fetch(worker_id)
+
+    assert {:ok, {account, first_environment}} =
+             ProviderAccounts.create(
+               %{provider_key: "fake", worker_id: worker_id, display_name: "Reconnect proof"},
+               first_worker.connection_generation
+             )
+
+    first_report = %{
+      provider_account_id: account.id,
+      credential_generation: account.credential_generation,
+      worker_id: worker_id,
+      worker_generation: first_environment.worker_generation,
+      operation_id: first_environment.operation_id,
+      physical_state: "available",
+      event_type: "environment_ensured",
+      backend_kind: "fake-account",
+      environment_id: "physical-provider-account",
+      incarnation: "provider-account-incarnation",
+      error_code: nil,
+      error_message: nil,
+      canary_persisted: true,
+      observed_at: DateTime.utc_now()
+    }
+
+    assert {:ok, {:applied, _, _}} = ProviderAccounts.apply_environment_report(first_report)
+
+    :ok = FakeWorker.disconnect(worker)
+    :ok = FakeWorker.connect(worker)
+    assert_eventually(fn -> FakeWorker.connected?(worker) end)
+
+    assert {:ok, second_worker} = WorkerStore.fetch(worker_id)
+    assert second_worker.connection_generation == first_worker.connection_generation + 1
+
+    assert_eventually(fn ->
+      match?(
+        [
+          %{
+            "provider_account_id" => id,
+            "worker_generation" => generation,
+            "operation_id" => operation_id
+          }
+        ]
+        when id == account.id and generation == second_worker.connection_generation and
+               operation_id != first_environment.operation_id,
+        FakeWorker.provider_accounts(worker)
+      )
+    end)
+
+    [desired] = FakeWorker.provider_accounts(worker)
+
+    :ok =
+      FakeWorker.send_message(worker, %{
+        "type" => "provider_account_environment_state",
+        "protocol_version" => 15,
+        "worker_id" => worker_id,
+        "environment" =>
+          first_report
+          |> Map.drop([:worker_id])
+          |> Map.put(:physical_state, "degraded")
+          |> Map.put(:event_type, "environment_degraded")
+          |> Map.put(:observed_at, DateTime.utc_now() |> DateTime.to_iso8601())
+          |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      })
+
+    :ok =
+      FakeWorker.send_message(worker, %{
+        "type" => "provider_account_environment_state",
+        "protocol_version" => 15,
+        "worker_id" => worker_id,
+        "environment" => %{
+          "provider_account_id" => account.id,
+          "credential_generation" => account.credential_generation,
+          "worker_generation" => desired["worker_generation"],
+          "operation_id" => desired["operation_id"],
+          "physical_state" => "stopped",
+          "event_type" => "environment_stopped",
+          "backend_kind" => "fake-account",
+          "environment_id" => "physical-provider-account",
+          "incarnation" => "provider-account-incarnation",
+          "error_code" => nil,
+          "error_message" => nil,
+          "canary_persisted" => true,
+          "observed_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+      })
+
+    assert_eventually(fn ->
+      match?(
+        {:ok, %{environment_state: :stopped}, %{physical_state: "stopped"}},
+        ProviderAccounts.get_with_environment(account.id)
+      )
+    end)
+
+    refute Enum.any?(
+             ProviderAccounts.events(account.id),
+             &(&1.event_type == "environment_degraded")
+           )
   end
 
   test "lost acceptance ACK redelivers one scheduled ResolvedExecution without duplication",
