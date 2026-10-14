@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 16 as const;
+export const WORKER_PROTOCOL_VERSION = 17 as const;
 
 export type JsonValue =
   | string
@@ -288,6 +288,52 @@ export interface CancelProviderAccountSetupCommand {
   request_id: string;
 }
 
+export interface PrepareWorkspaceToolBrokerCommand {
+  type: "prepare_workspace_tool_broker";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  broker: {
+    authorization_id: string;
+    provider_account_id: string;
+    credential_generation: number;
+    account_environment_generation: number;
+    account_environment: {
+      backend_kind: string;
+      environment_id: string;
+      incarnation: string;
+    };
+    run_id: string;
+    action_id: string;
+    occurrence_id: string;
+    attempt_id: string;
+    operational_epoch: number;
+    operational_attempt: number;
+    workspace_id: string;
+    worktree_id: string;
+    workspace_binding_id: string;
+    workspace_access: WorkspaceAccess;
+    resolved_tool_profile: ResolvedToolProfile;
+  };
+}
+
+export interface AdmitWorkspaceToolBrokerCommand {
+  type: "admit_workspace_tool_broker";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  authorization_id: string;
+}
+
+export interface RetireWorkspaceToolBrokerCommand {
+  type: "retire_workspace_tool_broker";
+  protocol_version: typeof WORKER_PROTOCOL_VERSION;
+  worker_id: string;
+  connection_generation: number;
+  authorization_id: string;
+  reason: string;
+}
+
 export interface HumanAttentionResponseCommand {
   type: "respond_human_attention";
   protocol_version: typeof WORKER_PROTOCOL_VERSION;
@@ -564,6 +610,7 @@ export interface WorkerCapabilities {
     | "run_bound_harness_setup_v1"
     | "provider_account_environments_v1"
     | "provider_account_setup_v1"
+    | "workspace_tool_broker_v1"
   >;
   workspace_bindings: Array<{
     binding_id: string;

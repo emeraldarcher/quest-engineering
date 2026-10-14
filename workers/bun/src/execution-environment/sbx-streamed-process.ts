@@ -59,7 +59,6 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   private targetExited = false;
   private disconnected = false;
   private runStarted = false;
-  private transportStderrObserved = false;
 
   private constructor(
     private readonly child: RelayChild,
@@ -195,6 +194,8 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     if (this.runStarted)
       throw new Error("SBX streamed process transport can be consumed once.");
     this.runStarted = true;
+    let stdoutEof = false;
+    let stderrEof = false;
     try {
       while (!this.disconnected) {
         const frame = await this.frames.next();
@@ -208,10 +209,10 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           continue;
         }
         if (frame.type === STDOUT_EOF || frame.type === STDERR_EOF) {
-          await onEvent({
-            kind: "eof",
-            stream: frame.type === STDOUT_EOF ? "stdout" : "stderr",
-          });
+          const stream = frame.type === STDOUT_EOF ? "stdout" : "stderr";
+          if (stream === "stdout") stdoutEof = true;
+          else stderrEof = true;
+          await onEvent({ kind: "eof", stream });
           continue;
         }
         if (
@@ -253,12 +254,10 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         });
         break;
       }
-      const hostExitCode = await this.child.exited;
+      await this.child.exited;
       if (
         !this.disconnected &&
-        (!this.targetExited ||
-          hostExitCode !== 0 ||
-          this.transportStderrObserved)
+        (!this.targetExited || !stdoutEof || !stderrEof)
       )
         await onEvent({
           kind: "transport_error",
@@ -365,7 +364,8 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
       while (true) {
         const next = await this.stderrReader.read();
         if (next.done) return;
-        if (next.value.byteLength > 0) this.transportStderrObserved = true;
+        // Drain native SBX diagnostics; exact target exit plus both EOF frames
+        // remains complete process evidence.
       }
     } finally {
       this.stderrReader.releaseLock();

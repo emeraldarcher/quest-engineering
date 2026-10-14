@@ -45,6 +45,7 @@ import { HarnessRegistry } from "./harnesses/registry.ts";
 import { structuredResultExists } from "./harnesses/turn-lifecycle.ts";
 import type { AgentHarness } from "./harnesses/types.ts";
 import {
+  decodeAdmitWorkspaceToolBroker,
   decodeCancelDispatch,
   decodeCancelHarnessSetup,
   decodeCancelProviderAccountSetup,
@@ -52,9 +53,11 @@ import {
   decodeHumanAttentionResponse,
   decodePrepareHarnessSetup,
   decodePrepareProviderAccountSetup,
+  decodePrepareWorkspaceToolBroker,
   decodeProviderAccountSetupReconciliation,
   decodeRespondHarnessSetup,
   decodeRespondProviderAccountSetup,
+  decodeRetireWorkspaceToolBroker,
 } from "./protocol/codec.ts";
 import { PhoenixWorkerChannel } from "./protocol/phoenix-channel.ts";
 import type {
@@ -87,6 +90,8 @@ import {
   type RunWorktreeRecord,
   RunWorktreeRegistry,
 } from "./workspace/run-worktrees.ts";
+import { WorkspaceToolBroker } from "./workspace-tool-broker.ts";
+import { WorkspaceToolBrokerStore } from "./workspace-tool-broker-store.ts";
 
 interface WorkerInfrastructure {
   ensureInfrastructure(): Promise<unknown>;
@@ -119,6 +124,7 @@ export class QuestEngineeringWorker {
   private readonly sbxExecutionManager: SbxRunExecutionManager | null;
   private readonly providerAccountEnvironments: ProviderAccountEnvironmentManager;
   private readonly providerAccountSetups: ProviderAccountSetupCoordinator;
+  readonly workspaceToolBroker: WorkspaceToolBroker;
   private readonly desiredProviderAccounts = new Map<
     string,
     ProviderAccountEnvironmentCommand
@@ -265,6 +271,88 @@ export class QuestEngineeringWorker {
       defaultHarness.kind,
       (kind) => this.harnesses.get(kind).capabilities,
     );
+    this.workspaceToolBroker = new WorkspaceToolBroker(
+      new WorkspaceToolBrokerStore(config.dataRoot),
+      {
+        account: async (input) => {
+          if (
+            !this.providerAccountSetups.authenticated(
+              input.providerAccountId,
+              input.credentialGeneration,
+              input.accountEnvironmentGeneration,
+            )
+          )
+            throw new Error(
+              "ProviderAccount is not authenticated for broker admission.",
+            );
+          const authority =
+            await this.providerAccountEnvironments.workspaceToolBrokerAuthority(
+              {
+                providerAccountId: input.providerAccountId,
+                environmentGeneration: input.accountEnvironmentGeneration,
+                expected: input.accountEnvironment,
+              },
+            );
+          const physicalAssert = authority.assertCurrent;
+          authority.assertCurrent = () => {
+            if (
+              !this.providerAccountSetups.authenticated(
+                input.providerAccountId,
+                input.credentialGeneration,
+                input.accountEnvironmentGeneration,
+              )
+            )
+              throw new Error("ProviderAccount broker generation is stale.");
+            physicalAssert();
+          };
+          return authority;
+        },
+        run: async (input) => {
+          const dispatch = this.registry.get(input.actionId);
+          if (
+            !["accepted", "running"].includes(dispatch.state) ||
+            dispatch.action.run_id !== input.runId ||
+            dispatch.action.occurrence_id !== input.occurrenceId ||
+            dispatch.action.attempt_id !== input.attemptId ||
+            dispatch.action.operational_recovery?.epoch_number !==
+              input.operationalEpoch ||
+            dispatch.action.operational_recovery?.attempt_in_epoch !==
+              input.operationalAttempt
+          )
+            throw new Error(
+              "Current operational execution does not authorize the broker.",
+            );
+          if (!this.sbxExecutionManager)
+            throw new Error(
+              "Workspace tool broker requires the Run SBX execution manager.",
+            );
+          const authority =
+            this.sbxExecutionManager.workspaceToolBrokerAuthority(input);
+          const physicalAssert = authority.assertCurrent;
+          authority.assertCurrent = () => {
+            const current = this.registry.get(input.actionId);
+            if (
+              !["accepted", "running"].includes(current.state) ||
+              current.action.attempt_id !== input.attemptId ||
+              current.lineageId !== authority.physicalLineageId
+            )
+              throw new Error("Operational broker authority is stale.");
+            physicalAssert();
+          };
+          return authority;
+        },
+      },
+      (activity) =>
+        this.channel
+          .sendProtocol({
+            type: "workspace_tool_broker_activity",
+            protocol_version: WORKER_PROTOCOL_VERSION,
+            worker_id: this.config.workerId,
+            ...activity,
+          })
+          .then(() => undefined),
+      { maxActiveRequests: 8 },
+    );
     this.harnessControl = new HarnessControlAuthority(
       this.registry,
       2,
@@ -393,8 +481,10 @@ export class QuestEngineeringWorker {
         }
       },
       harnessTargets: (runId) => this.executor.cleanupTargets(runId),
-      closeHarnessTargets: (runId, targets) =>
-        this.executor.closeRunTargets(runId, targets),
+      closeHarnessTargets: async (runId, targets) => {
+        await this.workspaceToolBroker.closeByRun(runId, "run_cleanup");
+        return this.executor.closeRunTargets(runId, targets);
+      },
       currentEnvironment: (runId) =>
         this.sbxExecutionManager?.currentEnvironment(runId) ??
         Promise.resolve(null),
@@ -559,6 +649,7 @@ export class QuestEngineeringWorker {
       return;
     }
     await this.harnessControlServer.stop();
+    await this.workspaceToolBroker.close();
     this.setupCoordinator.close();
     await this.providerAccountSetups.close();
     await this.providerAccountEnvironments.close();
@@ -643,6 +734,20 @@ export class QuestEngineeringWorker {
         this.config.workerId,
         cancellationServerGeneration(this.channel, generation),
       );
+      const previous = this.desiredProviderAccounts.get(
+        command.providerAccountId,
+      );
+      if (
+        command.desiredState !== "available" ||
+        (previous &&
+          previous.credentialGeneration !== command.credentialGeneration)
+      )
+        await this.workspaceToolBroker.closeByProviderAccount(
+          command.providerAccountId,
+          command.desiredState === "available"
+            ? "provider_account_generation_replaced"
+            : "provider_account_unavailable",
+        );
       this.desiredProviderAccounts.set(command.providerAccountId, command);
       const report = await this.providerAccountEnvironments.apply(command);
       await this.reportProviderAccountEnvironment(report);
@@ -718,6 +823,63 @@ export class QuestEngineeringWorker {
       await this.providerAccountSetups.cancel(command);
       return;
     }
+    if (message.type === "prepare_workspace_tool_broker") {
+      await this.awaitClaimReadiness(generation);
+      const command = decodePrepareWorkspaceToolBroker(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.workspaceToolBroker.prepare({
+        authorizationId: command.broker.authorization_id,
+        providerAccountId: command.broker.provider_account_id,
+        credentialGeneration: command.broker.credential_generation,
+        accountEnvironmentGeneration:
+          command.broker.account_environment_generation,
+        accountEnvironment: {
+          backendKind: command.broker.account_environment.backend_kind,
+          environmentId: command.broker.account_environment.environment_id,
+          incarnation: command.broker.account_environment.incarnation,
+        },
+        runId: command.broker.run_id,
+        actionId: command.broker.action_id,
+        occurrenceId: command.broker.occurrence_id,
+        attemptId: command.broker.attempt_id,
+        operationalEpoch: command.broker.operational_epoch,
+        operationalAttempt: command.broker.operational_attempt,
+        workspaceId: command.broker.workspace_id,
+        worktreeId: command.broker.worktree_id,
+        workspaceBindingId: command.broker.workspace_binding_id,
+        workspaceAccess: command.broker.workspace_access,
+        resolvedToolProfile: command.broker.resolved_tool_profile,
+        workerId: command.worker_id,
+        workerGeneration: command.connection_generation,
+      });
+      return;
+    }
+    if (message.type === "admit_workspace_tool_broker") {
+      const command = decodeAdmitWorkspaceToolBroker(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.workspaceToolBroker.admitAuthorization(
+        command.authorization_id,
+      );
+      return;
+    }
+    if (message.type === "retire_workspace_tool_broker") {
+      const command = decodeRetireWorkspaceToolBroker(
+        message,
+        this.config.workerId,
+        cancellationServerGeneration(this.channel, generation),
+      );
+      await this.workspaceToolBroker.retireAuthorization(
+        command.authorization_id,
+        command.reason,
+      );
+      return;
+    }
     if (message.type === "prepare_harness_setup") {
       await this.awaitClaimReadiness(generation);
       const command = decodePrepareHarnessSetup(
@@ -751,6 +913,10 @@ export class QuestEngineeringWorker {
         message,
         this.config.workerId,
         cancellationServerGeneration(this.channel, generation),
+      );
+      await this.workspaceToolBroker.closeByExecution(
+        cancellation.action_id,
+        "execution_cancelled",
       );
       await this.executor.cancel(cancellation);
       return;
@@ -1064,6 +1230,9 @@ export class QuestEngineeringWorker {
     if (this.readyGeneration === generation) this.readyGeneration = null;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
+    void this.trackProtocolOperation(
+      this.workspaceToolBroker.retireAll("worker_generation_disconnected"),
+    ).catch(() => undefined);
   }
 
   private async awaitClaimReadiness(generation: number): Promise<void> {
@@ -1175,6 +1344,10 @@ export class QuestEngineeringWorker {
             command,
             this.config.workerId,
             cancellationServerGeneration(this.channel, generation),
+          );
+          await this.workspaceToolBroker.closeByExecution(
+            cancellation.action_id,
+            "execution_cancelled",
           );
           await this.executor.cancel(cancellation);
         }
@@ -1904,6 +2077,15 @@ export class QuestEngineeringWorker {
     dispatch: ReconcileDispatch,
     type: DispatchReportType,
   ): Promise<boolean> {
+    if (
+      type === "step_completed" ||
+      type === "step_failed" ||
+      dispatch.state === "uncertain"
+    )
+      await this.workspaceToolBroker.closeByExecution(
+        dispatch.action_id,
+        `execution_${dispatch.state}`,
+      );
     if (!this.controlPlaneReady()) {
       this.markReconciliationDirty();
       return false;

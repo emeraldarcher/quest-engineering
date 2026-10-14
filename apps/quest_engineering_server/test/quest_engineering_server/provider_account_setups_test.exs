@@ -267,7 +267,7 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
         desired
       )
 
-    assert command["protocol_version"] == 16
+    assert command["protocol_version"] == 17
     assert command["setup"]["authorization_kind"] == "provider_account_setup"
     assert command["setup"]["credential_generation"] == 1
     assert command["setup"]["environment_generation"] == 1

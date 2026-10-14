@@ -41,6 +41,26 @@ test("lost relay response after physical launcher start is ambiguous", async () 
   });
 });
 
+test("exact EOF and exit frames remain complete despite trailing native diagnostics", async () => {
+  const launcher = await script(`
+const frame=(type,value)=>{const payload=Buffer.from(typeof value==='string'?value:JSON.stringify(value));const header=Buffer.alloc(5);header.writeUInt8(type,0);header.writeUInt32BE(payload.length,1);process.stdout.write(Buffer.concat([header,payload]));};
+frame(1,{pid:'41',startIdentity:'start-41',observedExecutable:'/fixture/provider',environmentMarkerSha256:'fixture-marker'});
+frame(2,'complete-output');frame(4,'');frame(5,'');frame(11,{kind:'exited',exitCode:0});
+process.stderr.write('native wrapper diagnostic after exact relay settlement\\n');
+process.exitCode=7;`);
+  const transport = await open(launcher, 2_000);
+  const events: Array<{ kind: string }> = [];
+  await transport.run(async (event) => {
+    events.push(event);
+  });
+  expect(events).toEqual([
+    expect.objectContaining({ kind: "data" }),
+    expect.objectContaining({ kind: "eof" }),
+    expect.objectContaining({ kind: "eof" }),
+    expect.objectContaining({ kind: "exit" }),
+  ]);
+});
+
 async function open(executable: string, acknowledgementTimeoutMs: number) {
   const client = {
     executable,

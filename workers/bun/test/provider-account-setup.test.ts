@@ -107,7 +107,7 @@ describe("ProviderAccount setup", () => {
         decodeCancelProviderAccountSetup(
           {
             type: "cancel_provider_account_setup",
-            protocol_version: 16,
+            protocol_version: 17,
             worker_id: "worker-setup",
             connection_generation: 7,
             setup_attempt_id: "setup-attempt-1",
@@ -361,7 +361,7 @@ describe("ProviderAccount setup", () => {
       };
       await cancellation.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 16,
+        protocol_version: 17,
         worker_id: cancellation.setupCommand.worker_id,
         connection_generation: cancellation.setupCommand.connection_generation,
         setup_attempt_id: cancellation.setupCommand.setup.setup_attempt_id,
@@ -483,7 +483,7 @@ describe("ProviderAccount setup", () => {
 
       await fixture.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 16,
+        protocol_version: 17,
         worker_id: fixture.setupCommand.worker_id,
         connection_generation: fixture.setupCommand.connection_generation,
         setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
@@ -592,7 +592,7 @@ async function setupFixture() {
   const environment = await manager.apply(environmentCommand);
   const setupCommand: ProviderAccountSetupCommand = {
     type: "prepare_provider_account_setup",
-    protocol_version: 16,
+    protocol_version: 17,
     worker_id: "worker-setup",
     connection_generation: 7,
     setup: {
@@ -651,7 +651,7 @@ function responseCommand(
 ): RespondProviderAccountSetupCommand {
   return {
     type: "respond_provider_account_setup",
-    protocol_version: 16,
+    protocol_version: 17,
     worker_id: setup.worker_id,
     connection_generation: setup.connection_generation,
     setup_attempt_id: setup.setup.setup_attempt_id,

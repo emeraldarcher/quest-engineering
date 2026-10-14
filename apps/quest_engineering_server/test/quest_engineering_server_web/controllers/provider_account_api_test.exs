@@ -197,7 +197,7 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_provider_account_setup",
-                      "protocol_version" => 16,
+                      "protocol_version" => 17,
                       "setup" => %{
                         "setup_attempt_id" => ^attempt_id,
                         "provider_account_id" => account_id,

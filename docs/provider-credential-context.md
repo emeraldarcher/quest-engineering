@@ -1,6 +1,6 @@
 # Provider credential context architecture
 
-**Status:** proposed final architecture; research only
+**Status:** accepted architecture; ProviderAccount Phases A–C implemented
 
 **Date:** 2026-10-12
 
@@ -11,9 +11,12 @@ Worker-local provider-account SBX; unmodified Claude Code runs there and uses a
 Worker-mediated tool broker to a separate Run-owned SBX. Credential bytes are
 never mounted, copied, snapshotted, or proxied into a Run.
 
-This report decides architecture only. It does not change Product APIs,
-protocols, profiles, the current Claude Agent SDK adapter, or production
-credential behavior. It performed no provider authentication or inference.
+This report originally decided architecture only. ProviderAccount Phases A and
+B now implement Product ownership, persistent account environments, and
+account-scoped setup. Phase C implements the generic account-to-Run workspace
+tool broker described in [Account-to-Run workspace tool broker](workspace-tool-broker.md).
+The current Claude Agent SDK adapter and immutable execution profiles remain
+unchanged, and Phase C performed no provider authentication or inference.
 
 ## Evidence labels
 
@@ -93,7 +96,7 @@ The clean baseline satisfies the requested prerequisites:
   gateway, profile, federation, and cloud-provider selectors. [QE]
 - The current authentication setup is Run/PhysicalLineage-bound. This report
   supersedes that **future target**, but does not modify it. [QE]
-- Harness Control remains version 2 and Worker Protocol is version 16. Protocol v15 added credential-free ProviderAccount environment lifecycle; v16 adds only deterministic-fake, account-scoped setup authority/reconciliation and ephemeral interaction. It adds no real provider authentication or credential transfer. [QE]
+- Harness Control remains version 2. Worker Protocol v15 added credential-free ProviderAccount environment lifecycle; v16 added deterministic-fake account-scoped setup authority/reconciliation and ephemeral interaction; v17 adds only generic workspace-broker preparation/admission/retirement and safe activity. No version adds real provider authentication or credential transfer. [QE]
 - Setup authorization and inference authorization remain separate. [QE][REC]
 - Subscription-token proxying, API-key fallback, credential parsing, and
   modified Claude authentication remain prohibited. [REC]

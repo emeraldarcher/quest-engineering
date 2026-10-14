@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 16
+  @version 17
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -54,6 +54,9 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @provider_account_setup_states ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required validating succeeded failed uncertain cancellation_requested cancelled invalidated)
   @provider_account_setup_invocation_states ~w(not_requested requested acknowledged settled uncertain)
   @provider_account_setup_validation_states ~w(not_checked authenticated authentication_required inspection_unavailable incompatible_status)
+  @workspace_tool_broker_operations ~w(filesystem.read filesystem.list filesystem.stat filesystem.write filesystem.edit search.grep terminal.shell)
+  @workspace_tool_broker_certainties ~w(not_submitted acknowledged completed uncertain)
+  @workspace_tool_broker_activity_states ~w(prepared admitted completed rejected uncertain cancelled closed)
 
   defmodule Message do
     @moduledoc false
@@ -84,6 +87,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
             provider_account_setup: map() | nil,
             provider_account_setups: [map()] | nil,
             setup_delivery: map() | nil,
+            broker_activity: map() | nil,
             ephemeral: String.t() | nil
           }
 
@@ -112,6 +116,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       :provider_account_setup,
       :provider_account_setups,
       :setup_delivery,
+      :broker_activity,
       :ephemeral
     ]
   end
@@ -125,7 +130,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 16
+  @spec version() :: 17
   def version, do: @version
 
   @spec encode_tool_policy(Exact.t() | NativePermissions.t()) :: map()
@@ -264,6 +269,58 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "setup_generation" => attempt.setup_generation,
       "process_generation" => attempt.process_generation,
       "request_id" => request_id
+    }
+  end
+
+  def prepare_workspace_tool_broker(worker_id, generation, binding) do
+    %{
+      "type" => "prepare_workspace_tool_broker",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "broker" => %{
+        "authorization_id" => binding.authorization_id,
+        "provider_account_id" => binding.provider_account_id,
+        "credential_generation" => binding.credential_generation,
+        "account_environment_generation" => binding.account_environment_generation,
+        "account_environment" => %{
+          "backend_kind" => binding.account_environment.backend_kind,
+          "environment_id" => binding.account_environment.environment_id,
+          "incarnation" => binding.account_environment.incarnation
+        },
+        "run_id" => binding.run_id,
+        "action_id" => binding.action_id,
+        "occurrence_id" => binding.occurrence_id,
+        "attempt_id" => binding.attempt_id,
+        "operational_epoch" => binding.operational_epoch,
+        "operational_attempt" => binding.operational_attempt,
+        "workspace_id" => binding.workspace_id,
+        "worktree_id" => binding.worktree_id,
+        "workspace_binding_id" => binding.workspace_binding_id,
+        "workspace_access" => binding.workspace_access,
+        "resolved_tool_profile" => binding.resolved_tool_profile
+      }
+    }
+  end
+
+  def admit_workspace_tool_broker(worker_id, generation, authorization_id) do
+    %{
+      "type" => "admit_workspace_tool_broker",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "authorization_id" => authorization_id
+    }
+  end
+
+  def retire_workspace_tool_broker(worker_id, generation, authorization_id, reason) do
+    %{
+      "type" => "retire_workspace_tool_broker",
+      "protocol_version" => @version,
+      "worker_id" => worker_id,
+      "connection_generation" => generation,
+      "authorization_id" => authorization_id,
+      "reason" => reason
     }
   end
 
@@ -738,6 +795,57 @@ defmodule QuestEngineering.Server.WorkerProtocol do
        }}
     else
       _ -> error(:invalid_field, "human_attention_delivery")
+    end
+  end
+
+  defp decode_message("workspace_tool_broker_activity", worker_id, payload) do
+    fields =
+      ~w(session_id broker_generation action_id attempt_id operation request_id state certainty request_bytes result_bytes duration_ms error_code observed_at)
+
+    with :ok <-
+           exact_map_keys(
+             Map.drop(payload, ["type", "protocol_version", "worker_id"]),
+             fields,
+             "workspace_tool_broker_activity"
+           ),
+         {:ok, session_id} <- required_string(payload, "session_id"),
+         broker_generation when is_integer(broker_generation) and broker_generation > 0 <-
+           payload["broker_generation"],
+         {:ok, action_id} <- required_string(payload, "action_id"),
+         {:ok, attempt_id} <- required_string(payload, "attempt_id"),
+         {:ok, operation} <- optional_broker_operation(payload["operation"]),
+         {:ok, request_id} <- optional_string(payload["request_id"]),
+         state when state in @workspace_tool_broker_activity_states <- payload["state"],
+         {:ok, certainty} <- optional_broker_certainty(payload["certainty"]),
+         {:ok, request_bytes} <- optional_non_negative_integer(payload["request_bytes"]),
+         {:ok, result_bytes} <- optional_non_negative_integer(payload["result_bytes"]),
+         {:ok, duration_ms} <- optional_non_negative_integer(payload["duration_ms"]),
+         {:ok, error_code} <- optional_string(payload["error_code"]),
+         {:ok, observed_at} <- timestamp(payload["observed_at"], "observed_at") do
+      {:ok,
+       %Message{
+         type: :workspace_tool_broker_activity,
+         worker_id: worker_id,
+         action_id: action_id,
+         attempt_id: attempt_id,
+         broker_activity: %{
+           session_id: session_id,
+           broker_generation: broker_generation,
+           action_id: action_id,
+           attempt_id: attempt_id,
+           operation: operation,
+           request_id: request_id,
+           state: state,
+           certainty: certainty,
+           request_bytes: request_bytes,
+           result_bytes: result_bytes,
+           duration_ms: duration_ms,
+           error_code: error_code,
+           observed_at: observed_at
+         }
+       }}
+    else
+      _ -> error(:invalid_field, "workspace_tool_broker_activity")
     end
   end
 
@@ -1544,6 +1652,30 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp optional_string(nil), do: {:ok, nil}
   defp optional_string(value) when is_binary(value) and value != "", do: {:ok, value}
   defp optional_string(_), do: error(:invalid_field, "session.native_session_id")
+
+  defp optional_broker_operation(nil), do: {:ok, nil}
+
+  defp optional_broker_operation(value) when value in @workspace_tool_broker_operations,
+    do: {:ok, value}
+
+  defp optional_broker_operation(_),
+    do: error(:invalid_field, "workspace_tool_broker_activity.operation")
+
+  defp optional_broker_certainty(nil), do: {:ok, nil}
+
+  defp optional_broker_certainty(value) when value in @workspace_tool_broker_certainties,
+    do: {:ok, value}
+
+  defp optional_broker_certainty(_),
+    do: error(:invalid_field, "workspace_tool_broker_activity.certainty")
+
+  defp optional_non_negative_integer(nil), do: {:ok, nil}
+
+  defp optional_non_negative_integer(value) when is_integer(value) and value >= 0,
+    do: {:ok, value}
+
+  defp optional_non_negative_integer(_),
+    do: error(:invalid_field, "workspace_tool_broker_activity.measurement")
 
   defp required_boolean(value, key) do
     case Map.fetch(value, key) do
