@@ -24,6 +24,11 @@ import type {
   StreamedProcessStreamEvent,
 } from "../../execution-environment/types.ts";
 import type { JsonValue } from "../../protocol/types.ts";
+import {
+  CLAUDE_SUBSCRIPTION_CONFIGURATION,
+  classifyClaudeSubscriptionAuthStatus,
+  isProviderAuthenticationReady,
+} from "../../provider-auth.ts";
 import { materializeExecutionArtifacts } from "../../workspace/execution-artifacts.ts";
 import type {
   BoundWorkspaceToolClient,
@@ -921,19 +926,27 @@ async function assertAuthenticated(
     environment: claudeAccountEnvironment(account.configRoot),
     timeoutMs: 30_000,
   });
-  if (result.exitCode !== 0)
-    throw new Error("Claude ProviderAccount authentication is unavailable.");
-  let status: Record<string, unknown>;
-  try {
-    status = JSON.parse(result.stdout) as Record<string, unknown>;
-  } catch {
-    throw new Error("Claude authentication status is malformed.");
-  }
-  if (
-    status.loggedIn !== true ||
-    status.authMethod !== "claude.ai" ||
-    status.configDirectory !== account.configRoot
-  )
+  const owner = account.ref.owner;
+  if (owner.kind !== "provider_account")
+    throw new Error("Claude authentication requires a ProviderAccount owner.");
+  const status = classifyClaudeSubscriptionAuthStatus(
+    result,
+    account.configRoot,
+    {
+      providerKey: "anthropic",
+      owner: {
+        kind: "provider_account",
+        id: owner.providerAccountId,
+        generation: owner.credentialGeneration,
+      },
+      backendKind: account.ref.backendKind,
+      environmentId: account.ref.environmentId,
+      environmentIncarnation: account.ref.incarnation,
+      profile: account.ref.profile,
+      configuration: CLAUDE_SUBSCRIPTION_CONFIGURATION,
+    },
+  );
+  if (!isProviderAuthenticationReady(status))
     throw new Error(
       "Claude ProviderAccount authentication status is incompatible.",
     );

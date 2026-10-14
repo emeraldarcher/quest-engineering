@@ -39,6 +39,8 @@ export const CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY =
 export const CLAUDE_SUBSCRIPTION_AUTH_CONFIGURATION =
   "claude-code-2.1.292-subscription-v1" as const;
 
+// This configuration identity already pins the 2.1.292 status contract. Decoder
+// corrections do not create a second inspector epoch or change evidence identity.
 export const CLAUDE_SUBSCRIPTION_CONFIGURATION = Object.freeze({
   identity: CLAUDE_SUBSCRIPTION_AUTH_CONFIGURATION,
   mode: CLAUDE_SUBSCRIPTION_AUTH_MODE,
@@ -74,26 +76,84 @@ interface AuthStatusResult {
   stdout: string;
 }
 
+type ClaudeAuthMethod =
+  | "none"
+  | "claude.ai"
+  | "oauth_token"
+  | "api_key"
+  | "api_key_helper"
+  | "third_party";
+
+type ClaudeApiProvider =
+  | "firstParty"
+  | "bedrock"
+  | "vertex"
+  | "foundry"
+  | "anthropicAws"
+  | "anthropicGoogleCloud"
+  | "mantle"
+  | "gateway";
+
 interface ClaudeAuthStatusPayload {
   loggedIn: boolean;
-  authMethod:
-    | "none"
-    | "claude.ai"
-    | "oauth_token"
-    | "api_key"
-    | "api_key_helper"
-    | "third_party";
-  apiProvider: string;
+  authMethod: ClaudeAuthMethod;
+  apiProvider: ClaudeApiProvider;
   configDirectory: string;
 }
 
-const knownClaudeAuthMethods = new Set<ClaudeAuthStatusPayload["authMethod"]>([
+const knownClaudeAuthMethods = new Set<ClaudeAuthMethod>([
   "none",
   "claude.ai",
   "oauth_token",
   "api_key",
   "api_key_helper",
   "third_party",
+]);
+const knownClaudeApiProviders = new Set<ClaudeApiProvider>([
+  "firstParty",
+  "bedrock",
+  "vertex",
+  "foundry",
+  "anthropicAws",
+  "anthropicGoogleCloud",
+  "mantle",
+  "gateway",
+]);
+const thirdPartyClaudeApiProviders = new Set<ClaudeApiProvider>([
+  "bedrock",
+  "vertex",
+  "foundry",
+  "anthropicAws",
+  "anthropicGoogleCloud",
+  "mantle",
+  "gateway",
+]);
+const knownAllowedProviderValues = new Set([
+  "anthropic",
+  "customEndpoint",
+  "bedrock",
+  "vertex",
+  "foundry",
+  "anthropicAws",
+  "mantle",
+  "gateway",
+]);
+const requiredClaudeAuthStatusFields = Object.freeze([
+  "loggedIn",
+  "authMethod",
+  "apiProvider",
+  "analyticsDisabled",
+  "projectsDirectory",
+  "configDirectory",
+]);
+const optionalClaudeAuthStatusFields = new Set([
+  "forcedLoginMethod",
+  "allowedProviders",
+  "apiKeySource",
+  "email",
+  "orgId",
+  "orgName",
+  "subscriptionType",
 ]);
 
 /**
@@ -146,9 +206,11 @@ export function classifyClaudeSubscriptionAuthStatus(
   context: ProviderAuthenticationEvidenceContext,
   inspectedAt = new Date().toISOString(),
 ): ProviderAuthenticationInspection {
-  let payload: unknown;
+  if (result.exitCode !== 0 && result.exitCode !== 1)
+    return unavailableProviderAuthenticationInspection(context, inspectedAt);
+  let nativePayload: unknown;
   try {
-    payload = JSON.parse(result.stdout);
+    nativePayload = JSON.parse(result.stdout);
   } catch {
     return authenticationInspection(
       "incompatible_status",
@@ -158,7 +220,8 @@ export function classifyClaudeSubscriptionAuthStatus(
       "Claude authentication status output was incompatible with the pinned contract.",
     );
   }
-  if (!isClaudeAuthStatusPayload(payload))
+  const payload = decodeClaudeAuthStatusPayload(nativePayload);
+  if (!payload)
     return authenticationInspection(
       "incompatible_status",
       null,
@@ -181,7 +244,7 @@ export function classifyClaudeSubscriptionAuthStatus(
     result.exitCode === 1 &&
     payload.loggedIn === false &&
     payload.authMethod === "none" &&
-    payload.apiProvider === "none"
+    payload.apiProvider === "firstParty"
   )
     return authenticationInspection(
       "authentication_required",
@@ -205,7 +268,16 @@ export function classifyClaudeSubscriptionAuthStatus(
       "Provider-account authentication is ready.",
     );
 
-  if (payload.authMethod !== "none" && payload.authMethod !== "claude.ai")
+  if (
+    result.exitCode === 0 &&
+    payload.loggedIn === true &&
+    payload.authMethod !== "none" &&
+    payload.authMethod !== "claude.ai" &&
+    ((payload.authMethod === "third_party" &&
+      thirdPartyClaudeApiProviders.has(payload.apiProvider)) ||
+      (payload.authMethod !== "third_party" &&
+        payload.apiProvider === "firstParty"))
+  )
     return authenticationInspection(
       "forbidden_auth_method",
       method,
@@ -346,7 +418,7 @@ function validAuthenticationPair(
 }
 
 function canonicalClaudeMethod(
-  value: ClaudeAuthStatusPayload["authMethod"],
+  value: ClaudeAuthMethod,
 ): ProviderAuthenticationMethod {
   switch (value) {
     case "none":
@@ -364,23 +436,125 @@ function canonicalClaudeMethod(
   }
 }
 
-function isClaudeAuthStatusPayload(
+/**
+ * Strict projection of Claude Code 2.1.292's `claude auth status` JSON.
+ *
+ * The pinned native implementation always emits the six required fields below.
+ * It may additionally emit known policy/source metadata and account metadata.
+ * Those fields are type-checked here but intentionally discarded: email,
+ * organization identity/name, subscription type, and credential-source paths
+ * never enter canonical evidence, persistence, protocol, or telemetry.
+ */
+function decodeClaudeAuthStatusPayload(
   value: unknown,
-): value is ClaudeAuthStatusPayload {
-  if (!value || typeof value !== "object") return false;
+): ClaudeAuthStatusPayload | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate);
   if (
-    Object.keys(candidate).sort().join(",") !==
-    "apiProvider,authMethod,configDirectory,loggedIn"
+    requiredClaudeAuthStatusFields.some((field) => !keys.includes(field)) ||
+    keys.some(
+      (field) =>
+        !requiredClaudeAuthStatusFields.includes(field) &&
+        !optionalClaudeAuthStatusFields.has(field),
+    )
   )
-    return false;
-  return (
-    typeof candidate.loggedIn === "boolean" &&
-    typeof candidate.authMethod === "string" &&
-    knownClaudeAuthMethods.has(
-      candidate.authMethod as ClaudeAuthStatusPayload["authMethod"],
-    ) &&
-    typeof candidate.apiProvider === "string" &&
-    typeof candidate.configDirectory === "string"
-  );
+    return null;
+  if (
+    typeof candidate.loggedIn !== "boolean" ||
+    typeof candidate.authMethod !== "string" ||
+    !knownClaudeAuthMethods.has(candidate.authMethod as ClaudeAuthMethod) ||
+    typeof candidate.apiProvider !== "string" ||
+    !knownClaudeApiProviders.has(candidate.apiProvider as ClaudeApiProvider) ||
+    typeof candidate.analyticsDisabled !== "boolean" ||
+    !isNullableString(candidate.projectsDirectory) ||
+    typeof candidate.configDirectory !== "string" ||
+    candidate.configDirectory.length === 0
+  )
+    return null;
+
+  if (
+    has(candidate, "forcedLoginMethod") &&
+    !["claudeai", "console", "gateway"].includes(
+      candidate.forcedLoginMethod as string,
+    )
+  )
+    return null;
+  if (
+    has(candidate, "allowedProviders") &&
+    (!Array.isArray(candidate.allowedProviders) ||
+      candidate.allowedProviders.some(
+        (provider) =>
+          typeof provider !== "string" ||
+          !knownAllowedProviderValues.has(provider),
+      ) ||
+      new Set(candidate.allowedProviders).size !==
+        candidate.allowedProviders.length)
+  )
+    return null;
+  if (
+    has(candidate, "apiKeySource") &&
+    (typeof candidate.apiKeySource !== "string" ||
+      candidate.apiKeySource.length === 0)
+  )
+    return null;
+  for (const field of ["email", "orgId", "orgName", "subscriptionType"])
+    if (has(candidate, field) && !isNullableString(candidate[field]))
+      return null;
+
+  const method = candidate.authMethod as ClaudeAuthMethod;
+  const provider = candidate.apiProvider as ClaudeApiProvider;
+  const accountFields = ["email", "orgId", "orgName", "subscriptionType"];
+  if (
+    method === "claude.ai" &&
+    accountFields.some((field) => !has(candidate, field))
+  )
+    return null;
+  if (method !== "claude.ai" && has(candidate, "subscriptionType")) return null;
+  if (
+    (method === "none" || method === "claude.ai") &&
+    has(candidate, "apiKeySource")
+  )
+    return null;
+  if (method === "api_key" && !has(candidate, "apiKeySource")) return null;
+  if (
+    method === "api_key_helper" &&
+    has(candidate, "apiKeySource") &&
+    candidate.apiKeySource !== "apiKeyHelper"
+  )
+    return null;
+
+  const managedApiKey =
+    method === "api_key" && candidate.apiKeySource === "/login managed key";
+  if (
+    managedApiKey &&
+    ["email", "orgId", "orgName"].some((field) => !has(candidate, field))
+  )
+    return null;
+  if (
+    method !== "claude.ai" &&
+    !managedApiKey &&
+    ["orgId", "orgName"].some((field) => has(candidate, field))
+  )
+    return null;
+  if (
+    method !== "claude.ai" &&
+    !managedApiKey &&
+    has(candidate, "email") !== (provider === "gateway")
+  )
+    return null;
+  return {
+    loggedIn: candidate.loggedIn as boolean,
+    authMethod: method,
+    apiProvider: provider,
+    configDirectory: candidate.configDirectory as string,
+  };
+}
+
+function has(value: Record<string, unknown>, field: string): boolean {
+  return Object.hasOwn(value, field);
+}
+
+function isNullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
 }

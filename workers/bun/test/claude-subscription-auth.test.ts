@@ -24,49 +24,81 @@ const evidenceContext = {
   configuration: CLAUDE_SUBSCRIPTION_CONFIGURATION,
 };
 
-function status(
-  exitCode: number,
-  authMethod: string,
-  loggedIn: boolean,
-  apiProvider = authMethod === "claude.ai" ? "firstParty" : "none",
-) {
+function nativeStatus(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    loggedIn: false,
+    authMethod: "none",
+    apiProvider: "firstParty",
+    analyticsDisabled: true,
+    projectsDirectory: `${configDirectory}/projects`,
+    configDirectory,
+    ...overrides,
+  };
+}
+
+function classify(exitCode: number, payload: Record<string, unknown>) {
   return classifyClaudeSubscriptionAuthStatus(
-    {
-      exitCode,
-      stdout: JSON.stringify({
-        loggedIn,
-        authMethod,
-        apiProvider,
-        configDirectory,
-      }),
-    },
+    { exitCode, stdout: JSON.stringify(payload) },
     configDirectory,
     evidenceContext,
   );
 }
 
-test("pinned Claude auth status maps only exact logged-out state to provider-account login eligibility", () => {
-  const loggedOut = status(1, "none", false);
+test("exact pinned 2.1.292 logged-out and subscription fixtures classify canonically", () => {
+  const loggedOut = classify(1, nativeStatus());
   expect(loggedOut).toMatchObject({
     state: "authentication_required",
     method: "none",
   });
   expect(isProviderAuthenticationLoginEligible(loggedOut)).toBe(true);
 
-  const subscription = status(0, "claude.ai", true);
+  const loggedOutWithPolicy = classify(
+    1,
+    nativeStatus({
+      projectsDirectory: null,
+      forcedLoginMethod: "claudeai",
+      allowedProviders: ["anthropic"],
+    }),
+  );
+  expect(loggedOutWithPolicy).toMatchObject({
+    state: "authentication_required",
+    method: "none",
+  });
+
+  const subscription = classify(
+    0,
+    nativeStatus({
+      loggedIn: true,
+      authMethod: "claude.ai",
+      email: "private@example.invalid",
+      orgId: "private-org-id",
+      orgName: "private-org-name",
+      subscriptionType: "private-subscription",
+    }),
+  );
   expect(subscription).toMatchObject({
     state: "authenticated",
     method: "provider_account",
   });
   expect(isProviderAuthenticationLoginEligible(subscription)).toBe(false);
+  expect(JSON.stringify(subscription)).not.toContain("private@");
+  expect(JSON.stringify(subscription)).not.toContain("private-org");
+  expect(JSON.stringify(subscription)).not.toContain("private-subscription");
+});
 
+test("pinned forbidden selectors and third-party providers fail closed without login eligibility", () => {
   const methods = [
-    ["api_key", "api_key"],
-    ["oauth_token", "injected_oauth_token"],
-    ["api_key_helper", "api_key_helper"],
+    ["api_key", "api_key", { apiKeySource: "ANTHROPIC_API_KEY" }],
+    ["oauth_token", "injected_oauth_token", {}],
+    ["api_key_helper", "api_key_helper", { apiKeySource: "apiKeyHelper" }],
   ] as const;
-  for (const [method, canonical] of methods) {
-    const forbidden = status(0, method, true);
+  for (const [method, canonical, metadata] of methods) {
+    const forbidden = classify(
+      0,
+      nativeStatus({ loggedIn: true, authMethod: method, ...metadata }),
+    );
     expect(forbidden).toMatchObject({
       state: "forbidden_auth_method",
       method: canonical,
@@ -74,54 +106,88 @@ test("pinned Claude auth status maps only exact logged-out state to provider-acc
     expect(isProviderAuthenticationLoginEligible(forbidden)).toBe(false);
   }
 
-  for (const provider of ["bedrock", "vertex", "foundry"] as const)
-    expect(status(0, "third_party", true, provider)).toMatchObject({
+  expect(
+    classify(
+      0,
+      nativeStatus({
+        loggedIn: true,
+        authMethod: "api_key",
+        apiKeySource: "/login managed key",
+        email: null,
+        orgId: null,
+        orgName: null,
+      }),
+    ),
+  ).toMatchObject({ state: "forbidden_auth_method", method: "api_key" });
+
+  for (const provider of [
+    "bedrock",
+    "vertex",
+    "foundry",
+    "anthropicAws",
+    "anthropicGoogleCloud",
+    "mantle",
+    "gateway",
+  ] as const) {
+    const metadata = provider === "gateway" ? { email: null } : {};
+    expect(
+      classify(
+        0,
+        nativeStatus({
+          loggedIn: true,
+          authMethod: "third_party",
+          apiProvider: provider,
+          ...metadata,
+        }),
+      ),
+    ).toMatchObject({
       state: "forbidden_auth_method",
       method: "third_party",
     });
-
-  expect(
-    classifyClaudeSubscriptionAuthStatus(
-      { exitCode: 0, stdout: "not-json" },
-      configDirectory,
-      evidenceContext,
-    ),
-  ).toMatchObject({ state: "incompatible_status", method: null });
-  expect(
-    unavailableProviderAuthenticationInspection(evidenceContext),
-  ).toMatchObject({
-    state: "inspection_unavailable",
-    method: null,
-  });
+  }
 });
 
-test("contradictory, unknown, and wrong-directory status is never login-eligible", () => {
+test("malformed, unsupported, incomplete, and contradictory 2.1.292 status is never login-eligible", () => {
+  const subscription = nativeStatus({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    email: null,
+    orgId: null,
+    orgName: null,
+    subscriptionType: null,
+  });
+  const missingAnalytics = nativeStatus();
+  delete missingAnalytics.analyticsDisabled;
   const candidates = [
-    status(0, "none", false),
-    status(1, "claude.ai", true),
-    classifyClaudeSubscriptionAuthStatus(
-      {
-        exitCode: 1,
-        stdout: JSON.stringify({
-          loggedIn: false,
-          authMethod: "future_method",
-          apiProvider: "future",
-          configDirectory,
-        }),
-      },
-      configDirectory,
-      evidenceContext,
+    classify(0, nativeStatus()),
+    classify(1, subscription),
+    classify(1, nativeStatus({ apiProvider: "none" })),
+    classify(1, nativeStatus({ authMethod: "future_method" })),
+    classify(1, nativeStatus({ apiProvider: "future" })),
+    classify(1, nativeStatus({ configDirectory: "/wrong/config" })),
+    classify(1, nativeStatus({ futureField: true })),
+    classify(1, nativeStatus({ analyticsDisabled: "yes" })),
+    classify(1, nativeStatus({ projectsDirectory: 123 })),
+    classify(1, nativeStatus({ allowedProviders: ["unknown"] })),
+    classify(1, nativeStatus({ email: "unexpected@example.invalid" })),
+    classify(1, nativeStatus({ apiProvider: "gateway", email: null })),
+    classify(0, { ...subscription, apiKeySource: "ANTHROPIC_API_KEY" }),
+    classify(0, nativeStatus({ loggedIn: true, authMethod: "api_key" })),
+    classify(
+      0,
+      nativeStatus({
+        loggedIn: true,
+        authMethod: "third_party",
+        apiProvider: "firstParty",
+      }),
     ),
+    classify(1, missingAnalytics),
+    classify(0, {
+      ...subscription,
+      subscriptionType: undefined,
+    }),
     classifyClaudeSubscriptionAuthStatus(
-      {
-        exitCode: 1,
-        stdout: JSON.stringify({
-          loggedIn: false,
-          authMethod: "none",
-          apiProvider: "none",
-          configDirectory: "/wrong/config",
-        }),
-      },
+      { exitCode: 0, stdout: "not-json" },
       configDirectory,
       evidenceContext,
     ),
@@ -130,6 +196,19 @@ test("contradictory, unknown, and wrong-directory status is never login-eligible
     expect(candidate.state).toBe("incompatible_status");
     expect(isProviderAuthenticationLoginEligible(candidate)).toBe(false);
   }
+  expect(
+    classifyClaudeSubscriptionAuthStatus(
+      { exitCode: 127, stdout: "" },
+      configDirectory,
+      evidenceContext,
+    ),
+  ).toMatchObject({ state: "inspection_unavailable", method: null });
+  expect(
+    unavailableProviderAuthenticationInspection(evidenceContext),
+  ).toMatchObject({
+    state: "inspection_unavailable",
+    method: null,
+  });
 });
 
 test("subscription environment is an exact allowlist with all provider selectors absent", () => {

@@ -574,9 +574,10 @@ Safe validation runs the pinned unmodified `claude auth status` in the account
 cell with the exact account config directory and sanitized environment. The
 account-scoped states are:
 
-- `authenticated` only for exit 0, `loggedIn: true`, exact `claude.ai`, and exact
-  config identity;
-- `authentication_required` only for exit 1, `loggedIn: false`, and `none`;
+- `authenticated` only for exit 0, `loggedIn: true`, exact `claude.ai`, exact
+  `firstParty`, exact config identity, and the complete pinned 2.1.292 shape;
+- `authentication_required` only for exit 1, `loggedIn: false`, exact `none`,
+  exact `firstParty`, and the complete pinned 2.1.292 shape;
 - `forbidden_auth_method` for any API key, helper, OAuth environment token,
   profile, cloud, gateway, or third-party selection;
 - `inspection_unavailable`; and

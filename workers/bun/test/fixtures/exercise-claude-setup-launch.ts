@@ -82,7 +82,9 @@ const lease = {
     stdout: JSON.stringify({
       loggedIn: false,
       authMethod: "none",
-      apiProvider: "none",
+      apiProvider: "firstParty",
+      analyticsDisabled: true,
+      projectsDirectory: `${configDirectory}/projects`,
       configDirectory,
     }),
     stderr: "",
