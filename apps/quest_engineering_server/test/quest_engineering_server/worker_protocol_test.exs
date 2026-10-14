@@ -77,6 +77,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
       "worker_id" => @worker_id,
       "session_id" => "session-1",
       "broker_generation" => 1,
+      "authorization_id" => "workspace-tool-broker:authority",
       "action_id" => "action-1",
       "attempt_id" => "attempt-1",
       "operation" => "filesystem.read",

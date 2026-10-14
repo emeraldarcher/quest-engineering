@@ -1,0 +1,6 @@
+{
+  "name": "qe-account-cell",
+  "version": "1.0.0",
+  "description": "Immutable Quest Engineering account-cell tool broker",
+  "author": { "name": "Quest Engineering" }
+}

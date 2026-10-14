@@ -50,6 +50,29 @@ describe("WorkspaceToolBroker", () => {
     }
   });
 
+  test("admits a Worker-side account relay without a broker client process", async () => {
+    const fixture = await brokerFixture();
+    try {
+      const prepared = await fixture.broker.prepare(preparation());
+      const client = await fixture.broker.admitLocalAuthorization(
+        prepared.binding.authorizationId,
+      );
+      expect(fixture.store.session(client.sessionId)?.process).toBeNull();
+      expect(
+        fixture.broker.boundClientForAction(prepared.binding.actionId).binding,
+      ).toEqual(prepared.binding);
+      expect(
+        await client.request(readRequest("local-relay-read")),
+      ).toMatchObject({
+        status: "completed",
+        result: { content: "run-cell-only" },
+      });
+      expect(fixture.runOperations).toEqual(["filesystem.read"]);
+    } finally {
+      await fixture.broker.close();
+    }
+  });
+
   test("executes only through the Run-cell process and preserves account-cell state", async () => {
     const fixture = await brokerFixture();
     try {

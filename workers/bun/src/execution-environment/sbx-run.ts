@@ -92,6 +92,7 @@ import {
   SBX_MIXED_RUNTIME_NETWORK_TARGETS,
   SBX_PI_DISCOVERY_SCRIPT,
   SBX_PI_EXECUTABLE,
+  type SbxExecutionProfile,
 } from "./sbx-profile.ts";
 import { SbxRunExecutionStore } from "./sbx-run-store.ts";
 import type {
@@ -361,7 +362,7 @@ export interface PreparedSbxHarnessSetup {
 export interface PreparedSbxHarnessExecution {
   lease: EnvironmentLease;
   workspace: PrivateLineageWorkspace;
-  harnessKind: "pi" | "antigravity" | "claude_agent_sdk";
+  harnessKind: "pi" | "antigravity" | "claude_agent_sdk" | "claude_code";
   guestExecutable: string;
   guestHome: string;
   guestLogPath: string | null;
@@ -444,6 +445,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
   };
   private readonly privateGit: PrivateGitWorkspaceManager;
   private readonly store: SbxRunExecutionStore;
+  private readonly executionProfile: SbxExecutionProfile;
   private readonly contexts = new Map<string, RuntimeContext>();
   private extensionBundles: Promise<{
     digest: string;
@@ -465,7 +467,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       accountAvailabilityNow?: () => Date;
     } = {},
   ) {
-    const executionProfile = resolveRunExecutionProfile(
+    this.executionProfile = resolveRunExecutionProfile(
       config.enabledHarnesses ?? ["pi", "antigravity"],
     ).profile;
     this.backend =
@@ -473,7 +475,7 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       new SbxExecutionEnvironmentBackend({
         workerId: config.workerId,
         dataRoot: config.dataRoot,
-        executionProfile,
+        executionProfile: this.executionProfile,
       });
     this.privateGit =
       options.privateGit ??
@@ -1013,7 +1015,8 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     if (
       harnessKind !== "pi" &&
       harnessKind !== "antigravity" &&
-      harnessKind !== "claude_agent_sdk"
+      harnessKind !== "claude_agent_sdk" &&
+      harnessKind !== "claude_code"
     )
       throw new Error(
         `The mixed coding profile cannot launch harness ${harnessKind}.`,
@@ -1044,7 +1047,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         ? SBX_ANTIGRAVITY_EXECUTABLE
         : harnessKind === "claude_agent_sdk"
           ? SBX_CLAUDE_WRAPPER
-          : SBX_PI_EXECUTABLE;
+          : harnessKind === "claude_code"
+            ? "/bin/true"
+            : SBX_PI_EXECUTABLE;
     const guestLogPath =
       harnessKind === "antigravity"
         ? posix.join(controlRoot, "antigravity.log")
@@ -1058,7 +1063,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         ? await this.bundledAntigravityControl()
         : harnessKind === "claude_agent_sdk"
           ? { digest: digest("claude-headless-wrapper-v1"), bundles: [] }
-          : await this.bundledExtensions();
+          : harnessKind === "claude_code"
+            ? { digest: digest("claude-account-cell-v1"), bundles: [] }
+            : await this.bundledExtensions();
     const extensionRoot = posix.join(
       lease.paths.state,
       harnessKind === "antigravity"
@@ -1280,10 +1287,10 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       materializedArtifacts,
       claude,
       launchDescriptor: async (args) => {
-        if (harnessKind === "claude_agent_sdk")
+        if (harnessKind === "claude_agent_sdk" || harnessKind === "claude_code")
           throw environmentLaunchFailure(
             "environment_launch_mismatch",
-            "Claude Agent SDK is headless and cannot use a terminal launcher.",
+            "The Claude headless harness cannot use a terminal launcher.",
           );
         const guestArgvSha256 = digest(JSON.stringify([...args]));
         if (launchArgvDigest && launchArgvDigest !== guestArgvSha256)
@@ -2264,57 +2271,75 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
           frozenBase: { kind: "git_commit", value: input.frozenBase },
         },
       },
-      profile: SBX_CODING_EXECUTION_PROFILE_V3,
+      profile: this.executionProfile.identity,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
-      networkRequirements: [
-        {
-          capability: "model_provider",
-          targets: SBX_MIXED_RUNTIME_NETWORK_TARGETS,
-        },
-      ],
-      credentialGrants: [
-        {
-          grantId: "sbx-host-openai-oauth",
-          kind: "openai-codex-oauth",
-          scope: "subscription",
-        },
-        {
-          grantId: "sbx-host-antigravity-oauth",
-          kind: "antigravity-oauth",
-          scope: "subscription",
-        },
-      ],
-      controlChannels: [{ kind: "worker_file_mailbox_v1", required: true }],
-      requiredCapabilities: [
-        { kind: "filesystem_namespace", mode: "isolated" },
-        { kind: "home", mode: "private" },
-        { kind: "host_filesystem", mode: "unexposed" },
-        { kind: "container_runtime", mode: "isolated" },
-        { kind: "harness_runtime", mode: "pi_native_extensions" },
-        {
-          kind: "harness_runtime",
-          mode: "antigravity_capability_contract_v1",
-        },
-        {
-          kind: "harness_runtime",
-          mode: "claude_agent_sdk_headless_v1",
-        },
-        {
-          kind: "process.streamed",
-          mode: "attached_only",
-        },
-        {
-          kind: "credentials",
-          mode: "host_mixed_oauth_dynamic_proxies",
-        },
-        {
-          kind: "network_policy",
-          mode: "mixed_subscription_providers_only",
-        },
-        { kind: "control_channel", mode: "worker_file_mailbox_v1" },
-        { kind: "environment_exec", mode: "available" },
-        { kind: "pty_launcher", mode: "available" },
-      ],
+      networkRequirements:
+        this.executionProfile.networkMode === "deny_all"
+          ? []
+          : [
+              {
+                capability: "model_provider",
+                targets: SBX_MIXED_RUNTIME_NETWORK_TARGETS,
+              },
+            ],
+      credentialGrants:
+        this.executionProfile.credentialMode === "none"
+          ? []
+          : [
+              {
+                grantId: "sbx-host-openai-oauth",
+                kind: "openai-codex-oauth",
+                scope: "subscription",
+              },
+              {
+                grantId: "sbx-host-antigravity-oauth",
+                kind: "antigravity-oauth",
+                scope: "subscription",
+              },
+            ],
+      controlChannels:
+        this.executionProfile.networkMode === "deny_all"
+          ? []
+          : [{ kind: "worker_file_mailbox_v1", required: true }],
+      requiredCapabilities:
+        this.executionProfile.networkMode === "deny_all"
+          ? [
+              { kind: "filesystem_namespace", mode: "isolated" },
+              { kind: "home", mode: "private" },
+              { kind: "host_filesystem", mode: "unexposed" },
+              { kind: "container_runtime", mode: "isolated" },
+              { kind: "process.streamed", mode: "attached_only" },
+              { kind: "credentials", mode: "none" },
+              { kind: "network_policy", mode: "deny_all" },
+              { kind: "environment_exec", mode: "available" },
+            ]
+          : [
+              { kind: "filesystem_namespace", mode: "isolated" },
+              { kind: "home", mode: "private" },
+              { kind: "host_filesystem", mode: "unexposed" },
+              { kind: "container_runtime", mode: "isolated" },
+              { kind: "harness_runtime", mode: "pi_native_extensions" },
+              {
+                kind: "harness_runtime",
+                mode: "antigravity_capability_contract_v1",
+              },
+              {
+                kind: "harness_runtime",
+                mode: "claude_agent_sdk_headless_v1",
+              },
+              { kind: "process.streamed", mode: "attached_only" },
+              {
+                kind: "credentials",
+                mode: "host_mixed_oauth_dynamic_proxies",
+              },
+              {
+                kind: "network_policy",
+                mode: "mixed_subscription_providers_only",
+              },
+              { kind: "control_channel", mode: "worker_file_mailbox_v1" },
+              { kind: "environment_exec", mode: "available" },
+              { kind: "pty_launcher", mode: "available" },
+            ],
     };
   }
 }

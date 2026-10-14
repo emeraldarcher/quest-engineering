@@ -800,7 +800,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
 
   defp decode_message("workspace_tool_broker_activity", worker_id, payload) do
     fields =
-      ~w(session_id broker_generation action_id attempt_id operation request_id state certainty request_bytes result_bytes duration_ms error_code observed_at)
+      ~w(session_id broker_generation authorization_id action_id attempt_id operation request_id state certainty request_bytes result_bytes duration_ms error_code observed_at)
 
     with :ok <-
            exact_map_keys(
@@ -811,6 +811,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          {:ok, session_id} <- required_string(payload, "session_id"),
          broker_generation when is_integer(broker_generation) and broker_generation > 0 <-
            payload["broker_generation"],
+         {:ok, authorization_id} <- required_string(payload, "authorization_id"),
          {:ok, action_id} <- required_string(payload, "action_id"),
          {:ok, attempt_id} <- required_string(payload, "attempt_id"),
          {:ok, operation} <- optional_broker_operation(payload["operation"]),
@@ -831,6 +832,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          broker_activity: %{
            session_id: session_id,
            broker_generation: broker_generation,
+           authorization_id: authorization_id,
            action_id: action_id,
            attempt_id: attempt_id,
            operation: operation,

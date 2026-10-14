@@ -25,6 +25,26 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
 
   @feature "workspace_tool_broker_v1"
 
+  @doc """
+  Prepares and admits the one exact Anthropic ProviderAccount authority for a
+  Claude Code Action. Ambiguous account selection fails closed.
+  """
+  def prepare_and_admit_for_action(action_id) when is_binary(action_id) do
+    case claude_account_for_action(action_id) do
+      {:ok, :not_required} ->
+        {:ok, :not_required}
+
+      {:ok, provider_account_id} ->
+        with {:ok, binding} <- prepare(provider_account_id, action_id),
+             {:ok, admitted} <- admit(binding) do
+          {:ok, admitted}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   def prepare(provider_account_id, action_id)
       when is_binary(provider_account_id) and is_binary(action_id) do
     with {:ok, binding} <- authority(provider_account_id, action_id, false),
@@ -44,7 +64,7 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
 
   def admit(binding) when is_map(binding) do
     with {:ok, current} <-
-           authority(binding.provider_account_id, binding.action_id, true),
+           authority(binding.provider_account_id, binding.action_id, false),
          true <- current == binding,
          :ok <-
            WorkerConnections.send_protocol(
@@ -60,6 +80,64 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
     else
       false -> {:error, error(:workspace_tool_broker_authority_stale)}
       {:error, _reason} = error -> error
+    end
+  end
+
+  def record_activity(worker_id, worker_generation, activity)
+      when is_binary(worker_id) and is_integer(worker_generation) and is_map(activity) do
+    Repo.transaction(fn ->
+      dispatch =
+        Repo.one(
+          from dispatch in WorkerDispatch,
+            where: dispatch.action_id == ^activity.action_id,
+            lock: "FOR UPDATE"
+        ) || Repo.rollback(error(:workspace_tool_broker_execution_missing))
+
+      if dispatch.worker_id != worker_id or
+           dispatch.last_connection_generation != worker_generation or
+           dispatch.workspace_tool_broker_authorization_id != activity.authorization_id do
+        Repo.rollback(error(:workspace_tool_broker_authority_stale))
+      end
+
+      case activity.state do
+        "admitted" ->
+          if dispatch.workspace_tool_broker_admitted_at &&
+               (dispatch.workspace_tool_broker_session_id != activity.session_id or
+                  dispatch.workspace_tool_broker_generation != activity.broker_generation) do
+            Repo.rollback(error(:workspace_tool_broker_authority_stale))
+          end
+
+          dispatch
+          |> Ecto.Changeset.change(
+            workspace_tool_broker_session_id: activity.session_id,
+            workspace_tool_broker_generation: activity.broker_generation,
+            workspace_tool_broker_admitted_at:
+              dispatch.workspace_tool_broker_admitted_at || DateTime.utc_now()
+          )
+          |> Repo.update!()
+
+        "closed" ->
+          if dispatch.workspace_tool_broker_admitted_at &&
+               (dispatch.workspace_tool_broker_session_id != activity.session_id or
+                  dispatch.workspace_tool_broker_generation != activity.broker_generation) do
+            Repo.rollback(error(:workspace_tool_broker_authority_stale))
+          end
+
+          dispatch
+          |> Ecto.Changeset.change(
+            workspace_tool_broker_session_id: nil,
+            workspace_tool_broker_generation: nil,
+            workspace_tool_broker_admitted_at: nil
+          )
+          |> Repo.update!()
+
+        _ ->
+          dispatch
+      end
+    end)
+    |> case do
+      {:ok, dispatch} -> {:ok, dispatch}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -82,6 +160,64 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
     else
       false -> {:error, error(:workspace_tool_broker_authority_stale)}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp claude_account_for_action(action_id) do
+    Repo.transaction(fn ->
+      scheduled =
+        Repo.one(
+          from execution in ScheduledActionExecution,
+            where: execution.action_id == ^action_id,
+            lock: "FOR UPDATE"
+        ) || Repo.rollback(error(:workspace_tool_broker_execution_missing))
+
+      execution =
+        case ResolvedExecutionCodec.decode(
+               scheduled.resolved_execution,
+               scheduled.resolved_execution_version
+             ) do
+          {:ok, decoded} -> decoded
+          {:error, _reason} -> Repo.rollback(error(:workspace_tool_broker_execution_invalid))
+        end
+
+      if execution.configuration.harness_kind != "claude_code" do
+        :not_required
+      else
+        if execution.configuration.model.provider != "anthropic" do
+          Repo.rollback(error(:workspace_tool_broker_provider_mismatch))
+        end
+
+        accounts =
+          Repo.all(
+            from account in ProviderAccount,
+              join: environment in ProviderAccountEnvironment,
+              on: environment.provider_account_id == account.id,
+              where:
+                account.worker_id == ^scheduled.worker_id and
+                  account.provider_key == "anthropic" and
+                  account.lifecycle_state == "connected" and
+                  account.authentication_state == "authenticated" and
+                  environment.worker_id == ^scheduled.worker_id and
+                  environment.credential_generation == account.credential_generation and
+                  environment.physical_state == "available" and
+                  environment.desired_environment_state == "available" and
+                  environment.canary_persisted == true,
+              order_by: [asc: account.id],
+              select: account.id,
+              lock: "FOR UPDATE"
+          )
+
+        case accounts do
+          [provider_account_id] -> provider_account_id
+          [] -> Repo.rollback(error(:claude_provider_account_unavailable))
+          _ -> Repo.rollback(error(:claude_provider_account_ambiguous))
+        end
+      end
+    end)
+    |> case do
+      {:ok, value} -> {:ok, value}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -196,7 +332,27 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
         Repo.rollback(error(:workspace_tool_broker_execution_stale))
       end
 
-      Map.put(binding, :authorization_id, authorization_id(binding))
+      authorized = Map.put(binding, :authorization_id, authorization_id(binding))
+
+      if dispatch.workspace_tool_broker_authorization_id &&
+           (dispatch.provider_account_id != authorized.provider_account_id or
+              dispatch.provider_account_credential_generation !=
+                authorized.credential_generation or
+              dispatch.workspace_tool_broker_authorization_id != authorized.authorization_id) do
+        Repo.rollback(error(:workspace_tool_broker_authority_stale))
+      end
+
+      unless dispatch.workspace_tool_broker_authorization_id do
+        dispatch
+        |> Ecto.Changeset.change(
+          provider_account_id: authorized.provider_account_id,
+          provider_account_credential_generation: authorized.credential_generation,
+          workspace_tool_broker_authorization_id: authorized.authorization_id
+        )
+        |> Repo.update!()
+      end
+
+      authorized
     end)
     |> case do
       {:ok, binding} -> {:ok, binding}

@@ -4,6 +4,9 @@ import { FakeStreamedProcessTransport } from "./fake.ts";
 import { providerAccountOwner, sameEnvironmentOwner } from "./ownership.ts";
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
+  SBX_CLAUDE_ACCOUNT_PROFILE,
+  SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+  SBX_CLAUDE_EXECUTABLE,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_SHELL_PROFILE,
 } from "./sbx-profile.ts";
@@ -13,6 +16,7 @@ import {
 } from "./store.ts";
 import { StreamedProcessManager } from "./streamed-process.ts";
 import type {
+  EnvironmentLease,
   EnvironmentOwner,
   EnvironmentRef,
   ExecutionEnvironmentBackend,
@@ -29,18 +33,6 @@ const BROKER_SECURITY_CANARY_FILENAME =
   "workspace-tool-broker-security-canary-v1";
 export const WORKSPACE_TOOL_BROKER_ACCOUNT_CANARY =
   "QE_ACCOUNT_CELL_SECRET_CANARY_DO_NOT_EXPOSE";
-const FAKE_AUTH_FILENAME = "provider-account-fake-auth-v1.json";
-const FAKE_LOGIN_PROGRAM = [
-  "import json,os,sys",
-  "marker,account,setup,identity=sys.argv[1:5]",
-  "prompt={'kind':'fake_provider_login','url':'https://fake-provider.invalid/device','code':setup[-8:]} ",
-  "sys.stdout.write(json.dumps(prompt,separators=(',',':'))+'\\n');sys.stdout.flush()",
-  "value=sys.stdin.readline()",
-  "if not value: sys.exit(2)",
-  "tmp=marker+'.tmp'",
-  "with open(tmp,'w',encoding='utf-8') as handle: json.dump({'contract':'qe-fake-provider-auth-v1','account':account,'setup':setup,'identity':identity},handle,separators=(',',':'))",
-  "os.chmod(tmp,0o600);os.replace(tmp,marker)",
-].join("\n");
 const FAKE_ACCOUNT_BROKER_CLIENT_PROGRAM = [
   "import json,sys",
   "for line in sys.stdin:",
@@ -56,25 +48,23 @@ const FAKE_ACCOUNT_BROKER_CLIENT_PROGRAM = [
   " elif message.get('type')=='close': sys.exit(0)",
   " else: sys.exit(22)",
 ].join("\n");
-const FAKE_STATUS_PROGRAM = [
-  "import json,sys",
-  "marker,account,setup,identity=sys.argv[1:5]",
-  "try:",
-  " value=json.load(open(marker,'r',encoding='utf-8'))",
-  "except Exception: sys.exit(1)",
-  "expected={'contract':'qe-fake-provider-auth-v1','account':account,'setup':setup,'identity':identity}",
-  "if value!=expected: sys.exit(2)",
-  "sys.stdout.write(identity+'\\n')",
-].join("\n");
-
 export interface ProviderAccountSetupRuntimeIdentity {
   setupAttemptId: string;
   setupGeneration: number;
   providerAccountId: string;
+  providerKey: string;
   environmentGeneration: number;
   backendKind: string;
   environmentId: string;
   environmentIncarnation: string;
+}
+
+export interface ClaudeCodeAccountRuntime {
+  lease: EnvironmentLease;
+  ref: EnvironmentRef;
+  configRoot: string;
+  cwd: string;
+  assertCurrent(): void;
 }
 
 export type ProviderAccountEnvironmentDesiredState =
@@ -173,7 +163,7 @@ export class ProviderAccountEnvironmentManager {
             workerId: config.workerId,
             dataRoot: config.dataRoot,
             store: this.store,
-            executionProfile: SBX_SHELL_PROFILE,
+            executionProfile: SBX_CLAUDE_ACCOUNT_PROFILE,
             resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY,
           }));
     this.clock = options.clock ?? (() => new Date());
@@ -288,50 +278,60 @@ export class ProviderAccountEnvironmentManager {
   async spawnSetupProcess(
     identity: ProviderAccountSetupRuntimeIdentity,
   ): Promise<StreamedProcess> {
-    const record = this.setupRecord(identity);
-    const ref = recordRef(record);
-    const validationIdentity = setupValidationIdentity(identity);
-    if (this.fake) {
-      const paths = fakePaths(ref);
-      return this.fakeSetupProcesses.spawn(
-        ref,
-        paths,
-        {
-          executable: "/usr/bin/qe-fake-provider-login",
-          args: [],
-          cwd: paths.state,
-          environment: {},
-        },
-        {},
-        async (context) =>
-          new DeterministicFakeLoginTransport(
-            context.processGeneration,
-            identity.setupAttemptId,
-            () => this.fakeAuthenticatedSetups.add(validationIdentity),
-          ),
-      );
+    const release = await this.acquireAccountOperation(
+      identity.providerAccountId,
+    );
+    try {
+      const record = this.setupRecord(identity);
+      const ref = recordRef(record);
+      const validationIdentity = setupValidationIdentity(identity);
+      let process: StreamedProcess;
+      if (this.fake) {
+        const paths = fakePaths(ref);
+        process = await this.fakeSetupProcesses.spawn(
+          ref,
+          paths,
+          {
+            executable: "/usr/bin/qe-fake-provider-login",
+            args: [],
+            cwd: paths.state,
+            environment: {},
+          },
+          {},
+          async (context) =>
+            new DeterministicFakeLoginTransport(
+              context.processGeneration,
+              identity.setupAttemptId,
+              () => this.fakeAuthenticatedSetups.add(validationIdentity),
+            ),
+        );
+      } else {
+        if (identity.providerKey !== "anthropic")
+          throw new EnvironmentBackendError(
+            "backend_incompatible",
+            "The immutable ProviderAccount runtime supports Anthropic accounts only.",
+          );
+        const lease = await (
+          this.backend as ExecutionEnvironmentBackend
+        ).recover(ref, this.setupSpec(identity));
+        const configRoot = `${lease.paths.state}/claude/config`;
+        await this.prepareClaudeDirectories(lease, configRoot);
+        process = await lease.spawnStreamed(
+          {
+            executable: SBX_CLAUDE_EXECUTABLE,
+            args: ["auth", "login"],
+            cwd: `${lease.paths.state}/claude/empty-cwd`,
+            environment: claudeAccountEnvironment(configRoot),
+          },
+          { bufferBytes: 64 * 1024, acknowledgementTimeoutMs: 30_000 },
+        );
+      }
+      void process.exit.then(release, release);
+      return process;
+    } catch (error) {
+      release();
+      throw error;
     }
-    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
-      ref,
-      this.setupSpec(identity),
-    );
-    return lease.spawnStreamed(
-      {
-        executable: "/usr/bin/python3",
-        args: [
-          "-u",
-          "-c",
-          FAKE_LOGIN_PROGRAM,
-          `${lease.paths.state}/${FAKE_AUTH_FILENAME}`,
-          identity.providerAccountId,
-          identity.setupAttemptId,
-          validationIdentity,
-        ],
-        cwd: lease.paths.state,
-        environment: {},
-      },
-      { bufferBytes: 32 * 1024, acknowledgementTimeoutMs: 5_000 },
-    );
   }
 
   async workspaceToolBrokerAuthority(input: {
@@ -430,7 +430,15 @@ export class ProviderAccountEnvironmentManager {
     return lease.reconcileStreamedProcess(handle);
   }
 
-  async validateSetup(
+  validateSetup(
+    identity: ProviderAccountSetupRuntimeIdentity,
+  ): Promise<{ authenticated: boolean; identity: string | null }> {
+    return this.withAccount(identity.providerAccountId, () =>
+      this.validateSetupUnlocked(identity),
+    );
+  }
+
+  private async validateSetupUnlocked(
     identity: ProviderAccountSetupRuntimeIdentity,
   ): Promise<{ authenticated: boolean; identity: string | null }> {
     const record = this.setupRecord(identity);
@@ -439,28 +447,178 @@ export class ProviderAccountEnvironmentManager {
       return this.fakeAuthenticatedSetups.has(validationIdentity)
         ? { authenticated: true, identity: validationIdentity }
         : { authenticated: false, identity: null };
+    if (identity.providerKey !== "anthropic")
+      return { authenticated: false, identity: null };
     const ref = recordRef(record);
     const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
       ref,
       this.setupSpec(identity),
     );
+    const configRoot = `${lease.paths.state}/claude/config`;
+    await this.prepareClaudeDirectories(lease, configRoot);
     const result = await lease.exec({
+      executable: SBX_CLAUDE_EXECUTABLE,
+      args: ["auth", "status"],
+      cwd: `${lease.paths.state}/claude/empty-cwd`,
+      environment: claudeAccountEnvironment(configRoot),
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0) return { authenticated: false, identity: null };
+    try {
+      const status = JSON.parse(result.stdout) as Record<string, unknown>;
+      const authenticated =
+        status.loggedIn === true &&
+        status.authMethod === "claude.ai" &&
+        status.configDirectory === configRoot;
+      return authenticated
+        ? {
+            authenticated: true,
+            identity: `claude-auth-v1:${digest(
+              JSON.stringify({
+                authMethod: status.authMethod,
+                configDirectory: status.configDirectory,
+                providerAccountId: identity.providerAccountId,
+                generation: identity.environmentGeneration,
+              }),
+            )}`,
+          }
+        : { authenticated: false, identity: null };
+    } catch {
+      return { authenticated: false, identity: null };
+    }
+  }
+
+  async claudeCodeRuntime(input: {
+    providerAccountId: string;
+    credentialGeneration: number;
+    expected: {
+      backendKind: string;
+      environmentId: string;
+      incarnation: string;
+    };
+  }): Promise<ClaudeCodeAccountRuntime> {
+    if (this.fake)
+      throw new EnvironmentBackendError(
+        "backend_incompatible",
+        "The fake ProviderAccount boundary cannot run Claude Code.",
+      );
+    const owner = providerAccountOwner(
+      input.providerAccountId,
+      input.credentialGeneration,
+    );
+    const record = this.store.current("sbx", this.config.workerId, owner);
+    if (
+      !record ||
+      record.retiredAt ||
+      record.state !== "running" ||
+      record.environmentId !== input.expected.environmentId ||
+      record.incarnation !== input.expected.incarnation ||
+      record.backendKind !== input.expected.backendKind ||
+      record.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.id ||
+      record.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest
+    )
+      throw new EnvironmentBackendError(
+        "stale_environment_ref",
+        "Claude ProviderAccount execution authority is stale.",
+      );
+    const ref = recordRef(record);
+    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+      ref,
+      this.specForOwner(owner),
+    );
+    const capabilities = new Set(
+      lease.capabilities.map(
+        (capability) => `${capability.kind}:${capability.mode}`,
+      ),
+    );
+    for (const required of [
+      "credentials:account_private_claude_oauth",
+      "network_policy:anthropic_account_only",
+      "harness_runtime:claude_code_managed_mod_v1",
+      "control_channel:worker_account_mailbox_v1",
+      "process.streamed:attached_only",
+    ])
+      if (!capabilities.has(required))
+        throw new EnvironmentBackendError(
+          "backend_incompatible",
+          `Claude account runtime capability is missing: ${required}.`,
+        );
+    const configRoot = `${lease.paths.state}/claude/config`;
+    const cwd = `${lease.paths.state}/claude/empty-cwd`;
+    await this.prepareClaudeDirectories(lease, configRoot);
+    const assertCurrent = () => {
+      const current = this.store.byRef(ref);
+      if (
+        !current ||
+        current.retiredAt ||
+        current.state !== "running" ||
+        current.incarnation !== ref.incarnation
+      )
+        throw new EnvironmentBackendError(
+          "stale_environment_ref",
+          "Claude ProviderAccount execution environment was replaced.",
+        );
+    };
+    return { lease, ref, configRoot, cwd, assertCurrent };
+  }
+
+  withSerializedAccount<T>(
+    providerAccountId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.withAccount(providerAccountId, operation);
+  }
+
+  async retireSetupProcesses(
+    identity: ProviderAccountSetupRuntimeIdentity,
+  ): Promise<void> {
+    if (this.fake) return;
+    const record = this.setupRecord(identity);
+    const ref = recordRef(record);
+    await this.withAccount(identity.providerAccountId, async () => {
+      await (
+        this.backend as ExecutionEnvironmentBackend
+      ).retireStreamedProcesses(ref);
+    });
+  }
+
+  async retireClaudeAccountProcesses(ref: EnvironmentRef): Promise<void> {
+    if (!this.backend || ref.owner.kind !== "provider_account")
+      throw new EnvironmentBackendError(
+        "invalid_environment_ref",
+        "Claude account process retirement requires a physical ProviderAccount cell.",
+      );
+    await this.backend.retireStreamedProcesses(ref);
+  }
+
+  private async prepareClaudeDirectories(
+    lease: EnvironmentLease,
+    configRoot: string,
+  ): Promise<void> {
+    const cwd = `${lease.paths.state}/claude/empty-cwd`;
+    await lease.workerExec({
+      executable: "/usr/bin/install",
+      args: [
+        "-d",
+        "-m",
+        "0700",
+        "-o",
+        "1000",
+        "-g",
+        "1000",
+        configRoot,
+        `${configRoot}/tmp`,
+        cwd,
+      ],
+    });
+    await lease.workerExec({
       executable: "/usr/bin/python3",
       args: [
         "-c",
-        FAKE_STATUS_PROGRAM,
-        `${lease.paths.state}/${FAKE_AUTH_FILENAME}`,
-        identity.providerAccountId,
-        identity.setupAttemptId,
-        validationIdentity,
+        "import json,os,pathlib; p=pathlib.Path(os.environ['P']); value={}\ntry:\n value=json.loads(p.read_text())\nexcept Exception: pass\nvalue['hasCompletedOnboarding']=True; t=p.with_suffix('.tmp'); t.write_text(json.dumps(value,separators=(',',':'))); os.chmod(t,0o600); os.chown(t,1000,1000); os.replace(t,p)",
       ],
-      cwd: lease.paths.state,
-      environment: {},
-      timeoutMs: 10_000,
+      environment: { P: `${configRoot}/.claude.json` },
     });
-    return result.exitCode === 0 && result.stdout.trim() === validationIdentity
-      ? { authenticated: true, identity: validationIdentity }
-      : { authenticated: false, identity: null };
   }
 
   async close(): Promise<void> {
@@ -785,16 +943,55 @@ export class ProviderAccountEnvironmentManager {
       workerId: this.config.workerId,
       owner,
       layout: { kind: "provider_account", version: "provider-account-cell-v1" },
-      profile: SBX_SHELL_PROFILE.identity,
+      profile: SBX_CLAUDE_ACCOUNT_PROFILE_V1,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
-      networkRequirements: [],
-      credentialGrants: [],
-      controlChannels: [],
+      networkRequirements: [
+        {
+          capability: "anthropic_account",
+          targets: ["api.anthropic.com", "claude.ai"],
+        },
+      ],
+      credentialGrants: [
+        {
+          grantId: `provider-account:${owner.providerAccountId}:${owner.credentialGeneration}`,
+          kind: "claude-oauth",
+          scope: "provider_account",
+        },
+      ],
+      controlChannels: [{ kind: "worker_account_mailbox_v1", required: true }],
       requiredCapabilities: [
         { kind: "environment_persistence", mode: "verified" },
-        { kind: "credentials", mode: "none" },
-        { kind: "network_policy", mode: "deny_all" },
+        { kind: "credentials", mode: "account_private_claude_oauth" },
+        { kind: "network_policy", mode: "anthropic_account_only" },
+        { kind: "harness_runtime", mode: "claude_code_managed_mod_v1" },
+        { kind: "control_channel", mode: "worker_account_mailbox_v1" },
+        { kind: "process.streamed", mode: "attached_only" },
       ],
+    };
+  }
+
+  private async acquireAccountOperation(
+    providerAccountId: string,
+  ): Promise<() => void> {
+    let acquired!: () => void;
+    let releaseWait!: () => void;
+    const acquisition = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    const hold = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    const operation = this.withAccount(providerAccountId, async () => {
+      acquired();
+      await hold;
+    });
+    void operation.catch(() => undefined);
+    await acquisition;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseWait();
     };
   }
 
@@ -1082,6 +1279,39 @@ class DeterministicFakeLoginTransport extends FakeStreamedProcessTransport {
     }
     return outcome;
   }
+}
+
+export function claudeAccountEnvironment(
+  configRoot: string,
+  additions: Record<string, string> = {},
+): Record<string, string> {
+  return {
+    HOME: configRoot,
+    CLAUDE_CONFIG_DIR: configRoot,
+    TMPDIR: `${configRoot}/tmp`,
+    PATH: "/usr/bin:/bin",
+    BROWSER: "/bin/false",
+    GIT_TERMINAL_PROMPT: "0",
+    DISABLE_AUTOUPDATER: "1",
+    DISABLE_TELEMETRY: "1",
+    DISABLE_ERROR_REPORTING: "1",
+    ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    ENABLE_TOOL_SEARCH: "false",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+    CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+    CLAUDE_CODE_DISABLE_AGENT_VIEW: "1",
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+    CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: "1",
+    CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: "1",
+    CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: "1",
+    CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1",
+    CLAUDE_CODE_DISABLE_ARTIFACT: "1",
+    CLAUDE_CODE_DISABLE_FAST_MODE: "1",
+    ...additions,
+  };
 }
 
 function digest(value: string): string {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type {
   EnvironmentPathMap,
@@ -69,6 +69,14 @@ export const SBX_CLAUDE_RUNTIME_NETWORK_TARGETS = Object.freeze([
   "api.anthropic.com",
   "claude.ai",
 ]);
+export const SBX_CLAUDE_EXECUTABLE = "/opt/qe/claude/claude";
+export const SBX_CLAUDE_ACCOUNT_BRIDGE =
+  "/opt/qe/claude/qe-account-cell-bridge";
+export const SBX_CLAUDE_MANAGED_SETTINGS =
+  "/etc/claude-code/managed-settings.json";
+export const SBX_CLAUDE_MANAGED_MARKETPLACE = "/opt/qe/claude-plugins";
+export const SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL =
+  "qe_claude_account_cell_v1" as const;
 export const SBX_PI_INSTALL_NETWORK_TARGET = "registry.npmjs.org";
 export const SBX_ANTIGRAVITY_INSTALL_NETWORK_TARGETS = Object.freeze([
   "github.com",
@@ -329,13 +337,101 @@ export const SBX_CODING_EXECUTION_PROFILE_V3: EnvironmentProfileIdentity =
     digest: digest(SBX_CODING_EXECUTION_PROFILE_V3_DEFINITION),
   });
 
+export const SBX_CLAUDE_MANAGED_SETTINGS_SHA256 =
+  "8892df943a117000b24e716de0884c093ac062dfff5db84ea1754a28acb38ae7";
+export const SBX_CLAUDE_MANAGED_MOD_SHA256 =
+  "ca14976dfa66570d0405eeaae853effc63f22493e76316cce6a6c252028fc53a";
+export const SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256 =
+  "de6ad713da03942580acad89a56ebc5386cd429e47976145a455301fd05e0f2d";
+
+const SBX_CLAUDE_ACCOUNT_PROFILE_ASSETS = Object.freeze({
+  "spec.yaml":
+    "04622d39b0687b8a7cccac7c31b874f6b293b67cb98e17734df339c86760796c",
+  "files/home/.qe-profile/package.json":
+    "840ef323a329d91fe6004f003ff18acb9f0d0f421806199f431184008849f148",
+  "files/home/.qe-profile/package-lock.json":
+    "f42fa3fc374686574f538ec032a44bd2a55889829fadadb9e0f9a68016aefd04",
+  "files/home/.qe-profile/qe-account-cell-bridge.py":
+    SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256,
+  "files/home/.qe-profile/managed/managed-settings.json":
+    SBX_CLAUDE_MANAGED_SETTINGS_SHA256,
+  "files/home/.qe-profile/claude-plugins/.claude-plugin/marketplace.json":
+    "9cd6b7ead0683ce0d14d486e802255eaacc02de131a138ca3e31a108765ad8f0",
+  "files/home/.qe-profile/claude-plugins/plugins/qe-account-cell/.claude-plugin/plugin.json":
+    "d791ac66f94713a542a1143b5963c27645ec179704fe3a9ef00c8d2e08e35e63",
+  "files/home/.qe-profile/claude-plugins/plugins/qe-account-cell/hooks/hooks.json":
+    "4c5247cda3cf88eb551c7822a2b386e0654c8b97a8dfb37289a2816073a7d1e0",
+  "files/home/.qe-profile/claude-plugins/plugins/qe-account-cell/hooks/register.ts":
+    SBX_CLAUDE_MANAGED_MOD_SHA256,
+  "files/home/.qe-profile/claude-plugins/plugins/qe-account-cell/tsconfig.json":
+    "4087cf0ba92fde503ed0e7c56f37bcb26ad0c085873f10219d0336c0f19b5a8f",
+});
+
+export const SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION = Object.freeze({
+  schemaVersion: 1,
+  id: "qe-claude-account-v1",
+  backend: "docker-sandboxes",
+  kitSchemaVersion: "2",
+  kitName: "qe-claude-account-v1",
+  claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
+  claudeAgentSdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
+  modProtocol: SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL,
+  assets: SBX_CLAUDE_ACCOUNT_PROFILE_ASSETS,
+  mounts: Object.freeze([]),
+  network: Object.freeze({
+    runtimeAllow: SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+    postInstallDeny: SBX_PI_INSTALL_NETWORK_TARGET,
+  }),
+  credential: "account_private_claude_oauth",
+  managedModsOnly: true,
+  processStreaming: "attached_only",
+  paths: SBX_GUEST_PATHS,
+});
+
+export const SBX_CLAUDE_ACCOUNT_PROFILE_V1: EnvironmentProfileIdentity =
+  Object.freeze({
+    id: SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION.id,
+    digest: digest(SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION),
+  });
+
+const SBX_CLAUDE_BROKER_RUN_PROFILE_ASSETS = Object.freeze({
+  "spec.yaml":
+    "4c01899b27d24eba9a57296e5033df568d53dd47cb0ef3bd3603cc391e530c85",
+});
+
+export const SBX_CLAUDE_BROKER_RUN_PROFILE_V1_DEFINITION = Object.freeze({
+  schemaVersion: 1,
+  id: "qe-claude-broker-run-v1",
+  backend: "docker-sandboxes",
+  kitSchemaVersion: "2",
+  kitName: "qe-claude-broker-run-v1",
+  harnesses: Object.freeze({ claude_code: SBX_CLAUDE_CODE_VERSION }),
+  assets: SBX_CLAUDE_BROKER_RUN_PROFILE_ASSETS,
+  mounts: Object.freeze([]),
+  credentials: "none",
+  network: "sandbox_scoped_deny_all",
+  processStreaming: "attached_only",
+  paths: SBX_GUEST_PATHS,
+});
+
+export const SBX_CLAUDE_BROKER_RUN_PROFILE_V1: EnvironmentProfileIdentity =
+  Object.freeze({
+    id: SBX_CLAUDE_BROKER_RUN_PROFILE_V1_DEFINITION.id,
+    digest: digest(SBX_CLAUDE_BROKER_RUN_PROFILE_V1_DEFINITION),
+  });
+
 export interface SbxExecutionProfile {
   identity: EnvironmentProfileIdentity;
   agentReference: string;
   nativeAgent: string;
-  networkMode: "deny_all" | "openai_subscription" | "mixed_subscriptions";
+  networkMode:
+    | "deny_all"
+    | "openai_subscription"
+    | "mixed_subscriptions"
+    | "claude_account";
   credentialMode:
     | "none"
+    | "account_private_claude_oauth"
     | "host_pi_oauth_dynamic_proxy"
     | "host_mixed_oauth_dynamic_proxies";
   postCreateNetworkDenies: readonly string[];
@@ -386,6 +482,34 @@ export const SBX_CODING_PROFILE: SbxExecutionProfile = Object.freeze({
   postCreateNetworkDenies: SBX_MIXED_INSTALL_NETWORK_TARGETS,
 });
 
+export const SBX_CLAUDE_ACCOUNT_PROFILE_ROOT = resolve(
+  import.meta.dir,
+  "../../profiles/qe-claude-account-v1",
+);
+export const SBX_CLAUDE_ACCOUNT_PROFILE: SbxExecutionProfile = Object.freeze({
+  identity: SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+  agentReference: SBX_CLAUDE_ACCOUNT_PROFILE_ROOT,
+  nativeAgent: "qe-claude-account-v1",
+  networkMode: "claude_account",
+  credentialMode: "account_private_claude_oauth",
+  postCreateNetworkDenies: Object.freeze([SBX_PI_INSTALL_NETWORK_TARGET]),
+});
+
+export const SBX_CLAUDE_BROKER_RUN_PROFILE_ROOT = resolve(
+  import.meta.dir,
+  "../../profiles/qe-claude-broker-run-v1",
+);
+export const SBX_CLAUDE_BROKER_RUN_PROFILE: SbxExecutionProfile = Object.freeze(
+  {
+    identity: SBX_CLAUDE_BROKER_RUN_PROFILE_V1,
+    agentReference: SBX_CLAUDE_BROKER_RUN_PROFILE_ROOT,
+    nativeAgent: "qe-claude-broker-run-v1",
+    networkMode: "deny_all",
+    credentialMode: "none",
+    postCreateNetworkDenies: Object.freeze([]),
+  },
+);
+
 export async function verifySbxProfileAssets(
   profile: SbxExecutionProfile,
 ): Promise<void> {
@@ -404,26 +528,56 @@ export async function verifySbxProfileAssets(
             assets: SBX_CODING_V3_PROFILE_ASSETS,
             label: "mixed coding v3",
           }
-        : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
-            profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V2.digest
+        : profile.identity.id === SBX_CLAUDE_ACCOUNT_PROFILE_V1.id &&
+            profile.identity.digest === SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest
           ? {
-              root: SBX_CODING_PROFILE_V2_ROOT,
-              assets: SBX_CODING_V2_PROFILE_ASSETS,
-              label: "mixed coding v2",
+              root: SBX_CLAUDE_ACCOUNT_PROFILE_ROOT,
+              assets: SBX_CLAUDE_ACCOUNT_PROFILE_ASSETS,
+              label: "Claude account v1",
+              strictFiles: true,
             }
-          : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
-              profile.identity.digest === SBX_CODING_EXECUTION_PROFILE_V1.digest
+          : profile.identity.id === SBX_CLAUDE_BROKER_RUN_PROFILE_V1.id &&
+              profile.identity.digest ===
+                SBX_CLAUDE_BROKER_RUN_PROFILE_V1.digest
             ? {
-                root: SBX_CODING_PROFILE_V1_ROOT,
-                assets: SBX_CODING_PROFILE_ASSETS,
-                label: "mixed coding v1",
+                root: SBX_CLAUDE_BROKER_RUN_PROFILE_ROOT,
+                assets: SBX_CLAUDE_BROKER_RUN_PROFILE_ASSETS,
+                label: "Claude credential-free broker Run v1",
+                strictFiles: true,
               }
-            : null;
+            : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
+                profile.identity.digest ===
+                  SBX_CODING_EXECUTION_PROFILE_V2.digest
+              ? {
+                  root: SBX_CODING_PROFILE_V2_ROOT,
+                  assets: SBX_CODING_V2_PROFILE_ASSETS,
+                  label: "mixed coding v2",
+                }
+              : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
+                  profile.identity.digest ===
+                    SBX_CODING_EXECUTION_PROFILE_V1.digest
+                ? {
+                    root: SBX_CODING_PROFILE_V1_ROOT,
+                    assets: SBX_CODING_PROFILE_ASSETS,
+                    label: "mixed coding v1",
+                  }
+                : null;
   if (!expected) return;
   if (resolve(profile.agentReference) !== expected.root)
     throw new Error(
       `The ${expected.label} SBX profile does not use the repository-owned kit.`,
     );
+  if ("strictFiles" in expected && expected.strictFiles) {
+    const actualFiles = await regularProfileFiles(expected.root);
+    const expectedFiles = Object.keys(expected.assets).sort();
+    if (
+      actualFiles.length !== expectedFiles.length ||
+      actualFiles.some((path, index) => path !== expectedFiles[index])
+    )
+      throw new Error(
+        `Repository-owned ${expected.label} SBX profile contains an unattested asset.`,
+      );
+  }
   for (const [relativePath, expectedDigest] of Object.entries(
     expected.assets,
   )) {
@@ -441,6 +595,31 @@ export async function verifySbxProfileAssets(
         `Repository-owned ${expected.label} SBX profile asset failed integrity verification: ${relativePath}.`,
       );
   }
+}
+
+async function regularProfileFiles(
+  root: string,
+  relativeRoot = "",
+): Promise<string[]> {
+  const files: string[] = [];
+  const entries = await readdir(resolve(root, relativeRoot), {
+    withFileTypes: true,
+  });
+  for (const entry of entries) {
+    const relativePath = relativeRoot
+      ? `${relativeRoot}/${entry.name}`
+      : entry.name;
+    if (entry.isDirectory()) {
+      files.push(...(await regularProfileFiles(root, relativePath)));
+    } else if (entry.isFile()) {
+      files.push(relativePath);
+    } else {
+      throw new Error(
+        `Repository-owned SBX profile contains a non-regular asset: ${relativePath}.`,
+      );
+    }
+  }
+  return files.sort();
 }
 
 export interface SbxResourcePolicy {

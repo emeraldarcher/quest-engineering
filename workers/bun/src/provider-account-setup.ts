@@ -378,6 +378,15 @@ export class ProviderAccountSetupCoordinator {
     credentialGeneration: number,
     environmentGeneration: number,
   ): boolean {
+    const setupInProgress = this.store
+      .list()
+      .some(
+        (record) =>
+          this.desiredAttemptIds.has(record.setupAttemptId) &&
+          record.command.setup.provider_account_id === providerAccountId &&
+          (!isTerminal(record.state) || record.state === "uncertain"),
+      );
+    if (setupInProgress) return false;
     const generations = this.store
       .list()
       .filter(
@@ -427,6 +436,7 @@ export class ProviderAccountSetupCoordinator {
           ? "restart_process_identity_missing"
           : "restart_invocation_uncertain",
       );
+      await this.environments.retireSetupProcesses(runtimeIdentity(record));
       await this.publish(uncertain);
       return;
     }
@@ -450,6 +460,7 @@ export class ProviderAccountSetupCoordinator {
         },
         "restart_process_inspection_failed",
       );
+      await this.environments.retireSetupProcesses(runtimeIdentity(record));
       await this.publish(uncertain);
       return;
     }
@@ -470,6 +481,7 @@ export class ProviderAccountSetupCoordinator {
         },
         "restart_process_unattached",
       );
+      await this.environments.retireSetupProcesses(runtimeIdentity(record));
       await this.publish(uncertain);
       return;
     }
@@ -775,6 +787,7 @@ function runtimeIdentity(
     setupAttemptId: setup.setup_attempt_id,
     setupGeneration: setup.setup_generation,
     providerAccountId: setup.provider_account_id,
+    providerKey: setup.provider_key,
     environmentGeneration: setup.environment_generation,
     backendKind: setup.environment.backend_kind,
     environmentId: setup.environment.environment_id,

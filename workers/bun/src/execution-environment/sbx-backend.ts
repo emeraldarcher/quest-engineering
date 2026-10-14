@@ -16,6 +16,7 @@ import { CliSbxClient, SbxClientError } from "./sbx-client.ts";
 import { SbxMixedCredentialProvisioner } from "./sbx-mixed-credential.ts";
 import { SbxPiCredentialProvisioner } from "./sbx-pi-credential.ts";
 import {
+  SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
   SBX_DISABLED_CREDENTIAL_ENVIRONMENT,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   type SBX_EXECUTION_PROFILE_V1,
@@ -1364,6 +1365,42 @@ export class SbxExecutionEnvironmentBackend
         "SBX supports disposable fixtures and Worker-controlled frozen imports only.",
         operation,
       );
+    if (
+      this.executionProfile.credentialMode === "account_private_claude_oauth"
+    ) {
+      const targetRequirements = spec.networkRequirements.filter(
+        (requirement) => requirement.capability === "anthropic_account",
+      );
+      const targets = targetRequirements.flatMap((requirement) => [
+        ...requirement.targets,
+      ]);
+      const credential = spec.credentialGrants[0];
+      const channel = spec.controlChannels[0];
+      const exactTargets = [...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS].sort();
+      if (
+        !accountLayout ||
+        spec.networkRequirements.length !== 1 ||
+        targetRequirements.length !== 1 ||
+        targets.length !== exactTargets.length ||
+        [...targets]
+          .sort()
+          .some((target, index) => target !== exactTargets[index]) ||
+        spec.credentialGrants.length !== 1 ||
+        credential?.grantId !==
+          `provider-account:${spec.owner.kind === "provider_account" ? spec.owner.providerAccountId : "invalid"}:${spec.owner.kind === "provider_account" ? spec.owner.credentialGeneration : "invalid"}` ||
+        credential.kind !== "claude-oauth" ||
+        credential.scope !== "provider_account" ||
+        spec.controlChannels.length !== 1 ||
+        channel?.kind !== "worker_account_mailbox_v1" ||
+        channel.required !== true
+      )
+        throw new EnvironmentBackendError(
+          "environment_requirements_unmet",
+          "The Claude account profile requires one exact private OAuth, Anthropic network, and Worker mailbox authority.",
+          operation,
+        );
+      return;
+    }
     if (this.executionProfile.credentialMode === "none") {
       if (
         spec.credentialGrants.length > 0 ||
