@@ -1,4 +1,5 @@
 import {
+  type AdmitWorkspaceToolBrokerCommand,
   type ArtifactInstance,
   type CancelDispatch,
   type CancelHarnessSetupCommand,
@@ -7,10 +8,12 @@ import {
   type HumanAttentionResponseCommand,
   isJsonValue,
   type PrepareHarnessSetupCommand,
+  type PrepareWorkspaceToolBrokerCommand,
   type ProviderAccountSetupCommand,
   type ResolvedExecution,
   type RespondHarnessSetupCommand,
   type RespondProviderAccountSetupCommand,
+  type RetireWorkspaceToolBrokerCommand,
   WORKER_PROTOCOL_VERSION,
   type WorkspaceAccess,
 } from "./types.ts";
@@ -273,6 +276,190 @@ export function decodeCancelProviderAccountSetup(
       "process_generation",
     ),
     request_id: string(payload.request_id, "request_id"),
+  };
+}
+
+export function decodePrepareWorkspaceToolBroker(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): PrepareWorkspaceToolBrokerCommand {
+  const payload = record(value, "message");
+  exactKeys(
+    payload,
+    [
+      "type",
+      "protocol_version",
+      "worker_id",
+      "connection_generation",
+      "broker",
+    ],
+    "message",
+  );
+  exact(payload.type, "prepare_workspace_tool_broker", "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  const broker = record(payload.broker, "broker");
+  exactKeys(
+    broker,
+    [
+      "authorization_id",
+      "provider_account_id",
+      "credential_generation",
+      "account_environment_generation",
+      "account_environment",
+      "run_id",
+      "action_id",
+      "occurrence_id",
+      "attempt_id",
+      "operational_epoch",
+      "operational_attempt",
+      "workspace_id",
+      "worktree_id",
+      "workspace_binding_id",
+      "workspace_access",
+      "resolved_tool_profile",
+    ],
+    "broker",
+  );
+  const accountEnvironment = record(
+    broker.account_environment,
+    "broker.account_environment",
+  );
+  exactKeys(
+    accountEnvironment,
+    ["backend_kind", "environment_id", "incarnation"],
+    "broker.account_environment",
+  );
+  const toolProfile = record(
+    broker.resolved_tool_profile,
+    "broker.resolved_tool_profile",
+  );
+  exactKeys(toolProfile, ["tools"], "broker.resolved_tool_profile");
+  if (
+    !Array.isArray(toolProfile.tools) ||
+    toolProfile.tools.length > 64 ||
+    !toolProfile.tools.every(
+      (tool) =>
+        typeof tool === "string" && tool.length > 0 && tool.length <= 128,
+    ) ||
+    new Set(toolProfile.tools).size !== toolProfile.tools.length
+  )
+    throw new ProtocolDecodeError(
+      "broker.resolved_tool_profile.tools",
+      "must contain unique bounded tool names",
+    );
+  const workspaceAccess = oneOf(
+    broker.workspace_access,
+    ["none", "read_only", "read_write"] as const,
+    "broker.workspace_access",
+  );
+  const operationalEpoch = nonNegativeInteger(
+    broker.operational_epoch,
+    "broker.operational_epoch",
+  );
+  return {
+    type: "prepare_workspace_tool_broker",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    broker: {
+      authorization_id: string(
+        broker.authorization_id,
+        "broker.authorization_id",
+      ),
+      provider_account_id: string(
+        broker.provider_account_id,
+        "broker.provider_account_id",
+      ),
+      credential_generation: positiveInteger(
+        broker.credential_generation,
+        "broker.credential_generation",
+      ),
+      account_environment_generation: positiveInteger(
+        broker.account_environment_generation,
+        "broker.account_environment_generation",
+      ),
+      account_environment: {
+        backend_kind: string(
+          accountEnvironment.backend_kind,
+          "broker.account_environment.backend_kind",
+        ),
+        environment_id: string(
+          accountEnvironment.environment_id,
+          "broker.account_environment.environment_id",
+        ),
+        incarnation: string(
+          accountEnvironment.incarnation,
+          "broker.account_environment.incarnation",
+        ),
+      },
+      run_id: string(broker.run_id, "broker.run_id"),
+      action_id: string(broker.action_id, "broker.action_id"),
+      occurrence_id: string(broker.occurrence_id, "broker.occurrence_id"),
+      attempt_id: string(broker.attempt_id, "broker.attempt_id"),
+      operational_epoch: operationalEpoch,
+      operational_attempt: positiveInteger(
+        broker.operational_attempt,
+        "broker.operational_attempt",
+      ),
+      workspace_id: string(broker.workspace_id, "broker.workspace_id"),
+      worktree_id: string(broker.worktree_id, "broker.worktree_id"),
+      workspace_binding_id: string(
+        broker.workspace_binding_id,
+        "broker.workspace_binding_id",
+      ),
+      workspace_access: workspaceAccess,
+      resolved_tool_profile: { tools: [...(toolProfile.tools as string[])] },
+    },
+  };
+}
+
+export function decodeAdmitWorkspaceToolBroker(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): AdmitWorkspaceToolBrokerCommand {
+  const payload = exactBrokerLifecycle(
+    value,
+    "admit_workspace_tool_broker",
+    expectedWorkerId,
+    expectedGeneration,
+    ["authorization_id"],
+  );
+  return {
+    type: "admit_workspace_tool_broker",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    authorization_id: string(payload.authorization_id, "authorization_id"),
+  };
+}
+
+export function decodeRetireWorkspaceToolBroker(
+  value: unknown,
+  expectedWorkerId: string,
+  expectedGeneration: number,
+): RetireWorkspaceToolBrokerCommand {
+  const payload = exactBrokerLifecycle(
+    value,
+    "retire_workspace_tool_broker",
+    expectedWorkerId,
+    expectedGeneration,
+    ["authorization_id", "reason"],
+  );
+  return {
+    type: "retire_workspace_tool_broker",
+    protocol_version: WORKER_PROTOCOL_VERSION,
+    worker_id: expectedWorkerId,
+    connection_generation: expectedGeneration,
+    authorization_id: string(payload.authorization_id, "authorization_id"),
+    reason: boundedText(payload.reason, "reason", 128),
   };
 }
 
@@ -999,6 +1186,36 @@ function exactKeys(
   )
     throw new ProtocolDecodeError(field, "has unexpected or missing fields");
 }
+function exactBrokerLifecycle(
+  value: unknown,
+  type: "admit_workspace_tool_broker" | "retire_workspace_tool_broker",
+  expectedWorkerId: string,
+  expectedGeneration: number,
+  fields: string[],
+): Record<string, unknown> {
+  const payload = record(value, "message");
+  exactKeys(
+    payload,
+    [
+      "type",
+      "protocol_version",
+      "worker_id",
+      "connection_generation",
+      ...fields,
+    ],
+    "message",
+  );
+  exact(payload.type, type, "type");
+  exact(payload.protocol_version, WORKER_PROTOCOL_VERSION, "protocol_version");
+  exact(payload.worker_id, expectedWorkerId, "worker_id");
+  exact(
+    payload.connection_generation,
+    expectedGeneration,
+    "connection_generation",
+  );
+  return payload;
+}
+
 function string(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0)
     throw new ProtocolDecodeError(field, "must be a non-empty string");

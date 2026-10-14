@@ -61,9 +61,10 @@ constraints.
 
 ## Deliberate limits
 
-This fixture does not implement ProviderAccount state, a real broker, Claude
-v4, a profile, a protocol, authentication, or provider inference. The network
-boundary and restart model are deterministic fakes; physical two-SBX lifecycle
-and firewall acceptance remain later gates. Broker shell streaming,
-cancellation, output persistence, and side-effect certainty also remain Phase C
-work.
+This retained fixture does not itself implement ProviderAccount state, a real
+broker, Claude v4, a profile, authentication, or provider inference. The
+production generic broker, strict local protocol, cancellation/certainty, and
+physical two-SBX evidence now live in
+[`docs/workspace-tool-broker.md`](../../docs/workspace-tool-broker.md) and the
+Worker/server implementation. Managed Mod integration and all provider behavior
+remain later gates; this spike stays a zero-auth research fixture.

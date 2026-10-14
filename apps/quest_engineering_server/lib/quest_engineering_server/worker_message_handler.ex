@@ -271,6 +271,21 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   end
 
   def handle(worker_id, generation, %{
+        type: :workspace_tool_broker_activity,
+        broker_activity: activity
+      }) do
+    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation) do
+      {:ok,
+       %{
+         "type" => "message_result",
+         "protocol_version" => WorkerProtocol.version(),
+         "result" => "workspace_tool_broker_activity_accepted",
+         "request_id" => activity.request_id
+       }}
+    end
+  end
+
+  def handle(worker_id, generation, %{
         type: :provider_account_setup_state,
         provider_account_setup: setup,
         ephemeral: ephemeral

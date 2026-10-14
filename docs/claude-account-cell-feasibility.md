@@ -26,17 +26,21 @@ The design is safe only with the constraints in this report. In particular:
    exact session-ownership record before process launch;
 5. all login, status, logout, refresh, and inference processes remain serialized
    per ProviderAccount until a later pinned-version concurrency proof exists;
-6. a production bridge and physical two-SBX firewall/restart proof are still
-   required; and
+6. the generic production `WorkspaceToolBroker` and its physical two-SBX,
+   network-namespace, restart, cleanup, and canary proof are now implemented by
+   Phase C; and
 7. production must find a preventive, pinned control for provider-side server
    tools. A Mod can detect `serverToolUses` only after the provider performed
    them, which is not preventive enforcement.
 
 No login, credential creation, credential inspection, provider authentication,
 model request, Agent SDK `query()`, or provider inference occurred in this
-research. No production profile, protocol, schema, or adapter was changed.
+research. Phase C changes Worker Protocol and Worker-local schema only; it does
+not change an immutable execution profile or the current Claude adapter. See
+[Account-to-Run workspace tool broker](workspace-tool-broker.md) for the current
+implementation and physical evidence.
 
-### FLAG — current account-environment ownership gap
+### Resolved by Phases A–C — account ownership and workspace broker
 
 **Facts:** SBX v0.43 and QE's existing backend preserve a stopped sandbox's disk
 and exact incarnation, and the verifier advertises
@@ -45,17 +49,13 @@ and exact incarnation, and the verifier advertises
 cleanup authority are all explicitly `{Worker, Run}` owned. They cannot express
 `{Worker, ProviderAccount}` ownership today.
 
-**Decision:** Phase B must add an account-owned lifecycle before any real login.
-Do not encode a ProviderAccount as a synthetic `runId` and do not weaken the
-existing Run contract.
-
-**Recommendation:** build a dedicated ProviderAccount-environment contract and
-store while reusing the audited SBX client, exact-incarnation fencing,
-state-preserving stop/recover behavior, verifier primitives, and uncertainty
-rules. This keeps Run cleanup and account disconnect independent. No Phase D
-Claude launch may proceed until a stopped account cell is physically recovered
-with the same UUID/incarnation/disk and a replacement receives a new
-incarnation.
+**Resolution:** Phase B added typed ProviderAccount ownership and persistent
+account-cell lifecycle without encoding an account as a synthetic Run. Phase C
+added a separately versioned, Worker-mediated broker bound to the exact current
+Product execution and physical account/Run environments. Broker subprocesses
+use fixed Linux network namespaces and Worker-attached stdio rather than broad
+cross-SBX networking. Run cleanup and account disconnect remain independent.
+Real login and all Claude/managed-Mod behavior remain deferred.
 
 ## Scope and evidence language
 
@@ -439,12 +439,12 @@ post-response hook can undo the operation.
 | Run tool executor | No route/mount/env | No | Yes, exact Run/lineage | No |
 | Worker business logic | safe refs only; no read/copy/export | lifecycle | control authority | host infrastructure only |
 
-The fake proof demonstrates relative-path containment, account-path rejection,
-symlink escape rejection, no canary in workspace search, Run-local `HOME`/cwd,
-and macOS kernel sandbox denial when a Run shell directly opens the fake account
-credential or follows a symlink to it. **[FAKE]** Linux two-SBX namespace proof
-remains mandatory because the fake does not make a macOS host sandbox equivalent
-to SBX.
+The retained fake proof demonstrates relative-path containment, account-path
+rejection, symlink escape rejection, no canary in workspace search, and
+Run-local `HOME`/cwd. Phase C additionally runs simultaneous Linux account and
+Run SBXs, isolates each broker subprocess in a fresh network namespace, and
+proves namespace/canary separation, Run-only tool execution, restart, and
+ordered cleanup. **[FAKE][RUN]**
 
 ### Network matrix
 
@@ -456,14 +456,13 @@ to SBX.
 | Run broker client/tool executor | existing Run egress grants as resolved for the Run | account-cell IP/control socket, account disk, provider-account broker reverse route |
 | Product/server | Worker protocol only | credential bytes and provider HTTP proxying |
 
-`FakeNetworkBoundary` proves the intended direction: the account side may request
-one bound broker operation; the Run has only `run-egress`, and direct Run
-connections to either `account-cell-control` or `worker-bound-broker` throw.
-**[FAKE]** Production must enforce this with separate VM namespaces, no shared
-mount, no shared inherited descriptor, an account-to-Worker authenticated
-channel, Run firewall denial of account/private control ranges, and physical
-packet/path probes. The Worker brokers operations, never provider HTTP headers
-or credential traffic.
+`FakeNetworkBoundary` proves the intended direction. Phase C implements the
+physical equivalent without account↔Run peering: fixed account-client and Run
+tool subprocesses each run under `unshare --net`, retaining only their
+Worker-attached stdio. Simultaneous-SBX probes prove that local listeners are
+alive but neither broker endpoint can connect to the other SBX address. The
+Worker brokers operations, never provider HTTP headers or credential traffic.
+**[FAKE][RUN]**
 
 ### Broker authority and concurrency
 
@@ -482,9 +481,10 @@ Workspace
 
 None of those fields exists in model tool input. A server-side binding maps the
 account process identity/channel to that tuple. Every operation revalidates it
-before dispatch and before returning a result. The fake proof concurrently
-reads Run A and Run B and observes the correct content and exact distinct
-lineages; a traversal from A to B is rejected. **[FAKE]**
+before dispatch and before returning a result. Deterministic Phase-C tests concurrently read Run A and Run B, observe exact
+distinct lineages, reject cross-binding use, and independently bind two
+ProviderAccounts. The physical test proves the same account→Worker→Run route
+across two simultaneous SBXs. **[FAKE][RUN]**
 
 The model's `qe_run_shell.command` is intentionally shell language, but it is
 stdin data to the fixed account bridge. Only the credential-free Run executor
@@ -597,11 +597,10 @@ Anthropic credential/code. Account setup uses its separate lifecycle. A Run
 HumanAttention message and response may be durable only under the existing safe
 Product contract.
 
-Cancellation must propagate from exact Attempt authority to the Mod bridge wait,
-Run shell/tool operation, and exact account Claude process. Lost process/tool
-acknowledgement is uncertain and never retried automatically. The spike proves
-blocking and lifecycle fencing but not physical cancellation; that is a Phase C
-and D stop gate.
+Cancellation propagates from exact Attempt authority through the generic broker
+to the Run shell/tool process. Lost process/tool acknowledgement is uncertain
+and never retried automatically. Phase C proves generic cancellation and
+lifecycle fencing; managed-Mod/provider-process cancellation remains Phase D.
 
 ## Proof matrices
 
@@ -627,19 +626,21 @@ and D stop gate.
 | Only brokered Run tools visible | Proven in exact local `system/init` and Mod tests |
 | No account-cell shell/fs/search for model | Structural with new names and separate Run executor; physical profile deferred |
 | Canonical refresh across Runs | Feasible under one process lease; fake serialized proof |
-| Concurrent Run/lineage isolation | Fake proof passes; physical dual-SBX proof deferred |
+| Concurrent Run/lineage isolation | Phase-C deterministic multi-binding and physical dual-SBX proof pass |
 | Durable exact native sessions | Pinned CLI behavior proven; QE ownership gate fake-proven |
 | Logout/generation fencing | Fake state machine passes; official logout deferred |
 | Worker/host restart | Safe model passes; exact account-owned SBX recovery deferred |
-| Credential-free Run | Fake path/network proof passes; production packet/mount proof deferred |
+| Credential-free Run | Phase-C physical namespace, canary, subprocess-network, and broker-route proof passes; real Claude remains deferred |
 | No provider-side server tools | Not yet preventively proven; production stop |
 | No production implementation in research PR | Satisfied |
 
-## Exact 61-item stop report
+## Historical exact 61-item feasibility stop report
 
-A `PASS` here means the research evidence supports the design. `STOP` means the
-named production phase may not proceed until satisfied; it does not change the
-feasibility verdict to a production acceptance.
+This table is the retained pre-implementation research report. Its Phase-B and
+Phase-C implementation STOPs are superseded by
+[`workspace-tool-broker.md`](workspace-tool-broker.md); Phase-D provider and
+managed-Mod STOPs remain authoritative. A `PASS` here meant the original
+research evidence supported the design.
 
 | # | Check | Status | Stop condition / evidence |
 |---:|---|---|---|

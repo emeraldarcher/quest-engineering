@@ -27,6 +27,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.Persistence.OccurrenceMemberBinding
   alias QuestEngineering.Server.Persistence.OperationalAttemptAttribution
   alias QuestEngineering.Server.Persistence.OperationalRecoveryEpoch
+  alias QuestEngineering.Server.Persistence.ProviderAccount, as: ProviderAccountRecord
   alias QuestEngineering.Server.Persistence.QuestLaunch
   alias QuestEngineering.Server.Persistence.RunDelivery
   alias QuestEngineering.Server.Persistence.RuntimeOutbox
@@ -36,8 +37,10 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
   alias QuestEngineering.Server.Persistence.ScheduledActionExecution
   alias QuestEngineering.Server.Persistence.WorkerDispatch
   alias QuestEngineering.Server.Persistence.WorkerWorkspaceBinding
+  alias QuestEngineering.Server.Product.ProviderAccounts
   alias QuestEngineering.Server.Product.Repository, as: Products
   alias QuestEngineering.Server.Product.TacticLibrary
+  alias QuestEngineering.Server.Product.WorkspaceToolBrokers
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.RunProjection
   alias QuestEngineering.Server.RuntimeStore
@@ -1129,6 +1132,140 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert persisted.prompt_authorized_at
   end
 
+  test "workspace broker authority is derived from one current admitted Product execution",
+       context do
+    fixture =
+      product_fixture(tools: ["workspace.filesystem", "workspace.search", "terminal.shell"])
+
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("worker-workspace-tool-broker", context.workspace_root,
+        features: ["workspace_tool_broker_v1"]
+      )
+
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "workspace-tool-broker-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, _} =
+             DispatchStore.acknowledge(
+               worker.id,
+               worker.connection_generation,
+               dispatch.action_id
+             )
+
+    assert {:ok, {account, pending_environment}} =
+             ProviderAccounts.create(
+               %{
+                 provider_key: "fake",
+                 display_name: "Workspace broker fixture",
+                 worker_id: worker.id
+               },
+               worker.connection_generation
+             )
+
+    observed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, {:applied, _account, environment}} =
+             ProviderAccounts.apply_environment_report(%{
+               provider_account_id: account.id,
+               credential_generation: pending_environment.credential_generation,
+               worker_id: worker.id,
+               worker_generation: worker.connection_generation,
+               operation_id: pending_environment.operation_id,
+               physical_state: "available",
+               event_type: "environment_ensured",
+               backend_kind: "sbx",
+               environment_id: "account-environment-1",
+               incarnation: "account-incarnation-1",
+               error_code: nil,
+               error_message: nil,
+               canary_persisted: true,
+               observed_at: observed_at
+             })
+
+    account_record = Repo.get!(ProviderAccountRecord, account.id)
+
+    account_record
+    |> ProviderAccountRecord.changeset(%{
+      authentication_state: "authenticated",
+      authenticated_at: observed_at,
+      last_validated_at: observed_at
+    })
+    |> Repo.update!()
+
+    assert {:ok, prepared} =
+             WorkspaceToolBrokers.prepare(account.id, dispatch.action_id)
+
+    assert prepared.run_id == launched.run_id
+    assert prepared.action_id == dispatch.action_id
+    assert prepared.attempt_id == dispatch.execution.identity.attempt_id
+    assert prepared.worker_generation == worker.connection_generation
+    assert prepared.account_environment.incarnation == environment.incarnation
+
+    assert prepared.resolved_tool_profile == %{
+             "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"]
+           }
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_workspace_tool_broker",
+                      "protocol_version" => 17,
+                      "connection_generation" => generation,
+                      "broker" => %{
+                        "authorization_id" => authorization_id,
+                        "provider_account_id" => provider_account_id,
+                        "run_id" => run_id,
+                        "action_id" => action_id,
+                        "attempt_id" => attempt_id
+                      }
+                    }}
+
+    assert generation == worker.connection_generation
+    assert authorization_id == prepared.authorization_id
+    assert provider_account_id == account.id
+    assert run_id == launched.run_id
+    assert action_id == dispatch.action_id
+    assert attempt_id == dispatch.execution.identity.attempt_id
+
+    assert {:error, %{type: :workspace_tool_broker_not_admissible}} =
+             WorkspaceToolBrokers.admit(prepared)
+
+    assert {:ok, _} = DispatchStore.authorize_prompt(dispatch.action_id, Ecto.UUID.generate())
+    assert {:ok, admitted} = WorkspaceToolBrokers.admit(prepared)
+    assert admitted == prepared
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "admit_workspace_tool_broker",
+                      "authorization_id" => ^authorization_id
+                    }}
+
+    assert :ok = WorkspaceToolBrokers.retire(prepared, "deterministic_test_complete")
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "retire_workspace_tool_broker",
+                      "authorization_id" => ^authorization_id,
+                      "reason" => "deterministic_test_complete"
+                    }}
+
+    assert {:ok, {_next_account, _replacement}} =
+             ProviderAccounts.next_generation(account.id, worker.connection_generation)
+
+    assert {:error, %{type: :workspace_tool_broker_not_admissible}} =
+             WorkspaceToolBrokers.admit(prepared)
+  end
+
   test "Product cancellation is exact, idempotent, terminal, and excludes prompt authorization",
        context do
     fixture = product_fixture()
@@ -1190,7 +1327,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 16,
+                      "protocol_version" => 17,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -2941,7 +3078,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 16,
+                      "protocol_version" => 17,
                       "setup" => %{
                         "setup_id" => setup_id,
                         "action_id" => action_id,
@@ -3393,7 +3530,8 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
             |> Map.put("authentication", "context_required")
           ],
           else: []
-        )
+        ),
+      "features" => Keyword.get(options, :features, [])
     }
 
     {:ok, worker} = WorkerStore.register(id, capabilities, Ecto.UUID.generate())

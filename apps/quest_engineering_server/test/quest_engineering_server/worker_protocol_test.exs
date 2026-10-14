@@ -19,12 +19,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 16
+  @protocol_version 17
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v16 logical Workspace bindings" do
+  test "accepts explicit protocol v17 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -32,6 +32,86 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert hello.capabilities["tags"] == ["fake"]
     assert hello.capabilities["features"] == ["run_delivery_v1"]
     assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
+  end
+
+  test "workspace broker commands and activity use exact versioned safe fields" do
+    binding = %{
+      authorization_id: "workspace-tool-broker:authority",
+      provider_account_id: "account-1",
+      credential_generation: 2,
+      account_environment_generation: 1,
+      account_environment: %{
+        backend_kind: "sbx",
+        environment_id: "account-environment-1",
+        incarnation: "account-incarnation-1"
+      },
+      run_id: "run-1",
+      action_id: "action-1",
+      occurrence_id: "occurrence-1",
+      attempt_id: "attempt-1",
+      operational_epoch: 0,
+      operational_attempt: 1,
+      workspace_id: @workspace_id,
+      worktree_id: @worktree_id,
+      workspace_binding_id: @binding_id,
+      workspace_access: "read_write",
+      resolved_tool_profile: %{
+        "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"]
+      }
+    }
+
+    assert %{
+             "type" => "prepare_workspace_tool_broker",
+             "protocol_version" => @protocol_version,
+             "connection_generation" => 7,
+             "broker" => %{
+               "authorization_id" => "workspace-tool-broker:authority",
+               "provider_account_id" => "account-1",
+               "action_id" => "action-1"
+             }
+           } = WorkerProtocol.prepare_workspace_tool_broker(@worker_id, 7, binding)
+
+    activity = %{
+      "type" => "workspace_tool_broker_activity",
+      "protocol_version" => @protocol_version,
+      "worker_id" => @worker_id,
+      "session_id" => "session-1",
+      "broker_generation" => 1,
+      "action_id" => "action-1",
+      "attempt_id" => "attempt-1",
+      "operation" => "filesystem.read",
+      "request_id" => "request-1",
+      "state" => "completed",
+      "certainty" => "completed",
+      "request_bytes" => 120,
+      "result_bytes" => 240,
+      "duration_ms" => 3,
+      "error_code" => nil,
+      "observed_at" => "2026-10-15T00:00:00Z"
+    }
+
+    assert {:ok, %{type: :workspace_tool_broker_activity, broker_activity: decoded}} =
+             WorkerProtocol.decode_worker_message(activity, @worker_id)
+
+    assert decoded.operation == "filesystem.read"
+    assert decoded.certainty == "completed"
+
+    for {field, value} <- [
+          {"operation", "provider.secret"},
+          {"certainty", "maybe"},
+          {"state", "invented"},
+          {"result_bytes", -1}
+        ] do
+      assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+               activity
+               |> Map.put(field, value)
+               |> WorkerProtocol.decode_worker_message(@worker_id)
+    end
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             activity
+             |> Map.put("content", "must-not-cross-product-protocol")
+             |> WorkerProtocol.decode_worker_message(@worker_id)
   end
 
   test "ProviderAccount setup reports carry exact safe fences and sealed ephemeral bytes" do
@@ -156,7 +236,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert command == %{
              "type" => "prepare_provider_account_setup",
-             "protocol_version" => 16,
+             "protocol_version" => 17,
              "worker_id" => @worker_id,
              "connection_generation" => 7,
              "setup" => %{

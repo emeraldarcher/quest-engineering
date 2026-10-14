@@ -14,7 +14,7 @@ import {
 } from "../src/protocol/types.ts";
 import { action } from "./support.ts";
 
-describe("Worker Protocol v16 ResolvedExecution codec", () => {
+describe("Worker Protocol v17 ResolvedExecution codec", () => {
   test("decodes only an exact Worker-generation cancellation command", () => {
     const command = {
       type: "cancel_dispatch",
@@ -277,7 +277,7 @@ describe("Worker Protocol v16 ResolvedExecution codec", () => {
   });
 });
 
-describe("Worker Protocol v16 harness setup codec", () => {
+describe("Worker Protocol v17 harness setup codec", () => {
   test("requires the explicit exact ToolPolicy discriminator", () => {
     const input = setupCommand();
     expect(decodePrepareHarnessSetup(input, "worker-test", 7)).toEqual(input);

@@ -64,6 +64,11 @@ import type {
   RunWorktreeRecord,
   RunWorktreeRegistry,
 } from "../workspace/run-worktrees.ts";
+import type {
+  WorkspaceToolBrokerPreparation,
+  WorkspaceToolRunAuthority,
+} from "../workspace-tool-broker.ts";
+import type { WorkspaceToolRequest } from "../workspace-tool-broker-protocol.ts";
 import { runIdFromRef, runOwner, sameEnvironmentOwner } from "./ownership.ts";
 import { resolveRunExecutionProfile } from "./profile-resolution.ts";
 import {
@@ -96,8 +101,145 @@ import type {
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
 } from "./types.ts";
+import { networkIsolatedWorkspaceToolCommand } from "./workspace-tool-network.ts";
 
 const MAX_MAILBOX_REQUEST_BYTES = 1024 * 1024;
+export const WORKSPACE_TOOL_PROGRAM = [
+  "import errno,json,os,re,stat,sys,time,uuid",
+  "MAX_FILE=262144;MAX_RESULTS=100;MAX_RESULT_BYTES=65536;MAX_ENTRIES=256;MAX_FILES=2048;DEADLINE=time.monotonic()+5",
+  "class ToolError(Exception):",
+  " def __init__(self,code,message): self.code=code;self.message=message",
+  "def parts(path):",
+  " if not isinstance(path,str) or len(path.encode())>1024 or path.startswith('/') or '\\\\' in path or '\\x00' in path: raise ToolError('path_invalid','Workspace path is invalid.')",
+  " value=[] if path in ('','.') else path.split('/')",
+  " if any(item in ('','..') for item in value): raise ToolError('path_invalid','Workspace path is invalid.')",
+  " return value",
+  "def open_dir(root,items):",
+  " fd=os.dup(root)",
+  " try:",
+  "  for item in items:",
+  "   nextfd=os.open(item,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=nextfd",
+  "  return fd",
+  " except: os.close(fd);raise",
+  "def parent(root,path):",
+  " value=parts(path)",
+  " if not value: raise ToolError('path_invalid','A file path is required.')",
+  " return open_dir(root,value[:-1]),value[-1]",
+  "def kind(mode):",
+  " return 'file' if stat.S_ISREG(mode) else 'directory' if stat.S_ISDIR(mode) else 'symlink' if stat.S_ISLNK(mode) else 'other'",
+  "def metadata(name,value): return {'name':name,'type':kind(value.st_mode),'size':value.st_size if stat.S_ISREG(value.st_mode) else None,'mode':value.st_mode&0o777,'modified_ns':value.st_mtime_ns}",
+  "def read_bytes(fd,maximum):",
+  " chunks=[];total=0",
+  " while total<=maximum:",
+  "  chunk=os.read(fd,min(65536,maximum+1-total))",
+  "  if not chunk: break",
+  "  chunks.append(chunk);total+=len(chunk)",
+  " return b''.join(chunks)",
+  "def read_regular(root,path):",
+  " directory,name=parent(root,path)",
+  " try:",
+  "  fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)",
+  "  try:",
+  "   before=os.fstat(fd)",
+  "   if not stat.S_ISREG(before.st_mode): raise ToolError('entry_not_regular','Workspace entry is not a regular file.')",
+  "   if before.st_size>MAX_FILE: raise ToolError('file_too_large','Workspace file exceeds the read bound.')",
+  "   data=read_bytes(fd,MAX_FILE);after=os.fstat(fd)",
+  "   if len(data)>MAX_FILE: raise ToolError('file_too_large','Workspace file exceeds the read bound.')",
+  "   if len(data)!=before.st_size or (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns): raise ToolError('entry_changed','Workspace entry changed during inspection.')",
+  "   try: return data.decode('utf-8'),before",
+  "   except UnicodeDecodeError: raise ToolError('file_not_utf8','Workspace file is not UTF-8 text.')",
+  "  finally: os.close(fd)",
+  " finally: os.close(directory)",
+  "def atomic_write(root,path,text,expected=None):",
+  " data=text.encode('utf-8')",
+  " if len(data)>MAX_FILE: raise ToolError('file_too_large','Workspace write exceeds the bound.')",
+  " directory,name=parent(root,path);temporary='.qe-broker-'+uuid.uuid4().hex+'.tmp'",
+  " try:",
+  "  try:",
+  "   current=os.stat(name,dir_fd=directory,follow_symlinks=False)",
+  "   if not stat.S_ISREG(current.st_mode): raise ToolError('entry_not_regular','Workspace write target is not a regular file.')",
+  "   if expected is not None and (current.st_dev,current.st_ino,current.st_size,current.st_mtime_ns)!=(expected.st_dev,expected.st_ino,expected.st_size,expected.st_mtime_ns): raise ToolError('entry_changed','Workspace entry changed before edit replacement.')",
+  "  except FileNotFoundError:",
+  "   if expected is not None: raise ToolError('entry_changed','Workspace entry changed before edit replacement.')",
+  "  fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=directory)",
+  "  try:",
+  "   view=memoryview(data)",
+  "   while view:",
+  "    written=os.write(fd,view)",
+  "    if written<=0: raise OSError(errno.EIO,'Workspace write did not progress.')",
+  "    view=view[written:]",
+  "   os.fsync(fd);os.fchmod(fd,0o644)",
+  "  finally: os.close(fd)",
+  "  os.replace(temporary,name,src_dir_fd=directory,dst_dir_fd=directory);os.fsync(directory)",
+  " finally:",
+  "  try: os.unlink(temporary,dir_fd=directory)",
+  "  except FileNotFoundError: pass",
+  "  os.close(directory)",
+  " return {'path':path,'bytes':len(data)}",
+  "def search(root,path,query):",
+  " try: pattern=re.compile(query)",
+  " except re.error: raise ToolError('query_invalid','Search query is not a valid regular expression.')",
+  " base=parts(path);start=open_dir(root,base);results=[];result_bytes=0;seen=0",
+  " def walk(fd,prefix,depth):",
+  "  nonlocal result_bytes,seen",
+  "  if depth>32 or time.monotonic()>DEADLINE: raise ToolError('search_timeout','Workspace search exceeded its duration bound.')",
+  "  entries=sorted(os.scandir(fd),key=lambda item:item.name)",
+  "  for entry in entries:",
+  "   if len(results)>=MAX_RESULTS or result_bytes>=MAX_RESULT_BYTES: return",
+  "   info=entry.stat(follow_symlinks=False);relative='/'.join([item for item in [prefix,entry.name] if item])",
+  "   if stat.S_ISDIR(info.st_mode):",
+  "    child=os.open(entry.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)",
+  "    try: walk(child,relative,depth+1)",
+  "    finally: os.close(child)",
+  "   elif stat.S_ISREG(info.st_mode):",
+  "    seen+=1",
+  "    if seen>MAX_FILES: raise ToolError('search_file_limit','Workspace search exceeded its file bound.')",
+  "    if info.st_size>MAX_FILE: continue",
+  "    child=os.open(entry.name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd)",
+  "    try: data=read_bytes(child,MAX_FILE)",
+  "    finally: os.close(child)",
+  "    if len(data)>MAX_FILE: continue",
+  "    text=data.decode('utf-8','replace')",
+  "    for number,line in enumerate(text.splitlines(),1):",
+  "     if pattern.search(line):",
+  "      item={'path':relative,'line':number,'text':line[:1024]};size=len(json.dumps(item,separators=(',',':')).encode())",
+  "      if result_bytes+size>MAX_RESULT_BYTES: return",
+  "      results.append(item);result_bytes+=size",
+  " walk(start,'/'.join(base),0);os.close(start)",
+  " return {'matches':results,'truncated':len(results)>=MAX_RESULTS or result_bytes>=MAX_RESULT_BYTES}",
+  "try:",
+  " payload=sys.stdin.buffer.read(393217)",
+  " if len(payload)>393216: raise ToolError('request_too_large','Workspace request exceeds its bound.')",
+  " request=json.loads(payload);operation=request['operation'];args=request['arguments'];root=os.open('.',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)",
+  " if operation=='filesystem.read':",
+  "  content,info=read_regular(root,args['path']);result={'path':args['path'],'content':content,'bytes':len(content.encode()),'modified_ns':info.st_mtime_ns}",
+  " elif operation=='filesystem.list':",
+  "  directory=open_dir(root,parts(args['path']));names=sorted(os.listdir(directory))",
+  "  if len(names)>MAX_ENTRIES: raise ToolError('directory_too_large','Directory exceeds the entry bound.')",
+  "  result={'path':args['path'],'entries':[metadata(name,os.stat(name,dir_fd=directory,follow_symlinks=False)) for name in names]};os.close(directory)",
+  " elif operation=='filesystem.stat':",
+  "  value=parts(args['path'])",
+  "  if not value: info=os.fstat(root);name='.'",
+  "  else:",
+  "   directory,name=parent(root,args['path']);info=os.stat(name,dir_fd=directory,follow_symlinks=False);os.close(directory)",
+  "  result={'path':args['path'],**metadata(name,info)}",
+  " elif operation=='filesystem.write': result=atomic_write(root,args['path'],args['content'])",
+  " elif operation=='filesystem.edit':",
+  "  content,info=read_regular(root,args['path']);count=content.count(args['old_text'])",
+  "  if count!=args['expected_replacements']: raise ToolError('edit_mismatch','Workspace edit replacement count did not match.')",
+  "  result=atomic_write(root,args['path'],content.replace(args['old_text'],args['new_text']),info)|{'replacements':count}",
+  " elif operation=='search.grep': result=search(root,args['path'],args['query'])",
+  " else: raise ToolError('operation_unknown','Workspace operation is unknown.')",
+  " os.close(root);print(json.dumps({'ok':True,'result':result},separators=(',',':')))",
+  "except ToolError as error: print(json.dumps({'ok':False,'error':{'code':error.code,'message':error.message,'certainty':'not_submitted'}},separators=(',',':')))",
+  "except OSError as error:",
+  " if error.errno in (errno.ELOOP,errno.ENOTDIR): code='path_invalid';message='Workspace path is invalid.';certainty='not_submitted'",
+  " else: code='workspace_operation_failed';message='Workspace operation failed safely.';certainty='uncertain' if globals().get('operation') in ('filesystem.write','filesystem.edit') else 'acknowledged'",
+  " print(json.dumps({'ok':False,'error':{'code':code,'message':message,'certainty':certainty}},separators=(',',':')))",
+  "except (KeyError,TypeError,ValueError) as error:",
+  " certainty='uncertain' if globals().get('operation') in ('filesystem.write','filesystem.edit') else 'acknowledged'",
+  " print(json.dumps({'ok':False,'error':{'code':'workspace_operation_failed','message':'Workspace operation failed safely.','certainty':certainty}},separators=(',',':')))",
+].join("\n");
 const PI_EXTENSION_ENTRIES = [
   "step-result-extension.ts",
   "workspace-permission-extension.ts",
@@ -1349,6 +1491,106 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
     const context = this.contexts.get(lineageId);
     await context?.relay?.stop();
     if (context) context.relay = null;
+  }
+
+  workspaceToolBrokerAuthority(
+    input: WorkspaceToolBrokerPreparation,
+  ): WorkspaceToolRunAuthority {
+    const context = [...this.contexts.values()].find(
+      (candidate) =>
+        candidate.dispatch.action.action_id === input.actionId &&
+        candidate.dispatch.action.run_id === input.runId &&
+        candidate.dispatch.action.occurrence_id === input.occurrenceId &&
+        candidate.dispatch.action.attempt_id === input.attemptId,
+    );
+    if (!context)
+      throw new Error(
+        "No exact active Run execution context exists for the broker.",
+      );
+    const execution = context.dispatch.action.execution;
+    if (
+      execution.logical_workspace.workspace_id !== input.workspaceId ||
+      execution.execution_workspace.worktree_id !== input.worktreeId ||
+      execution.execution_workspace.workspace_binding_id !==
+        input.workspaceBindingId ||
+      execution.execution_workspace.access !== input.workspaceAccess ||
+      JSON.stringify(
+        [...execution.configuration.resolved_tool_profile.tools].sort(),
+      ) !== JSON.stringify([...input.resolvedToolProfile.tools].sort())
+    )
+      throw new Error(
+        "Run workspace broker authority does not match the execution.",
+      );
+    const assertCurrent = () => {
+      const current = this.contexts.get(context.lineage.lineageId);
+      if (
+        current !== context ||
+        current.dispatch.action.action_id !== input.actionId ||
+        current.dispatch.action.attempt_id !== input.attemptId ||
+        current.lease.ref.environmentId !== context.lease.ref.environmentId ||
+        current.lease.ref.incarnation !== context.lease.ref.incarnation
+      )
+        throw new Error("Run workspace broker authority is stale.");
+    };
+    return {
+      ref: structuredClone(context.lease.ref),
+      physicalLineageId: context.lineage.lineageId,
+      workspaceId: input.workspaceId,
+      worktreeId: input.worktreeId,
+      workspaceBindingId: input.workspaceBindingId,
+      workspaceAccess: input.workspaceAccess,
+      resolvedToolProfile: structuredClone(
+        execution.configuration.resolved_tool_profile,
+      ),
+      assertCurrent,
+      spawn: async (request: WorkspaceToolRequest) => {
+        assertCurrent();
+        if (request.operation === "terminal.shell") {
+          if (request.arguments.cwd !== ".")
+            throw Object.assign(
+              new Error(
+                "Broker shell cwd must be the exact lineage workspace root.",
+              ),
+              {
+                code: "broker_shell_cwd_denied",
+                sideEffectCertainty: "not_submitted" as const,
+              },
+            );
+          const process = await context.lease.spawnStreamed(
+            networkIsolatedWorkspaceToolCommand({
+              executable: "/bin/sh",
+              args: [],
+              cwd: context.workspace.paths.workspace,
+              environment: workspaceToolEnvironment(context.workspace),
+            }),
+            {
+              bufferBytes: 128 * 1024,
+              acknowledgementTimeoutMs: Math.min(
+                request.arguments.timeout_ms,
+                5_000,
+              ),
+            },
+          );
+          return {
+            process,
+            input: new TextEncoder().encode(`${request.arguments.command}\n`),
+          };
+        }
+        const process = await context.lease.spawnStreamed(
+          networkIsolatedWorkspaceToolCommand({
+            executable: "/usr/bin/python3",
+            args: ["-u", "-c", WORKSPACE_TOOL_PROGRAM],
+            cwd: context.workspace.paths.workspace,
+            environment: workspaceToolEnvironment(context.workspace),
+          }),
+          { bufferBytes: 384 * 1024, acknowledgementTimeoutMs: 5_000 },
+        );
+        return {
+          process,
+          input: new TextEncoder().encode(`${JSON.stringify(request)}\n`),
+        };
+      },
+    };
   }
 
   currentEnvironment(runId: string): Promise<EnvironmentRef | null> {
@@ -2692,6 +2934,18 @@ function sameAttestation(
   return Object.entries(expected).every(
     ([key, value]) => observed[key] === value,
   );
+}
+
+function workspaceToolEnvironment(
+  workspace: PrivateLineageWorkspace,
+): Record<string, string> {
+  return {
+    HOME: workspace.paths.runtimeHome,
+    LANG: "C.UTF-8",
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    TMPDIR: workspace.paths.runtimeTemp,
+    QE_WORKSPACE_TOOL_BROKER: "workspace_tool_broker_v1",
+  };
 }
 
 function environmentLaunchFailure(code: string, message: string): Error {

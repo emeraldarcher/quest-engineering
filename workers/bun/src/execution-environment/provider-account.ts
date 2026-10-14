@@ -22,8 +22,13 @@ import type {
   StreamedProcessReconciliation,
 } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
+import { networkIsolatedWorkspaceToolCommand } from "./workspace-tool-network.ts";
 
 const CANARY_FILENAME = "provider-account-canary-v1";
+const BROKER_SECURITY_CANARY_FILENAME =
+  "workspace-tool-broker-security-canary-v1";
+export const WORKSPACE_TOOL_BROKER_ACCOUNT_CANARY =
+  "QE_ACCOUNT_CELL_SECRET_CANARY_DO_NOT_EXPOSE";
 const FAKE_AUTH_FILENAME = "provider-account-fake-auth-v1.json";
 const FAKE_LOGIN_PROGRAM = [
   "import json,os,sys",
@@ -35,6 +40,21 @@ const FAKE_LOGIN_PROGRAM = [
   "tmp=marker+'.tmp'",
   "with open(tmp,'w',encoding='utf-8') as handle: json.dump({'contract':'qe-fake-provider-auth-v1','account':account,'setup':setup,'identity':identity},handle,separators=(',',':'))",
   "os.chmod(tmp,0o600);os.replace(tmp,marker)",
+].join("\n");
+const FAKE_ACCOUNT_BROKER_CLIENT_PROGRAM = [
+  "import json,sys",
+  "for line in sys.stdin:",
+  " try: message=json.loads(line)",
+  " except Exception: sys.exit(21)",
+  " if message.get('type')=='drive' and set(message)=={'type','request'}:",
+  "  request=message['request']",
+  "  sys.stdout.write(json.dumps(request,separators=(',',':'))+'\\n');sys.stdout.flush()",
+  " elif message.get('type')=='result' and set(message)=={'type','response'}:",
+  "  response=message['response']",
+  "  ack={'type':'client_received','request_id':response.get('request_id')}",
+  "  sys.stdout.write(json.dumps(ack,separators=(',',':'))+'\\n');sys.stdout.flush()",
+  " elif message.get('type')=='close': sys.exit(0)",
+  " else: sys.exit(22)",
 ].join("\n");
 const FAKE_STATUS_PROGRAM = [
   "import json,sys",
@@ -312,6 +332,88 @@ export class ProviderAccountEnvironmentManager {
       },
       { bufferBytes: 32 * 1024, acknowledgementTimeoutMs: 5_000 },
     );
+  }
+
+  async workspaceToolBrokerAuthority(input: {
+    providerAccountId: string;
+    environmentGeneration: number;
+    expected: {
+      backendKind: string;
+      environmentId: string;
+      incarnation: string;
+    };
+  }): Promise<{
+    ref: EnvironmentRef;
+    spawnClient(
+      sessionId: string,
+      brokerGeneration: number,
+    ): Promise<StreamedProcess>;
+    assertCurrent(): void;
+  }> {
+    const owner = providerAccountOwner(
+      input.providerAccountId,
+      input.environmentGeneration,
+    );
+    const record =
+      this.store.current("sbx", this.config.workerId, owner) ??
+      this.store.current("fake-account", this.config.workerId, owner);
+    if (
+      !record ||
+      record.retiredAt ||
+      record.state !== "running" ||
+      record.backendKind !== input.expected.backendKind ||
+      record.environmentId !== input.expected.environmentId ||
+      record.incarnation !== input.expected.incarnation
+    )
+      throw new EnvironmentBackendError(
+        "stale_environment_ref",
+        "ProviderAccount broker environment is stale.",
+      );
+    const ref = recordRef(record);
+    const assertCurrent = () => {
+      const current = this.store.byRef(ref);
+      if (
+        !current ||
+        current.retiredAt ||
+        current.state !== "running" ||
+        current.incarnation !== ref.incarnation
+      )
+        throw new EnvironmentBackendError(
+          "stale_environment_ref",
+          "ProviderAccount broker environment was replaced.",
+        );
+    };
+    return {
+      ref,
+      assertCurrent,
+      spawnClient: async (_sessionId, _brokerGeneration) => {
+        assertCurrent();
+        if (this.fake)
+          throw new EnvironmentBackendError(
+            "streamed_process_unsupported",
+            "The in-memory fake account environment cannot host the physical broker client.",
+            "spawn_streamed",
+            "not_submitted",
+          );
+        const lease = await (
+          this.backend as ExecutionEnvironmentBackend
+        ).recover(ref, this.specForOwner(owner));
+        await lease.writeFile({
+          path: `${lease.paths.state}/${BROKER_SECURITY_CANARY_FILENAME}`,
+          data: new TextEncoder().encode(WORKSPACE_TOOL_BROKER_ACCOUNT_CANARY),
+          mode: 0o600,
+        });
+        return lease.spawnStreamed(
+          networkIsolatedWorkspaceToolCommand({
+            executable: "/usr/bin/python3",
+            args: ["-u", "-c", FAKE_ACCOUNT_BROKER_CLIENT_PROGRAM],
+            cwd: lease.paths.state,
+            environment: { QE_FAKE_BROKER_CLIENT: "1" },
+          }),
+          { bufferBytes: 384 * 1024, acknowledgementTimeoutMs: 5_000 },
+        );
+      },
+    };
   }
 
   async reconcileSetupProcess(
@@ -668,12 +770,20 @@ export class ProviderAccountEnvironmentManager {
   private setupSpec(
     identity: ProviderAccountSetupRuntimeIdentity,
   ): ProviderAccountEnvironmentSpec {
-    return {
-      workerId: this.config.workerId,
-      owner: providerAccountOwner(
+    return this.specForOwner(
+      providerAccountOwner(
         identity.providerAccountId,
         identity.environmentGeneration,
       ),
+    );
+  }
+
+  private specForOwner(
+    owner: Extract<EnvironmentOwner, { kind: "provider_account" }>,
+  ): ProviderAccountEnvironmentSpec {
+    return {
+      workerId: this.config.workerId,
+      owner,
       layout: { kind: "provider_account", version: "provider-account-cell-v1" },
       profile: SBX_SHELL_PROFILE.identity,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
@@ -710,24 +820,12 @@ export class ProviderAccountEnvironmentManager {
   private spec(
     command: ProviderAccountEnvironmentCommand,
   ): ProviderAccountEnvironmentSpec {
-    return {
-      workerId: this.config.workerId,
-      owner: providerAccountOwner(
+    return this.specForOwner(
+      providerAccountOwner(
         command.providerAccountId,
         command.credentialGeneration,
       ),
-      layout: { kind: "provider_account", version: "provider-account-cell-v1" },
-      profile: SBX_SHELL_PROFILE.identity,
-      resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
-      networkRequirements: [],
-      credentialGrants: [],
-      controlChannels: [],
-      requiredCapabilities: [
-        { kind: "environment_persistence", mode: "verified" },
-        { kind: "credentials", mode: "none" },
-        { kind: "network_policy", mode: "deny_all" },
-      ],
-    };
+    );
   }
 
   private recordReport(

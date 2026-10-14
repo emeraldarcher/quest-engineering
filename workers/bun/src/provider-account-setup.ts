@@ -373,6 +373,28 @@ export class ProviderAccountSetupCoordinator {
       .map((record) => this.payload(record, null));
   }
 
+  authenticated(
+    providerAccountId: string,
+    credentialGeneration: number,
+    environmentGeneration: number,
+  ): boolean {
+    const generations = this.store
+      .list()
+      .filter(
+        (record) =>
+          record.command.setup.provider_account_id === providerAccountId &&
+          record.command.setup.environment_generation ===
+            environmentGeneration &&
+          record.state === "succeeded" &&
+          record.validation?.state === "authenticated",
+      )
+      .map((record) => record.command.setup.credential_generation + 1);
+    return (
+      generations.length > 0 &&
+      Math.max(...generations) === credentialGeneration
+    );
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
