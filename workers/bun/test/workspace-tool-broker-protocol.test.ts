@@ -50,7 +50,7 @@ describe("workspace tool broker protocol", () => {
       decodeAdmitWorkspaceToolBroker(
         {
           type: "admit_workspace_tool_broker",
-          protocol_version: 17,
+          protocol_version: 18,
           worker_id: workerId,
           connection_generation: generation,
           authorization_id: "authorization-1",
@@ -63,7 +63,7 @@ describe("workspace tool broker protocol", () => {
       decodeRetireWorkspaceToolBroker(
         {
           type: "retire_workspace_tool_broker",
-          protocol_version: 17,
+          protocol_version: 18,
           worker_id: workerId,
           connection_generation: generation,
           authorization_id: "authorization-1",
@@ -183,7 +183,7 @@ describe("workspace tool broker protocol", () => {
 function prepareCommand() {
   return {
     type: "prepare_workspace_tool_broker",
-    protocol_version: 17,
+    protocol_version: 18,
     worker_id: workerId,
     connection_generation: generation,
     broker: {

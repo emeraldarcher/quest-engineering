@@ -12,6 +12,12 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
     field :credential_generation_after, :integer
     field :environment_generation, :integer
     field :provider_key, :string
+    field :authorization_auth_state, :string
+    field :authorization_auth_method, :string
+    field :auth_configuration_identity, :string
+    field :auth_environment_policy, :string
+    field :authorization_inspection_identity, :string
+    field :authorization_inspected_at, :utc_datetime_usec
     field :worker_id, :string
     field :worker_generation, :integer
     field :environment_operation_id, :string
@@ -25,8 +31,18 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
     field :process_generation, :string
     field :process_executable, :string
     field :attention_id, :string
+    field :preflight_state, :string
+    field :preflight_method, :string
+    field :preflight_configuration_identity, :string
+    field :preflight_environment_policy, :string
+    field :preflight_identity, :string
+    field :preflight_inspected_at, :utc_datetime_usec
     field :validation_state, :string
+    field :validation_method, :string
     field :validation_identity, :string
+    field :validation_configuration_identity, :string
+    field :validation_environment_policy, :string
+    field :validation_inspected_at, :utc_datetime_usec
     field :failure_code, :string
     field :failure_message, :string
     field :invocation_requested_at, :utc_datetime_usec
@@ -49,6 +65,12 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
       :credential_generation_after,
       :environment_generation,
       :provider_key,
+      :authorization_auth_state,
+      :authorization_auth_method,
+      :auth_configuration_identity,
+      :auth_environment_policy,
+      :authorization_inspection_identity,
+      :authorization_inspected_at,
       :worker_id,
       :worker_generation,
       :environment_operation_id,
@@ -62,8 +84,18 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
       :process_generation,
       :process_executable,
       :attention_id,
+      :preflight_state,
+      :preflight_method,
+      :preflight_configuration_identity,
+      :preflight_environment_policy,
+      :preflight_identity,
+      :preflight_inspected_at,
       :validation_state,
+      :validation_method,
       :validation_identity,
+      :validation_configuration_identity,
+      :validation_environment_policy,
+      :validation_inspected_at,
       :failure_code,
       :failure_message,
       :invocation_requested_at,
@@ -81,6 +113,12 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
       :credential_generation_before,
       :environment_generation,
       :provider_key,
+      :authorization_auth_state,
+      :authorization_auth_method,
+      :auth_configuration_identity,
+      :auth_environment_policy,
+      :authorization_inspection_identity,
+      :authorization_inspected_at,
       :worker_id,
       :worker_generation,
       :environment_operation_id,
@@ -88,8 +126,7 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
       :environment_id,
       :environment_incarnation,
       :state,
-      :invocation_state,
-      :validation_state
+      :invocation_state
     ])
     |> validate_number(:setup_generation, greater_than: 0)
     |> validate_number(:credential_generation_before, greater_than: 0)
@@ -104,9 +141,23 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
       :invocation_state,
       ~w(not_requested requested acknowledged settled uncertain)
     )
+    |> validate_inclusion(:authorization_auth_state, ~w(authentication_required))
+    |> validate_inclusion(:authorization_auth_method, ~w(none))
+    |> validate_inclusion(
+      :preflight_state,
+      ~w(authentication_required authenticated forbidden_auth_method inspection_unavailable incompatible_status)
+    )
+    |> validate_inclusion(
+      :preflight_method,
+      ~w(none provider_account injected_oauth_token api_key api_key_helper third_party)
+    )
     |> validate_inclusion(
       :validation_state,
-      ~w(not_checked authenticated authentication_required inspection_unavailable incompatible_status)
+      ~w(authentication_required authenticated forbidden_auth_method inspection_unavailable incompatible_status)
+    )
+    |> validate_inclusion(
+      :validation_method,
+      ~w(none provider_account injected_oauth_token api_key api_key_helper third_party)
     )
     |> foreign_key_constraint(:provider_account_id)
     |> foreign_key_constraint(:worker_id)
@@ -124,6 +175,15 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
     |> check_constraint(:state, name: :provider_account_setup_state_valid)
     |> check_constraint(:invocation_state, name: :provider_account_setup_invocation_state_valid)
     |> check_constraint(:validation_state, name: :provider_account_setup_validation_state_valid)
+    |> check_constraint(:preflight_state,
+      name: :provider_account_setup_auth_preflight_complete
+    )
+    |> check_constraint(:validation_state,
+      name: :provider_account_setup_auth_validation_complete
+    )
+    |> check_constraint(:authorization_auth_method,
+      name: :provider_account_setup_auth_method_valid
+    )
     |> check_constraint(:process_backend_id,
       name: :provider_account_setup_process_identity_complete
     )
@@ -142,6 +202,10 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAuthorization 
     field :setup_generation, :integer
     field :request_id, :string
     field :kind, :string
+    field :auth_configuration_identity, :string
+    field :auth_environment_policy, :string
+    field :auth_inspection_identity, :string
+    field :auth_inspected_at, :utc_datetime_usec
     field :authorized_at, :utc_datetime_usec
     timestamps(updated_at: false, type: :utc_datetime_usec)
   end
@@ -154,6 +218,10 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAuthorization 
       :setup_generation,
       :request_id,
       :kind,
+      :auth_configuration_identity,
+      :auth_environment_policy,
+      :auth_inspection_identity,
+      :auth_inspected_at,
       :authorized_at
     ])
     |> validate_required([
@@ -162,6 +230,10 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAuthorization 
       :setup_generation,
       :request_id,
       :kind,
+      :auth_configuration_identity,
+      :auth_environment_policy,
+      :auth_inspection_identity,
+      :auth_inspected_at,
       :authorized_at
     ])
     |> validate_number(:setup_generation, greater_than: 0)

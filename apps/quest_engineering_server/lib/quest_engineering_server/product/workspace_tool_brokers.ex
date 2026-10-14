@@ -24,6 +24,8 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
   alias QuestEngineering.Server.WorkerProtocol
 
   @feature "workspace_tool_broker_v1"
+  @claude_auth_configuration "claude-code-2.1.292-subscription-v1"
+  @claude_auth_environment_policy "claude-subscription-explicit-environment-v1"
 
   @doc """
   Prepares and admits the one exact Anthropic ProviderAccount authority for a
@@ -198,8 +200,12 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
                   account.provider_key == "anthropic" and
                   account.lifecycle_state == "connected" and
                   account.authentication_state == "authenticated" and
+                  account.authentication_method == "provider_account" and
+                  account.auth_configuration_identity == ^@claude_auth_configuration and
+                  account.auth_environment_policy == ^@claude_auth_environment_policy and
+                  not is_nil(account.auth_inspection_identity) and
+                  not is_nil(account.auth_inspected_at) and
                   environment.worker_id == ^scheduled.worker_id and
-                  environment.credential_generation == account.credential_generation and
                   environment.physical_state == "available" and
                   environment.desired_environment_state == "available" and
                   environment.canary_persisted == true,
@@ -375,6 +381,10 @@ defmodule QuestEngineering.Server.Product.WorkspaceToolBrokers do
     valid =
       account.lifecycle_state == "connected" and
         account.authentication_state == "authenticated" and
+        account.authentication_method == "provider_account" and
+        account.auth_configuration_identity == @claude_auth_configuration and
+        account.auth_environment_policy == @claude_auth_environment_policy and
+        is_binary(account.auth_inspection_identity) and not is_nil(account.auth_inspected_at) and
         environment.physical_state == "available" and
         environment.desired_environment_state == "available" and
         environment.canary_persisted == true and

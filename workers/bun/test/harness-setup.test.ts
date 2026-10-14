@@ -484,8 +484,8 @@ test("already-authenticated preflight becomes ready without login intent", async
         ...prepared.inspection,
         state: "ready",
         authenticated: true,
-        authState: "subscription_authenticated",
-        authMethod: "claude.ai",
+        authState: "authenticated",
+        authMethod: "provider_account",
         detail: "Claude subscription authentication is ready.",
       },
     };

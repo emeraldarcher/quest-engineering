@@ -91,7 +91,8 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
       error_code: nil,
       error_message: nil,
       canary_persisted: true,
-      observed_at: DateTime.utc_now()
+      observed_at: DateTime.utc_now(),
+      authentication: nil
     }
 
     assert {:ok, {:applied, _, _}} = ProviderAccounts.apply_environment_report(first_report)
@@ -132,7 +133,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     :ok =
       FakeWorker.send_message(worker, %{
         "type" => "provider_account_environment_state",
-        "protocol_version" => 17,
+        "protocol_version" => 18,
         "worker_id" => worker_id,
         "environment" =>
           first_report
@@ -146,7 +147,7 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
     :ok =
       FakeWorker.send_message(worker, %{
         "type" => "provider_account_environment_state",
-        "protocol_version" => 17,
+        "protocol_version" => 18,
         "worker_id" => worker_id,
         "environment" => %{
           "provider_account_id" => account.id,
@@ -161,7 +162,8 @@ defmodule QuestEngineering.Server.WorkerProtocolIntegrationTest do
           "error_code" => nil,
           "error_message" => nil,
           "canary_persisted" => true,
-          "observed_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+          "observed_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+          "authentication" => nil
         }
       })
 

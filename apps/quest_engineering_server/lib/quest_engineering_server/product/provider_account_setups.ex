@@ -34,7 +34,17 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     "setup_cancelled" => "ProviderAccount setup was cancelled by the operator.",
     "environment_identity_mismatch" => "The ProviderAccount environment identity changed.",
     "stale_setup_command" => "The setup command is stale.",
-    "input_delivery_uncertain" => "Sensitive setup input delivery is uncertain."
+    "input_delivery_uncertain" => "Sensitive setup input delivery is uncertain.",
+    "setup_authentication_already_authenticated" =>
+      "Provider authentication is already present; login was not invoked.",
+    "setup_authentication_method_forbidden" =>
+      "A forbidden provider authentication method was selected; login was not invoked.",
+    "setup_authentication_preflight_unavailable" =>
+      "Provider authentication could not be inspected; login was not invoked.",
+    "setup_authentication_status_incompatible" =>
+      "Provider authentication status was incompatible; login was not invoked.",
+    "setup_authentication_preflight_mismatch" =>
+      "Provider authentication preflight no longer matches the authorization; login was not invoked."
   }
 
   def list(provider_account_id) when is_binary(provider_account_id) do
@@ -268,7 +278,6 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
               |> Repo.update!()
 
             cancel_attention!(updated, now)
-            update_account_authentication!(updated.provider_account_id, "authentication_required")
             insert_event!(updated, "cancellation_requested", %{})
             {updated, true}
         end
@@ -376,7 +385,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     valid_worker =
       worker.status == "connected" and worker.ready_generation == worker.connection_generation and
         worker.connection_generation == environment.worker_generation and
-        "provider_account_setup_v1" in Map.get(worker.capabilities, "features", [])
+        "provider_account_setup_v1" in Map.get(worker.capabilities, "features", []) and
+        "provider_account_auth_preflight_v1" in Map.get(worker.capabilities, "features", [])
 
     if not valid_worker,
       do: Repo.rollback(error(:setup_worker_unavailable, %{worker_id: worker.id}))
@@ -398,6 +408,12 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         credential_generation_before: account.credential_generation,
         environment_generation: environment.credential_generation,
         provider_key: account.provider_key,
+        authorization_auth_state: account.authentication_state,
+        authorization_auth_method: account.authentication_method,
+        auth_configuration_identity: account.auth_configuration_identity,
+        auth_environment_policy: account.auth_environment_policy,
+        authorization_inspection_identity: account.auth_inspection_identity,
+        authorization_inspected_at: account.auth_inspected_at,
         worker_id: account.worker_id,
         worker_generation: environment.worker_generation,
         environment_operation_id: environment.operation_id,
@@ -405,8 +421,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         environment_id: environment.environment_id,
         environment_incarnation: environment.incarnation,
         state: "authorized",
-        invocation_state: "not_requested",
-        validation_state: "not_checked"
+        invocation_state: "not_requested"
       })
       |> Repo.insert!()
 
@@ -417,12 +432,21 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         setup_generation: setup_generation,
         request_id: request_id,
         kind: "provider_account_setup",
+        auth_configuration_identity: attempt.auth_configuration_identity,
+        auth_environment_policy: attempt.auth_environment_policy,
+        auth_inspection_identity: attempt.authorization_inspection_identity,
+        auth_inspected_at: attempt.authorization_inspected_at,
         authorized_at: now
       })
       |> Repo.insert!()
 
-    update_account_authentication!(account.id, "setup_authorized")
-    insert_event!(attempt, "setup_authorized", %{authorization_id: authorization.id})
+    insert_event!(attempt, "setup_authorized", %{
+      authorization_id: authorization.id,
+      auth_configuration_identity: attempt.auth_configuration_identity,
+      auth_environment_policy: attempt.auth_environment_policy,
+      auth_inspection_identity: attempt.authorization_inspection_identity
+    })
+
     {attempt, authorization, false}
   end
 
@@ -432,6 +456,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         environment.physical_state == "available" and
         environment.desired_environment_state == "available" and
         environment.canary_persisted == true and
+        ProviderAccounts.setup_authentication_eligible?(account) and
         Enum.all?(
           [environment.backend_kind, environment.environment_id, environment.incarnation],
           &(is_binary(&1) and &1 != "")
@@ -443,7 +468,11 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
           error(:provider_account_setup_ineligible, %{
             provider_account_id: account.id,
             lifecycle_state: account.lifecycle_state,
-            environment_state: account.environment_state
+            environment_state: account.environment_state,
+            authentication_state: account.authentication_state,
+            authentication_method: account.authentication_method,
+            auth_configuration_identity: account.auth_configuration_identity,
+            auth_environment_policy: account.auth_environment_policy
           })
         )
   end
@@ -490,10 +519,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
             })
             |> Repo.update!()
 
-          update_account_authentication!(
-            invalidated.provider_account_id,
-            "authentication_required"
-          )
+          clear_account_authentication!(invalidated.provider_account_id)
 
           insert_event!(invalidated, "setup_invalidated", %{})
           nil
@@ -512,20 +538,79 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     validate_transition!(attempt, incoming_state, incoming_invocation)
     now = parse_timestamp(fetch(report, :observed_at))
     process = fetch(report, :process)
+    preflight = fetch(report, :preflight)
     validation = fetch(report, :validation)
     failure_code = fetch(report, :failure_code)
 
     attributes = %{
       state: incoming_state,
       invocation_state: incoming_invocation,
-      process_backend_id: process && fetch(process, :backend_process_id),
-      process_start_identity: process && fetch(process, :process_start_identity),
-      process_generation: process && fetch(process, :process_generation),
-      process_executable: process && fetch(process, :executable),
+      process_backend_id:
+        if(is_map(process),
+          do: fetch(process, :backend_process_id),
+          else: attempt.process_backend_id
+        ),
+      process_start_identity:
+        if(is_map(process),
+          do: fetch(process, :process_start_identity),
+          else: attempt.process_start_identity
+        ),
+      process_generation:
+        if(is_map(process),
+          do: fetch(process, :process_generation),
+          else: attempt.process_generation
+        ),
+      process_executable:
+        if(is_map(process), do: fetch(process, :executable), else: attempt.process_executable),
       attention_id: attention_id(report),
-      validation_state: (validation && fetch(validation, :state)) || attempt.validation_state,
+      preflight_state:
+        if(is_map(preflight), do: fetch(preflight, :state), else: attempt.preflight_state),
+      preflight_method:
+        if(is_map(preflight), do: fetch(preflight, :method), else: attempt.preflight_method),
+      preflight_configuration_identity:
+        if(is_map(preflight),
+          do: fetch(preflight, :configuration_identity),
+          else: attempt.preflight_configuration_identity
+        ),
+      preflight_environment_policy:
+        if(is_map(preflight),
+          do: fetch(preflight, :environment_policy),
+          else: attempt.preflight_environment_policy
+        ),
+      preflight_identity:
+        if(is_map(preflight),
+          do: fetch(preflight, :evidence_identity),
+          else: attempt.preflight_identity
+        ),
+      preflight_inspected_at:
+        if(is_map(preflight),
+          do: parse_timestamp(fetch(preflight, :inspected_at)),
+          else: attempt.preflight_inspected_at
+        ),
+      validation_state:
+        if(is_map(validation), do: fetch(validation, :state), else: attempt.validation_state),
+      validation_method:
+        if(is_map(validation), do: fetch(validation, :method), else: attempt.validation_method),
       validation_identity:
-        (validation && fetch(validation, :identity)) || attempt.validation_identity,
+        if(is_map(validation),
+          do: fetch(validation, :evidence_identity),
+          else: attempt.validation_identity
+        ),
+      validation_configuration_identity:
+        if(is_map(validation),
+          do: fetch(validation, :configuration_identity),
+          else: attempt.validation_configuration_identity
+        ),
+      validation_environment_policy:
+        if(is_map(validation),
+          do: fetch(validation, :environment_policy),
+          else: attempt.validation_environment_policy
+        ),
+      validation_inspected_at:
+        if(is_map(validation),
+          do: parse_timestamp(fetch(validation, :inspected_at)),
+          else: attempt.validation_inspected_at
+        ),
       failure_code: failure_code,
       failure_message: safe_failure_message(failure_code),
       invocation_requested_at:
@@ -585,6 +670,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
 
     process = fetch(report, :process)
     attention = fetch(report, :attention)
+    preflight = fetch(report, :preflight)
     validation = fetch(report, :validation)
     incoming_state = fetch(report, :state)
     incoming_invocation = fetch(report, :invocation_state)
@@ -595,6 +681,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
 
     process_stable =
       is_nil(attempt.process_generation) or
+        (incoming_state == "uncertain" and incoming_invocation == "uncertain" and
+           is_nil(process)) or
         (is_map(process) and attempt.process_backend_id == fetch(process, :backend_process_id) and
            attempt.process_start_identity == fetch(process, :process_start_identity) and
            attempt.process_generation == fetch(process, :process_generation) and
@@ -603,13 +691,48 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     process_allowed =
       is_nil(process) or fetch(process, :executable) in @setup_executables
 
+    preflight_required = incoming_invocation in ~w(requested acknowledged settled)
+
+    preflight_valid =
+      is_map(preflight) and fetch(preflight, :state) == "authentication_required" and
+        fetch(preflight, :method) == "none" and
+        fetch(preflight, :configuration_identity) == attempt.auth_configuration_identity and
+        fetch(preflight, :environment_policy) == attempt.auth_environment_policy and
+        fetch(preflight, :evidence_identity) == attempt.authorization_inspection_identity
+
+    validation_valid =
+      is_map(validation) and fetch(validation, :state) == "authenticated" and
+        fetch(validation, :method) == "provider_account" and
+        fetch(validation, :configuration_identity) == attempt.auth_configuration_identity and
+        fetch(validation, :environment_policy) == attempt.auth_environment_policy and
+        is_binary(fetch(validation, :evidence_identity))
+
+    evidence_stable =
+      stable_inspection?(
+        attempt.preflight_state,
+        attempt.preflight_method,
+        attempt.preflight_configuration_identity,
+        attempt.preflight_environment_policy,
+        attempt.preflight_identity,
+        attempt.preflight_inspected_at,
+        preflight
+      ) and
+        stable_inspection?(
+          attempt.validation_state,
+          attempt.validation_method,
+          attempt.validation_configuration_identity,
+          attempt.validation_environment_policy,
+          attempt.validation_identity,
+          attempt.validation_inspected_at,
+          validation
+        )
+
     valid_shape =
       (not process_required or is_map(process)) and process_allowed and process_stable and
+        evidence_stable and (not preflight_required or preflight_valid) and
         (incoming_state != "human_interaction_required" or is_map(attention)) and
         (incoming_state != "succeeded" or
-           (incoming_invocation == "settled" and is_map(validation) and
-              fetch(validation, :state) == "authenticated" and
-              is_binary(fetch(validation, :identity))))
+           (incoming_invocation == "settled" and validation_valid))
 
     if not valid or not valid_shape,
       do:
@@ -677,25 +800,13 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp apply_account_projection!(attempt, validation, now) do
     case attempt.state do
-      "authorized" ->
-        update_account_authentication!(attempt.provider_account_id, "setup_authorized")
-        attempt
-
-      state when state in ~w(preparing invocation_requested invocation_acknowledged) ->
-        update_account_authentication!(attempt.provider_account_id, "setup_in_progress")
-        attempt
-
-      "human_interaction_required" ->
-        update_account_authentication!(attempt.provider_account_id, "interaction_required")
-        attempt
-
-      "validating" ->
-        update_account_authentication!(attempt.provider_account_id, "validating")
+      state
+      when state in ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required validating cancellation_requested) ->
         attempt
 
       "succeeded" ->
-        if not is_map(validation) or fetch(validation, :state) != "authenticated" or
-             not is_binary(fetch(validation, :identity)) or attempt.invocation_state != "settled" do
+        if not valid_authenticated_validation?(attempt, validation) or
+             attempt.invocation_state != "settled" do
           Repo.rollback(
             error(:invalid_provider_account_setup_readiness, %{setup_attempt_id: attempt.id})
           )
@@ -705,16 +816,33 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
 
         cond do
           account.credential_generation == attempt.credential_generation_before ->
-            next = DomainAccount.authenticated(ProviderAccounts.to_domain_record(account), now)
+            inspected_at = parse_timestamp(fetch(validation, :inspected_at))
+
+            next =
+              DomainAccount.authenticated(
+                ProviderAccounts.to_domain_record(account),
+                %{
+                  configuration_identity: fetch(validation, :configuration_identity),
+                  environment_policy: fetch(validation, :environment_policy),
+                  inspection_identity: fetch(validation, :evidence_identity),
+                  inspected_at: inspected_at
+                },
+                now
+              )
 
             updated_account =
               account
               |> ProviderAccount.changeset(%{
                 credential_generation: next.credential_generation,
                 lifecycle_state: Atom.to_string(next.lifecycle_state),
-                authentication_state: Atom.to_string(next.authentication_state),
-                authenticated_at: next.authenticated_at,
-                last_validated_at: next.last_validated_at
+                authentication_state: "authenticated",
+                authentication_method: "provider_account",
+                auth_configuration_identity: attempt.auth_configuration_identity,
+                auth_environment_policy: attempt.auth_environment_policy,
+                auth_inspection_identity: fetch(validation, :evidence_identity),
+                auth_inspected_at: inspected_at,
+                authenticated_at: inspected_at,
+                last_validated_at: inspected_at
               })
               |> Repo.update!()
 
@@ -725,7 +853,9 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
             |> Repo.update!()
 
           account.credential_generation == attempt.credential_generation_before + 1 and
-              account.authentication_state == "authenticated" ->
+            account.authentication_state == "authenticated" and
+            account.auth_configuration_identity == attempt.auth_configuration_identity and
+              account.auth_environment_policy == attempt.auth_environment_policy ->
             attempt
 
           true ->
@@ -735,18 +865,28 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         end
 
       "failed" ->
-        state =
-          case validation_state(validation) do
-            "authentication_required" -> "authentication_required"
-            "inspection_unavailable" -> "inspection_unavailable"
-            _ -> "authentication_required"
-          end
+        cond do
+          is_map(validation) ->
+            project_authentication_inspection!(attempt.provider_account_id, validation)
 
-        update_account_authentication!(attempt.provider_account_id, state)
+          is_binary(attempt.preflight_state) ->
+            project_authentication_inspection!(attempt.provider_account_id, %{
+              state: attempt.preflight_state,
+              method: attempt.preflight_method,
+              configuration_identity: attempt.preflight_configuration_identity,
+              environment_policy: attempt.preflight_environment_policy,
+              evidence_identity: attempt.preflight_identity,
+              inspected_at: attempt.preflight_inspected_at
+            })
+
+          true ->
+            clear_account_authentication!(attempt.provider_account_id)
+        end
+
         attempt
 
-      state when state in ~w(uncertain cancelled invalidated cancellation_requested) ->
-        update_account_authentication!(attempt.provider_account_id, "authentication_required")
+      state when state in ~w(uncertain cancelled invalidated) ->
+        clear_account_authentication!(attempt.provider_account_id)
         attempt
     end
   end
@@ -894,16 +1034,48 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     end
   end
 
-  defp update_account_authentication!(id, state) do
+  defp valid_authenticated_validation?(attempt, validation) do
+    is_map(validation) and fetch(validation, :state) == "authenticated" and
+      fetch(validation, :method) == "provider_account" and
+      fetch(validation, :configuration_identity) == attempt.auth_configuration_identity and
+      fetch(validation, :environment_policy) == attempt.auth_environment_policy and
+      is_binary(fetch(validation, :evidence_identity))
+  end
+
+  defp project_authentication_inspection!(id, inspection) do
+    account = locked_account(id)
+    state = fetch(inspection, :state)
+    inspected_at = parse_timestamp(fetch(inspection, :inspected_at))
+
+    account
+    |> ProviderAccount.changeset(%{
+      authentication_state: state,
+      authentication_method: fetch(inspection, :method),
+      auth_configuration_identity: fetch(inspection, :configuration_identity),
+      auth_environment_policy: fetch(inspection, :environment_policy),
+      auth_inspection_identity: fetch(inspection, :evidence_identity),
+      auth_inspected_at: inspected_at,
+      authenticated_at: if(state == "authenticated", do: inspected_at, else: nil),
+      last_validated_at: inspected_at
+    })
+    |> Repo.update!()
+  end
+
+  defp clear_account_authentication!(id) do
     account = locked_account(id)
 
-    attributes =
-      %{authentication_state: state}
-      |> then(fn attrs ->
-        if state == "authenticated", do: attrs, else: Map.put(attrs, :last_validated_at, nil)
-      end)
-
-    account |> ProviderAccount.changeset(attributes) |> Repo.update!()
+    account
+    |> ProviderAccount.changeset(%{
+      authentication_state: "not_checked",
+      authentication_method: nil,
+      auth_configuration_identity: nil,
+      auth_environment_policy: nil,
+      auth_inspection_identity: nil,
+      auth_inspected_at: nil,
+      authenticated_at: nil,
+      last_validated_at: nil
+    })
+    |> Repo.update!()
   end
 
   defp insert_event!(attempt, event_type, details) do
@@ -935,6 +1107,14 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
       worker_generation: attempt.worker_generation,
       environment_operation_id: attempt.environment_operation_id,
       provider_key: attempt.provider_key,
+      authorized_authentication: %{
+        state: attempt.authorization_auth_state,
+        method: attempt.authorization_auth_method,
+        configuration_identity: attempt.auth_configuration_identity,
+        environment_policy: attempt.auth_environment_policy,
+        evidence_identity: attempt.authorization_inspection_identity,
+        inspected_at: attempt.authorization_inspected_at
+      },
       backend_kind: attempt.backend_kind,
       environment_id: attempt.environment_id,
       environment_incarnation: attempt.environment_incarnation,
@@ -967,8 +1147,35 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
       Repo.rollback(error(:provider_account_setup_not_found, %{setup_attempt_id: id}))
   end
 
-  defp validation_state(value) when is_map(value), do: fetch(value, :state)
-  defp validation_state(_value), do: nil
+  defp stable_inspection?(
+         nil,
+         _method,
+         _configuration,
+         _policy,
+         _identity,
+         _inspected_at,
+         _incoming
+       ),
+       do: true
+
+  defp stable_inspection?(
+         _state,
+         _method,
+         _configuration,
+         _policy,
+         _identity,
+         _inspected_at,
+         nil
+       ),
+       do: true
+
+  defp stable_inspection?(state, method, configuration, policy, identity, inspected_at, incoming) do
+    state == fetch(incoming, :state) and method == fetch(incoming, :method) and
+      configuration == fetch(incoming, :configuration_identity) and
+      policy == fetch(incoming, :environment_policy) and
+      identity == fetch(incoming, :evidence_identity) and
+      DateTime.compare(inspected_at, parse_timestamp(fetch(incoming, :inspected_at))) == :eq
+  end
 
   defp attention_id(report) do
     case fetch(report, :attention) do

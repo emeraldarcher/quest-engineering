@@ -13,6 +13,11 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccount do
     field :lifecycle_state, :string
     field :environment_state, :string
     field :authentication_state, :string
+    field :authentication_method, :string
+    field :auth_configuration_identity, :string
+    field :auth_environment_policy, :string
+    field :auth_inspection_identity, :string
+    field :auth_inspected_at, :utc_datetime_usec
     field :authenticated_at, :utc_datetime_usec
     field :last_validated_at, :utc_datetime_usec
     timestamps(type: :utc_datetime_usec)
@@ -29,6 +34,11 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccount do
       :lifecycle_state,
       :environment_state,
       :authentication_state,
+      :authentication_method,
+      :auth_configuration_identity,
+      :auth_environment_policy,
+      :auth_inspection_identity,
+      :auth_inspected_at,
       :authenticated_at,
       :last_validated_at
     ])
@@ -49,9 +59,28 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccount do
     )
     |> validate_inclusion(
       :authentication_state,
-      ~w(not_checked setup_authorized setup_in_progress interaction_required validating authenticated authentication_required inspection_unavailable invalid)
+      ~w(not_checked authentication_required authenticated forbidden_auth_method inspection_unavailable incompatible_status)
+    )
+    |> validate_inclusion(
+      :authentication_method,
+      ~w(none provider_account injected_oauth_token api_key api_key_helper third_party)
     )
     |> foreign_key_constraint(:worker_id)
+    |> check_constraint(:authentication_state,
+      name: :provider_accounts_authentication_state_valid
+    )
+    |> check_constraint(:authentication_method,
+      name: :provider_accounts_authentication_method_valid
+    )
+    |> check_constraint(:authentication_state,
+      name: :provider_accounts_authentication_method_matches_state
+    )
+    |> check_constraint(:authentication_state,
+      name: :provider_accounts_authentication_evidence_complete
+    )
+    |> check_constraint(:authentication_state,
+      name: :provider_accounts_authentication_timestamps
+    )
   end
 end
 

@@ -1,17 +1,28 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { claudeAccountEnvironment } from "../src/execution-environment/provider-account.ts";
 import { claudeConfigIdentity } from "../src/execution-environment/sbx-run.ts";
 import type { EnvironmentRef } from "../src/execution-environment/types.ts";
 import {
   CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES,
+  CLAUDE_SUBSCRIPTION_CONFIGURATION,
   CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
   classifyClaudeSubscriptionAuthStatus,
   claudeSubscriptionEnvironment,
-  isClaudeSubscriptionLoginEligible,
-  unavailableClaudeSubscriptionAuthInspection,
-} from "../src/harnesses/claude-agent-sdk/auth.ts";
+  isProviderAuthenticationLoginEligible,
+  unavailableProviderAuthenticationInspection,
+} from "../src/provider-auth.ts";
 
 const configDirectory = "/qe/state/claude-lineages/test/config";
+const evidenceContext = {
+  providerKey: "anthropic",
+  owner: { kind: "provider_account" as const, id: "account-1", generation: 1 },
+  backendKind: "sbx",
+  environmentId: "environment-1",
+  environmentIncarnation: "incarnation-1",
+  profile: { id: "qe-claude-account-v1", digest: "sha256:test" },
+  configuration: CLAUDE_SUBSCRIPTION_CONFIGURATION,
+};
 
 function status(
   exitCode: number,
@@ -30,48 +41,57 @@ function status(
       }),
     },
     configDirectory,
+    evidenceContext,
   );
 }
 
-test("pinned Claude auth status maps only exact logged-out state to subscription login eligibility", () => {
+test("pinned Claude auth status maps only exact logged-out state to provider-account login eligibility", () => {
   const loggedOut = status(1, "none", false);
   expect(loggedOut).toMatchObject({
-    authState: "authentication_required",
-    authMethod: "none",
+    state: "authentication_required",
+    method: "none",
   });
-  expect(isClaudeSubscriptionLoginEligible(loggedOut)).toBe(true);
+  expect(isProviderAuthenticationLoginEligible(loggedOut)).toBe(true);
 
   const subscription = status(0, "claude.ai", true);
   expect(subscription).toMatchObject({
-    authState: "subscription_authenticated",
-    authMethod: "claude.ai",
+    state: "authenticated",
+    method: "provider_account",
   });
-  expect(isClaudeSubscriptionLoginEligible(subscription)).toBe(false);
+  expect(isProviderAuthenticationLoginEligible(subscription)).toBe(false);
 
-  for (const method of ["api_key", "oauth_token", "api_key_helper"] as const) {
+  const methods = [
+    ["api_key", "api_key"],
+    ["oauth_token", "injected_oauth_token"],
+    ["api_key_helper", "api_key_helper"],
+  ] as const;
+  for (const [method, canonical] of methods) {
     const forbidden = status(0, method, true);
     expect(forbidden).toMatchObject({
-      authState: "forbidden_auth_method",
-      authMethod: method,
+      state: "forbidden_auth_method",
+      method: canonical,
     });
-    expect(isClaudeSubscriptionLoginEligible(forbidden)).toBe(false);
+    expect(isProviderAuthenticationLoginEligible(forbidden)).toBe(false);
   }
 
   for (const provider of ["bedrock", "vertex", "foundry"] as const)
     expect(status(0, "third_party", true, provider)).toMatchObject({
-      authState: "forbidden_auth_method",
-      authMethod: "third_party",
+      state: "forbidden_auth_method",
+      method: "third_party",
     });
 
   expect(
     classifyClaudeSubscriptionAuthStatus(
       { exitCode: 0, stdout: "not-json" },
       configDirectory,
+      evidenceContext,
     ),
-  ).toMatchObject({ authState: "incompatible_status", authMethod: null });
-  expect(unavailableClaudeSubscriptionAuthInspection()).toMatchObject({
-    authState: "inspection_unavailable",
-    authMethod: null,
+  ).toMatchObject({ state: "incompatible_status", method: null });
+  expect(
+    unavailableProviderAuthenticationInspection(evidenceContext),
+  ).toMatchObject({
+    state: "inspection_unavailable",
+    method: null,
   });
 });
 
@@ -90,6 +110,7 @@ test("contradictory, unknown, and wrong-directory status is never login-eligible
         }),
       },
       configDirectory,
+      evidenceContext,
     ),
     classifyClaudeSubscriptionAuthStatus(
       {
@@ -102,11 +123,12 @@ test("contradictory, unknown, and wrong-directory status is never login-eligible
         }),
       },
       configDirectory,
+      evidenceContext,
     ),
   ];
   for (const candidate of candidates) {
-    expect(candidate.authState).toBe("incompatible_status");
-    expect(isClaudeSubscriptionLoginEligible(candidate)).toBe(false);
+    expect(candidate.state).toBe("incompatible_status");
+    expect(isProviderAuthenticationLoginEligible(candidate)).toBe(false);
   }
 });
 
@@ -124,6 +146,17 @@ test("subscription environment is an exact allowlist with all provider selectors
   expect(environment).not.toHaveProperty("GOOGLE_APPLICATION_CREDENTIALS");
   expect(environment).not.toHaveProperty("AZURE_CLIENT_SECRET");
   expect(environment).not.toHaveProperty("HTTP_PROXY");
+
+  expect(() =>
+    claudeAccountEnvironment(configDirectory, {
+      ANTHROPIC_API_KEY: "forbidden",
+    }),
+  ).toThrow("not allowlisted");
+  expect(() =>
+    claudeAccountEnvironment(configDirectory, {
+      PATH: "/untrusted",
+    }),
+  ).toThrow("not allowlisted");
 });
 
 test("configuration identity fences subscription mode and environment policy without changing profile identity", () => {

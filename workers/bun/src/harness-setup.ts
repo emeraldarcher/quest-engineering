@@ -4,12 +4,6 @@ import type {
   HarnessSetupRecord,
   HarnessSetupStore,
 } from "./harness-setup-store.ts";
-import {
-  CLAUDE_SUBSCRIPTION_AUTH_MODE,
-  CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
-  CLAUDE_SUBSCRIPTION_LOGIN_MODE,
-  isClaudeSubscriptionLoginEligible,
-} from "./harnesses/claude-agent-sdk/auth.ts";
 import type { HarnessRegistry } from "./harnesses/registry.ts";
 import type {
   HarnessSetupContext,
@@ -23,6 +17,12 @@ import type {
   PrepareHarnessSetupCommand,
   RespondHarnessSetupCommand,
 } from "./protocol/types.ts";
+import {
+  CLAUDE_SUBSCRIPTION_AUTH_MODE,
+  CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
+  CLAUDE_SUBSCRIPTION_LOGIN_MODE,
+  isProviderAuthenticationLoginEligible,
+} from "./provider-auth.ts";
 
 export type HarnessSetupReporter = (
   record: HarnessSetupRecord,
@@ -860,8 +860,8 @@ function subscriptionReady(
     inspection.authMode === CLAUDE_SUBSCRIPTION_AUTH_MODE &&
     inspection.loginMode === CLAUDE_SUBSCRIPTION_LOGIN_MODE &&
     inspection.environmentPolicy === CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY &&
-    inspection.authState === "subscription_authenticated" &&
-    inspection.authMethod === "claude.ai"
+    inspection.authState === "authenticated" &&
+    inspection.authMethod === "provider_account"
   );
 }
 
@@ -871,7 +871,7 @@ function setupPreflightFailure(
   switch (inspection.authState) {
     case "authentication_required":
       return null;
-    case "subscription_authenticated":
+    case "authenticated":
       return {
         code: "claude_auth_preflight_incompatible",
         message:
@@ -913,7 +913,10 @@ function loginEligibilityFailure(
     authorizationAge < -60_000 ||
     authorizationAge > 5 * 60_000 ||
     JSON.stringify(prepared.context) !== JSON.stringify(context) ||
-    !isClaudeSubscriptionLoginEligible(inspection) ||
+    !isProviderAuthenticationLoginEligible({
+      state: inspection.authState,
+      method: inspection.authMethod,
+    }) ||
     inspection.state !== "preparing" ||
     inspection.authenticated !== false ||
     environment?.profile.id !== context.profile.id ||

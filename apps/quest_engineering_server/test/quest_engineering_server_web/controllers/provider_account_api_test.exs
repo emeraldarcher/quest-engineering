@@ -47,6 +47,15 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
                  "authentication" => "not_checked",
                  "inference" => "not_evaluated"
                },
+               "capabilities" => %{"can_authorize_setup" => false},
+               "authentication" => %{
+                 "state" => "not_checked",
+                 "method" => nil,
+                 "configuration_identity" => nil,
+                 "environment_policy" => nil,
+                 "evidence_identity" => nil,
+                 "inspected_at" => nil
+               },
                "environment" => %{
                  "desired_state" => "available",
                  "physical_state" => "pending",
@@ -173,8 +182,30 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
         error_code: nil,
         error_message: nil,
         canary_persisted: true,
-        observed_at: DateTime.utc_now()
+        observed_at: DateTime.utc_now(),
+        authentication: %{
+          state: "authentication_required",
+          method: "none",
+          configuration_identity: "qe-fake-provider-account-auth-v1",
+          environment_policy: "qe-fake-provider-account-explicit-environment-v1",
+          evidence_identity: "provider-auth-evidence-v1:" <> String.duplicate("a", 64),
+          inspected_at: DateTime.utc_now()
+        }
       })
+
+    assert %{
+             "provider_account" => %{
+               "capabilities" => %{"can_authorize_setup" => true},
+               "authentication" => %{
+                 "state" => "authentication_required",
+                 "method" => "none",
+                 "configuration_identity" => "qe-fake-provider-account-auth-v1"
+               }
+             }
+           } =
+             build_conn()
+             |> get("/api/v1/provider-accounts/#{account.id}")
+             |> json_response(200)
 
     request_id = Ecto.UUID.generate()
 
@@ -197,7 +228,7 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_provider_account_setup",
-                      "protocol_version" => 17,
+                      "protocol_version" => 18,
                       "setup" => %{
                         "setup_attempt_id" => ^attempt_id,
                         "provider_account_id" => account_id,
@@ -255,6 +286,14 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
                    attention_id: attention_id,
                    kind: "provider_authentication",
                    message: "Complete deterministic sign-in."
+                 },
+                 preflight: %{
+                   state: "authentication_required",
+                   method: "none",
+                   configuration_identity: attempt.auth_configuration_identity,
+                   environment_policy: attempt.auth_environment_policy,
+                   evidence_identity: attempt.authorization_inspection_identity,
+                   inspected_at: DateTime.utc_now()
                  },
                  validation: nil,
                  failure_code: nil,
@@ -452,7 +491,11 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
       "arch" => "test",
       "max_concurrency" => 1,
       "tags" => [],
-      "features" => ["provider_account_environments_v1", "provider_account_setup_v1"],
+      "features" => [
+        "provider_account_environments_v1",
+        "provider_account_setup_v1",
+        "provider_account_auth_preflight_v1"
+      ],
       "workspace_bindings" => [],
       "executors" => [
         %{

@@ -17,6 +17,11 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   alias QuestEngineering.Server.Repo
 
   @active_setup_states ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required validating cancellation_requested)
+  @claude_auth_configuration "claude-code-2.1.292-subscription-v1"
+  @claude_auth_environment_policy "claude-subscription-explicit-environment-v1"
+  @fake_auth_configuration "qe-fake-provider-account-auth-v1"
+  @fake_auth_environment_policy "qe-fake-provider-account-explicit-environment-v1"
+  @auth_evidence_pattern ~r/^provider-auth-evidence-v1:[0-9a-f]{64}$/
 
   @type error :: %{code: atom(), details: map()}
 
@@ -35,6 +40,21 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   end
 
   def to_domain_record(%ProviderAccount{} = record), do: to_domain(record)
+
+  def setup_authentication_eligible?(account) do
+    state = account.authentication_state
+
+    state in [:authentication_required, "authentication_required"] and
+      account.authentication_method == "none" and
+      expected_authentication_configuration?(
+        account.provider_key,
+        account.auth_configuration_identity,
+        account.auth_environment_policy
+      ) and
+      is_binary(account.auth_inspection_identity) and
+      Regex.match?(@auth_evidence_pattern, account.auth_inspection_identity) and
+      match?(%DateTime{}, account.auth_inspected_at)
+  end
 
   def get_with_environment(id) when is_binary(id) do
     with {:ok, account} <- get(id) do
@@ -160,12 +180,13 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
            operation_id = Ecto.UUID.generate(),
            {:ok, updated} <-
              account
-             |> ProviderAccount.changeset(%{
-               credential_generation: next.credential_generation,
-               lifecycle_state: "connected",
-               environment_state: "pending",
-               authentication_state: "not_checked"
-             })
+             |> ProviderAccount.changeset(
+               clear_authentication_evidence(%{
+                 credential_generation: next.credential_generation,
+                 lifecycle_state: "connected",
+                 environment_state: "pending"
+               })
+             )
              |> Repo.update(),
            {:ok, environment} <-
              upsert_environment(
@@ -206,6 +227,11 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   end
 
   defp refence_environment({account, environment}, worker_generation) do
+    account =
+      account
+      |> ProviderAccount.changeset(clear_authentication_evidence(%{}))
+      |> Repo.update!()
+
     updated =
       environment
       |> ProviderAccountEnvironment.changeset(%{
@@ -229,11 +255,12 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   defp persist_semantic_transition(account, next, target) do
     with {:ok, updated} <-
            account
-           |> ProviderAccount.changeset(%{
-             lifecycle_state: Atom.to_string(next.lifecycle_state),
-             environment_state: Atom.to_string(next.environment_state),
-             authentication_state: "not_checked"
-           })
+           |> ProviderAccount.changeset(
+             clear_authentication_evidence(%{
+               lifecycle_state: Atom.to_string(next.lifecycle_state),
+               environment_state: Atom.to_string(next.environment_state)
+             })
+           )
            |> Repo.update(),
          {:ok, _event} <-
            insert_event(
@@ -252,11 +279,12 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   defp persist_disconnection(account, next, worker_generation) do
     with {:ok, updated} <-
            account
-           |> ProviderAccount.changeset(%{
-             lifecycle_state: Atom.to_string(next.lifecycle_state),
-             environment_state: Atom.to_string(next.environment_state),
-             authentication_state: "not_checked"
-           })
+           |> ProviderAccount.changeset(
+             clear_authentication_evidence(%{
+               lifecycle_state: Atom.to_string(next.lifecycle_state),
+               environment_state: Atom.to_string(next.environment_state)
+             })
+           )
            |> Repo.update(),
          {:ok, _event} <-
            insert_event(
@@ -303,11 +331,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
          {:ok, updated} <-
            account
            |> ProviderAccount.changeset(
-             if(desired_state == "removed",
-               do: %{
-                 environment_state: pending,
-                 authentication_state: "authentication_required"
-               },
+             if(desired_state in ["available", "removed"],
+               do: clear_authentication_evidence(%{environment_state: pending}),
                else: %{environment_state: pending}
              )
            )
@@ -384,7 +409,14 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
            |> Repo.update(),
          {:ok, updated_account} <-
            account
-           |> ProviderAccount.changeset(%{environment_state: projected_state})
+           |> ProviderAccount.changeset(
+             authentication_report_attributes(
+               report,
+               environment.desired_environment_state,
+               physical_state,
+               projected_state
+             )
+           )
            |> Repo.update(),
          {:ok, _event} <-
            insert_event(
@@ -398,6 +430,67 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
     else
       {:error, reason} -> Repo.rollback(reason)
     end
+  end
+
+  defp authentication_report_attributes(
+         report,
+         desired_state,
+         physical_state,
+         projected_state
+       ) do
+    case {fetch(report, :authentication), desired_state, physical_state, projected_state} do
+      {authentication, "available", "available", "available"} when is_map(authentication) ->
+        inspected_at = parse_timestamp(fetch(authentication, :inspected_at))
+        state = fetch(authentication, :state)
+
+        %{
+          environment_state: projected_state,
+          authentication_state: state,
+          authentication_method: fetch(authentication, :method),
+          auth_configuration_identity: fetch(authentication, :configuration_identity),
+          auth_environment_policy: fetch(authentication, :environment_policy),
+          auth_inspection_identity: fetch(authentication, :evidence_identity),
+          auth_inspected_at: inspected_at,
+          authenticated_at: if(state == "authenticated", do: inspected_at, else: nil),
+          last_validated_at: inspected_at
+        }
+
+      {_authentication, "available", "available", "available"} ->
+        clear_authentication_evidence(%{environment_state: projected_state})
+
+      _other ->
+        %{environment_state: projected_state}
+    end
+  end
+
+  defp expected_authentication_configuration?(
+         "anthropic",
+         @claude_auth_configuration,
+         @claude_auth_environment_policy
+       ),
+       do: true
+
+  defp expected_authentication_configuration?(
+         provider_key,
+         @fake_auth_configuration,
+         @fake_auth_environment_policy
+       )
+       when provider_key != "anthropic",
+       do: true
+
+  defp expected_authentication_configuration?(_provider_key, _configuration, _policy), do: false
+
+  defp clear_authentication_evidence(attributes) do
+    Map.merge(attributes, %{
+      authentication_state: "not_checked",
+      authentication_method: nil,
+      auth_configuration_identity: nil,
+      auth_environment_policy: nil,
+      auth_inspection_identity: nil,
+      auth_inspected_at: nil,
+      authenticated_at: nil,
+      last_validated_at: nil
+    })
   end
 
   defp current_report?(account, environment, report) do
@@ -569,6 +662,11 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
       lifecycle_state: lifecycle_state(record.lifecycle_state),
       environment_state: environment_state(record.environment_state),
       authentication_state: authentication_state(record.authentication_state),
+      authentication_method: record.authentication_method,
+      auth_configuration_identity: record.auth_configuration_identity,
+      auth_environment_policy: record.auth_environment_policy,
+      auth_inspection_identity: record.auth_inspection_identity,
+      auth_inspected_at: record.auth_inspected_at,
       authenticated_at: record.authenticated_at,
       last_validated_at: record.last_validated_at,
       inserted_at: record.inserted_at,
@@ -590,14 +688,11 @@ defmodule QuestEngineering.Server.Product.ProviderAccounts do
   defp environment_state("removed"), do: :removed
 
   defp authentication_state("not_checked"), do: :not_checked
-  defp authentication_state("setup_authorized"), do: :setup_authorized
-  defp authentication_state("setup_in_progress"), do: :setup_in_progress
-  defp authentication_state("interaction_required"), do: :interaction_required
-  defp authentication_state("validating"), do: :validating
-  defp authentication_state("authenticated"), do: :authenticated
   defp authentication_state("authentication_required"), do: :authentication_required
+  defp authentication_state("authenticated"), do: :authenticated
+  defp authentication_state("forbidden_auth_method"), do: :forbidden_auth_method
   defp authentication_state("inspection_unavailable"), do: :inspection_unavailable
-  defp authentication_state("invalid"), do: :invalid
+  defp authentication_state("incompatible_status"), do: :incompatible_status
 
   defp parse_timestamp(%DateTime{} = value), do: value
 

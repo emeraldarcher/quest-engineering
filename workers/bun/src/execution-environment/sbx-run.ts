@@ -26,11 +26,6 @@ import {
   isAntigravityInputReadyForMode,
 } from "../harnesses/antigravity/initial-input-readiness.ts";
 import {
-  CLAUDE_SUBSCRIPTION_AUTH_MODE,
-  CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
-  CLAUDE_SUBSCRIPTION_LOGIN_MODE,
-} from "../harnesses/claude-agent-sdk/auth.ts";
-import {
   controlDescriptorPath,
   type StructuredCompletionBoundary,
 } from "../harnesses/control/authority.ts";
@@ -49,6 +44,11 @@ import type {
   HarnessSetupContext,
 } from "../harnesses/types.ts";
 import type { JsonValue } from "../protocol/types.ts";
+import {
+  CLAUDE_SUBSCRIPTION_AUTH_MODE,
+  CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
+  CLAUDE_SUBSCRIPTION_LOGIN_MODE,
+} from "../provider-auth.ts";
 import type {
   NativeSessionRef,
   TerminalSessionBackend,

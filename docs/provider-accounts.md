@@ -1,4 +1,4 @@
-# ProviderAccounts, account environments, and setup (Phases A–B)
+# ProviderAccounts, account environments, authentication preflight, and setup
 
 ## Scope
 
@@ -8,7 +8,7 @@ append-only setup-attempt history, blocking HumanAttention, ephemeral process
 interaction, side-effect certainty, cancellation, restart reconciliation, and
 post-setup authentication validation.
 
-The original Phase B acceptance proof intentionally used only QE's deterministic fake provider/login process. Phase D adds the production Anthropic specialization without changing the provider-neutral Product lifecycle: `provider_key: "anthropic"` uses persistent `qe-claude-account-v1`, pinned `claude auth login`, exact Claude.ai status validation, and serialized account operations. Execution binds that account to the canonical `claude_code` harness and a separate workspace broker; see [`claude-code-managed-mod.md`](claude-code-managed-mod.md). Phase D validation still performs no real login, credential entry, external provider request, or inference.
+The original Phase B acceptance proof intentionally used only QE's deterministic fake provider/login process. Phase D adds the production Anthropic specialization without changing the provider-neutral Product lifecycle: `provider_key: "anthropic"` uses persistent `qe-claude-account-v1`, pinned Claude Code 2.1.292, `claude auth login`, exact Claude.ai status validation, and serialized account operations. Execution binds that account to the canonical `claude_code` harness and a separate workspace broker; see [`claude-code-managed-mod.md`](claude-code-managed-mod.md). Production preflight validation performs no real login, credential entry, external provider request, or inference.
 
 ## Product identity and semantic lifecycle
 
@@ -47,10 +47,20 @@ The API reports readiness in separate fields:
   semantically_disconnected`;
 - `environment`: `unassigned | pending | available | stopped | missing |
   degraded | removing | removed`;
-- `authentication`: `not_checked | setup_authorized | setup_in_progress |
-  interaction_required | validating | authenticated | authentication_required |
-  inspection_unavailable | invalid`;
-- `inference`: always `not_evaluated` in Phase B.
+- `authentication`: `not_checked | authentication_required | authenticated |
+  forbidden_auth_method | inspection_unavailable | incompatible_status`;
+- `inference`: `not_evaluated`.
+
+Authentication method is independent and canonical: `none | provider_account |
+injected_oauth_token | api_key | api_key_helper | third_party`. Every checked
+observation carries its versioned auth-configuration identity, environment-policy
+identity, physical/configuration-bound evidence identity, and inspection time.
+`capabilities.can_authorize_setup` is true only for exact current
+`authentication_required / none` evidence on an available, canary-verified cell.
+The production Claude specialization currently requires auth configuration
+`claude-code-2.1.292-subscription-v1` and environment policy
+`claude-subscription-explicit-environment-v1`; there is no PATH, API-key, cloud,
+gateway, or host-environment fallback.
 
 `environment=available` proves only the exact Worker-owned environment and its
 durable canary. It never means authenticated, model-eligible, or inference-ready.
@@ -100,10 +110,10 @@ PostgreSQL owns:
   attention and delivery metadata with no response value.
 
 The Worker execution-environment SQLite schema remains current-only version 3.
-The separate ProviderAccount setup SQLite ledger is current-only version 1. It
+The separate ProviderAccount setup SQLite ledger is current-only version 2. It
 stores safe authorization identity, exact account/environment/process identity,
-invocation state, input-delivery certainty, validation class, and append-only
-safe events. Neither SQLite database accepts sensitive interaction bytes. Stale
+canonical preflight and post-login evidence, invocation state, input-delivery
+certainty, validation class, and append-only safe events. Neither SQLite database accepts sensitive interaction bytes. Stale
 setup schemas fail startup and require explicit Worker-state recreation. Run rows
 and account rows cannot collide because ownership is part of every environment
 key.
@@ -116,14 +126,14 @@ claim.
 
 ## Protocol and fencing
 
-Worker Protocol v16 retains the Phase-A environment messages and adds:
+Worker Protocol v18 carries the environment and setup messages, and adds canonical authentication evidence:
 
 - Product → Worker `reconcile_provider_account_environment`;
 - Product → Worker desired `provider_accounts` on `reconcile_request`;
 - Worker → Product `provider_account_environment_state`;
 - account environment observations in `reconcile_state`;
-- capability features `provider_account_environments_v1` and
-  `provider_account_setup_v1`;
+- capability features `provider_account_environments_v1`,
+  `provider_account_setup_v1`, and `provider_account_auth_preflight_v1`;
 - Product → Worker `prepare_provider_account_setup`,
   `respond_provider_account_setup`, and `cancel_provider_account_setup`;
 - Product → Worker desired `provider_account_setups` on `reconcile_request`;
@@ -155,28 +165,42 @@ read-only reconciliation rules apply.
 A setup is eligible only when the semantic account is connected, the durable
 desired environment target is `available`, the observed environment is exactly
 `available`, the canary is present, all physical identity fields are complete,
-and the assigned Worker generation is connected and ready. Setup has no Run,
-Action, Runtime Attempt, PhysicalLineage, workspace, private Git state, or
-inference authorization.
+the assigned Worker generation is connected and ready, and Product holds exact
+current `authentication_required / none` evidence. Already-authenticated,
+forbidden-method, inspection-unavailable, incompatible, missing, stale, or
+configuration-mismatched observations are ineligible. Setup has no Run, Action,
+Runtime Attempt, PhysicalLineage, workspace, private Git state, or inference
+authorization.
 
 The ordering is strict:
 
-1. persist exact setup authorization and append-only attempt identity;
-2. persist `invocation_requested` immediately before spawn;
-3. record the exact acknowledged process handle;
-4. expose only a safe account-scoped HumanAttention message;
-5. relay bounded process output/input through an in-memory, five-minute,
+1. inspect authentication through the normal Worker-owned account-cell lifecycle
+   and persist the canonical observation in Product;
+2. persist exact setup authorization, append-only attempt identity, auth
+   configuration/environment-policy identity, and authorized evidence identity;
+3. under the Worker account-operation lock, re-inspect the exact physical cell;
+4. only if that fresh result exactly matches authorized
+   `authentication_required / none`, persist `invocation_requested` through the
+   coordinator callback;
+5. spawn only after that durable intent returns successfully;
+6. record the exact acknowledged process handle;
+7. expose only a safe account-scoped HumanAttention message;
+8. relay bounded process output/input through an in-memory, five-minute,
    setup-generation + attention + process-generation-bound channel;
-6. persist input-delivery metadata before the streamed write and classify it as
+9. persist input-delivery metadata before the streamed write and classify it as
    acknowledged or uncertain without storing the input;
-7. observe process settlement;
-8. run deterministic local status validation in the same exact environment;
-9. only then mark authentication ready and advance credential generation.
+10. observe process settlement;
+11. run deterministic local status validation with the same configuration and
+    physical identity; and
+12. only for exact `authenticated / provider_account` evidence mark
+    authentication ready and advance credential generation.
 
-A crash after invocation intent but before an acknowledged process handle is
-`uncertain` and is never replayed. An acknowledged process with lost stream
-attachment is inspected by exact handle. Restart never restores ephemeral I/O;
-it uses only exact process/environment evidence and local validation. Ambiguous
+A rejected preflight retains `invocation_state=not_requested` and crosses zero
+login boundaries. A crash after invocation intent but before an acknowledged
+process handle is `uncertain` and is never replayed. An acknowledged process
+with lost stream attachment is inspected by exact handle. Restart never restores
+ephemeral I/O; it uses only exact process/environment/configuration evidence and
+fresh local validation. Ambiguous
 input or cancellation is terminally uncertain and not repeated. One partial
 unique index plus Worker account tails admits one active setup per account;
 physical lifecycle mutations are rejected while setup is active. Different
@@ -234,6 +258,8 @@ replays it after uncertain delivery.
 ## Proof boundaries
 
 Deterministic tests cover no-Run creation/setup, idempotent exact authorization,
+canonical authentication observations, every forbidden/unavailable/incompatible
+preflight mode with physical zero-login proof, stale auth/configuration evidence,
 eligibility and generation/incarnation fencing, intent-before-spawn, known and
 ambiguous side-effect outcomes, stale input, acknowledged input, cancellation,
 restart non-replay, Product reconstruction, account serialization,

@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 17 as const;
+export const WORKER_PROTOCOL_VERSION = 18 as const;
 
 export type JsonValue =
   | string
@@ -224,15 +224,29 @@ export type ProviderAccountSetupInvocationState =
   | "settled"
   | "uncertain";
 
-export interface ProviderAccountSetupValidation {
+export interface ProviderAccountAuthenticationInspection {
   state:
-    | "not_checked"
-    | "authenticated"
     | "authentication_required"
+    | "authenticated"
+    | "forbidden_auth_method"
     | "inspection_unavailable"
     | "incompatible_status";
-  identity: string | null;
+  method:
+    | "none"
+    | "provider_account"
+    | "injected_oauth_token"
+    | "api_key"
+    | "api_key_helper"
+    | "third_party"
+    | null;
+  configuration_identity: string;
+  environment_policy: string;
+  evidence_identity: string;
+  inspected_at: string;
 }
+
+export type ProviderAccountSetupValidation =
+  ProviderAccountAuthenticationInspection;
 
 export interface ProviderAccountSetupCommand {
   type: "prepare_provider_account_setup";
@@ -255,6 +269,14 @@ export interface ProviderAccountSetupCommand {
       backend_kind: string;
       environment_id: string;
       incarnation: string;
+    };
+    authorized_authentication: {
+      state: "authentication_required";
+      method: "none";
+      configuration_identity: string;
+      environment_policy: string;
+      evidence_identity: string;
+      inspected_at: string;
     };
     interaction_public_key: string;
     state: ProviderAccountSetupState;
@@ -610,6 +632,7 @@ export interface WorkerCapabilities {
     | "run_bound_harness_setup_v1"
     | "provider_account_environments_v1"
     | "provider_account_setup_v1"
+    | "provider_account_auth_preflight_v1"
     | "workspace_tool_broker_v1"
   >;
   workspace_bindings: Array<{

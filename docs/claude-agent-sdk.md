@@ -59,8 +59,8 @@ Pinned Claude Code `2.1.292` status JSON is classified as this closed state mach
 
 | Exact observation | QE auth state | Login eligible? |
 |---|---|---|
-| exit `1`, `loggedIn=false`, `authMethod=none`, exact private config directory | `authentication_required` | yes |
-| exit `0`, `loggedIn=true`, `authMethod=claude.ai`, string `apiProvider`, exact private config directory | `subscription_authenticated` | no; setup is already ready |
+| exit `1`, `loggedIn=false`, `authMethod=none`, `apiProvider=none`, exact private config directory | `authentication_required / none` | yes |
+| exit `0`, `loggedIn=true`, `authMethod=claude.ai`, `apiProvider=firstParty`, exact private config directory | `authenticated / provider_account` | no; setup is already ready |
 | `api_key`, `oauth_token`, `api_key_helper`, or `third_party` (including Bedrock, Vertex, Foundry, Anthropic AWS, or a gateway) | `forbidden_auth_method` | no |
 | command/status unavailable | `inspection_unavailable` | no |
 | malformed, unknown, contradictory, or wrong-directory JSON | `incompatible_status` | no |
@@ -89,7 +89,7 @@ Login and the already-working headless wrapper share the same physical primitive
 
 The QE transport requirement is conclusively non-PTY: `spawnStreamed()` uses `sbx exec --interactive` without `--tty`, and the real-SBX fake-target proof observes `isatty(0/1/2) == false`. Whether pinned Claude Code 2.1.292's **real** `auth login` independently requires a TTY remains unknown: official browser/code-paste documentation does not state such a requirement, and this fix was forbidden from invoking real login to test it. QE therefore makes no unsupported TTY compatibility claim and does not weaken the accepted headless transport. A future fresh, explicitly authorized acceptance is the boundary that can establish provider behavior.
 
-Worker Protocol v16 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
+Worker Protocol v18 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
 
 1. Global disposable discovery verifies only immutable artifacts and publishes a `harness_setups` capability with `authentication: context_required`; it never publishes a globally ready Claude executor.
 2. The normal Run workspace lifecycle first selects one setup-capable Worker and provisions the durable Run worktree. Work Yard then offers a separate “Set up subscription” action for the pending occurrence.

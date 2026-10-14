@@ -21,7 +21,6 @@ import {
   claudeAuthenticationCommand,
   claudeAuthenticationStatusCommand,
 } from "../src/harnesses/claude-agent-sdk/adapter.ts";
-import { CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES } from "../src/harnesses/claude-agent-sdk/auth.ts";
 import {
   type ClaudeTransportState,
   claudeRecoveryDisposition,
@@ -41,6 +40,7 @@ import {
   type JsonValue,
   WORKER_PROTOCOL_VERSION,
 } from "../src/protocol/types.ts";
+import { CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES } from "../src/provider-auth.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];

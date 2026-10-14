@@ -18,6 +18,7 @@ import {
   nullableString,
   type ProviderAccount,
   type ProviderAccountSetupAttempt,
+  type ProviderAuthenticationEvidence,
   type Quest,
   type QuestPreview,
   type Reasoning,
@@ -778,9 +779,37 @@ function list<T>(
 ): T[] {
   return asArray(asRecord(value, key)[key], key).map(decode);
 }
+function decodeProviderAuthenticationEvidence(
+  value: unknown,
+  label: string,
+): ProviderAuthenticationEvidence {
+  const evidence = asRecord(value, label);
+  return {
+    state: asString(
+      evidence.state,
+      label,
+    ) as ProviderAuthenticationEvidence["state"],
+    method: nullableString(
+      evidence.method,
+      label,
+    ) as ProviderAuthenticationEvidence["method"],
+    configuration_identity: nullableString(
+      evidence.configuration_identity,
+      label,
+    ),
+    environment_policy: nullableString(evidence.environment_policy, label),
+    evidence_identity: nullableString(evidence.evidence_identity, label),
+    inspected_at: nullableString(evidence.inspected_at, label),
+  };
+}
+
 function decodeProviderAccount(value: unknown): ProviderAccount {
   const account = asRecord(value, "provider account");
   const readiness = asRecord(account.readiness, "provider account readiness");
+  const capabilities = asRecord(
+    account.capabilities,
+    "provider account capabilities",
+  );
   const environment =
     account.environment === null
       ? null
@@ -817,6 +846,16 @@ function decodeProviderAccount(value: unknown): ProviderAccount {
         "provider account readiness",
       ) as "not_evaluated",
     },
+    capabilities: {
+      can_authorize_setup: asBoolean(
+        capabilities.can_authorize_setup,
+        "provider account capabilities",
+      ),
+    },
+    authentication: decodeProviderAuthenticationEvidence(
+      account.authentication,
+      "provider account authentication",
+    ),
     environment: environment
       ? {
           credential_generation: asNumber(
@@ -905,10 +944,20 @@ function decodeProviderAccountSetupAttempt(
     attempt.attention === null
       ? null
       : asRecord(attempt.attention, "provider account setup attention");
-  const validation = asRecord(
-    attempt.validation,
-    "provider account setup validation",
-  );
+  const preflight =
+    attempt.preflight === null
+      ? null
+      : decodeProviderAuthenticationEvidence(
+          attempt.preflight,
+          "provider account setup preflight",
+        );
+  const validation =
+    attempt.validation === null
+      ? null
+      : decodeProviderAuthenticationEvidence(
+          attempt.validation,
+          "provider account setup validation",
+        );
   const failure =
     attempt.failure === null
       ? null
@@ -942,6 +991,10 @@ function decodeProviderAccountSetupAttempt(
     worker_generation: asNumber(
       attempt.worker_generation,
       "provider account setup",
+    ),
+    authorized_authentication: decodeProviderAuthenticationEvidence(
+      attempt.authorized_authentication,
+      "provider account setup authorization",
     ),
     state: asString(
       attempt.state,
@@ -1011,17 +1064,8 @@ function decodeProviderAccountSetupAttempt(
           ),
         }
       : null,
-    validation: {
-      state: asString(validation.state, "provider account setup validation"),
-      identity: nullableString(
-        validation.identity,
-        "provider account setup validation",
-      ),
-      validated_at: nullableString(
-        validation.validated_at,
-        "provider account setup validation",
-      ),
-    },
+    preflight,
+    validation,
     failure: failure
       ? {
           code: asString(failure.code, "provider account setup failure"),

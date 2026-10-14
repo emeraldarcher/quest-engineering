@@ -41,19 +41,40 @@ defmodule QuestEngineering.Core.Product.ProviderAccountTest do
       credential_generation: 4,
       lifecycle_state: :connected,
       environment_state: :available,
-      authentication_state: :validating,
+      authentication_state: :authentication_required,
+      authentication_method: "none",
+      auth_configuration_identity: "qe-fake-provider-account-auth-v1",
+      auth_environment_policy: "qe-fake-provider-account-explicit-environment-v1",
+      auth_inspection_identity: "provider-auth-evidence-v1:before",
+      auth_inspected_at: now,
+      last_validated_at: now,
       inserted_at: now,
       updated_at: now
     }
 
-    authenticated = ProviderAccount.authenticated(account, DateTime.add(now, 1))
+    inspected_at = DateTime.add(now, 1)
+
+    authenticated =
+      ProviderAccount.authenticated(
+        account,
+        %{
+          configuration_identity: "qe-fake-provider-account-auth-v1",
+          environment_policy: "qe-fake-provider-account-explicit-environment-v1",
+          inspection_identity: "provider-auth-evidence-v1:after",
+          inspected_at: inspected_at
+        },
+        inspected_at
+      )
 
     assert authenticated.credential_generation == 5
     assert authenticated.environment_state == :available
     assert authenticated.authentication_state == :authenticated
-    assert authenticated.authenticated_at == DateTime.add(now, 1)
-    assert authenticated.last_validated_at == DateTime.add(now, 1)
+    assert authenticated.authentication_method == "provider_account"
+    assert authenticated.auth_inspection_identity == "provider-auth-evidence-v1:after"
+    assert authenticated.authenticated_at == inspected_at
+    assert authenticated.last_validated_at == inspected_at
     assert ProviderAccount.valid?(authenticated)
+    refute ProviderAccount.valid?(%{authenticated | authentication_method: "api_key"})
   end
 
   test "semantic invalidation and disconnection never claim authentication or physical readiness" do

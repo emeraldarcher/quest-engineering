@@ -39,16 +39,17 @@ import type {
   StreamedProcessStreamEvent,
 } from "../src/execution-environment/types.ts";
 import { ClaudeAgentSdkAdapter } from "../src/harnesses/claude-agent-sdk/adapter.ts";
-import {
-  CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES,
-  classifyClaudeSubscriptionAuthStatus,
-  claudeSubscriptionEnvironment,
-} from "../src/harnesses/claude-agent-sdk/auth.ts";
 import type {
   HarnessSetupContext,
   HarnessSetupEvent,
   HarnessSetupPrepared,
 } from "../src/harnesses/types.ts";
+import {
+  CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES,
+  CLAUDE_SUBSCRIPTION_CONFIGURATION,
+  classifyClaudeSubscriptionAuthStatus,
+  claudeSubscriptionEnvironment,
+} from "../src/provider-auth.ts";
 
 const live = process.env.QE_LIVE_SBX_CLAUDE === "1";
 const authPreflightLive = process.env.QE_LIVE_SBX_CLAUDE_AUTH_PREFLIGHT === "1";
@@ -86,6 +87,15 @@ test.skipIf(!authPreflightLive)(
         ),
       );
       const configDirectory = `${SBX_GUEST_PATHS.state}/claude-auth-preflight/config`;
+      const evidenceContext = {
+        providerKey: "anthropic",
+        owner: { kind: "run" as const, id: "auth-preflight", generation: null },
+        backendKind: lease.ref.backendKind,
+        environmentId: lease.ref.environmentId,
+        environmentIncarnation: lease.ref.incarnation,
+        profile: lease.ref.profile,
+        configuration: CLAUDE_SUBSCRIPTION_CONFIGURATION,
+      };
       await lease.workerExec({
         executable: "/usr/bin/install",
         args: [
@@ -111,20 +121,28 @@ test.skipIf(!authPreflightLive)(
         }),
       );
       expect(
-        classifyClaudeSubscriptionAuthStatus(historical, configDirectory),
+        classifyClaudeSubscriptionAuthStatus(
+          historical,
+          configDirectory,
+          evidenceContext,
+        ),
       ).toMatchObject({
-        authState: "forbidden_auth_method",
-        authMethod: "api_key",
+        state: "forbidden_auth_method",
+        method: "api_key",
       });
 
       const isolated = await lease.exec(
         authStatusCommand(runtime, lease.paths.workspace, environment),
       );
       expect(
-        classifyClaudeSubscriptionAuthStatus(isolated, configDirectory),
+        classifyClaudeSubscriptionAuthStatus(
+          isolated,
+          configDirectory,
+          evidenceContext,
+        ),
       ).toMatchObject({
-        authState: "authentication_required",
-        authMethod: "none",
+        state: "authentication_required",
+        method: "none",
       });
       const credentialMetadata = await lease.exec({
         executable: "/usr/bin/env",

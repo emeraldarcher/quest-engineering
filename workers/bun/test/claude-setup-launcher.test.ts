@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { resolve } from "node:path";
 import { SBX_CODING_EXECUTION_PROFILE_V3 } from "../src/execution-environment/sbx-profile.ts";
-import { CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES } from "../src/harnesses/claude-agent-sdk/auth.ts";
 import { WORKER_PROTOCOL_VERSION } from "../src/protocol/types.ts";
+import { CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES } from "../src/provider-auth.ts";
 
 const fixture = resolve(
   import.meta.dir,
