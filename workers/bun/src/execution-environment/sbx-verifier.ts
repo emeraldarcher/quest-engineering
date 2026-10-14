@@ -14,10 +14,18 @@ import {
   SBX_ANTIGRAVITY_LINUX_ARM64_BINARY_SHA256,
   SBX_ANTIGRAVITY_RUNTIME_PROBE,
   SBX_ANTIGRAVITY_VERSION,
+  SBX_CLAUDE_ACCOUNT_BRIDGE,
+  SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256,
   SBX_CLAUDE_AGENT_SDK_VERSION,
   SBX_CLAUDE_CODE_VERSION,
+  SBX_CLAUDE_EXECUTABLE,
   SBX_CLAUDE_LINUX_ARM64_SHA256,
   SBX_CLAUDE_LINUX_X64_SHA256,
+  SBX_CLAUDE_MANAGED_MARKETPLACE,
+  SBX_CLAUDE_MANAGED_MOD_SHA256,
+  SBX_CLAUDE_MANAGED_SETTINGS,
+  SBX_CLAUDE_MANAGED_SETTINGS_SHA256,
+  SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
   SBX_CLAUDE_SDK_PACKAGE_JSON,
   SBX_CLAUDE_WRAPPER,
   SBX_CLAUDE_WRAPPER_VERSION,
@@ -380,6 +388,8 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
       );
       if (!scopedDenyAll)
         throw unhealthy("Sandbox-scoped deny-all network policy is missing.");
+    } else if (this.profile.networkMode === "claude_account") {
+      await this.verifyClaudeAccountRuntimeBoundary(sandbox.name, policies);
     } else {
       await this.verifyOpenAiRuntimeBoundary(sandbox.name, policies, probe);
     }
@@ -423,10 +433,12 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
         ? await this.piCapabilities(sandbox.name)
         : this.profile.networkMode === "mixed_subscriptions"
           ? await this.mixedCapabilities(sandbox.name)
-          : [
-              { kind: "network_policy", mode: "deny_all" },
-              { kind: "credentials", mode: "none" },
-            ];
+          : this.profile.networkMode === "claude_account"
+            ? await this.claudeAccountCapabilities(sandbox.name)
+            : [
+                { kind: "network_policy", mode: "deny_all" },
+                { kind: "credentials", mode: "none" },
+              ];
     return {
       markerDigest: digestMarker(expectedMarker),
       dockerDaemonId: docker.ID,
@@ -567,6 +579,102 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
           : "none",
       piOAuthCredentialValid: value.piOAuthCredentialValid === true,
     };
+  }
+
+  private async verifyClaudeAccountRuntimeBoundary(
+    sandboxName: string,
+    policies: readonly SbxPolicyRule[],
+  ): Promise<void> {
+    const activeNetwork = policies.filter(
+      (rule) => rule.resourceType === "network" && rule.status === "active",
+    );
+    const allows = activeNetwork
+      .filter((rule) => rule.decision === "allow")
+      .flatMap((rule) => [...rule.resources]);
+    const approvedAtCreation = new Set([
+      ...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+      SBX_PI_INSTALL_NETWORK_TARGET,
+    ]);
+    if (
+      allows.some((resource) => !approvedAtCreation.has(resource)) ||
+      SBX_CLAUDE_RUNTIME_NETWORK_TARGETS.some(
+        (target) => !allows.includes(target),
+      )
+    )
+      throw unhealthy(
+        "Claude account-cell network grants are broader than the immutable runtime contract.",
+      );
+    const installDenied = activeNetwork.some(
+      (rule) =>
+        rule.scope === `sandbox:${sandboxName}` &&
+        rule.decision === "deny" &&
+        rule.resources.includes(SBX_PI_INSTALL_NETWORK_TARGET),
+    );
+    if (
+      !installDenied ||
+      !(await this.networkDenied(
+        sandboxName,
+        `https://${SBX_PI_INSTALL_NETWORK_TARGET}/`,
+      ))
+    )
+      throw unhealthy(
+        "The Claude account-cell install grant remains reachable.",
+      );
+  }
+
+  private async claudeAccountCapabilities(
+    sandboxName: string,
+  ): Promise<EnvironmentCapability[]> {
+    const result = await this.client.exec(sandboxName, {
+      executable: "/usr/bin/python3",
+      args: [
+        "-c",
+        "import hashlib,json,os,pathlib,stat,subprocess; paths=json.loads(os.environ['QE_PATHS']); dig={k:hashlib.sha256(pathlib.Path(v).read_bytes()).hexdigest() for k,v in paths.items()}; modes={k:stat.S_IMODE(pathlib.Path(v).stat().st_mode) for k,v in paths.items()}; version=subprocess.run([paths['claude'],'--version'],capture_output=True,text=True,timeout=10); print(json.dumps({'digests':dig,'modes':modes,'version':version.stdout.strip(),'versionExit':version.returncode},separators=(',',':')))",
+      ],
+      environment: {
+        QE_PATHS: JSON.stringify({
+          claude: SBX_CLAUDE_EXECUTABLE,
+          bridge: SBX_CLAUDE_ACCOUNT_BRIDGE,
+          settings: SBX_CLAUDE_MANAGED_SETTINGS,
+          mod: `${SBX_CLAUDE_MANAGED_MARKETPLACE}/plugins/qe-account-cell/hooks/register.ts`,
+        }),
+      },
+      timeoutMs: 30_000,
+    });
+    const proof = parseObject(result.stdout, "Claude account runtime proof");
+    const digests = parseObject(proof.digests, "Claude account digests");
+    const modes = parseObject(proof.modes, "Claude account modes");
+    const expectedRuntimeDigest =
+      process.arch === "arm64"
+        ? SBX_CLAUDE_LINUX_ARM64_SHA256
+        : process.arch === "x64"
+          ? SBX_CLAUDE_LINUX_X64_SHA256
+          : null;
+    if (
+      proof.versionExit !== 0 ||
+      proof.version !== `${SBX_CLAUDE_CODE_VERSION} (Claude Code)` ||
+      digests.claude !== expectedRuntimeDigest ||
+      digests.settings !== SBX_CLAUDE_MANAGED_SETTINGS_SHA256 ||
+      digests.mod !== SBX_CLAUDE_MANAGED_MOD_SHA256 ||
+      digests.bridge !== SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256 ||
+      ![0o555, 0o755].includes(Number(modes.claude)) ||
+      ![0o555, 0o755].includes(Number(modes.bridge)) ||
+      Number(modes.settings) !== 0o444 ||
+      Number(modes.mod) !== 0o444
+    )
+      throw unhealthy(
+        "The immutable Claude Code, managed policy, Mod, or bridge provenance does not match.",
+      );
+    return [
+      { kind: "network_policy", mode: "anthropic_account_only" },
+      { kind: "credentials", mode: "account_private_claude_oauth" },
+      {
+        kind: "harness_runtime",
+        mode: "claude_code_managed_mod_v1",
+        detail: `claude ${SBX_CLAUDE_CODE_VERSION}; managed Mod sha256:${SBX_CLAUDE_MANAGED_MOD_SHA256}`,
+      },
+      { kind: "control_channel", mode: "worker_account_mailbox_v1" },
+    ];
   }
 
   private async verifyOpenAiRuntimeBoundary(

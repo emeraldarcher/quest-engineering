@@ -32,6 +32,7 @@ import { HarnessSetupCoordinator } from "./harness-setup.ts";
 import { HarnessSetupStore } from "./harness-setup-store.ts";
 import { AntigravityHarness } from "./harnesses/antigravity/adapter.ts";
 import { ClaudeAgentSdkAdapter } from "./harnesses/claude-agent-sdk/adapter.ts";
+import { ClaudeCodeHarness } from "./harnesses/claude-code/adapter.ts";
 import { HarnessControlAuthority } from "./harnesses/control/authority.ts";
 import { HarnessControlServer } from "./harnesses/control/server.ts";
 import type {
@@ -202,7 +203,8 @@ export class QuestEngineeringWorker {
         (kind) =>
           kind === "pi" ||
           kind === "antigravity" ||
-          kind === "claude_agent_sdk",
+          kind === "claude_agent_sdk" ||
+          kind === "claude_code",
       )
         ? new SbxRunExecutionManager(config, this.worktrees)
         : null;
@@ -244,6 +246,18 @@ export class QuestEngineeringWorker {
               return new ClaudeAgentSdkAdapter(
                 config,
                 this.sbxExecutionManager,
+              );
+            }
+            if (kind === "claude_code") {
+              if (!this.sbxExecutionManager)
+                throw new Error(
+                  "Claude Code requires the credential-free Run SBX execution manager.",
+                );
+              return new ClaudeCodeHarness(
+                config,
+                this.sbxExecutionManager,
+                this.providerAccountEnvironments,
+                () => this.workspaceToolBroker,
               );
             }
             const host = new HerdrTerminalBackend(
@@ -830,7 +844,7 @@ export class QuestEngineeringWorker {
         this.config.workerId,
         cancellationServerGeneration(this.channel, generation),
       );
-      await this.workspaceToolBroker.prepare({
+      await this.prepareWorkspaceToolBrokerWhenReady({
         authorizationId: command.broker.authorization_id,
         providerAccountId: command.broker.provider_account_id,
         credentialGeneration: command.broker.credential_generation,
@@ -863,9 +877,7 @@ export class QuestEngineeringWorker {
         this.config.workerId,
         cancellationServerGeneration(this.channel, generation),
       );
-      await this.workspaceToolBroker.admitAuthorization(
-        command.authorization_id,
-      );
+      await this.admitWorkspaceToolBrokerWhenReady(command.authorization_id);
       return;
     }
     if (message.type === "retire_workspace_tool_broker") {
@@ -2071,6 +2083,65 @@ export class QuestEngineeringWorker {
     } catch {
       this.markReconciliationDirty();
     }
+  }
+
+  private async prepareWorkspaceToolBrokerWhenReady(
+    preparation: Parameters<WorkspaceToolBroker["prepare"]>[0],
+  ): Promise<void> {
+    // The Product message can arrive before dispatch acknowledgement starts
+    // the Run. Keep this bounded by the same physical-provisioning horizon as
+    // SBX rather than racing a fresh immutable profile build.
+    const deadline = Date.now() + 10 * 60_000;
+    let last: unknown;
+    while (Date.now() < deadline) {
+      try {
+        await this.workspaceToolBroker.prepare(preparation);
+        return;
+      } catch (error) {
+        last = error;
+        await Bun.sleep(50);
+      }
+    }
+    throw last instanceof Error
+      ? last
+      : new Error("WorkspaceToolBroker preparation timed out.");
+  }
+
+  private async admitWorkspaceToolBrokerWhenReady(
+    authorizationId: string,
+  ): Promise<void> {
+    const deadline = Date.now() + 10 * 60_000;
+    let last: unknown;
+    while (Date.now() < deadline) {
+      try {
+        const prepared = this.workspaceToolBroker
+          .sessions()
+          .find(
+            (session) =>
+              ["prepared", "admitted"].includes(session.state) &&
+              session.binding.authorizationId === authorizationId,
+          );
+        if (!prepared)
+          throw new Error(
+            "Workspace tool broker authorization is not prepared.",
+          );
+        const dispatch = this.registry.get(prepared.binding.actionId);
+        if (
+          dispatch.action.execution.configuration.harness_kind === "claude_code"
+        )
+          await this.workspaceToolBroker.admitLocalAuthorization(
+            authorizationId,
+          );
+        else await this.workspaceToolBroker.admitAuthorization(authorizationId);
+        return;
+      } catch (error) {
+        last = error;
+        await Bun.sleep(50);
+      }
+    }
+    throw last instanceof Error
+      ? last
+      : new Error("WorkspaceToolBroker admission timed out.");
   }
 
   private async report(

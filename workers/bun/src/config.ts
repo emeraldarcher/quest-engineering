@@ -73,7 +73,9 @@ export interface WorkerConfig {
   /** Nonterminal liveness threshold; crossing it never authorizes a retry. */
   promptActivityStallMs?: number;
   provider: "pi" | "fake";
-  enabledHarnesses?: Array<"pi" | "antigravity" | "claude_agent_sdk" | "fake">;
+  enabledHarnesses?: Array<
+    "pi" | "antigravity" | "claude_agent_sdk" | "claude_code" | "fake"
+  >;
   fakeOutputs: Record<string, JsonValue>;
   fakeDelayMs: number;
   gitAuthorName?: string;
@@ -579,19 +581,24 @@ function models(
 }
 function harnesses(
   value: string,
-): Array<"pi" | "antigravity" | "claude_agent_sdk"> {
+): Array<"pi" | "antigravity" | "claude_agent_sdk" | "claude_code"> {
   const values = csv(value);
   if (
     values.length === 0 ||
     !values.every(
       (item) =>
-        item === "pi" || item === "antigravity" || item === "claude_agent_sdk",
+        item === "pi" ||
+        item === "antigravity" ||
+        item === "claude_agent_sdk" ||
+        item === "claude_code",
     )
   )
     throw new Error(
-      "QE_WORKER_HARNESSES must contain pi, antigravity, and/or claude_agent_sdk.",
+      "QE_WORKER_HARNESSES must contain pi, antigravity, claude_code, and/or claude_agent_sdk.",
     );
-  return values as Array<"pi" | "antigravity" | "claude_agent_sdk">;
+  return values as Array<
+    "pi" | "antigravity" | "claude_agent_sdk" | "claude_code"
+  >;
 }
 function reasoning(value: string): Reasoning[] {
   return csv(value);

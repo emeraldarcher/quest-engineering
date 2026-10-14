@@ -1,6 +1,6 @@
 # Account-to-Run workspace tool broker
 
-**Status:** ProviderAccount Phase C implementation
+**Status:** ProviderAccount Phase C infrastructure, integrated by Claude Phase D
 
 **Date:** 2026-10-14
 
@@ -27,12 +27,7 @@ identity. Preparation requires:
 The binding covers ProviderAccount and account generation/environment,
 Run/Action/occurrence/semantic Attempt, operational epoch/attempt,
 workspace/worktree/binding/access, Worker generation, resolved tools, and a
-server-derived authorization digest. Preparation is deliberately unusable.
-`WorkspaceToolBrokers.admit/1` re-derives the binding from current state and
-also requires current prompt authorization before the Worker may start the
-account-side client. A session ID or authorization ID is a fence/lookup value,
-not bearer authority: Worker-local account and Run environment ownership plus
-the exact in-memory session capability are also required.
+server-derived authorization digest. Preparation is deliberately unusable. `WorkspaceToolBrokers.admit/1` re-derives the binding from current state. Admission now precedes prompt authorization: for `claude_code`, Product persists admitted session/generation activity and makes that exact record a hard prerequisite to the prompt gate. Other callers retain the physical account-client transport. A session ID or authorization ID is a fence/lookup value, not bearer authority: Worker-local account and Run environment ownership plus the exact in-memory session capability are also required.
 
 Worker Protocol 17 adds prepare, admit, retire, and safe activity frames. The
 local account protocol is independently versioned as
@@ -51,9 +46,7 @@ process. It is not exposed through Product HTTP or Harness Control.
 | `search.grep` | `workspace.search` | bounded regex search |
 | `terminal.shell` | `terminal.shell` | non-PTY `/bin/sh` in the exact Run workspace |
 
-Claude-native names are intentionally absent. A later managed Mod may map
-`Read`, `Edit`, `Grep`, or `Bash` to these generic operations, but Phase C does
-not implement that Mod.
+Claude-native names remain absent from the provider-neutral broker. Phase D's immutable managed Mod maps its six workspace tools to these seven operations. The Mod's completion and HumanAttention tools bypass the workspace broker and use exact Harness Control authority. Canonical Claude uses Worker-local relay admission, so no generic broker client process is spawned in the credential cell.
 
 The central broker admission layer revalidates account and Run authority,
 worker/broker generation, immutable profile digest, exact workspace permission,
@@ -183,12 +176,6 @@ credential-free disposable SBX fixture profile so it cannot authenticate or
 contact a provider; production authority resolution and current Run-context
 binding are covered separately by deterministic Product and Worker tests.
 
-## Deferred Phase-D gates
+## Phase-D integration
 
-Phase C does **not** run or install production Claude Code, the Claude Agent SDK,
-or the managed QE Mod. It does not authenticate, read/copy credentials,
-authorize inference, make provider requests, or perform model turns. Managed
-Mod provenance/startup attestation, native session ownership, exact
-Claude-native tool mapping, and preventive provider server-tool absence remain
-hard Phase-D gates. Existing execution profiles and the current Agent SDK
-adapter are unchanged.
+Phase D adds the immutable managed Mod, exact Claude-native mapping, dispatch/account admission authority, startup attestation, durable native-session ownership, fake-provider request capture, and a production-profile physical two-cell proof. See [`claude-code-managed-mod.md`](claude-code-managed-mod.md). The broker itself remains provider-neutral. No real authentication, external provider request, or model turn was used for acceptance.

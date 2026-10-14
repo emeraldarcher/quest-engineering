@@ -14,6 +14,12 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
     field :operational_recovery_requested_at, :utc_datetime_usec
     field :prompt_authorization_request_id, :string
     field :prompt_authorized_at, :utc_datetime_usec
+    field :provider_account_id, :string
+    field :provider_account_credential_generation, :integer
+    field :workspace_tool_broker_authorization_id, :string
+    field :workspace_tool_broker_session_id, :string
+    field :workspace_tool_broker_generation, :integer
+    field :workspace_tool_broker_admitted_at, :utc_datetime_usec
     field :cancellation_request_id, :string
     field :cancellation_origin, :string
     field :cancellation_reason, :string
@@ -45,6 +51,12 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
       :operational_recovery_requested_at,
       :prompt_authorization_request_id,
       :prompt_authorized_at,
+      :provider_account_id,
+      :provider_account_credential_generation,
+      :workspace_tool_broker_authorization_id,
+      :workspace_tool_broker_session_id,
+      :workspace_tool_broker_generation,
+      :workspace_tool_broker_admitted_at,
       :cancellation_request_id,
       :cancellation_origin,
       :cancellation_reason,
@@ -93,12 +105,21 @@ defmodule QuestEngineering.Server.Persistence.WorkerDispatch do
     |> unique_constraint(:cancellation_request_id,
       name: :worker_dispatches_cancellation_request_index
     )
+    |> unique_constraint(:workspace_tool_broker_authorization_id,
+      name: :worker_dispatches_workspace_tool_broker_authorization_index
+    )
     |> unique_constraint([:worker_id, :worker_slot], name: :worker_dispatches_active_slot_index)
     |> check_constraint(:state, name: :worker_dispatches_state_valid)
     |> check_constraint(:worker_slot, name: :worker_dispatches_slot_valid)
     |> check_constraint(:worker_slot, name: :worker_dispatches_nonterminal_slot_required)
     |> check_constraint(:cancellation_request_id,
       name: :worker_dispatches_cancellation_provenance_valid
+    )
+    |> check_constraint(:provider_account_id,
+      name: :worker_dispatches_provider_account_authority_complete
+    )
+    |> check_constraint(:workspace_tool_broker_admitted_at,
+      name: :worker_dispatches_broker_admission_complete
     )
   end
 end

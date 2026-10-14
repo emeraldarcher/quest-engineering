@@ -17,6 +17,7 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
   alias QuestEngineering.Server.OperationalRecovery
   alias QuestEngineering.Server.Product.ProviderAccounts
   alias QuestEngineering.Server.Product.ProviderAccountSetups
+  alias QuestEngineering.Server.Product.WorkspaceToolBrokers
   alias QuestEngineering.Server.ProductChangeNotifier
   alias QuestEngineering.Server.ProviderAccountSetupInteractions
   alias QuestEngineering.Server.Reconciler
@@ -217,7 +218,8 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
   def handle(worker_id, generation, %{type: :dispatch_accepted} = message) do
     with :ok <- validate_identity(worker_id, message),
-         {:ok, dispatch} <- DispatchStore.acknowledge(worker_id, generation, message.action_id) do
+         {:ok, dispatch} <- DispatchStore.acknowledge(worker_id, generation, message.action_id),
+         :ok <- admit_claude_workspace_broker(message.action_id) do
       notify_action(message.action_id)
       {:ok, response(:dispatch_acknowledged, dispatch)}
     end
@@ -228,7 +230,8 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
   def handle(worker_id, generation, %{type: :dispatch_state, state: :running} = message) do
     with :ok <- validate_identity(worker_id, message),
-         {:ok, dispatch} <- DispatchStore.mark_running(worker_id, generation, message.action_id) do
+         {:ok, dispatch} <- DispatchStore.mark_running(worker_id, generation, message.action_id),
+         :ok <- admit_claude_workspace_broker(message.action_id) do
       notify_action(message.action_id)
       {:ok, response(:dispatch_running, dispatch)}
     end
@@ -274,7 +277,9 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
         type: :workspace_tool_broker_activity,
         broker_activity: activity
       }) do
-    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation) do
+    with {:ok, _worker} <- WorkerStore.heartbeat(worker_id, generation),
+         {:ok, _dispatch} <-
+           WorkspaceToolBrokers.record_activity(worker_id, generation, activity) do
       {:ok,
        %{
          "type" => "message_result",
@@ -550,6 +555,13 @@ defmodule QuestEngineering.Server.WorkerMessageHandler do
 
   defp relay_provider_account_setup_output(_attempt, nil), do: :ok
   defp relay_provider_account_setup_output(_attempt, _ephemeral), do: :ok
+
+  defp admit_claude_workspace_broker(action_id) do
+    case WorkspaceToolBrokers.prepare_and_admit_for_action(action_id) do
+      {:ok, _binding_or_not_required} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp delivery_response(result, delivery_id) do
     %{

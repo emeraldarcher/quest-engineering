@@ -8,12 +8,7 @@ append-only setup-attempt history, blocking HumanAttention, ephemeral process
 interaction, side-effect certainty, cancellation, restart reconciliation, and
 post-setup authentication validation.
 
-Phase B intentionally uses only QE's deterministic fake provider/login process.
-In physical mode that process is local Python inside the existing account SBX;
-it performs no network request and writes only deterministic fake state. The
-implementation does **not** invoke Claude Code, Agent SDK login, a real provider
-process, provider authentication/network, a model, inference, Claude v4, a Mod,
-or a tool broker. Existing Run-bound setup remains a separate legacy adapter.
+The original Phase B acceptance proof intentionally used only QE's deterministic fake provider/login process. Phase D adds the production Anthropic specialization without changing the provider-neutral Product lifecycle: `provider_key: "anthropic"` uses persistent `qe-claude-account-v1`, pinned `claude auth login`, exact Claude.ai status validation, and serialized account operations. Execution binds that account to the canonical `claude_code` harness and a separate workspace broker; see [`claude-code-managed-mod.md`](claude-code-managed-mod.md). Phase D validation still performs no real login, credential entry, external provider request, or inference.
 
 ## Product identity and semantic lifecycle
 

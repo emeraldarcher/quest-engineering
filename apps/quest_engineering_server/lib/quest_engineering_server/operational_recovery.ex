@@ -617,8 +617,21 @@ defmodule QuestEngineering.Server.OperationalRecovery do
 
   defp prompt_authorization_ready?(epoch, dispatch, session) do
     prompt_authorization_epoch?(epoch) and promptable_dispatch?(dispatch) and
-      promptable_session?(session)
+      promptable_session?(session) and broker_prompt_ready?(dispatch, session)
   end
+
+  defp broker_prompt_ready?(dispatch, %{harness_kind: "claude_code"}) do
+    is_binary(dispatch.provider_account_id) and
+      is_integer(dispatch.provider_account_credential_generation) and
+      dispatch.provider_account_credential_generation > 0 and
+      is_binary(dispatch.workspace_tool_broker_authorization_id) and
+      is_binary(dispatch.workspace_tool_broker_session_id) and
+      is_integer(dispatch.workspace_tool_broker_generation) and
+      dispatch.workspace_tool_broker_generation > 0 and
+      not is_nil(dispatch.workspace_tool_broker_admitted_at)
+  end
+
+  defp broker_prompt_ready?(_dispatch, _session), do: true
 
   defp prompt_authorization_epoch?(epoch) do
     epoch && epoch.authorization_kind in ["initial", "human"] &&
@@ -631,9 +644,17 @@ defmodule QuestEngineering.Server.OperationalRecovery do
   defp promptable_session?(session) do
     session && session.state == "waiting_for_human" &&
       get_in(session.attention || %{}, ["category"]) == "needs_confirmation" &&
-      is_nil(session.native_session_id) &&
+      promptable_native_identity?(session) &&
       is_nil(get_in(session.turn || %{}, ["prompt_intent_at"]))
   end
+
+  # Claude Code must create and attest its exact native session during the
+  # zero-inference startup stage. Historical harnesses retain the stricter
+  # pre-prompt invariant that no native session exists yet.
+  defp promptable_native_identity?(%{harness_kind: "claude_code", native_session_id: id}),
+    do: is_binary(id)
+
+  defp promptable_native_identity?(session), do: is_nil(session.native_session_id)
 
   defp deliver_prompt_authorization(
          {:ok, {dispatch, persisted_request_id, already_authorized?}},

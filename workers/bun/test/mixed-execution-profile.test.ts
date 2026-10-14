@@ -13,6 +13,7 @@ import {
   SBX_ANTIGRAVITY_LINUX_ARM64_BINARY_SHA256,
   SBX_ANTIGRAVITY_VERSION,
   SBX_CLAUDE_AGENT_SDK_VERSION,
+  SBX_CLAUDE_BROKER_RUN_PROFILE_V1,
   SBX_CLAUDE_CODE_VERSION,
   SBX_CODING_EXECUTION_PROFILE_V1,
   SBX_CODING_EXECUTION_PROFILE_V1_DEFINITION,
@@ -79,6 +80,21 @@ test("Pi, Antigravity, Claude, and mixed Runs resolve one composable immutable p
     ),
   ).toBe(true);
   expect(SBX_PI_EXECUTION_PROFILE_V2.id).toBe("qe-pi-execution-v2");
+});
+
+test("canonical Claude Code uses an exclusive credential-free Run profile", () => {
+  const resolved = resolveRunExecutionProfile(["claude_code"]);
+  expect(resolved.profile.identity).toEqual(SBX_CLAUDE_BROKER_RUN_PROFILE_V1);
+  expect(resolved.harnesses).toEqual(["claude_code"]);
+  expect(
+    profileSupportsHarness(SBX_CLAUDE_BROKER_RUN_PROFILE_V1.id, "claude_code"),
+  ).toBe(true);
+  expect(
+    profileSupportsHarness(SBX_CODING_EXECUTION_PROFILE_V3.id, "claude_code"),
+  ).toBe(false);
+  expect(() => resolveRunExecutionProfile(["claude_code", "pi"])).toThrow(
+    "cannot be combined",
+  );
 });
 
 test("historical coding profiles remain byte-for-byte immutable", async () => {

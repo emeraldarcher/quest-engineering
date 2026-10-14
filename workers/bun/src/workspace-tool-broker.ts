@@ -86,6 +86,7 @@ export interface WorkspaceToolBrokerAuthorityResolver {
 export interface WorkspaceToolBrokerActivity {
   session_id: string;
   broker_generation: number;
+  authorization_id: string;
   action_id: string;
   attempt_id: string;
   operation: string | null;
@@ -110,7 +111,8 @@ interface LiveSession {
   record: WorkspaceToolBrokerSessionRecord;
   account: WorkspaceToolAccountAuthority;
   run: WorkspaceToolRunAuthority;
-  client: StreamedProcess;
+  client: StreamedProcess | null;
+  transport: "streamed_account_client" | "worker_account_relay";
   output: Promise<void>;
   monitor: Promise<void>;
   pending: Map<
@@ -238,16 +240,40 @@ export class WorkspaceToolBroker {
   async admitAuthorization(
     authorizationId: string,
   ): Promise<BoundWorkspaceToolClient> {
+    const session = this.preparedAuthorization(authorizationId);
+    if (session.state === "admitted") {
+      const live = this.requiredLive(session.sessionId);
+      return this.boundClient(live, live.capability);
+    }
+    return this.admit(session.sessionId);
+  }
+
+  async admitLocalAuthorization(
+    authorizationId: string,
+  ): Promise<BoundWorkspaceToolClient> {
+    const session = this.preparedAuthorization(authorizationId);
+    if (session.state === "admitted") {
+      const live = this.requiredLive(session.sessionId);
+      if (live.transport !== "worker_account_relay")
+        throw new Error("Workspace tool broker transport mode conflicts.");
+      return this.boundClient(live, live.capability);
+    }
+    return this.admitLocal(session.sessionId);
+  }
+
+  private preparedAuthorization(
+    authorizationId: string,
+  ): WorkspaceToolBrokerSessionRecord {
     const session = this.store
       .sessions()
       .find(
         (candidate) =>
-          candidate.state === "prepared" &&
+          ["prepared", "admitted"].includes(candidate.state) &&
           candidate.binding.authorizationId === authorizationId,
       );
     if (!session)
       throw new Error("Workspace tool broker authorization is not prepared.");
-    return this.admit(session.sessionId);
+    return session;
   }
 
   async admit(sessionId: string): Promise<BoundWorkspaceToolClient> {
@@ -273,6 +299,7 @@ export class WorkspaceToolBroker {
       account,
       run,
       client,
+      transport: "streamed_account_client",
       output: Promise.resolve(),
       monitor: Promise.resolve(),
       pending: new Map(),
@@ -297,6 +324,69 @@ export class WorkspaceToolBroker {
       null,
     );
     return this.boundClient(live, capability);
+  }
+
+  async admitLocal(sessionId: string): Promise<BoundWorkspaceToolClient> {
+    const prepared = this.store.session(sessionId);
+    if (!prepared || prepared.state !== "prepared")
+      throw new Error("Workspace tool broker session is not prepared.");
+    const input = preparationFromBinding(prepared.binding);
+    const account = await this.authority.account(input);
+    const run = await this.authority.run(input);
+    assertAccountRef(input, account.ref);
+    assertRunAuthority(input, run);
+    account.assertCurrent();
+    run.assertCurrent();
+    const record = this.store.admit(sessionId, null);
+    const capability = {};
+    const live: LiveSession = {
+      record,
+      account,
+      run,
+      client: null,
+      transport: "worker_account_relay",
+      output: Promise.resolve(),
+      monitor: Promise.resolve(),
+      pending: new Map(),
+      active: new Map(),
+      completed: new Map(),
+      activeCount: 0,
+      mutationTail: Promise.resolve(),
+      closing: false,
+      capability,
+    };
+    this.live.set(sessionId, live);
+    await this.safeReport(
+      record,
+      null,
+      null,
+      "admitted",
+      null,
+      null,
+      null,
+      null,
+    );
+    return this.boundClient(live, capability);
+  }
+
+  boundClientForAction(actionId: string): {
+    binding: WorkspaceToolBrokerBinding;
+    client: BoundWorkspaceToolClient;
+  } {
+    const live = [...this.live.values()].find(
+      (candidate) =>
+        !candidate.closing &&
+        candidate.transport === "worker_account_relay" &&
+        candidate.record.binding.actionId === actionId,
+    );
+    if (!live)
+      throw new Error(
+        "No admitted local WorkspaceToolBroker authority exists for the Action.",
+      );
+    return {
+      binding: structuredClone(live.record.binding),
+      client: this.boundClient(live, live.capability),
+    };
   }
 
   async cancel(
@@ -391,8 +481,8 @@ export class WorkspaceToolBroker {
       },
     );
     await Promise.allSettled(cancellations);
-    await live.client.cancel().catch(() => undefined);
-    await live.client.disconnect().catch(() => undefined);
+    await live.client?.cancel().catch(() => undefined);
+    await live.client?.disconnect().catch(() => undefined);
     this.store.closeSession(sessionId, reason);
     for (const waiter of live.pending.values())
       waiter.reject(new Error("Workspace tool broker session closed."));
@@ -460,6 +550,8 @@ export class WorkspaceToolBroker {
             new Error("Workspace tool client capability is stale."),
           );
         const request = decodeWorkspaceToolRequest(value);
+        if (live.transport === "worker_account_relay")
+          return this.execute(live, request);
         if (live.pending.has(request.request_id))
           return Promise.reject(
             new Error("Workspace tool request is already pending."),
@@ -481,7 +573,7 @@ export class WorkspaceToolBroker {
             });
           },
         );
-        return live.client
+        return (live.client as StreamedProcess)
           .write(
             new TextEncoder().encode(
               `${JSON.stringify({ type: "drive", request })}\n`,
@@ -502,6 +594,8 @@ export class WorkspaceToolBroker {
     let buffered = "";
     const decoder = new TextDecoder("utf-8", { fatal: true });
     try {
+      if (!live.client)
+        throw new Error("Account-cell streamed broker client is missing.");
       for await (const event of live.client.stdout) {
         if (event.kind === "transport_error")
           throw new Error("Account-cell broker transport is unavailable.");
@@ -565,6 +659,8 @@ export class WorkspaceToolBroker {
     }
     const pending = live.pending.get(request.request_id);
     if (pending) pending.response = structuredClone(response);
+    if (!live.client)
+      throw new Error("Account-cell streamed broker client is missing.");
     await live.client
       .write(
         new TextEncoder().encode(
@@ -947,6 +1043,7 @@ export class WorkspaceToolBroker {
   }
 
   private async monitorClient(live: LiveSession): Promise<void> {
+    if (!live.client) return;
     const exit = await live.client.exit;
     if (!live.closing)
       await this.closeSession(
@@ -970,6 +1067,7 @@ export class WorkspaceToolBroker {
     await this.report({
       session_id: session.sessionId,
       broker_generation: session.brokerGeneration,
+      authorization_id: session.binding.authorizationId,
       action_id: session.binding.actionId,
       attempt_id: session.binding.attemptId,
       operation: request?.operation ?? null,

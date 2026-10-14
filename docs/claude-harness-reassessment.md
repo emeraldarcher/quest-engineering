@@ -6,10 +6,7 @@
 
 **Decision:** **B — replace the production Claude Agent SDK adapter with headless Claude Code plus one QE Mod.**
 
-This is a research decision, not an implementation. No production adapter or
-immutable execution profile was changed. No Claude login, credential operation,
-Agent SDK query, model turn, provider inference, Product prompt authorization,
-or `qe_complete_step` call was performed.
+This document records the research decision at that date. Phase D subsequently implemented candidate B under canonical identity `claude_code`; see [`claude-code-managed-mod.md`](claude-code-managed-mod.md). The historical evidence and spike conclusions below remain unchanged. Implementation acceptance performed no real Claude login, credential operation, Agent SDK query, paid model turn, or external provider request.
 
 ## Evidence labels and source date
 

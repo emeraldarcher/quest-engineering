@@ -186,7 +186,7 @@ export class WorkspaceToolBrokerStore {
 
   admit(
     id: string,
-    process: StreamedProcessHandle,
+    process: StreamedProcessHandle | null,
   ): WorkspaceToolBrokerSessionRecord {
     const now = this.timestamp();
     const changed = this.db
@@ -195,7 +195,7 @@ export class WorkspaceToolBrokerStore {
          SET state='admitted',process_json=?,admitted_at=COALESCE(admitted_at,?),updated_at=?
          WHERE session_id=? AND state='prepared'`,
       )
-      .run(JSON.stringify(process), now, now, id);
+      .run(process ? JSON.stringify(process) : null, now, now, id);
     if (changed.changes !== 1)
       throw new Error("Workspace tool broker session is not prepared.");
     this.event(id, null, "session_admitted", null);

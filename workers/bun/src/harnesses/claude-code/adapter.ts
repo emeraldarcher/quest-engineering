@@ -1,0 +1,1219 @@
+import { createHash, randomUUID } from "node:crypto";
+import { posix } from "node:path";
+import type { WorkerConfig } from "../../config.ts";
+import type {
+  DispatchRecord,
+  HarnessLineage,
+} from "../../dispatch/registry.ts";
+import {
+  type ClaudeCodeAccountRuntime,
+  claudeAccountEnvironment,
+  type ProviderAccountEnvironmentManager,
+} from "../../execution-environment/provider-account.ts";
+import {
+  SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL,
+  SBX_CLAUDE_CODE_VERSION,
+  SBX_CLAUDE_EXECUTABLE,
+} from "../../execution-environment/sbx-profile.ts";
+import type {
+  PreparedSbxHarnessExecution,
+  SbxRunExecutionManager,
+} from "../../execution-environment/sbx-run.ts";
+import type {
+  StreamedProcess,
+  StreamedProcessStreamEvent,
+} from "../../execution-environment/types.ts";
+import type { JsonValue } from "../../protocol/types.ts";
+import { materializeExecutionArtifacts } from "../../workspace/execution-artifacts.ts";
+import type {
+  BoundWorkspaceToolClient,
+  WorkspaceToolBroker,
+} from "../../workspace-tool-broker.ts";
+import { controlDescriptorPath } from "../control/authority.ts";
+import { HarnessControlClient } from "../control/client.ts";
+import { collectStepResult } from "../control/result-envelope.ts";
+import { nativeSessionRef } from "../native-session.ts";
+import { harnessPromptFor } from "../prompt.ts";
+import type { HarnessTransportBinding } from "../transport-binding.ts";
+import { structuredResultExists } from "../turn-lifecycle.ts";
+import type {
+  AgentHarness,
+  HarnessCapabilities,
+  HarnessDiscovery,
+  HarnessEvent,
+  HarnessExecutionHandle,
+  HarnessInspection,
+  HarnessPreparedExecution,
+  HarnessRecoveredExecution,
+} from "../types.ts";
+import { OperationalExecutionError } from "../types.ts";
+import { ClaudeAccountCellRelay, newBridgeToken } from "./account-relay.ts";
+import {
+  type ClaudeCodeSessionRecord,
+  ClaudeCodeSessionStore,
+} from "./session-store.ts";
+
+export const CLAUDE_CODE_HARNESS_KIND = "claude_code" as const;
+export const CLAUDE_CODE_MODEL = "claude-opus-4-6" as const;
+export const CLAUDE_CODE_EFFORT = "high" as const;
+export const CLAUDE_CODE_PLUGIN_NAME = "qe-account-cell" as const;
+export const CLAUDE_CODE_PLUGIN_PATH =
+  "/opt/qe/claude-plugins/plugins/qe-account-cell" as const;
+
+export const CLAUDE_CODE_TOOLS = Object.freeze([
+  "mcp__qe-account-cell__qe_workspace_read",
+  "mcp__qe-account-cell__qe_workspace_list",
+  "mcp__qe-account-cell__qe_workspace_write",
+  "mcp__qe-account-cell__qe_workspace_edit",
+  "mcp__qe-account-cell__qe_workspace_search",
+  "mcp__qe-account-cell__qe_run_shell",
+  "mcp__qe-account-cell__qe_complete_step",
+  "mcp__qe-account-cell__qe_request_human_assistance_and_wait",
+]);
+
+const CAPABILITIES: HarnessCapabilities = Object.freeze({
+  structuredResult: true,
+  continuation: true,
+  retainedSessionRecovery: true,
+  structuredAttention: true,
+  nativeBlocking: true,
+  canAttachTerminal: false,
+  canSendInput: false,
+  canInterrupt: true,
+  canDetectAttention: true,
+  canResume: true,
+  canObserveStructuredEvents: true,
+  structuredConfirmation: true,
+  structuredTextResponse: true,
+  structuredChoiceResponse: true,
+  structuredMultilineResponse: true,
+  nativePromptControl: true,
+  conversationalTakeover: false,
+  automationResume: false,
+});
+
+interface ActiveClaudeCodeExecution {
+  dispatch: DispatchRecord;
+  lineageId: string;
+  account: ClaudeCodeAccountRuntime;
+  runPrepared: PreparedSbxHarnessExecution;
+  accountId: string;
+  session: ClaudeCodeSessionRecord;
+  process: StreamedProcess;
+  broker: BoundWorkspaceToolClient;
+  control: HarnessControlClient;
+  relay: ClaudeAccountCellRelay;
+  frames: AsyncFrameQueue;
+  inspection: HarnessInspection;
+  initialized: boolean;
+  promptSubmitted: boolean;
+  promptAccepted: boolean;
+  continuationCount: number;
+  fatal: Error | null;
+  disconnected: boolean;
+}
+
+export class ClaudeCodeHarness implements AgentHarness {
+  readonly kind = CLAUDE_CODE_HARNESS_KIND;
+  readonly displayName = "Claude Code (managed QE account cell)";
+  readonly integrationStrategy = "structured_headless" as const;
+  readonly capabilities = CAPABILITIES;
+  readonly humanAttentionWaitRecoverability = "wait_not_recoverable" as const;
+  private readonly active = new Map<string, ActiveClaudeCodeExecution>();
+  private readonly sessions: ClaudeCodeSessionStore;
+
+  constructor(
+    private readonly config: WorkerConfig,
+    private readonly runManager: SbxRunExecutionManager,
+    private readonly accounts: ProviderAccountEnvironmentManager,
+    private readonly brokerProvider: () => WorkspaceToolBroker,
+    sessionStore?: ClaudeCodeSessionStore,
+  ) {
+    this.sessions =
+      sessionStore ?? new ClaudeCodeSessionStore(this.config.dataRoot);
+  }
+
+  async discover(): Promise<HarnessDiscovery> {
+    const configured = (this.config.executorModels ?? []).filter(
+      (candidate) =>
+        candidate.provider === "anthropic" &&
+        candidate.model === CLAUDE_CODE_MODEL,
+    );
+    return {
+      kind: this.kind,
+      displayName: this.displayName,
+      strategy: this.integrationStrategy,
+      integration: {
+        status: configured.length > 0 ? "ready" : "missing_dependency",
+        detail:
+          configured.length > 0
+            ? `Claude Code ${SBX_CLAUDE_CODE_VERSION} is pinned to the immutable managed-Mod account profile.`
+            : `Configure exact model anthropic/${CLAUDE_CODE_MODEL}.`,
+        installed: true,
+        authenticated: false,
+        setupAvailable: true,
+      },
+      models: configured.map((candidate) => ({
+        provider: candidate.provider,
+        model: candidate.model,
+        displayName: `${candidate.provider}/${candidate.model}`,
+        accountAvailability: "unknown",
+        reasoningCapability: {
+          kind: "enumerated",
+          values: [CLAUDE_CODE_EFFORT],
+        },
+      })),
+      capabilities: this.capabilities,
+    };
+  }
+
+  start(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+  ): Promise<HarnessPreparedExecution> {
+    return this.prepare(dispatch, lineage, false);
+  }
+
+  continue(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+  ): Promise<HarnessPreparedExecution> {
+    return this.prepare(dispatch, lineage, true);
+  }
+
+  async ready(
+    dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+  ): Promise<void> {
+    const active = this.required(execution.lineage.lineageId);
+    assertDispatch(active, dispatch);
+    if (!active.initialized || active.fatal)
+      throw claudeError(
+        "environment_attestation_failed",
+        active.fatal?.message ??
+          "Claude Code zero-inference readiness is incomplete.",
+        "readiness",
+        "not_submitted",
+      );
+    active.account.assertCurrent();
+  }
+
+  async sendInputAndCollect(
+    dispatch: DispatchRecord,
+    execution: HarnessPreparedExecution,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    const active = this.required(execution.lineage.lineageId);
+    assertDispatch(active, dispatch);
+    return this.accounts.withSerializedAccount(active.accountId, async () => {
+      active.account.assertCurrent();
+      const prompt = harnessPromptFor(
+        dispatch,
+        active.runPrepared.materializedArtifacts,
+        {
+          completionTool: "qe_complete_step",
+          humanAssistanceInstruction:
+            "Use qe_request_human_assistance_and_wait for a durable blocking request. Wait for its exact response and never infer one.",
+          recoveryContext: "QE-owned Claude Code native session",
+        },
+      );
+      onEvent({
+        type: "prompt_baseline",
+        evidence: {
+          kind: "claude_stream",
+          cursor: active.frames.cursor,
+          promptHash: digest(prompt),
+        },
+        inspection: inspection(active, "waiting_for_activity", "idle"),
+      });
+      active.promptSubmitted = true;
+      active.promptAccepted = false;
+      this.sessions.transition(
+        active.session.nativeSessionId,
+        ["prepared", "idle"],
+        "active",
+      );
+      active.session = this.sessions.get(
+        active.session.nativeSessionId,
+      ) as ClaudeCodeSessionRecord;
+      try {
+        await sendMessage(
+          active.process,
+          active.session.nativeSessionId,
+          prompt,
+          true,
+        );
+      } catch (error) {
+        this.markUncertain(active);
+        throw claudeError(
+          "agent_prompt_uncertain",
+          error instanceof Error
+            ? error.message
+            : "Claude prompt submission is uncertain.",
+          "execute",
+          "ambiguous",
+        );
+      }
+      return this.collect(dispatch, active, onEvent);
+    });
+  }
+
+  async waitAndCollect(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+    _handle: HarnessExecutionHandle,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    if (await structuredResultExists(dispatch.resultDirectory))
+      return (await collectStepResult(dispatch)).envelope.outputs;
+    const active = this.required(lineage.lineageId);
+    return this.accounts.withSerializedAccount(active.accountId, async () => {
+      if (!active.promptSubmitted) {
+        active.promptSubmitted = true;
+        this.sessions.transition(
+          active.session.nativeSessionId,
+          ["prepared", "idle", "uncertain"],
+          "active",
+        );
+        await sendMessage(
+          active.process,
+          active.session.nativeSessionId,
+          "Quest Engineering recovery: continue the already-authorized Step from the exact retained Claude session. Inspect current Run workspace state through QE broker tools, avoid repeating completed mutations, and call qe_complete_step with exactly the declared outputs.",
+          true,
+        );
+      }
+      return this.collect(dispatch, active, onEvent);
+    });
+  }
+
+  async recover(
+    lineage: HarnessLineage,
+    dispatch?: DispatchRecord,
+  ): Promise<HarnessRecoveredExecution> {
+    if (!dispatch)
+      return {
+        found: false,
+        detail: "Claude recovery requires the exact Dispatch.",
+      };
+    if (
+      dispatch.promptIntentAt &&
+      !(await structuredResultExists(dispatch.resultDirectory))
+    )
+      return {
+        found: false,
+        detail:
+          "Claude prompt submission crossed the side-effect boundary without a recoverable attached stream; QE refuses to resubmit or infer the provider outcome.",
+      };
+    try {
+      const prepared = await this.prepare(dispatch, lineage, true, true);
+      const active = this.required(lineage.lineageId);
+      return {
+        found: true,
+        handle: prepared.handle,
+        inspection: active.inspection,
+        detail:
+          "Rebound the exact QE-owned Claude session after retiring stale account-cell process attachments.",
+      };
+    } catch (error) {
+      return {
+        found: false,
+        detail:
+          error instanceof Error ? error.message : "Claude recovery failed.",
+      };
+    }
+  }
+
+  async interrupt(lineage: HarnessLineage): Promise<void> {
+    const active = this.active.get(lineage.lineageId);
+    if (!active) return;
+    active.disconnected = true;
+    await Promise.allSettled([
+      active.process.cancel(),
+      active.relay.stop(),
+      active.broker.close(),
+    ]);
+    this.markUncertain(active);
+    this.active.delete(lineage.lineageId);
+  }
+
+  async retire(lineage: HarnessLineage): Promise<void> {
+    await this.close(lineage);
+  }
+
+  async close(lineage: HarnessLineage): Promise<void> {
+    const active = this.active.get(lineage.lineageId);
+    if (active) {
+      active.disconnected = true;
+      await Promise.allSettled([
+        active.process.cancel(),
+        active.relay.stop(),
+        active.broker.close(),
+      ]);
+      this.active.delete(lineage.lineageId);
+    }
+    this.sessions.closeLineage(lineage.lineageId);
+  }
+
+  inspect(lineage: HarnessLineage): Promise<HarnessInspection> {
+    const active = this.active.get(lineage.lineageId);
+    if (active) return Promise.resolve(structuredClone(active.inspection));
+    const record = this.sessions.forLineage(lineage.lineageId);
+    return Promise.resolve({
+      state: record?.state === "idle" ? "retained" : "unavailable",
+      activity: {
+        state: record?.state === "idle" ? "idle" : "unknown",
+        detail: record
+          ? `Claude session is durably recorded in ${record.state} state.`
+          : "No QE-owned Claude session record exists.",
+      },
+      nativeSession: record
+        ? nativeSessionRef(this.kind, "id", record.nativeSessionId)
+        : null,
+      health: record?.state === "idle" ? "healthy" : "unavailable",
+      attention: lineage.attention,
+      intervention: lineage.intervention,
+      lastActivityAt: record?.updatedAt ?? new Date().toISOString(),
+      interactive: null,
+    });
+  }
+
+  async proveInactiveForFreshRecovery(
+    lineage: HarnessLineage,
+  ): Promise<boolean> {
+    const active = this.active.get(lineage.lineageId);
+    return !active || active.session.state === "idle";
+  }
+
+  clearActiveMetadata(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+  ): Promise<void> {
+    const active = this.active.get(lineage.lineageId);
+    if (
+      active &&
+      active.dispatch.action.action_id === dispatch.action.action_id
+    ) {
+      active.promptSubmitted = false;
+      active.promptAccepted = false;
+      active.session = this.sessions.transition(
+        active.session.nativeSessionId,
+        ["active", "idle"],
+        "idle",
+      );
+      active.inspection = inspection(active, "retained", "completed");
+    }
+    return Promise.resolve();
+  }
+
+  discoverAdoptionCandidates(): Promise<[]> {
+    return Promise.resolve([]);
+  }
+
+  disconnect(): void {
+    for (const active of this.active.values()) {
+      active.disconnected = true;
+      this.markUncertain(active);
+      void active.process.cancel();
+      void active.relay.stop();
+      void active.broker.close();
+    }
+    this.active.clear();
+  }
+
+  private async prepare(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+    continuation: boolean,
+    recovering = false,
+  ): Promise<HarnessPreparedExecution> {
+    assertExactConfiguration(dispatch);
+    const runPrepared = await this.runManager.prepare(
+      dispatch,
+      lineage,
+      materializeExecutionArtifacts(this.config, dispatch),
+    );
+    const admitted = await waitForBroker(
+      this.brokerProvider(),
+      dispatch.action.action_id,
+    );
+    const binding = admitted.binding;
+    assertBrokerBinding(dispatch, binding);
+    const existing = this.active.get(lineage.lineageId);
+    if (existing) {
+      if (!continuation)
+        throw new Error(
+          "Fresh Claude execution cannot reuse an active session.",
+        );
+      assertSessionBinding(existing.session, lineage, binding);
+      existing.account.assertCurrent();
+      const priorBroker = existing.broker;
+      existing.dispatch = dispatch;
+      existing.runPrepared = runPrepared;
+      existing.broker = admitted.client;
+      existing.relay.rebind(admitted.client, existing.account.assertCurrent);
+      if (priorBroker.sessionId !== admitted.client.sessionId)
+        await priorBroker.close();
+      existing.inspection = inspection(existing, "starting", "idle");
+      return prepared(lineage, existing);
+    }
+    const durable = this.sessions.forLineage(lineage.lineageId);
+    if (continuation && !durable)
+      throw new Error(
+        "Claude continuation has no exact QE-owned session record.",
+      );
+    if (continuation && durable?.state === "closed")
+      throw new Error(
+        "Claude continuation cannot resume a closed native session.",
+      );
+    if (!continuation && durable)
+      throw new Error(
+        "Fresh Claude execution cannot reuse any prior native session record.",
+      );
+    const nativeSessionId =
+      continuation && durable ? durable.nativeSessionId : randomUUID();
+    if (durable) assertSessionBinding(durable, lineage, binding);
+    const account = await this.accounts.claudeCodeRuntime({
+      providerAccountId: binding.providerAccountId,
+      credentialGeneration: binding.credentialGeneration,
+      expected: binding.accountEnvironment,
+    });
+    return this.accounts.withSerializedAccount(
+      binding.providerAccountId,
+      async () => {
+        if (recovering)
+          await this.accounts.retireClaudeAccountProcesses(account.ref);
+        await assertAuthenticated(account);
+        const mailboxRoot = posix.join(
+          account.lease.paths.control,
+          "claude",
+          digest(lineage.lineageId).slice(0, 32),
+        );
+        const bridgeToken = newBridgeToken();
+        const control = new HarnessControlClient(
+          controlDescriptorPath(lineage),
+        );
+        const relay = new ClaudeAccountCellRelay(
+          account.lease,
+          mailboxRoot,
+          bridgeToken,
+          admitted.client,
+          control,
+          account.assertCurrent,
+          (error) => {
+            const current = this.active.get(lineage.lineageId);
+            if (!current) return;
+            current.fatal = error;
+            current.inspection = inspection(current, "unavailable", "unknown");
+            void current.process.cancel();
+          },
+        );
+        await relay.start();
+        let process: StreamedProcess;
+        try {
+          process = await account.lease.spawnStreamed(
+            claudeCodeCommand(
+              account,
+              nativeSessionId,
+              continuation || Boolean(durable),
+              mailboxRoot,
+              bridgeToken,
+            ),
+            { bufferBytes: 1024 * 1024, acknowledgementTimeoutMs: 30_000 },
+          );
+        } catch (error) {
+          await relay.stop();
+          throw error;
+        }
+        const session =
+          durable ??
+          this.sessions.create({
+            nativeSessionId,
+            lineageId: lineage.lineageId,
+            logicalLineageId: lineage.logicalLineageId,
+            providerAccountId: binding.providerAccountId,
+            credentialGeneration: binding.credentialGeneration,
+            accountEnvironmentId: binding.accountEnvironment.environmentId,
+            accountEnvironmentIncarnation:
+              binding.accountEnvironment.incarnation,
+            model: CLAUDE_CODE_MODEL,
+            effort: CLAUDE_CODE_EFFORT,
+          });
+        const frames = new AsyncFrameQueue();
+        const active: ActiveClaudeCodeExecution = {
+          dispatch,
+          lineageId: lineage.lineageId,
+          account,
+          runPrepared,
+          accountId: binding.providerAccountId,
+          session,
+          process,
+          broker: admitted.client,
+          control,
+          relay,
+          frames,
+          inspection: emptyInspection(nativeSessionId),
+          initialized: false,
+          promptSubmitted: false,
+          promptAccepted: false,
+          continuationCount: 0,
+          fatal: null,
+          disconnected: false,
+        };
+        this.active.set(lineage.lineageId, active);
+        void pump(process.stdout, frames).catch((error) => frames.fail(error));
+        void process.exit.then((exit) => {
+          if (!active.disconnected && !frames.closed)
+            frames.fail(
+              new Error(
+                `Claude Code exited before protocol settlement (${exit.kind}).`,
+              ),
+            );
+        });
+        try {
+          await sendMessage(
+            process,
+            nativeSessionId,
+            "Quest Engineering fixed zero-inference initialization probe.",
+            false,
+          );
+          const init = await waitForInit(frames, 30_000);
+          attestClaudeInit(init, {
+            sessionId: nativeSessionId,
+            cwd: account.cwd,
+            model: CLAUDE_CODE_MODEL,
+            effort: CLAUDE_CODE_EFFORT,
+          });
+          active.initialized = true;
+          if (
+            active.session.state === "uncertain" &&
+            !dispatch.promptIntentAt &&
+            !dispatch.promptAcceptedAt &&
+            !dispatch.nativeActivityAt
+          )
+            active.session = this.sessions.transition(
+              active.session.nativeSessionId,
+              ["uncertain"],
+              "prepared",
+            );
+          active.inspection = inspection(active, "starting", "idle");
+          return prepared(lineage, active);
+        } catch (error) {
+          active.disconnected = true;
+          await Promise.allSettled([
+            process.cancel(),
+            relay.stop(),
+            admitted.client.close(),
+          ]);
+          this.active.delete(lineage.lineageId);
+          this.markUncertain(active);
+          throw claudeError(
+            "environment_attestation_failed",
+            error instanceof Error
+              ? error.message
+              : "Claude init attestation failed.",
+            "readiness",
+            "not_submitted",
+          );
+        }
+      },
+    );
+  }
+
+  private async collect(
+    dispatch: DispatchRecord,
+    active: ActiveClaudeCodeExecution,
+    onEvent: (event: HarnessEvent) => void,
+  ): Promise<Record<string, JsonValue>> {
+    for (;;) {
+      if (active.fatal) throw active.fatal;
+      const frame = await active.frames.next(null);
+      if (frame.type === "system" && frame.subtype === "init") {
+        attestClaudeInit(frame, {
+          sessionId: active.session.nativeSessionId,
+          cwd: active.account.cwd,
+          model: CLAUDE_CODE_MODEL,
+          effort: CLAUDE_CODE_EFFORT,
+        });
+        continue;
+      }
+      rejectServerToolEvidence(frame);
+      if (
+        frame.session_id &&
+        frame.session_id !== active.session.nativeSessionId
+      )
+        throw new Error("Claude stream crossed native-session ownership.");
+      if (frame.type === "assistant") {
+        const message =
+          frame.message && typeof frame.message === "object"
+            ? (frame.message as Record<string, unknown>)
+            : null;
+        if (message?.model !== CLAUDE_CODE_MODEL)
+          throw new Error("Claude assistant frame used an unapproved model.");
+        active.inspection = inspection(active, "running", "active");
+        if (!active.promptAccepted) {
+          active.promptAccepted = true;
+          onEvent({
+            type: "prompt_accepted",
+            acceptedAt: new Date().toISOString(),
+            inspection: active.inspection,
+          });
+        }
+        onEvent({
+          type: "native_activity",
+          observedAt: new Date().toISOString(),
+          inspection: active.inspection,
+        });
+        continue;
+      }
+      if (frame.type !== "result") continue;
+      assertExactModelUsage(frame);
+      onEvent({
+        type: "provider_turn_settled",
+        observedAt: new Date().toISOString(),
+        inspection: inspection(active, "running", "completed"),
+      });
+      onEvent({
+        type: "native_idle",
+        observedAt: new Date().toISOString(),
+        inspection: inspection(active, "running", "completed"),
+      });
+      if (frame.is_error === true || frame.subtype !== "success") {
+        this.markUncertain(active);
+        throw claudeError(
+          "claude_turn_failed",
+          typeof frame.result === "string"
+            ? frame.result
+            : "Claude Code reported a failed provider turn.",
+          "observe",
+          "submitted",
+        );
+      }
+      const decision = await active.control.nativeStop(
+        "claude_code_turn_settled",
+        true,
+        CLAUDE_CODE_MODEL,
+      );
+      if (decision.nativeStop?.decision === "allow") {
+        await waitForResult(dispatch);
+        const outputs = (await collectStepResult(dispatch)).envelope.outputs;
+        active.inspection = inspection(active, "retained", "completed");
+        onEvent({
+          type: "structured_result_received",
+          observedAt: new Date().toISOString(),
+          inspection: active.inspection,
+        });
+        return outputs;
+      }
+      if (decision.nativeStop?.decision === "contract_violation")
+        throw claudeError(
+          "harness_contract_violation",
+          decision.nativeStop.reason,
+          "observe",
+          "submitted",
+        );
+      if (decision.nativeStop?.decision !== "continue")
+        throw new Error("Claude completion authority returned no decision.");
+      active.continuationCount += 1;
+      if (active.continuationCount > 2)
+        throw claudeError(
+          "harness_contract_violation",
+          "Claude exceeded the bounded completion correction contract.",
+          "execute",
+          "submitted",
+        );
+      await sendMessage(
+        active.process,
+        active.session.nativeSessionId,
+        `Quest Engineering completion correction: ${decision.nativeStop.reason} Call qe_complete_step exactly once with the declared output keys.`,
+        true,
+      );
+    }
+  }
+
+  private required(lineageId: string): ActiveClaudeCodeExecution {
+    const active = this.active.get(lineageId);
+    if (!active) throw new Error("Claude Code execution is not active.");
+    return active;
+  }
+
+  private markUncertain(active: ActiveClaudeCodeExecution): void {
+    try {
+      active.session = this.sessions.transition(
+        active.session.nativeSessionId,
+        ["prepared", "active", "idle", "uncertain"],
+        "uncertain",
+      );
+    } catch {
+      // A terminal close remains authoritative.
+    }
+  }
+}
+
+export function claudeCodeCommand(
+  account: Pick<ClaudeCodeAccountRuntime, "configRoot" | "cwd">,
+  nativeSessionId: string,
+  resume: boolean,
+  mailboxRoot: string,
+  bridgeToken: string,
+) {
+  return {
+    executable: SBX_CLAUDE_EXECUTABLE,
+    args: [
+      "-p",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--restricted",
+      "--strict-mcp-config",
+      "--permission-mode",
+      "dontAsk",
+      "--permission-prompts",
+      "none",
+      "--model",
+      CLAUDE_CODE_MODEL,
+      "--effort",
+      CLAUDE_CODE_EFFORT,
+      resume ? "--resume" : "--session-id",
+      nativeSessionId,
+      "--tools",
+      CLAUDE_CODE_TOOLS.join(","),
+    ],
+    cwd: account.cwd,
+    environment: claudeAccountEnvironment(account.configRoot, {
+      QE_ACCOUNT_CELL_MOD_PROTOCOL: SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL,
+      QE_CLAUDE_MODEL: CLAUDE_CODE_MODEL,
+      QE_CLAUDE_EFFORT: CLAUDE_CODE_EFFORT,
+      QE_ACCOUNT_CELL_MAILBOX: mailboxRoot,
+      QE_ACCOUNT_CELL_BRIDGE_TOKEN: bridgeToken,
+      CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1",
+    }),
+  };
+}
+
+export function attestClaudeInit(
+  value: Record<string, unknown>,
+  expected: { sessionId: string; cwd: string; model: string; effort: string },
+): void {
+  const tools = Array.isArray(value.tools) ? [...value.tools].sort() : [];
+  const expectedTools = [...CLAUDE_CODE_TOOLS].sort();
+  const plugins = Array.isArray(value.plugins)
+    ? (value.plugins as Array<Record<string, unknown>>)
+    : [];
+  const qePlugins = plugins.filter(
+    (plugin) =>
+      plugin.name === CLAUDE_CODE_PLUGIN_NAME ||
+      plugin.name === `${CLAUDE_CODE_PLUGIN_NAME}@qe-managed`,
+  );
+  const securityPlugins = plugins.filter(
+    (plugin) => plugin.name === "cc-plugin-sec-default",
+  );
+  if (
+    value.type !== "system" ||
+    value.subtype !== "init" ||
+    value.session_id !== expected.sessionId ||
+    value.claude_code_version !== SBX_CLAUDE_CODE_VERSION ||
+    value.apiKeySource !== "oauth" ||
+    value.cwd !== expected.cwd ||
+    value.model !== expected.model ||
+    value.effort !== expected.effort ||
+    value.permissionMode !== "dontAsk" ||
+    JSON.stringify(tools) !== JSON.stringify(expectedTools) ||
+    !Array.isArray(value.mcp_servers) ||
+    value.mcp_servers.length !== 0 ||
+    !Array.isArray(value.skills) ||
+    value.skills.length !== 0 ||
+    (Array.isArray(value.agents) && value.agents.length !== 0) ||
+    plugins.length !== 2 ||
+    qePlugins.length !== 1 ||
+    securityPlugins.length !== 1 ||
+    qePlugins[0]?.path !== CLAUDE_CODE_PLUGIN_PATH ||
+    (Array.isArray(value.plugin_errors) && value.plugin_errors.length !== 0)
+  )
+    throw new Error(
+      "Claude Code init does not attest exact OAuth, managed Mod guard, model, effort, session, cwd, and tool inventory.",
+    );
+}
+
+function assertExactConfiguration(dispatch: DispatchRecord): void {
+  const configuration = dispatch.action.execution.configuration;
+  if (
+    configuration.harness_kind !== CLAUDE_CODE_HARNESS_KIND ||
+    configuration.model.provider !== "anthropic" ||
+    configuration.model.model !== CLAUDE_CODE_MODEL ||
+    configuration.reasoning !== CLAUDE_CODE_EFFORT ||
+    configuration.reasoning_capability.kind !== "enumerated" ||
+    !configuration.reasoning_capability.values.includes(CLAUDE_CODE_EFFORT) ||
+    configuration.tool_enforcement !== "exact"
+  )
+    throw claudeError(
+      "incompatible_continuation_configuration",
+      `Claude Code requires exact anthropic/${CLAUDE_CODE_MODEL}, effort ${CLAUDE_CODE_EFFORT}, and exact tool enforcement.`,
+      "prepare",
+      "not_submitted",
+    );
+}
+
+function assertBrokerBinding(
+  dispatch: DispatchRecord,
+  binding: ReturnType<WorkspaceToolBroker["boundClientForAction"]>["binding"],
+): void {
+  const action = dispatch.action;
+  const execution = action.execution;
+  if (
+    binding.actionId !== action.action_id ||
+    binding.runId !== action.run_id ||
+    binding.occurrenceId !== action.occurrence_id ||
+    binding.attemptId !== action.attempt_id ||
+    binding.workspaceId !== execution.logical_workspace.workspace_id ||
+    binding.worktreeId !== execution.execution_workspace.worktree_id ||
+    binding.workspaceBindingId !==
+      execution.execution_workspace.workspace_binding_id ||
+    binding.workspaceAccess !== execution.execution_workspace.access ||
+    binding.physicalLineageId.length === 0
+  )
+    throw new Error(
+      "WorkspaceToolBroker authority does not match Claude dispatch.",
+    );
+}
+
+function assertSessionBinding(
+  session: ClaudeCodeSessionRecord,
+  lineage: HarnessLineage,
+  binding: ReturnType<WorkspaceToolBroker["boundClientForAction"]>["binding"],
+): void {
+  if (
+    session.lineageId !== lineage.lineageId ||
+    session.logicalLineageId !== lineage.logicalLineageId ||
+    session.providerAccountId !== binding.providerAccountId ||
+    session.credentialGeneration !== binding.credentialGeneration ||
+    session.accountEnvironmentId !== binding.accountEnvironment.environmentId ||
+    session.accountEnvironmentIncarnation !==
+      binding.accountEnvironment.incarnation ||
+    session.model !== CLAUDE_CODE_MODEL ||
+    session.effort !== CLAUDE_CODE_EFFORT
+  )
+    throw new Error(
+      "Cross-project Claude resume was refused because exact QE session ownership does not match.",
+    );
+}
+
+function assertDispatch(
+  active: ActiveClaudeCodeExecution,
+  dispatch: DispatchRecord,
+): void {
+  if (
+    active.dispatch.action.action_id !== dispatch.action.action_id ||
+    active.dispatch.action.attempt_id !== dispatch.action.attempt_id ||
+    active.lineageId !== dispatch.lineageId
+  )
+    throw new Error("Claude execution ownership is stale.");
+}
+
+async function assertAuthenticated(
+  account: ClaudeCodeAccountRuntime,
+): Promise<void> {
+  const result = await account.lease.exec({
+    executable: SBX_CLAUDE_EXECUTABLE,
+    args: ["auth", "status"],
+    cwd: account.cwd,
+    environment: claudeAccountEnvironment(account.configRoot),
+    timeoutMs: 30_000,
+  });
+  if (result.exitCode !== 0)
+    throw new Error("Claude ProviderAccount authentication is unavailable.");
+  let status: Record<string, unknown>;
+  try {
+    status = JSON.parse(result.stdout) as Record<string, unknown>;
+  } catch {
+    throw new Error("Claude authentication status is malformed.");
+  }
+  if (
+    status.loggedIn !== true ||
+    status.authMethod !== "claude.ai" ||
+    status.configDirectory !== account.configRoot
+  )
+    throw new Error(
+      "Claude ProviderAccount authentication status is incompatible.",
+    );
+}
+
+async function waitForBroker(
+  broker: WorkspaceToolBroker,
+  actionId: string,
+): Promise<ReturnType<WorkspaceToolBroker["boundClientForAction"]>> {
+  const deadline = Date.now() + 30_000;
+  let last: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return broker.boundClientForAction(actionId);
+    } catch (error) {
+      last = error;
+      await Bun.sleep(50);
+    }
+  }
+  throw new Error(
+    last instanceof Error
+      ? `WorkspaceToolBroker admission timed out: ${last.message}`
+      : "WorkspaceToolBroker admission timed out.",
+  );
+}
+
+function prepared(
+  lineage: HarnessLineage,
+  active: ActiveClaudeCodeExecution,
+): HarnessPreparedExecution {
+  return {
+    lineage,
+    handle: {
+      schemaVersion: 1,
+      harnessKind: CLAUDE_CODE_HARNESS_KIND,
+      executionId: active.session.nativeSessionId,
+      nativeSession: nativeSessionRef(
+        CLAUDE_CODE_HARNESS_KIND,
+        "id",
+        active.session.nativeSessionId,
+      ),
+      transportBinding: transportBinding(active),
+    },
+  };
+}
+
+function transportBinding(
+  active: ActiveClaudeCodeExecution,
+): HarnessTransportBinding {
+  return {
+    schemaVersion: 1,
+    harnessKind: CLAUDE_CODE_HARNESS_KIND,
+    kind: "claude_code_account_cell_v1",
+    payload: {
+      nativeSessionId: active.session.nativeSessionId,
+      providerAccountId: active.accountId,
+      credentialGeneration: active.session.credentialGeneration,
+      accountEnvironmentId: active.session.accountEnvironmentId,
+      accountEnvironmentIncarnation:
+        active.session.accountEnvironmentIncarnation,
+      model: active.session.model,
+      effort: active.session.effort,
+      process: active.process.handle as unknown as JsonValue,
+    },
+  };
+}
+
+function emptyInspection(nativeSessionId: string): HarnessInspection {
+  return {
+    state: "starting",
+    activity: { state: "idle", detail: "Zero-inference init is pending." },
+    nativeSession: nativeSessionRef(
+      CLAUDE_CODE_HARNESS_KIND,
+      "id",
+      nativeSessionId,
+    ),
+    health: "unknown",
+    attention: null,
+    intervention: null,
+    lastActivityAt: new Date().toISOString(),
+    interactive: null,
+  };
+}
+
+function inspection(
+  active: ActiveClaudeCodeExecution,
+  state: HarnessInspection["state"],
+  activity: HarnessInspection["activity"]["state"],
+): HarnessInspection {
+  return {
+    state,
+    activity: {
+      state: activity,
+      detail: `Claude Code ${SBX_CLAUDE_CODE_VERSION}; managed Mod; ${active.session.state}.`,
+    },
+    nativeSession: nativeSessionRef(
+      CLAUDE_CODE_HARNESS_KIND,
+      "id",
+      active.session.nativeSessionId,
+    ),
+    health: active.fatal ? "unavailable" : "healthy",
+    attention: null,
+    intervention: null,
+    lastActivityAt: new Date().toISOString(),
+    transportBinding: transportBinding(active),
+    interactive: null,
+  };
+}
+
+async function sendMessage(
+  process: StreamedProcess,
+  sessionId: string,
+  content: string,
+  shouldQuery: boolean,
+): Promise<void> {
+  const message = {
+    type: "user",
+    message: { role: "user", content },
+    parent_tool_use_id: null,
+    session_id: sessionId,
+    uuid: randomUUID(),
+    client_composed: true,
+    ...(shouldQuery ? {} : { shouldQuery: false, isSynthetic: true }),
+  };
+  await process.write(new TextEncoder().encode(`${JSON.stringify(message)}\n`));
+}
+
+class AsyncFrameQueue {
+  private readonly values: Record<string, unknown>[] = [];
+  private readonly waiters: Array<{
+    resolve: (value: Record<string, unknown>) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout> | null;
+  }> = [];
+  cursor = 0;
+  closed = false;
+  private error: Error | null = null;
+
+  push(value: Record<string, unknown>): void {
+    if (this.closed) return;
+    this.cursor += 1;
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.resolve(value);
+    } else this.values.push(value);
+  }
+
+  fail(error: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.error = error;
+    for (const waiter of this.waiters.splice(0)) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+  }
+
+  next(timeoutMs: number | null): Promise<Record<string, unknown>> {
+    const value = this.values.shift();
+    if (value) return Promise.resolve(value);
+    if (this.error) return Promise.reject(this.error);
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        resolve,
+        reject,
+        timer: null as ReturnType<typeof setTimeout> | null,
+      };
+      if (timeoutMs !== null)
+        waiter.timer = setTimeout(() => {
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          reject(new Error("Claude Code protocol frame timed out."));
+        }, timeoutMs);
+      this.waiters.push(waiter);
+    });
+  }
+}
+
+async function pump(
+  stream: AsyncIterable<StreamedProcessStreamEvent>,
+  frames: AsyncFrameQueue,
+): Promise<void> {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let buffered = "";
+  for await (const event of stream) {
+    if (event.kind === "transport_error")
+      throw new Error("Claude Code stdout transport failed.");
+    if (event.kind !== "data") continue;
+    buffered += decoder.decode(event.data, { stream: true });
+    if (Buffer.byteLength(buffered, "utf8") > 2 * 1024 * 1024)
+      throw new Error("Claude Code stream frame exceeded its bound.");
+    while (buffered.includes("\n")) {
+      const index = buffered.indexOf("\n");
+      const line = buffered.slice(0, index);
+      buffered = buffered.slice(index + 1);
+      if (!line) continue;
+      const frame = JSON.parse(line) as unknown;
+      if (!frame || typeof frame !== "object" || Array.isArray(frame))
+        throw new Error("Claude Code emitted a malformed frame.");
+      frames.push(frame as Record<string, unknown>);
+    }
+  }
+  buffered += decoder.decode();
+  if (buffered.length > 0)
+    throw new Error("Claude Code stdout ended inside a frame.");
+  frames.fail(new Error("Claude Code stdout ended before settlement."));
+}
+
+async function waitForInit(
+  frames: AsyncFrameQueue,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  for (let count = 0; count < 64 && Date.now() < deadline; count += 1) {
+    const frame = await frames.next(Math.max(1, deadline - Date.now()));
+    if (frame.type === "system" && frame.subtype === "init") return frame;
+    rejectServerToolEvidence(frame);
+    if (frame.type === "result" && frame.is_error === true)
+      throw new Error(
+        "Claude Code failed before zero-inference init attestation.",
+      );
+  }
+  throw new Error("Claude Code did not emit bounded init attestation.");
+}
+
+function assertExactModelUsage(frame: Record<string, unknown>): void {
+  if (!frame.modelUsage || typeof frame.modelUsage !== "object")
+    throw new Error("Claude result omitted per-model usage provenance.");
+  const models = Object.keys(frame.modelUsage as Record<string, unknown>);
+  if (
+    models.length === 0 ||
+    models.some((model) => model !== CLAUDE_CODE_MODEL)
+  )
+    throw new Error("Claude result includes an unapproved model invocation.");
+}
+
+function rejectServerToolEvidence(frame: Record<string, unknown>): void {
+  const encoded = JSON.stringify(frame);
+  if (
+    encoded.includes("server_tool_use") ||
+    encoded.includes("web_search_20250305") ||
+    encoded.includes("advisor_20260301") ||
+    encoded.includes("agent_toolset_20260401")
+  )
+    throw new Error(
+      "Claude provider/server tool evidence violated exact policy.",
+    );
+}
+
+async function waitForResult(dispatch: DispatchRecord): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (await structuredResultExists(dispatch.resultDirectory)) return;
+    await Bun.sleep(25);
+  }
+  throw new Error("Structured completion export did not settle.");
+}
+
+function claudeError(
+  code: string,
+  message: string,
+  phase: "prepare" | "readiness" | "execute" | "observe",
+  certainty: "not_submitted" | "submitted" | "ambiguous",
+): OperationalExecutionError {
+  return new OperationalExecutionError(
+    message,
+    certainty === "ambiguous"
+      ? "uncertain"
+      : code === "harness_contract_violation" ||
+          code === "environment_attestation_failed" ||
+          code === "incompatible_continuation_configuration"
+        ? "terminal_not_recoverable"
+        : "operator_recovery_required",
+    code,
+    undefined,
+    { sideEffectCertainty: certainty, phase },
+  );
+}
+
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}

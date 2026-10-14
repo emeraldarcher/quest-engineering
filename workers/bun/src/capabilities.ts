@@ -1,4 +1,5 @@
 import type { WorkerConfig } from "./config.ts";
+import { resolveRunExecutionProfile } from "./execution-environment/profile-resolution.ts";
 import { SBX_CODING_EXECUTION_PROFILE_V3 } from "./execution-environment/sbx-profile.ts";
 import type { HarnessDiscovery } from "./harnesses/types.ts";
 import type {
@@ -167,7 +168,16 @@ export function workerCapabilities(
   discoveries?: HarnessDiscovery[],
 ): WorkerCapabilities {
   const executionEnvironment =
-    config.provider === "fake" ? undefined : SBX_EXECUTOR_EXECUTION_ENVIRONMENT;
+    config.provider === "fake"
+      ? undefined
+      : {
+          ...SBX_EXECUTOR_EXECUTION_ENVIRONMENT,
+          profile: {
+            ...resolveRunExecutionProfile(
+              config.enabledHarnesses ?? ["pi", "antigravity"],
+            ).profile.identity,
+          },
+        };
   return {
     os,
     arch,

@@ -1132,6 +1132,200 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert persisted.prompt_authorized_at
   end
 
+  test "Claude dispatch acknowledges before broker admission and requires admitted authority before prompt authorization",
+       context do
+    fixture =
+      product_fixture(
+        first_harness: "claude_code",
+        first_model: %ModelRef{provider: "anthropic", model: "claude-opus-4-6"},
+        first_reasoning: "high",
+        tools: ["workspace.filesystem", "workspace.search", "terminal.shell"]
+      )
+
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("worker-claude-code-authority", context.workspace_root,
+        adapter: "claude_code",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        features: ["workspace_tool_broker_v1"]
+      )
+
+    start_supervised!({WorkerConnections, []})
+
+    assert :ok =
+             WorkerConnections.activate(
+               worker.id,
+               "claude-code-authority-connection",
+               worker.connection_generation,
+               self()
+             )
+
+    assert {:ok, dispatch} = SchedulingStore.schedule_next(launched.run_id)
+
+    assert {:ok, {account, pending_environment}} =
+             ProviderAccounts.create(
+               %{
+                 provider_key: "anthropic",
+                 display_name: "Exact Claude account",
+                 worker_id: worker.id
+               },
+               worker.connection_generation
+             )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    assert {:ok, {:applied, _account, _environment}} =
+             ProviderAccounts.apply_environment_report(%{
+               provider_account_id: account.id,
+               credential_generation: pending_environment.credential_generation,
+               worker_id: worker.id,
+               worker_generation: worker.connection_generation,
+               operation_id: pending_environment.operation_id,
+               physical_state: "available",
+               event_type: "environment_ensured",
+               backend_kind: "sbx",
+               environment_id: "claude-account-environment-1",
+               incarnation: "claude-account-incarnation-1",
+               error_code: nil,
+               error_message: nil,
+               canary_persisted: true,
+               observed_at: now
+             })
+
+    account
+    |> then(&Repo.get!(ProviderAccountRecord, &1.id))
+    |> ProviderAccountRecord.changeset(%{
+      authentication_state: "authenticated",
+      authenticated_at: now,
+      last_validated_at: now
+    })
+    |> Repo.update!()
+
+    assert {:ok, %{"result" => "dispatch_acknowledged"}} =
+             WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+               type: :dispatch_accepted,
+               action_id: dispatch.action_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id
+             })
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_workspace_tool_broker",
+                      "broker" => %{"authorization_id" => authorization_id}
+                    }}
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "admit_workspace_tool_broker",
+                      "authorization_id" => ^authorization_id
+                    }}
+
+    acknowledged = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert acknowledged.acknowledged_at
+    assert acknowledged.provider_account_id == account.id
+    assert acknowledged.workspace_tool_broker_authorization_id == authorization_id
+    refute acknowledged.workspace_tool_broker_admitted_at
+    refute acknowledged.prompt_authorized_at
+
+    assert {:ok, _session} =
+             ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+               session_id: Ecto.UUID.generate(),
+               action_id: dispatch.action_id,
+               run_id: launched.run_id,
+               occurrence_id: dispatch.execution.identity.occurrence_id,
+               attempt_id: dispatch.execution.identity.attempt_id,
+               member_key: dispatch.execution.performer.member_key,
+               harness_kind: "claude_code",
+               harness_display_name: "Claude Code",
+               state: :waiting_for_human,
+               capabilities: %{},
+               terminal: nil,
+               native_session_id: Ecto.UUID.generate(),
+               attention: %{
+                 "attention_id" =>
+                   "qe-prompt-authorization-#{dispatch.execution.identity.attempt_id}",
+                 "category" => "needs_confirmation",
+                 "message" => "Initial execution environment ready."
+               },
+               turn: %{
+                 "phase" => "preparing",
+                 "prompt_intent_at" => nil,
+                 "prompt_accepted_at" => nil,
+                 "native_activity_at" => nil,
+                 "stalled_at" => nil,
+                 "settled_at" => nil
+               },
+               started_at: now,
+               last_activity_at: now
+             })
+
+    assert {:error, %{code: :prompt_authorization_not_ready}} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert {:ok, _admitted} =
+             WorkspaceToolBrokers.record_activity(worker.id, worker.connection_generation, %{
+               authorization_id: authorization_id,
+               action_id: dispatch.action_id,
+               state: "admitted",
+               session_id: "claude-broker-session-1",
+               broker_generation: 1
+             })
+
+    assert {:ok, closed_dispatch} =
+             WorkspaceToolBrokers.record_activity(worker.id, worker.connection_generation, %{
+               authorization_id: authorization_id,
+               action_id: dispatch.action_id,
+               state: "closed",
+               session_id: "claude-broker-session-1",
+               broker_generation: 1
+             })
+
+    assert is_nil(closed_dispatch.workspace_tool_broker_admitted_at)
+    assert is_nil(closed_dispatch.workspace_tool_broker_session_id)
+    assert is_nil(closed_dispatch.workspace_tool_broker_generation)
+
+    assert {:error, %{code: :prompt_authorization_not_ready}} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert {:ok, _readmitted} =
+             WorkspaceToolBrokers.record_activity(worker.id, worker.connection_generation, %{
+               authorization_id: authorization_id,
+               action_id: dispatch.action_id,
+               state: "admitted",
+               session_id: "claude-broker-session-2",
+               broker_generation: 2
+             })
+
+    assert {:ok, _authorization} =
+             OperationalRecovery.authorize_prompt(
+               launched.run_id,
+               dispatch.execution.identity.occurrence_id,
+               dispatch.execution.identity.attempt_id,
+               Ecto.UUID.generate()
+             )
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "authorize_dispatch_prompt",
+                      "action_id" => action_id
+                    }}
+
+    assert action_id == dispatch.action_id
+  end
+
   test "workspace broker authority is derived from one current admitted Product execution",
        context do
     fixture =
@@ -1237,10 +1431,16 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert action_id == dispatch.action_id
     assert attempt_id == dispatch.execution.identity.attempt_id
 
-    assert {:error, %{type: :workspace_tool_broker_not_admissible}} =
-             WorkspaceToolBrokers.admit(prepared)
+    persisted_authority = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
+    assert persisted_authority.provider_account_id == account.id
 
-    assert {:ok, _} = DispatchStore.authorize_prompt(dispatch.action_id, Ecto.UUID.generate())
+    assert persisted_authority.provider_account_credential_generation ==
+             account.credential_generation
+
+    assert persisted_authority.workspace_tool_broker_authorization_id == authorization_id
+    refute persisted_authority.prompt_authorized_at
+    refute persisted_authority.workspace_tool_broker_admitted_at
+
     assert {:ok, admitted} = WorkspaceToolBrokers.admit(prepared)
     assert admitted == prepared
 
@@ -1249,6 +1449,20 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
                       "type" => "admit_workspace_tool_broker",
                       "authorization_id" => ^authorization_id
                     }}
+
+    assert {:ok, admitted_dispatch} =
+             WorkspaceToolBrokers.record_activity(worker.id, worker.connection_generation, %{
+               authorization_id: authorization_id,
+               action_id: dispatch.action_id,
+               state: "admitted",
+               session_id: "broker-session-1",
+               broker_generation: 1
+             })
+
+    assert admitted_dispatch.workspace_tool_broker_admitted_at
+    assert admitted_dispatch.workspace_tool_broker_session_id == "broker-session-1"
+    assert admitted_dispatch.workspace_tool_broker_generation == 1
+    refute admitted_dispatch.prompt_authorized_at
 
     assert :ok = WorkspaceToolBrokers.retire(prepared, "deterministic_test_complete")
 
@@ -3364,7 +3578,12 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     first_model = Keyword.get(options, :first_model, %ModelRef{provider: "fake", model: "test"})
     tools = Keyword.get(options, :tools, ["workspace.filesystem"])
-    first_loadout = create_loadout("first-loadout", first_model, tools)
+
+    first_loadout =
+      create_loadout("first-loadout", first_model, tools,
+        harness: Keyword.get(options, :first_harness, "fake"),
+        reasoning: Keyword.get(options, :first_reasoning, "medium")
+      )
 
     second_loadout =
       create_loadout("second-loadout", %ModelRef{provider: "fake", model: "test"}, tools)
@@ -3436,14 +3655,14 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     value
   end
 
-  defp create_loadout(key, model, tools) do
+  defp create_loadout(key, model, tools, options \\ []) do
     {:ok, value} =
       Products.create_loadout(%{
         key: key,
         name: key,
-        harness: "fake",
+        harness: Keyword.get(options, :harness, "fake"),
         model: model,
-        reasoning: "medium",
+        reasoning: Keyword.get(options, :reasoning, "medium"),
         tool_policy: %QuestEngineering.Core.Product.ToolPolicy.Exact{tools: tools},
         workspace_access: :read_write
       })
@@ -3478,6 +3697,8 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
   defp register_worker(id, root, options \\ []) do
     adapter = Keyword.get(options, :adapter, "fake")
+    provider = Keyword.get(options, :provider, "fake")
+    model = Keyword.get(options, :model, "test")
 
     tools =
       Keyword.get(options, :tools, ["workspace.filesystem", "workspace.search", "terminal.shell"])
@@ -3488,8 +3709,8 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
       "harness_kind" => adapter,
       "models" => [
         %{
-          "provider" => "fake",
-          "model" => "test",
+          "provider" => provider,
+          "model" => model,
           "display_name" => "Test model",
           "account_availability" => "verified_available",
           "reasoning_capability" => %{

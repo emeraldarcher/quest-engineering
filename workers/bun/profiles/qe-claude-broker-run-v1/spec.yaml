@@ -1,0 +1,25 @@
+schemaVersion: "2"
+kind: sandbox
+name: qe-claude-broker-run-v1
+version: "1.0.0"
+displayName: Quest Engineering credential-free Claude broker Run
+sandbox:
+  image: "docker.io/docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919"
+  entrypoint: ["/bin/bash"]
+  command:
+    default: ["-l"]
+    interactive: ["-l"]
+permissions:
+  network:
+    allow: []
+environment:
+  variables:
+    BROWSER: /bin/false
+    GIT_TERMINAL_PROMPT: "0"
+setup:
+  install: []
+agentInstructions:
+  filename: AGENTS.md
+  content: |
+    This is a credential-free Quest Engineering Run cell. Workspace operations
+    arrive only through the exact WorkspaceToolBroker authority.

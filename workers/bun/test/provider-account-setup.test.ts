@@ -151,6 +151,9 @@ describe("ProviderAccount setup", () => {
         "fake-provider.invalid",
       );
       expect(waiting?.attention?.kind).toBe("provider_authentication");
+      expect(fixture.coordinator.authenticated("account-setup", 2, 1)).toBe(
+        false,
+      );
       const processGeneration = waiting?.process?.process_generation;
       expect(processGeneration).toBeTruthy();
 
@@ -173,6 +176,17 @@ describe("ProviderAccount setup", () => {
       });
       expect(terminal?.validation?.identity).toMatch(
         /^qe-fake-auth-v1:[a-f0-9]{64}$/,
+      );
+      expect(fixture.coordinator.authenticated("account-setup", 2, 1)).toBe(
+        true,
+      );
+      fixture.store.transition(
+        fixture.setupCommand.setup.setup_attempt_id,
+        { state: "uncertain", invocationState: "uncertain" },
+        "test_restart_uncertainty",
+      );
+      expect(fixture.coordinator.authenticated("account-setup", 2, 1)).toBe(
+        false,
       );
       expect(fixture.deliveries.map((delivery) => delivery.state)).toEqual([
         "delivery_acknowledged",
@@ -404,6 +418,10 @@ describe("ProviderAccount setup", () => {
         streamAttachment: "unavailable",
         streamRecovery: "not_recoverable",
       });
+      let retired = 0;
+      fixture.manager.retireSetupProcesses = async () => {
+        retired += 1;
+      };
 
       await fixture.coordinator.reconcile([
         {
@@ -425,6 +443,7 @@ describe("ProviderAccount setup", () => {
           (report) => report.state === "invocation_requested",
         ),
       ).toHaveLength(1);
+      expect(retired).toBe(1);
     } finally {
       await fixture.manager.close();
       await Bun.sleep(10);
@@ -435,6 +454,10 @@ describe("ProviderAccount setup", () => {
   test("fresh Worker state never replays Product-acknowledged setup without a process handle", async () => {
     const fixture = await setupFixture();
     try {
+      let retired = 0;
+      fixture.manager.retireSetupProcesses = async () => {
+        retired += 1;
+      };
       const acknowledged: ProviderAccountSetupCommand = {
         ...fixture.setupCommand,
         setup: {
@@ -457,6 +480,7 @@ describe("ProviderAccount setup", () => {
           .events(acknowledged.setup.setup_attempt_id)
           .some((event) => event.eventType === "login_invocation_requested"),
       ).toBe(false);
+      expect(retired).toBe(1);
     } finally {
       await fixture.coordinator.close();
       await fixture.manager.close();
