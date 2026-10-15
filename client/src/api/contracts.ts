@@ -247,6 +247,28 @@ export interface StarterCrewResult {
   tactic: Tactic;
 }
 
+export interface ProviderAuthenticationEvidence {
+  state:
+    | "not_checked"
+    | "authentication_required"
+    | "authenticated"
+    | "forbidden_auth_method"
+    | "inspection_unavailable"
+    | "incompatible_status";
+  method:
+    | "none"
+    | "provider_account"
+    | "injected_oauth_token"
+    | "api_key"
+    | "api_key_helper"
+    | "third_party"
+    | null;
+  configuration_identity: string | null;
+  environment_policy: string | null;
+  evidence_identity: string | null;
+  inspected_at: string | null;
+}
+
 export interface ProviderAccountSetupAttempt {
   id: string;
   provider_account_id: string;
@@ -256,6 +278,7 @@ export interface ProviderAccountSetupAttempt {
   environment_generation: number;
   worker_id: string;
   worker_generation: number;
+  authorized_authentication: ProviderAuthenticationEvidence;
   state:
     | "authorized"
     | "preparing"
@@ -295,11 +318,8 @@ export interface ProviderAccountSetupAttempt {
     delivery_attempt_id: string | null;
     surfaced_at: string;
   } | null;
-  validation: {
-    state: string;
-    identity: string | null;
-    validated_at: string | null;
-  };
+  preflight: ProviderAuthenticationEvidence | null;
+  validation: ProviderAuthenticationEvidence | null;
   failure: { code: string; message: string } | null;
   authorized_at: string;
   invocation_requested_at: string | null;
@@ -323,6 +343,8 @@ export interface ProviderAccount {
     authentication: string;
     inference: "not_evaluated";
   };
+  capabilities: { can_authorize_setup: boolean };
+  authentication: ProviderAuthenticationEvidence;
   environment: {
     credential_generation: number;
     worker_id: string;

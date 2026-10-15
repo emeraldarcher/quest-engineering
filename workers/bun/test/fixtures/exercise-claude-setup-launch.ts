@@ -21,9 +21,9 @@ import type {
 import { HarnessSetupCoordinator } from "../../src/harness-setup.ts";
 import { HarnessSetupStore } from "../../src/harness-setup-store.ts";
 import { ClaudeAgentSdkAdapter } from "../../src/harnesses/claude-agent-sdk/adapter.ts";
-import { CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES } from "../../src/harnesses/claude-agent-sdk/auth.ts";
 import { HarnessRegistry } from "../../src/harnesses/registry.ts";
 import { decodePrepareHarnessSetup } from "../../src/protocol/codec.ts";
+import { CLAUDE_FORBIDDEN_AUTH_SELECTOR_NAMES } from "../../src/provider-auth.ts";
 
 const [encoded, workerId, rawGeneration] = process.argv.slice(2);
 if (!encoded || !workerId || !rawGeneration)
@@ -82,7 +82,9 @@ const lease = {
     stdout: JSON.stringify({
       loggedIn: false,
       authMethod: "none",
-      apiProvider: "none",
+      apiProvider: "firstParty",
+      analyticsDisabled: true,
+      projectsDirectory: `${configDirectory}/projects`,
       configDirectory,
     }),
     stderr: "",

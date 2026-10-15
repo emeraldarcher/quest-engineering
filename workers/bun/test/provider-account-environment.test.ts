@@ -131,6 +131,12 @@ test("fake ProviderAccount environment is Run-independent, idempotent, and resta
     workerGeneration: 7,
     operationId: "operation-a",
     canaryPersisted: true,
+    authentication: {
+      state: "authentication_required",
+      method: "none",
+      configurationIdentity: "qe-fake-provider-account-auth-v1",
+      environmentPolicy: "qe-fake-provider-account-explicit-environment-v1",
+    },
   });
   expect(repeated.environmentId).toBe(first.environmentId);
   expect(repeated.incarnation).toBe(first.incarnation);
@@ -141,6 +147,9 @@ test("fake ProviderAccount environment is Run-independent, idempotent, and resta
   expect(restarted.environmentId).toBe(first.environmentId);
   expect(restarted.incarnation).toBe(first.incarnation);
   expect(restarted.canaryPersisted).toBe(true);
+  expect(restarted.authentication?.evidenceIdentity).toBe(
+    first.authentication?.evidenceIdentity,
+  );
   await manager.close();
 });
 

@@ -67,6 +67,7 @@ export function decodePrepareProviderAccountSetup(
       "environment_operation_id",
       "provider_key",
       "environment",
+      "authorized_authentication",
       "interaction_public_key",
       "state",
       "invocation_state",
@@ -81,6 +82,36 @@ export function decodePrepareProviderAccountSetup(
     environment,
     ["backend_kind", "environment_id", "incarnation"],
     "setup.environment",
+  );
+  const authentication = record(
+    setup.authorized_authentication,
+    "setup.authorized_authentication",
+  );
+  exactKeys(
+    authentication,
+    [
+      "state",
+      "method",
+      "configuration_identity",
+      "environment_policy",
+      "evidence_identity",
+      "inspected_at",
+    ],
+    "setup.authorized_authentication",
+  );
+  exact(
+    authentication.state,
+    "authentication_required",
+    "setup.authorized_authentication.state",
+  );
+  exact(
+    authentication.method,
+    "none",
+    "setup.authorized_authentication.method",
+  );
+  const authenticationInspectedAt = timestamp(
+    authentication.inspected_at,
+    "setup.authorized_authentication.inspected_at",
   );
   return {
     type: "prepare_provider_account_setup",
@@ -133,6 +164,23 @@ export function decodePrepareProviderAccountSetup(
           environment.incarnation,
           "setup.environment.incarnation",
         ),
+      },
+      authorized_authentication: {
+        state: "authentication_required",
+        method: "none",
+        configuration_identity: string(
+          authentication.configuration_identity,
+          "setup.authorized_authentication.configuration_identity",
+        ),
+        environment_policy: string(
+          authentication.environment_policy,
+          "setup.authorized_authentication.environment_policy",
+        ),
+        evidence_identity: string(
+          authentication.evidence_identity,
+          "setup.authorized_authentication.evidence_identity",
+        ),
+        inspected_at: authenticationInspectedAt,
       },
       interaction_public_key: string(
         setup.interaction_public_key,

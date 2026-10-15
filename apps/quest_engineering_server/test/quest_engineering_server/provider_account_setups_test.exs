@@ -87,7 +87,13 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
                worker.connection_generation,
                setup_report(validating, "succeeded", "settled",
                  process: process,
-                 validation: %{state: "authenticated", identity: validation_identity}
+                 validation:
+                   authentication_evidence(
+                     validating,
+                     "authenticated",
+                     "provider_account",
+                     validation_identity
+                   )
                )
              )
 
@@ -144,8 +150,26 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
                worker.connection_generation
              )
 
-    assert removing_account.authentication_state == :authentication_required
+    assert removing_account.authentication_state == :not_checked
     assert removing_account.credential_generation == 2
+  end
+
+  test "setup authorization fails closed for every non-eligible authentication observation" do
+    for {state, method} <- [
+          {"authenticated", "provider_account"},
+          {"forbidden_auth_method", "api_key"},
+          {"inspection_unavailable", nil},
+          {"incompatible_status", nil}
+        ] do
+      {_worker, account, _environment} =
+        available_account("setup-ineligible-#{state}", state, method)
+
+      assert account.authentication_state == String.to_existing_atom(state)
+      assert account.authentication_method == method
+
+      assert {:error, %{code: :provider_account_setup_ineligible}} =
+               ProviderAccountSetups.authorize(account.id, Ecto.UUID.generate())
+    end
   end
 
   test "concurrent authorization with one request ID creates one idempotent attempt" do
@@ -183,7 +207,15 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
       attempt
       |> setup_report("failed", "settled")
       |> Map.put(:process, process_identity())
-      |> Map.put(:validation, %{state: "authentication_required", identity: nil})
+      |> Map.put(
+        :validation,
+        authentication_evidence(
+          attempt,
+          "authentication_required",
+          "none",
+          "post-login-authentication-required"
+        )
+      )
       |> Map.put(:failure_code, "setup_validation_failed")
 
     assert {:ok, failed} =
@@ -243,6 +275,68 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
              )
   end
 
+  test "a stale Worker preflight cannot cross the Product invocation fence" do
+    {worker, account, _environment} = available_account("stale-preflight-worker")
+
+    assert {:ok, {attempt, _authorization, false}} =
+             ProviderAccountSetups.authorize(account.id, Ecto.UUID.generate())
+
+    stale_report =
+      attempt
+      |> setup_report("invocation_requested", "requested")
+      |> put_in([:preflight, :evidence_identity], "provider-auth-evidence-v1:stale")
+
+    assert {:error, %{code: :stale_provider_account_setup_report}} =
+             ProviderAccountSetups.record(
+               worker.id,
+               worker.connection_generation,
+               stale_report
+             )
+
+    assert ProviderAccountSetups.fetch(attempt.id).invocation_state == "not_requested"
+  end
+
+  test "restart uncertainty preserves previously acknowledged process evidence without inventing preflight" do
+    {worker, account, _environment} = available_account("uncertain-restart-worker")
+
+    assert {:ok, {attempt, _authorization, false}} =
+             ProviderAccountSetups.authorize(account.id, Ecto.UUID.generate())
+
+    process = process_identity()
+
+    assert {:ok, requested} =
+             ProviderAccountSetups.record(
+               worker.id,
+               worker.connection_generation,
+               setup_report(attempt, "invocation_requested", "requested")
+             )
+
+    assert {:ok, acknowledged} =
+             ProviderAccountSetups.record(
+               worker.id,
+               worker.connection_generation,
+               setup_report(requested, "invocation_acknowledged", "acknowledged",
+                 process: process
+               )
+             )
+
+    report =
+      acknowledged
+      |> setup_report("uncertain", "uncertain", failure_code: "setup_process_lost")
+      |> Map.put(:process, nil)
+      |> Map.put(:preflight, nil)
+
+    assert {:ok, uncertain} =
+             ProviderAccountSetups.record(worker.id, worker.connection_generation, report)
+
+    assert uncertain.state == "uncertain"
+    assert uncertain.invocation_state == "uncertain"
+    assert uncertain.process_backend_id == process.backend_process_id
+    assert uncertain.process_start_identity == process.process_start_identity
+    assert uncertain.process_generation == process.process_generation
+    assert uncertain.process_executable == process.executable
+  end
+
   test "Product restart reconstruction re-fences an active setup without replaying authorization" do
     {worker, account, environment} = available_account("restart-setup-worker")
 
@@ -267,7 +361,7 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
         desired
       )
 
-    assert command["protocol_version"] == 17
+    assert command["protocol_version"] == 18
     assert command["setup"]["authorization_kind"] == "provider_account_setup"
     assert command["setup"]["credential_generation"] == 1
     assert command["setup"]["environment_generation"] == 1
@@ -283,7 +377,11 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
     }
   end
 
-  defp available_account(worker_id) do
+  defp available_account(
+         worker_id,
+         authentication_state \\ "authentication_required",
+         authentication_method \\ "none"
+       ) do
     {:ok, worker} = WorkerStore.register(worker_id, capabilities(), Ecto.UUID.generate())
     {:ok, worker} = WorkerStore.mark_ready(worker.id, worker.connection_generation)
 
@@ -299,14 +397,23 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
                  account,
                  pending,
                  "physical-#{worker_id}",
-                 "incarnation-#{worker_id}"
+                 "incarnation-#{worker_id}",
+                 authentication_state,
+                 authentication_method
                )
              )
 
     {worker, account, environment}
   end
 
-  defp environment_report(account, environment, environment_id, incarnation) do
+  defp environment_report(
+         account,
+         environment,
+         environment_id,
+         incarnation,
+         authentication_state \\ "authentication_required",
+         authentication_method \\ "none"
+       ) do
     %{
       provider_account_id: account.id,
       credential_generation: environment.credential_generation,
@@ -321,7 +428,15 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
       error_code: nil,
       error_message: nil,
       canary_persisted: true,
-      observed_at: DateTime.utc_now()
+      observed_at: DateTime.utc_now(),
+      authentication: %{
+        state: authentication_state,
+        method: authentication_method,
+        configuration_identity: "qe-fake-provider-account-auth-v1",
+        environment_policy: "qe-fake-provider-account-explicit-environment-v1",
+        evidence_identity: "provider-auth-evidence-v1:" <> String.duplicate("a", 64),
+        inspected_at: DateTime.utc_now()
+      }
     }
   end
 
@@ -341,9 +456,35 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
       invocation_state: invocation_state,
       process: Keyword.get(options, :process),
       attention: Keyword.get(options, :attention),
+      preflight:
+        if(invocation_state == "not_requested",
+          do: nil,
+          else:
+            attempt
+            |> authentication_evidence(
+              "authentication_required",
+              "none",
+              attempt.authorization_inspection_identity
+            )
+            |> Map.put(
+              :inspected_at,
+              attempt.preflight_inspected_at || attempt.authorization_inspected_at
+            )
+        ),
       validation: Keyword.get(options, :validation),
       failure_code: Keyword.get(options, :failure_code),
       observed_at: DateTime.utc_now()
+    }
+  end
+
+  defp authentication_evidence(attempt, state, method, identity) do
+    %{
+      state: state,
+      method: method,
+      configuration_identity: attempt.auth_configuration_identity,
+      environment_policy: attempt.auth_environment_policy,
+      evidence_identity: identity,
+      inspected_at: DateTime.utc_now()
     }
   end
 
@@ -353,7 +494,11 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
       "arch" => "test",
       "max_concurrency" => 1,
       "tags" => [],
-      "features" => ["provider_account_environments_v1", "provider_account_setup_v1"],
+      "features" => [
+        "provider_account_environments_v1",
+        "provider_account_setup_v1",
+        "provider_account_auth_preflight_v1"
+      ],
       "workspace_bindings" => [],
       "executors" => [
         %{

@@ -199,6 +199,7 @@ export function workerCapabilities(
       "run_bound_harness_setup_v1",
       "provider_account_environments_v1",
       "provider_account_setup_v1",
+      "provider_account_auth_preflight_v1",
       "workspace_tool_broker_v1",
     ],
     workspace_bindings: config.workspaceBindings.map((binding) => ({

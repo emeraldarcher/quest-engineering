@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 17
+  @version 18
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -53,7 +53,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   @provider_account_environment_events ~w(environment_ensured environment_stopped environment_removed environment_missing environment_degraded environment_reconciled canary_written canary_read)
   @provider_account_setup_states ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required validating succeeded failed uncertain cancellation_requested cancelled invalidated)
   @provider_account_setup_invocation_states ~w(not_requested requested acknowledged settled uncertain)
-  @provider_account_setup_validation_states ~w(not_checked authenticated authentication_required inspection_unavailable incompatible_status)
+  @provider_authentication_states ~w(authentication_required authenticated forbidden_auth_method inspection_unavailable incompatible_status)
+  @provider_authentication_methods ~w(none provider_account injected_oauth_token api_key api_key_helper third_party)
   @workspace_tool_broker_operations ~w(filesystem.read filesystem.list filesystem.stat filesystem.write filesystem.edit search.grep terminal.shell)
   @workspace_tool_broker_certainties ~w(not_submitted acknowledged completed uncertain)
   @workspace_tool_broker_activity_states ~w(prepared admitted completed rejected uncertain cancelled closed)
@@ -130,7 +131,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 17
+  @spec version() :: 18
   def version, do: @version
 
   @spec encode_tool_policy(Exact.t() | NativePermissions.t()) :: map()
@@ -225,6 +226,14 @@ defmodule QuestEngineering.Server.WorkerProtocol do
         backend_kind: attempt.backend_kind,
         environment_id: attempt.environment_id,
         environment_incarnation: attempt.environment_incarnation,
+        authorized_authentication: %{
+          state: attempt.authorization_auth_state,
+          method: attempt.authorization_auth_method,
+          configuration_identity: authorization.auth_configuration_identity,
+          environment_policy: authorization.auth_environment_policy,
+          evidence_identity: authorization.auth_inspection_identity,
+          inspected_at: authorization.auth_inspected_at
+        },
         interaction_public_key: interaction_public_key,
         state: attempt.state,
         invocation_state: attempt.invocation_state,
@@ -949,6 +958,52 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp decode_message(type, _worker_id, _payload),
     do: error(:unknown_message_type, "type", %{received: type})
 
+  defp decode_provider_authentication(nil), do: {:ok, nil}
+
+  defp decode_provider_authentication(value) when is_map(value) do
+    with :ok <-
+           exact_map_keys(
+             value,
+             ~w(state method configuration_identity environment_policy evidence_identity inspected_at),
+             "authentication"
+           ),
+         state when state in @provider_authentication_states <- value["state"],
+         {:ok, method} <- optional_string(value["method"]),
+         true <- is_nil(method) or method in @provider_authentication_methods,
+         true <- valid_provider_authentication_pair?(state, method),
+         {:ok, configuration_identity} <- required_string(value, "configuration_identity"),
+         {:ok, environment_policy} <- required_string(value, "environment_policy"),
+         {:ok, evidence_identity} <- required_string(value, "evidence_identity"),
+         {:ok, inspected_at} <- timestamp(value["inspected_at"], "inspected_at") do
+      {:ok,
+       %{
+         state: state,
+         method: method,
+         configuration_identity: configuration_identity,
+         environment_policy: environment_policy,
+         evidence_identity: evidence_identity,
+         inspected_at: inspected_at
+       }}
+    else
+      _ -> error(:invalid_field, "authentication")
+    end
+  end
+
+  defp decode_provider_authentication(_value), do: error(:invalid_field, "authentication")
+
+  defp valid_provider_authentication_pair?("authentication_required", "none"), do: true
+  defp valid_provider_authentication_pair?("authenticated", "provider_account"), do: true
+
+  defp valid_provider_authentication_pair?("forbidden_auth_method", method),
+    do: method in ~w(injected_oauth_token api_key api_key_helper third_party)
+
+  defp valid_provider_authentication_pair?("inspection_unavailable", nil), do: true
+
+  defp valid_provider_authentication_pair?("incompatible_status", method),
+    do: is_nil(method) or method in @provider_authentication_methods
+
+  defp valid_provider_authentication_pair?(_state, _method), do: false
+
   defp decode_provider_account_environments(values) do
     values
     |> Enum.reduce_while({:ok, []}, fn value, {:ok, decoded} ->
@@ -967,7 +1022,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     with :ok <-
            exact_map_keys(
              value,
-             ~w(provider_account_id credential_generation worker_generation operation_id physical_state event_type backend_kind environment_id incarnation error_code error_message canary_persisted observed_at)
+             ~w(provider_account_id credential_generation worker_generation operation_id physical_state event_type backend_kind environment_id incarnation error_code error_message canary_persisted observed_at authentication)
            ),
          {:ok, provider_account_id} <- required_string(value, "provider_account_id"),
          {:ok, operation_id} <- required_string(value, "operation_id"),
@@ -987,7 +1042,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          {:ok, error_code} <- optional_string(value["error_code"]),
          {:ok, error_message} <- optional_string(value["error_message"]),
          canary_persisted when is_boolean(canary_persisted) <- value["canary_persisted"],
-         {:ok, observed_at} <- timestamp(value["observed_at"], "observed_at") do
+         {:ok, observed_at} <- timestamp(value["observed_at"], "observed_at"),
+         {:ok, authentication} <- decode_provider_authentication(value["authentication"]) do
       {:ok,
        %{
          provider_account_id: provider_account_id,
@@ -1002,7 +1058,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          error_code: error_code,
          error_message: error_message,
          canary_persisted: canary_persisted,
-         observed_at: observed_at
+         observed_at: observed_at,
+         authentication: authentication
        }}
     else
       _ -> error(:invalid_field, "environment")
@@ -1032,7 +1089,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     with :ok <-
            exact_map_keys(
              report,
-             ~w(setup_attempt_id provider_account_id setup_generation credential_generation environment_generation worker_generation environment_operation_id backend_kind environment_id environment_incarnation state invocation_state process attention validation failure_code observed_at ephemeral_output),
+             ~w(setup_attempt_id provider_account_id setup_generation credential_generation environment_generation worker_generation environment_operation_id backend_kind environment_id environment_incarnation state invocation_state process attention preflight validation failure_code observed_at ephemeral_output),
              "provider_account_setup_state"
            ),
          {:ok, setup_attempt_id} <- required_string(report, "setup_attempt_id"),
@@ -1057,11 +1114,15 @@ defmodule QuestEngineering.Server.WorkerProtocol do
            report["invocation_state"],
          {:ok, process} <- decode_provider_account_setup_process(report["process"]),
          {:ok, attention} <- decode_provider_account_setup_attention(report["attention"]),
-         {:ok, validation} <- decode_provider_account_setup_validation(report["validation"]),
+         {:ok, preflight} <- decode_provider_authentication(report["preflight"]),
+         {:ok, validation} <- decode_provider_authentication(report["validation"]),
          {:ok, failure_code} <- optional_string(report["failure_code"]),
          {:ok, observed_at} <- timestamp(report["observed_at"], "observed_at"),
          :ok <- validate_sealed_provider_account_setup_output(report["ephemeral_output"]),
          true <- state != "succeeded" or match?(%{state: "authenticated"}, validation),
+         true <-
+           invocation in ["not_requested", "uncertain"] or
+             match?(%{state: "authentication_required", method: "none"}, preflight),
          true <- is_nil(attention) or state == "human_interaction_required",
          true <- is_nil(report["ephemeral_output"]) or not is_nil(attention) do
       {:ok,
@@ -1080,6 +1141,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          invocation_state: invocation,
          process: process,
          attention: attention,
+         preflight: preflight,
          validation: validation,
          failure_code: failure_code,
          observed_at: observed_at
@@ -1140,22 +1202,6 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   end
 
   defp decode_provider_account_setup_attention(_value), do: error(:invalid_field, "attention")
-
-  defp decode_provider_account_setup_validation(nil), do: {:ok, nil}
-
-  defp decode_provider_account_setup_validation(value) when is_map(value) do
-    with :ok <- exact_map_keys(value, ~w(state identity), "validation"),
-         state when state in @provider_account_setup_validation_states <- value["state"],
-         {:ok, identity} <- optional_string(value["identity"]),
-         true <- state != "authenticated" or is_binary(identity) do
-      {:ok, %{state: state, identity: identity}}
-    else
-      _ -> error(:invalid_field, "validation")
-    end
-  end
-
-  defp decode_provider_account_setup_validation(_value),
-    do: error(:invalid_field, "validation")
 
   defp exact_map_keys(value, expected), do: exact_map_keys(value, expected, "environment")
 
@@ -2621,6 +2667,14 @@ defmodule QuestEngineering.Server.WorkerProtocol do
         "backend_kind" => value.backend_kind,
         "environment_id" => value.environment_id,
         "incarnation" => value.environment_incarnation
+      },
+      "authorized_authentication" => %{
+        "state" => value.authorized_authentication.state,
+        "method" => value.authorized_authentication.method,
+        "configuration_identity" => value.authorized_authentication.configuration_identity,
+        "environment_policy" => value.authorized_authentication.environment_policy,
+        "evidence_identity" => value.authorized_authentication.evidence_identity,
+        "inspected_at" => DateTime.to_iso8601(value.authorized_authentication.inspected_at)
       },
       "interaction_public_key" => value.interaction_public_key,
       "state" => value.state,

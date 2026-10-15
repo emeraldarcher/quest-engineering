@@ -21,6 +21,10 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
              ProviderAccounts.apply_environment_report(report)
 
     assert available.environment_state == :available
+    assert available.authentication_state == :authentication_required
+    assert available.authentication_method == "none"
+    assert available.auth_configuration_identity == "qe-fake-provider-account-auth-v1"
+    assert available.auth_inspection_identity =~ "provider-auth-evidence-v1:"
     assert binding.canary_persisted
 
     stale_report = %{
@@ -89,6 +93,9 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
 
     assert next.id == account.id
     assert next.credential_generation == account.credential_generation + 1
+    assert next.authentication_state == :not_checked
+    assert next.authentication_method == nil
+    assert next.auth_inspection_identity == nil
     assert replacement.environment_id == nil
     assert replacement.incarnation == nil
 
@@ -272,6 +279,8 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
 
     assert disconnected.lifecycle_state == :disconnected
     assert disconnected.environment_state == :removing
+    assert disconnected.authentication_state == :not_checked
+    assert disconnected.auth_inspection_identity == nil
     assert remove_environment.desired_environment_state == "removed"
 
     reconstructed_remove =
@@ -368,7 +377,15 @@ defmodule QuestEngineering.Server.ProviderAccountsTest do
       error_code: nil,
       error_message: nil,
       canary_persisted: true,
-      observed_at: DateTime.utc_now()
+      observed_at: DateTime.utc_now(),
+      authentication: %{
+        state: "authentication_required",
+        method: "none",
+        configuration_identity: "qe-fake-provider-account-auth-v1",
+        environment_policy: "qe-fake-provider-account-explicit-environment-v1",
+        evidence_identity: "provider-auth-evidence-v1:" <> String.duplicate("a", 64),
+        inspected_at: DateTime.utc_now()
+      }
     }
   end
 

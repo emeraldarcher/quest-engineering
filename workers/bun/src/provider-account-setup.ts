@@ -17,6 +17,7 @@ import type {
 import { EnvironmentBackendError } from "./execution-environment/types.ts";
 import type {
   CancelProviderAccountSetupCommand,
+  ProviderAccountAuthenticationInspection,
   ProviderAccountSetupCommand,
   RespondProviderAccountSetupCommand,
 } from "./protocol/types.ts";
@@ -24,6 +25,10 @@ import type {
   ProviderAccountSetupRecord,
   ProviderAccountSetupStore,
 } from "./provider-account-setup-store.ts";
+import {
+  isProviderAuthenticationReady,
+  type ProviderAuthenticationInspection,
+} from "./provider-auth.ts";
 
 const INTERACTION_LIMIT_BYTES = 16_384;
 
@@ -59,7 +64,8 @@ export interface ProviderAccountSetupReport {
     kind: "provider_authentication";
     message: string;
   } | null;
-  validation: { state: string; identity: string | null } | null;
+  preflight: ProviderAccountAuthenticationInspection | null;
+  validation: ProviderAccountAuthenticationInspection | null;
   failure_code: string | null;
   observed_at: string;
   ephemeral_output: SealedProviderAccountSetupOutput | null;
@@ -72,8 +78,8 @@ interface ActiveProcess {
 }
 
 /**
- * Provider-neutral account setup coordinator. The only production login target
- * in Phase B is the deterministic fake process supplied by the account runtime.
+ * Provider-neutral account setup coordinator. Login is reached only through an
+ * exactly authorized, freshly re-inspected ProviderAccount environment.
  */
 export class ProviderAccountSetupCoordinator {
   private readonly active = new Map<string, ActiveProcess>();
@@ -138,35 +144,68 @@ export class ProviderAccountSetupCoordinator {
       );
       await this.publish(record);
 
-      // Durable intent is committed before crossing the physical spawn boundary.
-      record = this.store.transition(
-        record.setupAttemptId,
-        { state: "invocation_requested", invocationState: "requested" },
-        "login_invocation_requested",
-      );
-      await this.publish(record);
-
       let process: StreamedProcess;
+      let intentCommitted = false;
       try {
-        process = await this.environments.spawnSetupProcess(
+        const beginning = await this.environments.beginSetupProcess(
           runtimeIdentity(record),
+          async (inspection, eligible) => {
+            const preflight = authenticationPayload(inspection);
+            if (eligible) {
+              // Exact fresh preflight and durable intent are committed while the
+              // account lock is held, immediately before physical spawn.
+              record = this.store.transition(
+                record.setupAttemptId,
+                {
+                  state: "invocation_requested",
+                  invocationState: "requested",
+                  preflight,
+                },
+                "login_invocation_requested",
+              );
+              intentCommitted = true;
+            } else {
+              record = this.store.transition(
+                record.setupAttemptId,
+                {
+                  state: "failed",
+                  invocationState: "not_requested",
+                  preflight,
+                  failureCode: preflightFailureCode(inspection),
+                },
+                "login_preflight_rejected",
+              );
+            }
+            await this.publish(record);
+          },
         );
+        if (!beginning.process) return;
+        process = beginning.process;
       } catch (error) {
         const ambiguous =
+          intentCommitted &&
           error instanceof EnvironmentBackendError &&
           error.sideEffectCertainty === "ambiguous";
         record = this.store.transition(
           record.setupAttemptId,
           {
             state: ambiguous ? "uncertain" : "failed",
-            invocationState: ambiguous ? "uncertain" : "requested",
+            invocationState: ambiguous
+              ? "uncertain"
+              : intentCommitted
+                ? "requested"
+                : "not_requested",
             failureCode: ambiguous
               ? "setup_invocation_uncertain"
-              : "setup_spawn_failed",
+              : intentCommitted
+                ? "setup_spawn_failed"
+                : "setup_authentication_preflight_unavailable",
           },
           ambiguous
             ? "login_invocation_uncertain"
-            : "login_invocation_rejected",
+            : intentCommitted
+              ? "login_invocation_rejected"
+              : "login_preflight_unavailable",
         );
         await this.publish(record);
         return;
@@ -395,7 +434,13 @@ export class ProviderAccountSetupCoordinator {
           record.command.setup.environment_generation ===
             environmentGeneration &&
           record.state === "succeeded" &&
-          record.validation?.state === "authenticated",
+          record.validation?.state === "authenticated" &&
+          record.validation.method === "provider_account" &&
+          record.validation.configuration_identity ===
+            record.command.setup.authorized_authentication
+              .configuration_identity &&
+          record.validation.environment_policy ===
+            record.command.setup.authorized_authentication.environment_policy,
       )
       .map((record) => record.command.setup.credential_generation + 1);
     return (
@@ -491,7 +536,7 @@ export class ProviderAccountSetupCoordinator {
   private async settleAfterLostProcess(
     record: ProviderAccountSetupRecord,
   ): Promise<void> {
-    let validation: { authenticated: boolean; identity: string | null };
+    let validation: ProviderAuthenticationInspection;
     try {
       validation = await this.environments.validateSetup(
         runtimeIdentity(record),
@@ -509,13 +554,13 @@ export class ProviderAccountSetupCoordinator {
       await this.publish(uncertain);
       return;
     }
-    if (validation.authenticated && validation.identity) {
+    if (validAuthenticatedInspection(record, validation)) {
       const succeeded = this.store.transition(
         record.setupAttemptId,
         {
           state: "succeeded",
           invocationState: "settled",
-          validation: { state: "authenticated", identity: validation.identity },
+          validation: authenticationPayload(validation),
         },
         "restart_validation_succeeded",
       );
@@ -527,7 +572,7 @@ export class ProviderAccountSetupCoordinator {
       {
         state: "failed",
         invocationState: "settled",
-        validation: { state: "authentication_required", identity: null },
+        validation: authenticationPayload(validation),
         failureCode: "setup_process_lost",
       },
       "restart_validation_failed",
@@ -577,15 +622,12 @@ export class ProviderAccountSetupCoordinator {
         const validation = await this.environments
           .validateSetup(runtimeIdentity(record))
           .catch(() => null);
-        if (validation?.authenticated && validation.identity) {
+        if (validation && validAuthenticatedInspection(record, validation)) {
           record = this.store.transition(
             id,
             {
               state: "succeeded",
-              validation: {
-                state: "authenticated",
-                identity: validation.identity,
-              },
+              validation: authenticationPayload(validation),
             },
             "post_login_validation_succeeded",
           );
@@ -594,12 +636,7 @@ export class ProviderAccountSetupCoordinator {
             id,
             {
               state: "failed",
-              validation: {
-                state: validation
-                  ? "authentication_required"
-                  : "inspection_unavailable",
-                identity: null,
-              },
+              validation: validation ? authenticationPayload(validation) : null,
               failureCode: "setup_validation_failed",
             },
             "post_login_validation_failed",
@@ -724,12 +761,8 @@ export class ProviderAccountSetupCoordinator {
                 "Complete the deterministic provider sign-in flow. This does not authorize model inference.",
             }
           : null,
-      validation: record.validation
-        ? {
-            state: record.validation.state,
-            identity: record.validation.identity,
-          }
-        : null,
+      preflight: record.preflight ? { ...record.preflight } : null,
+      validation: record.validation ? { ...record.validation } : null,
       failure_code: record.failureCode,
       observed_at: this.clock().toISOString(),
       ephemeral_output:
@@ -792,7 +825,57 @@ function runtimeIdentity(
     backendKind: setup.environment.backend_kind,
     environmentId: setup.environment.environment_id,
     environmentIncarnation: setup.environment.incarnation,
+    expectedAuthentication: {
+      state: setup.authorized_authentication.state,
+      method: setup.authorized_authentication.method,
+      configurationIdentity:
+        setup.authorized_authentication.configuration_identity,
+      environmentPolicy: setup.authorized_authentication.environment_policy,
+      evidenceIdentity: setup.authorized_authentication.evidence_identity,
+    },
   };
+}
+
+function authenticationPayload(
+  inspection: ProviderAuthenticationInspection,
+): ProviderAccountAuthenticationInspection {
+  return {
+    state: inspection.state,
+    method: inspection.method,
+    configuration_identity: inspection.configuration.identity,
+    environment_policy: inspection.configuration.environmentPolicy,
+    evidence_identity: inspection.evidenceIdentity,
+    inspected_at: inspection.inspectedAt,
+  };
+}
+
+function validAuthenticatedInspection(
+  record: ProviderAccountSetupRecord,
+  inspection: ProviderAuthenticationInspection,
+): boolean {
+  const authorized = record.command.setup.authorized_authentication;
+  return (
+    isProviderAuthenticationReady(inspection) &&
+    inspection.configuration.identity === authorized.configuration_identity &&
+    inspection.configuration.environmentPolicy === authorized.environment_policy
+  );
+}
+
+function preflightFailureCode(
+  inspection: ProviderAuthenticationInspection,
+): string {
+  switch (inspection.state) {
+    case "authenticated":
+      return "setup_authentication_already_authenticated";
+    case "forbidden_auth_method":
+      return "setup_authentication_method_forbidden";
+    case "inspection_unavailable":
+      return "setup_authentication_preflight_unavailable";
+    case "incompatible_status":
+      return "setup_authentication_status_incompatible";
+    case "authentication_required":
+      return "setup_authentication_preflight_mismatch";
+  }
 }
 
 function isTerminal(state: ProviderAccountSetupRecord["state"]): boolean {

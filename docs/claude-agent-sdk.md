@@ -55,15 +55,15 @@ It may be launched only after an explicit current human setup authorization, ins
 
 Inspection, login, and wrapper execution share environment policy `claude-subscription-explicit-environment-v1`. The policy supplies only private HOME/config/temp paths, a fixed PATH/locale, disabled browser, updater, telemetry, feedback, marketplace, memory, and nonessential traffic. The generic streamed-process relay now launches its target with exactly the command's named environment entries rather than inheriting the relay's guest environment. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, base URL/profile selectors, OAuth-token injection, Bedrock/Vertex/Foundry selectors, AWS/Google/Azure credentials, and proxy/gateway variables are absent. Status inspection additionally uses `/usr/bin/env -i`, fails if Linux managed Claude settings/MCP policy paths exist, and then `execve`s the pinned runtime with only the explicit environment. SDK execution adds only its pinned client-app marker inside the immutable wrapper and keeps `settingSources: []`.
 
-Pinned Claude Code `2.1.292` status JSON is classified as this closed state machine:
+The contract source is the official pinned `2.1.292` executable's embedded `authStatus` implementation, corroborated by the matching Agent SDK `0.3.292` provider/settings typings. Default mode writes one JSON object to stdout and exits `0` exactly when `loggedIn` is true, otherwise `1`; process failure remains distinct from a parsed logged-out result. Pinned Claude Code `2.1.292` status JSON is classified as this closed state machine. That version always emits `loggedIn`, `authMethod`, `apiProvider`, `analyticsDisabled`, `projectsDirectory`, and `configDirectory`; its known optional policy, credential-source, and account fields are type-checked and projected away. In particular, the active API backend is `firstParty` even while the default first-party account is logged out. Native email, organization, subscription, path, and credential-source metadata never enters canonical evidence, persistence, protocol, or telemetry. The existing `claude-code-2.1.292-subscription-v1` configuration identity already pins this native contract, so correcting its decoder does not introduce a new inspector epoch or change evidence-identity semantics.
 
 | Exact observation | QE auth state | Login eligible? |
 |---|---|---|
-| exit `1`, `loggedIn=false`, `authMethod=none`, exact private config directory | `authentication_required` | yes |
-| exit `0`, `loggedIn=true`, `authMethod=claude.ai`, string `apiProvider`, exact private config directory | `subscription_authenticated` | no; setup is already ready |
-| `api_key`, `oauth_token`, `api_key_helper`, or `third_party` (including Bedrock, Vertex, Foundry, Anthropic AWS, or a gateway) | `forbidden_auth_method` | no |
+| exit `1`, `loggedIn=false`, `authMethod=none`, `apiProvider=firstParty`, exact private config directory | `authentication_required / none` | yes |
+| exit `0`, `loggedIn=true`, `authMethod=claude.ai`, `apiProvider=firstParty`, exact private config directory | `authenticated / provider_account` | no; setup is already ready |
+| `api_key`, `oauth_token`, `api_key_helper`, or `third_party` (including Bedrock, Vertex, Foundry, Anthropic AWS/Google Cloud, Mantle, or a gateway) | `forbidden_auth_method` | no |
 | command/status unavailable | `inspection_unavailable` | no |
-| malformed, unknown, contradictory, or wrong-directory JSON | `incompatible_status` | no |
+| malformed, unknown, incomplete, contradictory, wrong-version, or wrong-directory JSON | `incompatible_status` | no |
 
 The login predicate is a conjunction, not a truthy `authenticated` check: exact `authentication_required`/`none`, subscription mode, `subscription_login`, environment-policy version, `state=preparing`, unauthenticated, current `human_harness_setup` authority, exact setup context, environment profile, and nonempty configuration identity, with no prior invocation. Only after all terms hold may the Worker durably record invocation intent immediately before physical launch. A forbidden, unavailable, incompatible, or ineligible preflight persists `failed` + `not_requested`; Product projects the safe failure and does not offer another setup authorization for that terminal generation. It is not relabeled `uncertain`. Historical requested/ambiguous invocations remain terminal and non-replayable.
 
@@ -89,7 +89,7 @@ Login and the already-working headless wrapper share the same physical primitive
 
 The QE transport requirement is conclusively non-PTY: `spawnStreamed()` uses `sbx exec --interactive` without `--tty`, and the real-SBX fake-target proof observes `isatty(0/1/2) == false`. Whether pinned Claude Code 2.1.292's **real** `auth login` independently requires a TTY remains unknown: official browser/code-paste documentation does not state such a requirement, and this fix was forbidden from invoking real login to test it. QE therefore makes no unsupported TTY compatibility claim and does not weaken the accepted headless transport. A future fresh, explicitly authorized acceptance is the boundary that can establish provider behavior.
 
-Worker Protocol v16 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
+Worker Protocol v18 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
 
 1. Global disposable discovery verifies only immutable artifacts and publishes a `harness_setups` capability with `authentication: context_required`; it never publishes a globally ready Claude executor.
 2. The normal Run workspace lifecycle first selects one setup-capable Worker and provisions the durable Run worktree. Work Yard then offers a separate “Set up subscription” action for the pending occurrence.

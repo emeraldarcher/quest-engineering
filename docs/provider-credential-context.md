@@ -574,9 +574,10 @@ Safe validation runs the pinned unmodified `claude auth status` in the account
 cell with the exact account config directory and sanitized environment. The
 account-scoped states are:
 
-- `authenticated` only for exit 0, `loggedIn: true`, exact `claude.ai`, and exact
-  config identity;
-- `authentication_required` only for exit 1, `loggedIn: false`, and `none`;
+- `authenticated` only for exit 0, `loggedIn: true`, exact `claude.ai`, exact
+  `firstParty`, exact config identity, and the complete pinned 2.1.292 shape;
+- `authentication_required` only for exit 1, `loggedIn: false`, exact `none`,
+  exact `firstParty`, and the complete pinned 2.1.292 shape;
 - `forbidden_auth_method` for any API key, helper, OAuth environment token,
   profile, cloud, gateway, or third-party selection;
 - `inspection_unavailable`; and
@@ -670,23 +671,19 @@ policy; QE does not export a portable credential bundle.
 
 ## Protocol consequences
 
-Worker Protocol v16 now implements the Phase-B subset for account inventory,
-deterministic-fake connect/reauthentication setup attempts, account-scoped safe
-HumanAttention, ephemeral interaction correlation, environment/process identity,
-and setup lifecycle/reconciliation. Later phases must still add strict messages
-for:
+Worker Protocol v18 implements account inventory, canonical provider-neutral
+authentication observations, exact Product authorization evidence, immediate
+pre-login reinspection, account-scoped safe HumanAttention, ephemeral interaction
+correlation, environment/process identity, and setup lifecycle/reconciliation.
+It also carries separately versioned `workspace_tool_broker_v1` account-to-Run
+binding and safe activity messages. Authentication evidence is bound to the
+physical account cell plus versioned configuration and environment policy;
+already-authenticated, forbidden, unavailable, incompatible, stale, or mismatched
+preflight never becomes login intent.
 
-- real-provider connect/reauthenticate/validate/disconnect commands;
-- Run-to-ProviderAccount binding/preparation;
-- exclusive provider-process admission; and
-- account process -> Worker -> Run tool operations, cancellation, results, and
-  uncertainty.
-
-Harness Control 2 remains unchanged. Phase B made the explicit Worker Protocol
-v16 bump; later protocol work must not overload account setup with Run or broker
-semantics. The local
-account/Run tool transport should be versioned separately from Product protocol;
-it must not overload Harness Control with credential semantics.
+Harness Control 2 remains unchanged. Account setup is not overloaded with Run or
+broker semantics, and the account/Run tool transport remains separate from
+Harness Control and credential semantics.
 
 Current `HarnessSetupContext` should be:
 

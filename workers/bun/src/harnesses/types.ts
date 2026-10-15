@@ -652,11 +652,18 @@ export interface HarnessSetupInspection {
   environmentPolicy: string;
   authState:
     | "authentication_required"
-    | "subscription_authenticated"
+    | "authenticated"
     | "forbidden_auth_method"
     | "inspection_unavailable"
     | "incompatible_status";
-  authMethod: string | null;
+  authMethod:
+    | "none"
+    | "provider_account"
+    | "injected_oauth_token"
+    | "api_key"
+    | "api_key_helper"
+    | "third_party"
+    | null;
   detail: string;
   environment: {
     environmentId: string;

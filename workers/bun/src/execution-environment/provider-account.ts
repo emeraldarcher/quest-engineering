@@ -1,5 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { WorkerConfig } from "../config.ts";
+import {
+  authenticationInspection,
+  CLAUDE_SUBSCRIPTION_CONFIGURATION,
+  classifyClaudeSubscriptionAuthStatus,
+  claudeSubscriptionEnvironment,
+  FAKE_PROVIDER_AUTH_CONFIGURATION,
+  isProviderAuthenticationLoginEligible,
+  type ProviderAuthenticationEvidenceContext,
+  type ProviderAuthenticationInspection,
+  type ProviderAuthenticationMethod,
+  type ProviderAuthenticationState,
+  unavailableProviderAuthenticationInspection,
+} from "../provider-auth.ts";
 import { FakeStreamedProcessTransport } from "./fake.ts";
 import { providerAccountOwner, sameEnvironmentOwner } from "./ownership.ts";
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
@@ -57,6 +70,13 @@ export interface ProviderAccountSetupRuntimeIdentity {
   backendKind: string;
   environmentId: string;
   environmentIncarnation: string;
+  expectedAuthentication: {
+    state: "authentication_required";
+    method: "none";
+    configurationIdentity: string;
+    environmentPolicy: string;
+    evidenceIdentity: string;
+  };
 }
 
 export interface ClaudeCodeAccountRuntime {
@@ -84,6 +104,15 @@ export interface ProviderAccountEnvironmentCommand {
     environmentId: string;
     incarnation: string;
   } | null;
+}
+
+export interface ProviderAccountAuthenticationReport {
+  state: ProviderAuthenticationState;
+  method: ProviderAuthenticationMethod | null;
+  configurationIdentity: string;
+  environmentPolicy: string;
+  evidenceIdentity: string;
+  inspectedAt: string;
 }
 
 export interface ProviderAccountEnvironmentReport {
@@ -115,6 +144,7 @@ export interface ProviderAccountEnvironmentReport {
   errorMessage: string | null;
   observedAt: string;
   canaryPersisted: boolean;
+  authentication: ProviderAccountAuthenticationReport | null;
 }
 
 export interface ProviderAccountEnvironmentManagerOptions {
@@ -122,14 +152,20 @@ export interface ProviderAccountEnvironmentManagerOptions {
   store?: ExecutionEnvironmentStore;
   fake?: boolean;
   clock?: () => Date;
+  fakeAuthentication?: (
+    identity: ProviderAccountSetupRuntimeIdentity | null,
+  ) => {
+    state: ProviderAuthenticationState;
+    method: ProviderAuthenticationMethod | null;
+  };
 }
 
 /**
  * Owns Phase-A ProviderAccount cells independently of Runs.
  *
- * Provider behavior is deliberately deterministic and credential-free. The
- * account generation is represented only as a fence; no login or inference is
- * performed. Real SBX uses the existing immutable shell profile.
+ * Reconciliation and inspection are credential-free. Explicit setup may launch
+ * provider login only after fresh exact preflight and durable intent; this
+ * manager never authorizes inference.
  */
 export class ProviderAccountEnvironmentManager {
   private readonly store: ExecutionEnvironmentStore;
@@ -141,7 +177,10 @@ export class ProviderAccountEnvironmentManager {
     ProviderAccountEnvironmentReport
   >();
   private readonly accountTails = new Map<string, Promise<void>>();
-  private readonly fakeAuthenticatedSetups = new Set<string>();
+  private readonly fakeAuthenticatedEnvironments = new Set<string>();
+  private readonly fakeAuthentication:
+    | ProviderAccountEnvironmentManagerOptions["fakeAuthentication"]
+    | null;
   private readonly fakeSetupProcesses: StreamedProcessManager;
   private closed = false;
 
@@ -167,6 +206,7 @@ export class ProviderAccountEnvironmentManager {
             resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY,
           }));
     this.clock = options.clock ?? (() => new Date());
+    this.fakeAuthentication = options.fakeAuthentication ?? null;
     this.fakeSetupProcesses = new StreamedProcessManager({
       backendKind: "fake-account",
       validate: (ref) => {
@@ -185,7 +225,11 @@ export class ProviderAccountEnvironmentManager {
   ): Promise<ProviderAccountEnvironmentReport> {
     this.validateCommand(command);
     return this.withAccount(command.providerAccountId, async () => {
-      const report = await this.applySafely(command);
+      const environment = await this.applySafely(command);
+      const report = await this.withAuthenticationInspection(
+        command,
+        environment,
+      );
       this.latestReports.set(command.providerAccountId, report);
       return report;
     });
@@ -275,63 +319,101 @@ export class ProviderAccountEnvironmentManager {
     });
   }
 
-  async spawnSetupProcess(
+  /**
+   * Reinspects under the account lock, commits durable intent through the
+   * caller, and only then crosses the physical login spawn boundary.
+   */
+  async beginSetupProcess(
     identity: ProviderAccountSetupRuntimeIdentity,
-  ): Promise<StreamedProcess> {
+    beforeSpawn: (
+      inspection: ProviderAuthenticationInspection,
+      eligible: boolean,
+    ) => Promise<void>,
+  ): Promise<{
+    inspection: ProviderAuthenticationInspection;
+    process: StreamedProcess | null;
+  }> {
     const release = await this.acquireAccountOperation(
       identity.providerAccountId,
     );
     try {
       const record = this.setupRecord(identity);
-      const ref = recordRef(record);
-      const validationIdentity = setupValidationIdentity(identity);
-      let process: StreamedProcess;
-      if (this.fake) {
-        const paths = fakePaths(ref);
-        process = await this.fakeSetupProcesses.spawn(
-          ref,
-          paths,
-          {
-            executable: "/usr/bin/qe-fake-provider-login",
-            args: [],
-            cwd: paths.state,
-            environment: {},
-          },
-          {},
-          async (context) =>
-            new DeterministicFakeLoginTransport(
-              context.processGeneration,
-              identity.setupAttemptId,
-              () => this.fakeAuthenticatedSetups.add(validationIdentity),
-            ),
-        );
-      } else {
-        if (identity.providerKey !== "anthropic")
-          throw new EnvironmentBackendError(
-            "backend_incompatible",
-            "The immutable ProviderAccount runtime supports Anthropic accounts only.",
-          );
-        const lease = await (
-          this.backend as ExecutionEnvironmentBackend
-        ).recover(ref, this.setupSpec(identity));
-        const configRoot = `${lease.paths.state}/claude/config`;
-        await this.prepareClaudeDirectories(lease, configRoot);
-        process = await lease.spawnStreamed(
-          {
-            executable: SBX_CLAUDE_EXECUTABLE,
-            args: ["auth", "login"],
-            cwd: `${lease.paths.state}/claude/empty-cwd`,
-            environment: claudeAccountEnvironment(configRoot),
-          },
-          { bufferBytes: 64 * 1024, acknowledgementTimeoutMs: 30_000 },
-        );
+      const inspection = await this.inspectAuthenticationForRecord(
+        record,
+        identity.providerKey,
+        identity,
+      );
+      const expected = identity.expectedAuthentication;
+      const eligible =
+        isProviderAuthenticationLoginEligible(inspection) &&
+        inspection.state === expected.state &&
+        inspection.method === expected.method &&
+        inspection.configuration.identity === expected.configurationIdentity &&
+        inspection.configuration.environmentPolicy ===
+          expected.environmentPolicy &&
+        inspection.evidenceIdentity === expected.evidenceIdentity;
+      await beforeSpawn(inspection, eligible);
+      if (!eligible) {
+        release();
+        return { inspection, process: null };
       }
+      const process = await this.spawnSetupProcessUnlocked(identity, record);
       void process.exit.then(release, release);
-      return process;
+      return { inspection, process };
     } catch (error) {
       release();
       throw error;
     }
+  }
+
+  private async spawnSetupProcessUnlocked(
+    identity: ProviderAccountSetupRuntimeIdentity,
+    record: DurableEnvironmentRecord,
+  ): Promise<StreamedProcess> {
+    const ref = recordRef(record);
+    if (this.fake) {
+      const paths = fakePaths(ref);
+      return this.fakeSetupProcesses.spawn(
+        ref,
+        paths,
+        {
+          executable: "/usr/bin/qe-fake-provider-login",
+          args: [],
+          cwd: paths.state,
+          environment: {},
+        },
+        {},
+        async (context) =>
+          new DeterministicFakeLoginTransport(
+            context.processGeneration,
+            identity.setupAttemptId,
+            () =>
+              this.fakeAuthenticatedEnvironments.add(
+                fakeAuthenticationIdentity(identity),
+              ),
+          ),
+      );
+    }
+    if (identity.providerKey !== "anthropic")
+      throw new EnvironmentBackendError(
+        "backend_incompatible",
+        "The immutable ProviderAccount runtime supports Anthropic accounts only.",
+      );
+    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+      ref,
+      this.setupSpec(identity),
+    );
+    const configRoot = `${lease.paths.state}/claude/config`;
+    await this.prepareClaudeDirectories(lease, configRoot);
+    return lease.spawnStreamed(
+      {
+        executable: SBX_CLAUDE_EXECUTABLE,
+        args: ["auth", "login"],
+        cwd: `${lease.paths.state}/claude/empty-cwd`,
+        environment: claudeAccountEnvironment(configRoot),
+      },
+      { bufferBytes: 64 * 1024, acknowledgementTimeoutMs: 30_000 },
+    );
   }
 
   async workspaceToolBrokerAuthority(input: {
@@ -432,59 +514,92 @@ export class ProviderAccountEnvironmentManager {
 
   validateSetup(
     identity: ProviderAccountSetupRuntimeIdentity,
-  ): Promise<{ authenticated: boolean; identity: string | null }> {
-    return this.withAccount(identity.providerAccountId, () =>
-      this.validateSetupUnlocked(identity),
-    );
+  ): Promise<ProviderAuthenticationInspection> {
+    return this.withAccount(identity.providerAccountId, async () => {
+      const record = this.setupRecord(identity);
+      return this.inspectAuthenticationForRecord(
+        record,
+        identity.providerKey,
+        identity,
+      );
+    });
   }
 
-  private async validateSetupUnlocked(
-    identity: ProviderAccountSetupRuntimeIdentity,
-  ): Promise<{ authenticated: boolean; identity: string | null }> {
-    const record = this.setupRecord(identity);
-    const validationIdentity = setupValidationIdentity(identity);
-    if (this.fake)
-      return this.fakeAuthenticatedSetups.has(validationIdentity)
-        ? { authenticated: true, identity: validationIdentity }
-        : { authenticated: false, identity: null };
-    if (identity.providerKey !== "anthropic")
-      return { authenticated: false, identity: null };
+  private async inspectAuthenticationForRecord(
+    record: DurableEnvironmentRecord,
+    providerKey: string,
+    identity: ProviderAccountSetupRuntimeIdentity | null,
+  ): Promise<ProviderAuthenticationInspection> {
+    const context = this.authenticationContext(record, providerKey);
+    const inspectedAt = this.clock().toISOString();
+    if (this.fake) {
+      const overridden = this.fakeAuthentication?.(identity);
+      const authenticated = identity
+        ? this.fakeAuthenticatedEnvironments.has(
+            fakeAuthenticationIdentity(identity),
+          )
+        : false;
+      const observed =
+        overridden ??
+        (authenticated
+          ? {
+              state: "authenticated" as const,
+              method: "provider_account" as const,
+            }
+          : {
+              state: "authentication_required" as const,
+              method: "none" as const,
+            });
+      return authenticationInspection(
+        observed.state,
+        observed.method,
+        context,
+        inspectedAt,
+        "Deterministic fake provider authentication was inspected.",
+      );
+    }
+    if (providerKey !== "anthropic")
+      return authenticationInspection(
+        "incompatible_status",
+        null,
+        context,
+        inspectedAt,
+        "The ProviderAccount runtime does not support this provider authentication configuration.",
+      );
     const ref = recordRef(record);
-    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
-      ref,
-      this.setupSpec(identity),
-    );
-    const configRoot = `${lease.paths.state}/claude/config`;
-    await this.prepareClaudeDirectories(lease, configRoot);
-    const result = await lease.exec({
-      executable: SBX_CLAUDE_EXECUTABLE,
-      args: ["auth", "status"],
-      cwd: `${lease.paths.state}/claude/empty-cwd`,
-      environment: claudeAccountEnvironment(configRoot),
-      timeoutMs: 30_000,
-    });
-    if (result.exitCode !== 0) return { authenticated: false, identity: null };
     try {
-      const status = JSON.parse(result.stdout) as Record<string, unknown>;
-      const authenticated =
-        status.loggedIn === true &&
-        status.authMethod === "claude.ai" &&
-        status.configDirectory === configRoot;
-      return authenticated
-        ? {
-            authenticated: true,
-            identity: `claude-auth-v1:${digest(
-              JSON.stringify({
-                authMethod: status.authMethod,
-                configDirectory: status.configDirectory,
-                providerAccountId: identity.providerAccountId,
-                generation: identity.environmentGeneration,
-              }),
-            )}`,
-          }
-        : { authenticated: false, identity: null };
+      const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+        ref,
+        this.specForOwner(
+          ref.owner as Extract<EnvironmentOwner, { kind: "provider_account" }>,
+        ),
+      );
+      const configRoot = `${lease.paths.state}/claude/config`;
+      await this.prepareClaudeDirectories(lease, configRoot);
+      const environment = claudeAccountEnvironment(configRoot);
+      const result = await lease.exec({
+        executable: "/usr/bin/env",
+        args: [
+          "-i",
+          ...Object.entries(environment)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([name, value]) => `${name}=${value}`),
+          SBX_CLAUDE_EXECUTABLE,
+          "auth",
+          "status",
+        ],
+        cwd: `${lease.paths.state}/claude/empty-cwd`,
+        environment: {},
+        timeoutMs: 30_000,
+      });
+      return classifyClaudeSubscriptionAuthStatus(
+        result,
+        configRoot,
+        context,
+        inspectedAt,
+      );
     } catch {
-      return { authenticated: false, identity: null };
+      return unavailableProviderAuthenticationInspection(context, inspectedAt);
     }
   }
 
@@ -627,6 +742,58 @@ export class ProviderAccountEnvironmentManager {
     await this.fakeSetupProcesses.shutdown();
     if (this.backend) await this.backend.close?.();
     else this.store.close();
+  }
+
+  private async withAuthenticationInspection(
+    command: ProviderAccountEnvironmentCommand,
+    report: ProviderAccountEnvironmentReport,
+  ): Promise<ProviderAccountEnvironmentReport> {
+    if (
+      command.desiredState !== "available" ||
+      report.physicalState !== "available" ||
+      !report.canaryPersisted
+    )
+      return { ...report, authentication: null };
+    const record = this.currentRecord(command);
+    if (!record || !record.environmentId)
+      return { ...report, authentication: null };
+    const inspection = await this.inspectAuthenticationForRecord(
+      record,
+      command.providerKey,
+      null,
+    );
+    return {
+      ...report,
+      authentication: authenticationReport(inspection),
+    };
+  }
+
+  private authenticationContext(
+    record: DurableEnvironmentRecord,
+    providerKey: string,
+  ): ProviderAuthenticationEvidenceContext {
+    if (record.owner.kind !== "provider_account" || !record.environmentId)
+      throw new EnvironmentBackendError(
+        "environment_identity_mismatch",
+        "Provider authentication inspection requires an exact account environment.",
+      );
+    return {
+      providerKey,
+      owner: {
+        kind: "provider_account",
+        id: record.owner.providerAccountId,
+        generation: record.owner.credentialGeneration,
+      },
+      backendKind: record.backendKind,
+      environmentId: record.environmentId,
+      environmentIncarnation: record.incarnation,
+      profile: { id: record.profileId, digest: record.profileDigest },
+      configuration: {
+        ...(this.fake
+          ? FAKE_PROVIDER_AUTH_CONFIGURATION
+          : CLAUDE_SUBSCRIPTION_CONFIGURATION),
+      },
+    };
   }
 
   private async applySafely(
@@ -916,7 +1083,10 @@ export class ProviderAccountEnvironmentManager {
       record.state !== "running" ||
       record.backendKind !== identity.backendKind ||
       record.environmentId !== identity.environmentId ||
-      record.incarnation !== identity.environmentIncarnation
+      record.incarnation !== identity.environmentIncarnation ||
+      (!this.fake &&
+        (record.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.id ||
+          record.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest))
     )
       throw new EnvironmentBackendError(
         "environment_identity_mismatch",
@@ -1081,6 +1251,7 @@ export class ProviderAccountEnvironmentManager {
       errorMessage: null,
       observedAt: this.clock().toISOString(),
       canaryPersisted,
+      authentication: null,
     };
   }
 
@@ -1111,6 +1282,7 @@ export class ProviderAccountEnvironmentManager {
           : "ProviderAccount environment is not physically bound.",
       observedAt: this.clock().toISOString(),
       canaryPersisted: false,
+      authentication: null,
     };
   }
 
@@ -1133,6 +1305,7 @@ export class ProviderAccountEnvironmentManager {
       errorMessage: null,
       observedAt: this.clock().toISOString(),
       canaryPersisted: false,
+      authentication: null,
     };
   }
 
@@ -1170,6 +1343,7 @@ export class ProviderAccountEnvironmentManager {
       errorMessage: "ProviderAccount environment operation failed safely.",
       observedAt: this.clock().toISOString(),
       canaryPersisted: false,
+      authentication: null,
     };
   }
 
@@ -1214,20 +1388,31 @@ function canaryValue(owner: EnvironmentOwner): string {
   return `qe-provider-account-canary-v1:${digest(ownerKey(owner))}`;
 }
 
-function setupValidationIdentity(
+function fakeAuthenticationIdentity(
   identity: ProviderAccountSetupRuntimeIdentity,
 ): string {
-  return `qe-fake-auth-v1:${digest(
+  return digest(
     [
       identity.providerAccountId,
       identity.environmentGeneration,
       identity.backendKind,
       identity.environmentId,
       identity.environmentIncarnation,
-      identity.setupAttemptId,
-      identity.setupGeneration,
     ].join("\0"),
-  )}`;
+  );
+}
+
+function authenticationReport(
+  inspection: ProviderAuthenticationInspection,
+): ProviderAccountAuthenticationReport {
+  return {
+    state: inspection.state,
+    method: inspection.method,
+    configurationIdentity: inspection.configuration.identity,
+    environmentPolicy: inspection.configuration.environmentPolicy,
+    evidenceIdentity: inspection.evidenceIdentity,
+    inspectedAt: inspection.inspectedAt,
+  };
 }
 
 function fakePaths(ref: EnvironmentRef) {
@@ -1281,37 +1466,29 @@ class DeterministicFakeLoginTransport extends FakeStreamedProcessTransport {
   }
 }
 
+const CLAUDE_ACCOUNT_RUNTIME_ADDITION_NAMES = new Set([
+  "QE_ACCOUNT_CELL_MOD_PROTOCOL",
+  "QE_CLAUDE_MODEL",
+  "QE_CLAUDE_EFFORT",
+  "QE_ACCOUNT_CELL_MAILBOX",
+  "QE_ACCOUNT_CELL_BRIDGE_TOKEN",
+  "CLAUDE_CODE_STARTUP_FAILURE_RESULTS",
+]);
+
 export function claudeAccountEnvironment(
   configRoot: string,
   additions: Record<string, string> = {},
 ): Record<string, string> {
-  return {
-    HOME: configRoot,
-    CLAUDE_CONFIG_DIR: configRoot,
-    TMPDIR: `${configRoot}/tmp`,
-    PATH: "/usr/bin:/bin",
-    BROWSER: "/bin/false",
-    GIT_TERMINAL_PROMPT: "0",
-    DISABLE_AUTOUPDATER: "1",
-    DISABLE_TELEMETRY: "1",
-    DISABLE_ERROR_REPORTING: "1",
-    ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-    ENABLE_TOOL_SEARCH: "false",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-    CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
-    CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
-    CLAUDE_CODE_DISABLE_AGENT_VIEW: "1",
-    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
-    CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: "1",
-    CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: "1",
-    CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: "1",
-    CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1",
-    CLAUDE_CODE_DISABLE_ARTIFACT: "1",
-    CLAUDE_CODE_DISABLE_FAST_MODE: "1",
-    ...additions,
-  };
+  if (
+    Object.keys(additions).some(
+      (name) => !CLAUDE_ACCOUNT_RUNTIME_ADDITION_NAMES.has(name),
+    )
+  )
+    throw new EnvironmentBackendError(
+      "backend_incompatible",
+      "Claude account runtime environment additions are not allowlisted.",
+    );
+  return { ...claudeSubscriptionEnvironment(configRoot), ...additions };
 }
 
 function digest(value: string): string {

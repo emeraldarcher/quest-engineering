@@ -38,14 +38,19 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
   ]
   @authentication_states [
     :not_checked,
-    :setup_authorized,
-    :setup_in_progress,
-    :interaction_required,
-    :validating,
-    :authenticated,
     :authentication_required,
+    :authenticated,
+    :forbidden_auth_method,
     :inspection_unavailable,
-    :invalid
+    :incompatible_status
+  ]
+  @authentication_methods [
+    "none",
+    "provider_account",
+    "injected_oauth_token",
+    "api_key",
+    "api_key_helper",
+    "third_party"
   ]
 
   @enforce_keys [
@@ -68,6 +73,11 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
     :lifecycle_state,
     :environment_state,
     :authentication_state,
+    :authentication_method,
+    :auth_configuration_identity,
+    :auth_environment_policy,
+    :auth_inspection_identity,
+    :auth_inspected_at,
     :authenticated_at,
     :last_validated_at,
     :inserted_at,
@@ -86,14 +96,11 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
           | :removed
   @type authentication_state ::
           :not_checked
-          | :setup_authorized
-          | :setup_in_progress
-          | :interaction_required
-          | :validating
-          | :authenticated
           | :authentication_required
+          | :authenticated
+          | :forbidden_auth_method
           | :inspection_unavailable
-          | :invalid
+          | :incompatible_status
   @type t :: %__MODULE__{
           id: ProviderAccountId.t(),
           provider_key: String.t(),
@@ -103,6 +110,11 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
           lifecycle_state: lifecycle_state(),
           environment_state: environment_state(),
           authentication_state: authentication_state(),
+          authentication_method: String.t() | nil,
+          auth_configuration_identity: String.t() | nil,
+          auth_environment_policy: String.t() | nil,
+          auth_inspection_identity: String.t() | nil,
+          auth_inspected_at: DateTime.t() | nil,
           authenticated_at: DateTime.t() | nil,
           last_validated_at: DateTime.t() | nil,
           inserted_at: DateTime.t(),
@@ -128,21 +140,28 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
       account.lifecycle_state in @lifecycle_states,
       account.environment_state in @environment_states,
       account.authentication_state in @authentication_states,
+      valid_authentication_evidence?(account),
       match?(%DateTime{}, account.inserted_at),
       match?(%DateTime{}, account.updated_at)
     ])
   end
 
-  @doc "Records a validated setup result without changing the physical environment lifecycle."
-  @spec authenticated(t(), DateTime.t()) :: t()
-  def authenticated(%__MODULE__{} = account, %DateTime{} = now) do
+  @doc "Records exact validated provider-account evidence without changing the physical environment lifecycle."
+  @spec authenticated(t(), map(), DateTime.t()) :: t()
+  def authenticated(%__MODULE__{} = account, evidence, %DateTime{} = now)
+      when is_map(evidence) do
     %{
       account
       | credential_generation: account.credential_generation + 1,
         lifecycle_state: :connected,
         authentication_state: :authenticated,
-        authenticated_at: now,
-        last_validated_at: now,
+        authentication_method: "provider_account",
+        auth_configuration_identity: Map.fetch!(evidence, :configuration_identity),
+        auth_environment_policy: Map.fetch!(evidence, :environment_policy),
+        auth_inspection_identity: Map.fetch!(evidence, :inspection_identity),
+        auth_inspected_at: Map.fetch!(evidence, :inspected_at),
+        authenticated_at: Map.fetch!(evidence, :inspected_at),
+        last_validated_at: Map.fetch!(evidence, :inspected_at),
         updated_at: now
     }
   end
@@ -156,6 +175,13 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
         lifecycle_state: :connected,
         environment_state: :pending,
         authentication_state: :not_checked,
+        authentication_method: nil,
+        auth_configuration_identity: nil,
+        auth_environment_policy: nil,
+        auth_inspection_identity: nil,
+        auth_inspected_at: nil,
+        authenticated_at: nil,
+        last_validated_at: nil,
         updated_at: now
     }
   end
@@ -174,6 +200,13 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
          | lifecycle_state: target,
            environment_state: environment_state,
            authentication_state: :not_checked,
+           authentication_method: nil,
+           auth_configuration_identity: nil,
+           auth_environment_policy: nil,
+           auth_inspection_identity: nil,
+           auth_inspected_at: nil,
+           authenticated_at: nil,
+           last_validated_at: nil,
            updated_at: now
        }}
     else
@@ -182,6 +215,63 @@ defmodule QuestEngineering.Core.Product.ProviderAccount do
   end
 
   def transition(_account, _target, _now), do: {:error, :invalid_transition}
+
+  defp valid_authentication_evidence?(%{authentication_state: :not_checked} = account) do
+    Enum.all?(
+      [
+        account.authentication_method,
+        account.auth_configuration_identity,
+        account.auth_environment_policy,
+        account.auth_inspection_identity,
+        account.auth_inspected_at,
+        account.authenticated_at,
+        account.last_validated_at
+      ],
+      &is_nil/1
+    )
+  end
+
+  defp valid_authentication_evidence?(account) do
+    present?(account.auth_configuration_identity) and
+      present?(account.auth_environment_policy) and present?(account.auth_inspection_identity) and
+      match?(%DateTime{}, account.auth_inspected_at) and
+      match?(%DateTime{}, account.last_validated_at) and valid_authentication_pair?(account) and
+      ((account.authentication_state == :authenticated and
+          match?(%DateTime{}, account.authenticated_at)) or
+         (account.authentication_state != :authenticated and is_nil(account.authenticated_at)))
+  end
+
+  defp valid_authentication_pair?(%{
+         authentication_state: :authentication_required,
+         authentication_method: "none"
+       }),
+       do: true
+
+  defp valid_authentication_pair?(%{
+         authentication_state: :authenticated,
+         authentication_method: "provider_account"
+       }),
+       do: true
+
+  defp valid_authentication_pair?(%{
+         authentication_state: :forbidden_auth_method,
+         authentication_method: method
+       }),
+       do: method in ~w(injected_oauth_token api_key api_key_helper third_party)
+
+  defp valid_authentication_pair?(%{
+         authentication_state: :inspection_unavailable,
+         authentication_method: nil
+       }),
+       do: true
+
+  defp valid_authentication_pair?(%{
+         authentication_state: :incompatible_status,
+         authentication_method: method
+       }),
+       do: is_nil(method) or method in @authentication_methods
+
+  defp valid_authentication_pair?(_account), do: false
 
   defp present?(value), do: is_binary(value) and value != ""
   defp positive_integer?(value), do: is_integer(value) and value > 0

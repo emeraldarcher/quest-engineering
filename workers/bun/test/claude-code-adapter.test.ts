@@ -194,7 +194,14 @@ function accountLease(
           stdout: JSON.stringify({
             loggedIn: true,
             authMethod: "claude.ai",
+            apiProvider: "firstParty",
+            analyticsDisabled: true,
+            projectsDirectory: "/qe/state/claude/config/projects",
             configDirectory: "/qe/state/claude/config",
+            email: null,
+            orgId: null,
+            orgName: null,
+            subscriptionType: null,
           }),
           stderr: "",
         };

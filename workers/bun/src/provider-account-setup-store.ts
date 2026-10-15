@@ -9,7 +9,7 @@ import type {
   ProviderAccountSetupValidation,
 } from "./protocol/types.ts";
 
-export const PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION = 1;
+export const PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION = 2;
 
 export interface ProviderAccountSetupRecord {
   setupAttemptId: string;
@@ -18,6 +18,7 @@ export interface ProviderAccountSetupRecord {
   invocationState: ProviderAccountSetupInvocationState;
   process: StreamedProcessHandle | null;
   attentionId: string | null;
+  preflight: ProviderAccountSetupValidation | null;
   validation: ProviderAccountSetupValidation | null;
   failureCode: string | null;
   cancellationRequestId: string | null;
@@ -43,6 +44,7 @@ interface SetupRow {
   invocation_state: ProviderAccountSetupInvocationState;
   process_json: string | null;
   attention_id: string | null;
+  preflight_json: string | null;
   validation_json: string | null;
   failure_code: string | null;
   cancellation_request_id: string | null;
@@ -117,8 +119,8 @@ export class ProviderAccountSetupStore {
         this.db
           .query(
             `INSERT INTO provider_account_setup_attempts
-             (setup_attempt_id,command_json,state,invocation_state,process_json,attention_id,validation_json,failure_code,cancellation_request_id,input_delivery_json,created_at,updated_at)
-             VALUES (?,?,?,?,NULL,NULL,NULL,NULL,?,NULL,?,?)`,
+             (setup_attempt_id,command_json,state,invocation_state,process_json,attention_id,preflight_json,validation_json,failure_code,cancellation_request_id,input_delivery_json,created_at,updated_at)
+             VALUES (?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,NULL,?,?)`,
           )
           .run(
             command.setup.setup_attempt_id,
@@ -142,6 +144,7 @@ export class ProviderAccountSetupStore {
       invocationState: ProviderAccountSetupInvocationState;
       process: StreamedProcessHandle | null;
       attentionId: string | null;
+      preflight: ProviderAccountSetupValidation | null;
       validation: ProviderAccountSetupValidation | null;
       failureCode: string | null;
       cancellationRequestId: string | null;
@@ -163,6 +166,10 @@ export class ProviderAccountSetupStore {
             attributes.attentionId === undefined
               ? current.attentionId
               : attributes.attentionId,
+          preflight:
+            attributes.preflight === undefined
+              ? current.preflight
+              : attributes.preflight,
           validation:
             attributes.validation === undefined
               ? current.validation
@@ -179,7 +186,7 @@ export class ProviderAccountSetupStore {
         this.db
           .query(
             `UPDATE provider_account_setup_attempts
-             SET state=?,invocation_state=?,process_json=?,attention_id=?,validation_json=?,failure_code=?,cancellation_request_id=?,updated_at=?
+             SET state=?,invocation_state=?,process_json=?,attention_id=?,preflight_json=?,validation_json=?,failure_code=?,cancellation_request_id=?,updated_at=?
              WHERE setup_attempt_id=?`,
           )
           .run(
@@ -187,6 +194,7 @@ export class ProviderAccountSetupStore {
             next.invocationState,
             next.process ? JSON.stringify(next.process) : null,
             next.attentionId,
+            next.preflight ? JSON.stringify(next.preflight) : null,
             next.validation ? JSON.stringify(next.validation) : null,
             next.failureCode,
             next.cancellationRequestId,
@@ -330,6 +338,7 @@ export class ProviderAccountSetupStore {
           invocation_state TEXT NOT NULL CHECK(invocation_state IN ('not_requested','requested','acknowledged','settled','uncertain')),
           process_json TEXT,
           attention_id TEXT,
+          preflight_json TEXT,
           validation_json TEXT,
           failure_code TEXT,
           cancellation_request_id TEXT,
@@ -371,6 +380,7 @@ export class ProviderAccountSetupStore {
       "invocation_state",
       "process_json",
       "attention_id",
+      "preflight_json",
       "validation_json",
       "failure_code",
       "cancellation_request_id",
@@ -430,6 +440,9 @@ function mapRow(row: SetupRow): ProviderAccountSetupRecord {
       ? (JSON.parse(row.process_json) as StreamedProcessHandle)
       : null,
     attentionId: row.attention_id,
+    preflight: row.preflight_json
+      ? (JSON.parse(row.preflight_json) as ProviderAccountSetupValidation)
+      : null,
     validation: row.validation_json
       ? (JSON.parse(row.validation_json) as ProviderAccountSetupValidation)
       : null,
@@ -463,7 +476,9 @@ function assertCompatible(
     left.provider_key === right.provider_key &&
     left.environment.backend_kind === right.environment.backend_kind &&
     left.environment.environment_id === right.environment.environment_id &&
-    left.environment.incarnation === right.environment.incarnation;
+    left.environment.incarnation === right.environment.incarnation &&
+    JSON.stringify(left.authorized_authentication) ===
+      JSON.stringify(right.authorized_authentication);
   if (!stable)
     throw new Error(
       "ProviderAccount setup command conflicts with durable identity.",

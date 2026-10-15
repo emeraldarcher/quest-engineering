@@ -58,7 +58,7 @@ test("ProviderAccount client decodes layered readiness and uses local setup endp
   expect(account.readiness).toEqual({
     semantic: "semantically_connected",
     environment: "available",
-    authentication: "interaction_required",
+    authentication: "authentication_required",
     inference: "not_evaluated",
   });
   expect(account.environment?.credential_generation).toBe(1);
@@ -139,9 +139,11 @@ function accountFixture() {
     readiness: {
       semantic: "semantically_connected",
       environment: "available",
-      authentication: "interaction_required",
+      authentication: "authentication_required",
       inference: "not_evaluated",
     },
+    capabilities: { can_authorize_setup: true },
+    authentication: authenticationEvidence(),
     environment: {
       credential_generation: 1,
       worker_id: "worker-1",
@@ -163,6 +165,17 @@ function accountFixture() {
   };
 }
 
+function authenticationEvidence() {
+  return {
+    state: "authentication_required",
+    method: "none",
+    configuration_identity: "qe-fake-provider-account-auth-v1",
+    environment_policy: "qe-fake-provider-account-explicit-environment-v1",
+    evidence_identity: "provider-auth-evidence-v1:test",
+    inspected_at: "2026-10-15T00:00:00Z",
+  };
+}
+
 function setupAttemptFixture() {
   return {
     id: "setup-1",
@@ -173,6 +186,7 @@ function setupAttemptFixture() {
     environment_generation: 1,
     worker_id: "worker-1",
     worker_generation: 7,
+    authorized_authentication: authenticationEvidence(),
     state: "human_interaction_required",
     invocation_state: "acknowledged",
     process: {
@@ -191,11 +205,8 @@ function setupAttemptFixture() {
       delivery_attempt_id: null,
       surfaced_at: "2026-10-15T00:00:01Z",
     },
-    validation: {
-      state: "not_checked",
-      identity: null,
-      validated_at: null,
-    },
+    preflight: authenticationEvidence(),
+    validation: null,
     failure: null,
     authorized_at: "2026-10-15T00:00:00Z",
     invocation_requested_at: "2026-10-15T00:00:01Z",

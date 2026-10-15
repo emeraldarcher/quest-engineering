@@ -7,7 +7,7 @@ import {
   CLAUDE_SUBSCRIPTION_AUTH_MODE,
   CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
   CLAUDE_SUBSCRIPTION_LOGIN_MODE,
-} from "../claude-agent-sdk/auth.ts";
+} from "../../provider-auth.ts";
 import { controlDescriptorPath } from "../control/authority.ts";
 import { HarnessControlClient } from "../control/client.ts";
 import type {
@@ -149,10 +149,8 @@ export class FakeHarness implements AgentHarness {
       authMode: CLAUDE_SUBSCRIPTION_AUTH_MODE,
       loginMode: CLAUDE_SUBSCRIPTION_LOGIN_MODE,
       environmentPolicy: CLAUDE_SUBSCRIPTION_ENVIRONMENT_POLICY,
-      authState: authenticated
-        ? "subscription_authenticated"
-        : "authentication_required",
-      authMethod: authenticated ? "claude.ai" : "none",
+      authState: authenticated ? "authenticated" : "authentication_required",
+      authMethod: authenticated ? "provider_account" : "none",
       detail: authenticated
         ? "Deterministic fake setup is ready."
         : "Deterministic fake setup is not ready.",

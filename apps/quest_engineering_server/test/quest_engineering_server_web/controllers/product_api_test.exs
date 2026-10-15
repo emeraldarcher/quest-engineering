@@ -300,7 +300,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 17,
+                      "protocol_version" => 18,
                       "worker_id" => ^worker_id,
                       "connection_generation" => generation
                     } = setup_command}
@@ -361,8 +361,18 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
                "cwd" => "/qe/workspaces/default",
                "environmentNames" => [
                  "BROWSER",
+                 "CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS",
+                 "CLAUDE_CODE_DISABLE_ADVISOR_TOOL",
+                 "CLAUDE_CODE_DISABLE_AGENT_VIEW",
+                 "CLAUDE_CODE_DISABLE_ARTIFACT",
                  "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                 "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+                 "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS",
+                 "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
+                 "CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS",
+                 "CLAUDE_CODE_DISABLE_FAST_MODE",
                  "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+                 "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS",
                  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
                  "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
                  "CLAUDE_CONFIG_DIR",
@@ -370,6 +380,9 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
                  "DISABLE_ERROR_REPORTING",
                  "DISABLE_FEEDBACK_COMMAND",
                  "DISABLE_TELEMETRY",
+                 "ENABLE_CLAUDEAI_MCP_SERVERS",
+                 "ENABLE_TOOL_SEARCH",
+                 "GIT_TERMINAL_PROMPT",
                  "HOME",
                  "LANG",
                  "PATH",

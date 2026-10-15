@@ -1198,6 +1198,11 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     |> then(&Repo.get!(ProviderAccountRecord, &1.id))
     |> ProviderAccountRecord.changeset(%{
       authentication_state: "authenticated",
+      authentication_method: "provider_account",
+      auth_configuration_identity: "claude-code-2.1.292-subscription-v1",
+      auth_environment_policy: "claude-subscription-explicit-environment-v1",
+      auth_inspection_identity: "provider-auth-evidence-v1:test",
+      auth_inspected_at: now,
       authenticated_at: now,
       last_validated_at: now
     })
@@ -1392,6 +1397,11 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     account_record
     |> ProviderAccountRecord.changeset(%{
       authentication_state: "authenticated",
+      authentication_method: "provider_account",
+      auth_configuration_identity: "claude-code-2.1.292-subscription-v1",
+      auth_environment_policy: "claude-subscription-explicit-environment-v1",
+      auth_inspection_identity: "provider-auth-evidence-v1:test",
+      auth_inspected_at: observed_at,
       authenticated_at: observed_at,
       last_validated_at: observed_at
     })
@@ -1413,7 +1423,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_workspace_tool_broker",
-                      "protocol_version" => 17,
+                      "protocol_version" => 18,
                       "connection_generation" => generation,
                       "broker" => %{
                         "authorization_id" => authorization_id,
@@ -1541,7 +1551,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "cancel_dispatch",
-                      "protocol_version" => 17,
+                      "protocol_version" => 18,
                       "worker_id" => worker_id,
                       "connection_generation" => generation,
                       "action_id" => action_id,
@@ -3292,7 +3302,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 17,
+                      "protocol_version" => 18,
                       "setup" => %{
                         "setup_id" => setup_id,
                         "action_id" => action_id,

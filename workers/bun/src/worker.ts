@@ -2315,6 +2315,16 @@ function providerAccountEnvironmentPayload(
     error_message: report.errorMessage,
     observed_at: report.observedAt,
     canary_persisted: report.canaryPersisted,
+    authentication: report.authentication
+      ? {
+          state: report.authentication.state,
+          method: report.authentication.method,
+          configuration_identity: report.authentication.configurationIdentity,
+          environment_policy: report.authentication.environmentPolicy,
+          evidence_identity: report.authentication.evidenceIdentity,
+          inspected_at: report.authentication.inspectedAt,
+        }
+      : null,
   };
 }
 

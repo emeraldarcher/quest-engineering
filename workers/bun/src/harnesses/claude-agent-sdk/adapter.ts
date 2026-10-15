@@ -15,6 +15,16 @@ import type {
   SbxRunExecutionManager,
 } from "../../execution-environment/sbx-run.ts";
 import type { JsonValue } from "../../protocol/types.ts";
+import {
+  authenticationInspection,
+  CLAUDE_SUBSCRIPTION_CONFIGURATION,
+  classifyClaudeSubscriptionAuthStatus,
+  claudeSubscriptionEnvironment,
+  isProviderAuthenticationLoginEligible,
+  type ProviderAuthenticationEvidenceContext,
+  type ProviderAuthenticationInspection,
+  unavailableProviderAuthenticationInspection,
+} from "../../provider-auth.ts";
 import { materializeExecutionArtifacts } from "../../workspace/execution-artifacts.ts";
 import { controlDescriptorPath } from "../control/authority.ts";
 import { HarnessControlClient } from "../control/client.ts";
@@ -42,13 +52,6 @@ import type {
   HumanAttention,
 } from "../types.ts";
 import { OperationalExecutionError } from "../types.ts";
-import {
-  classifyClaudeSubscriptionAuthStatus,
-  claudeSubscriptionEnvironment,
-  forbiddenClaudeManagedPolicyInspection,
-  isClaudeSubscriptionLoginEligible,
-  unavailableClaudeSubscriptionAuthInspection,
-} from "./auth.ts";
 import {
   type ClaudeTransportState,
   claudeTransportBinding,
@@ -452,7 +455,12 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
     },
     onEvent: Parameters<AgentHarnessSetup["begin"]>[2],
   ): Promise<HarnessSetupOperation> {
-    if (!isClaudeSubscriptionLoginEligible(setup.inspection))
+    if (
+      !isProviderAuthenticationLoginEligible({
+        state: setup.inspection.authState,
+        method: setup.inspection.authMethod,
+      })
+    )
       throw claudeError(
         "authentication_required",
         "Claude subscription login is not eligible for the inspected authentication state.",
@@ -516,14 +524,18 @@ export class ClaudeAgentSdkAdapter implements AgentHarness {
         return setupInspection(
           prepared,
           "cancelled",
-          unavailableClaudeSubscriptionAuthInspection(),
+          unavailableProviderAuthenticationInspection(
+            preparedAuthenticationContext(prepared),
+          ),
           "Harness setup was cancelled.",
         );
       if (exit.kind !== "exited" || exit.exitCode !== 0)
         return setupInspection(
           prepared,
           "failed",
-          unavailableClaudeSubscriptionAuthInspection(),
+          unavailableProviderAuthenticationInspection(
+            preparedAuthenticationContext(prepared),
+          ),
           "Provider authentication did not complete successfully.",
         );
       return inspectPreparedSetup(prepared);
@@ -1645,25 +1657,30 @@ function nativePreparedSetup(
 async function inspectPreparedSetup(
   prepared: PreparedSbxHarnessSetup,
 ): Promise<HarnessSetupInspection> {
+  const context = preparedAuthenticationContext(prepared);
   try {
     const result = await prepared.lease.exec(
       claudeAuthenticationStatusCommand(prepared),
     );
-    if (result.exitCode === 42)
-      return setupInspection(
-        prepared,
-        "failed",
-        forbiddenClaudeManagedPolicyInspection(),
-      );
-    const authentication = classifyClaudeSubscriptionAuthStatus(
-      result,
-      prepared.claude.configDirectory,
-    );
+    const authentication =
+      result.exitCode === 42
+        ? authenticationInspection(
+            "forbidden_auth_method",
+            "third_party",
+            context,
+            new Date().toISOString(),
+            "Claude managed authentication policy is incompatible with subscription-only setup.",
+          )
+        : classifyClaudeSubscriptionAuthStatus(
+            result,
+            prepared.claude.configDirectory,
+            context,
+          );
     return setupInspection(
       prepared,
-      authentication.authState === "subscription_authenticated"
+      authentication.state === "authenticated"
         ? "ready"
-        : authentication.authState === "authentication_required"
+        : authentication.state === "authentication_required"
           ? "preparing"
           : "failed",
       authentication,
@@ -1672,7 +1689,7 @@ async function inspectPreparedSetup(
     return setupInspection(
       prepared,
       "failed",
-      unavailableClaudeSubscriptionAuthInspection(),
+      unavailableProviderAuthenticationInspection(context),
     );
   }
 }
@@ -1680,13 +1697,19 @@ async function inspectPreparedSetup(
 function setupInspection(
   prepared: PreparedSbxHarnessSetup,
   state: HarnessSetupInspection["state"],
-  authentication = unavailableClaudeSubscriptionAuthInspection(),
+  authentication: ProviderAuthenticationInspection = unavailableProviderAuthenticationInspection(
+    preparedAuthenticationContext(prepared),
+  ),
   detail = authentication.detail,
 ): HarnessSetupInspection {
   return {
-    ...authentication,
     state,
-    authenticated: authentication.authState === "subscription_authenticated",
+    authenticated: authentication.state === "authenticated",
+    authMode: authentication.configuration.mode,
+    loginMode: authentication.configuration.loginMode,
+    environmentPolicy: authentication.configuration.environmentPolicy,
+    authState: authentication.state,
+    authMethod: authentication.method,
     detail,
     environment: {
       environmentId: prepared.lease.ref.environmentId,
@@ -1694,6 +1717,28 @@ function setupInspection(
       profile: { ...prepared.lease.ref.profile },
     },
     configIdentity: prepared.configIdentity,
+  };
+}
+
+function preparedAuthenticationContext(
+  prepared: PreparedSbxHarnessSetup,
+): ProviderAuthenticationEvidenceContext {
+  const owner = prepared.lease.ref.owner;
+  return {
+    providerKey: "anthropic",
+    owner:
+      owner.kind === "run"
+        ? { kind: "run", id: owner.runId, generation: null }
+        : {
+            kind: "provider_account",
+            id: owner.providerAccountId,
+            generation: owner.credentialGeneration,
+          },
+    backendKind: prepared.lease.ref.backendKind,
+    environmentId: prepared.lease.ref.environmentId,
+    environmentIncarnation: prepared.lease.ref.incarnation,
+    profile: { ...prepared.lease.ref.profile },
+    configuration: { ...CLAUDE_SUBSCRIPTION_CONFIGURATION },
   };
 }
 

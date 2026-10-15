@@ -1,6 +1,8 @@
 defmodule QuestEngineering.Server.ProviderAccountApi.View do
   @moduledoc false
 
+  alias QuestEngineering.Server.Product.ProviderAccounts
+
   def account(value, environment \\ nil) do
     %{
       id: value.id,
@@ -15,6 +17,10 @@ defmodule QuestEngineering.Server.ProviderAccountApi.View do
         authentication: Atom.to_string(value.authentication_state),
         inference: "not_evaluated"
       },
+      capabilities: %{
+        can_authorize_setup: can_authorize_setup?(value, environment)
+      },
+      authentication: authentication(value),
       environment: environment(environment),
       authenticated_at: iso(value.authenticated_at),
       last_validated_at: iso(value.last_validated_at),
@@ -33,6 +39,14 @@ defmodule QuestEngineering.Server.ProviderAccountApi.View do
       environment_generation: value.environment_generation,
       worker_id: value.worker_id,
       worker_generation: value.worker_generation,
+      authorized_authentication: %{
+        state: value.authorization_auth_state,
+        method: value.authorization_auth_method,
+        configuration_identity: value.auth_configuration_identity,
+        environment_policy: value.auth_environment_policy,
+        evidence_identity: value.authorization_inspection_identity,
+        inspected_at: iso(value.authorization_inspected_at)
+      },
       state: value.state,
       invocation_state: value.invocation_state,
       process:
@@ -46,11 +60,24 @@ defmodule QuestEngineering.Server.ProviderAccountApi.View do
           else: nil
         ),
       attention: attention(attention),
-      validation: %{
-        state: value.validation_state,
-        identity: value.validation_identity,
-        validated_at: iso(value.validated_at)
-      },
+      preflight:
+        authentication_evidence(
+          value.preflight_state,
+          value.preflight_method,
+          value.preflight_configuration_identity,
+          value.preflight_environment_policy,
+          value.preflight_identity,
+          value.preflight_inspected_at
+        ),
+      validation:
+        authentication_evidence(
+          value.validation_state,
+          value.validation_method,
+          value.validation_configuration_identity,
+          value.validation_environment_policy,
+          value.validation_identity,
+          value.validation_inspected_at
+        ),
       failure:
         if(value.failure_code,
           do: %{code: value.failure_code, message: value.failure_message},
@@ -84,6 +111,38 @@ defmodule QuestEngineering.Server.ProviderAccountApi.View do
       details: value.details,
       occurred_at: DateTime.to_iso8601(value.occurred_at)
     }
+  end
+
+  defp authentication(value) do
+    authentication_evidence(
+      Atom.to_string(value.authentication_state),
+      value.authentication_method,
+      value.auth_configuration_identity,
+      value.auth_environment_policy,
+      value.auth_inspection_identity,
+      value.auth_inspected_at
+    )
+  end
+
+  defp authentication_evidence(nil, _method, _configuration, _policy, _identity, _at),
+    do: nil
+
+  defp authentication_evidence(state, method, configuration, policy, identity, at) do
+    %{
+      state: state,
+      method: method,
+      configuration_identity: configuration,
+      environment_policy: policy,
+      evidence_identity: identity,
+      inspected_at: iso(at)
+    }
+  end
+
+  defp can_authorize_setup?(value, environment) do
+    value.lifecycle_state == :connected and value.environment_state == :available and
+      ProviderAccounts.setup_authentication_eligible?(value) and not is_nil(environment) and
+      environment.desired_environment_state == "available" and
+      environment.physical_state == "available" and environment.canary_persisted == true
   end
 
   defp attention(nil), do: nil

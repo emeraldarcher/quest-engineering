@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 describe("ProviderAccount setup", () => {
-  test("current-only SQLite rejects stale and incomplete version-one state", async () => {
+  test("current-only SQLite rejects stale version-one and incomplete version-two state", async () => {
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
     const staleRoot = await mkdtemp(
@@ -45,7 +45,9 @@ describe("ProviderAccount setup", () => {
     const stale = new Database(stalePath);
     stale.exec("PRAGMA user_version=2");
     stale.close();
-    expect(() => new ProviderAccountSetupStore(staleRoot)).toThrow("stale");
+    expect(() => new ProviderAccountSetupStore(staleRoot)).toThrow(
+      "incomplete",
+    );
 
     const incompleteRoot = await mkdtemp(
       join(parent, "provider-account-setup-incomplete-"),
@@ -63,7 +65,7 @@ describe("ProviderAccount setup", () => {
     `);
     incomplete.close();
     expect(() => new ProviderAccountSetupStore(incompleteRoot)).toThrow(
-      "incomplete",
+      "stale",
     );
   });
 
@@ -103,11 +105,27 @@ describe("ProviderAccount setup", () => {
           7,
         ),
       ).toThrow("unexpected or missing fields");
+      expect(() =>
+        decodePrepareProviderAccountSetup(
+          {
+            ...fixture.setupCommand,
+            setup: {
+              ...fixture.setupCommand.setup,
+              authorized_authentication: {
+                ...fixture.setupCommand.setup.authorized_authentication,
+                method: "api_key",
+              },
+            },
+          },
+          "worker-setup",
+          7,
+        ),
+      ).toThrow("authorized_authentication.method");
       expect(
         decodeCancelProviderAccountSetup(
           {
             type: "cancel_provider_account_setup",
-            protocol_version: 17,
+            protocol_version: 18,
             worker_id: "worker-setup",
             connection_generation: 7,
             setup_attempt_id: "setup-attempt-1",
@@ -174,8 +192,8 @@ describe("ProviderAccount setup", () => {
         invocation_state: "settled",
         validation: { state: "authenticated" },
       });
-      expect(terminal?.validation?.identity).toMatch(
-        /^qe-fake-auth-v1:[a-f0-9]{64}$/,
+      expect(terminal?.validation?.evidence_identity).toMatch(
+        /^provider-auth-evidence-v1:[a-f0-9]{64}$/,
       );
       expect(fixture.coordinator.authenticated("account-setup", 2, 1)).toBe(
         true,
@@ -239,9 +257,11 @@ describe("ProviderAccount setup", () => {
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
       const waiting = fixture.reports.at(-1) as ProviderAccountSetupReport;
-      fixture.manager.validateSetup = async () => ({
-        authenticated: false,
-        identity: null,
+      const validateSetup = fixture.manager.validateSetup.bind(fixture.manager);
+      fixture.manager.validateSetup = async (identity) => ({
+        ...(await validateSetup(identity)),
+        state: "authentication_required",
+        method: "none",
       });
       await fixture.coordinator.respond(
         responseCommand(fixture.setupCommand, waiting, "invalid-fake-input"),
@@ -252,13 +272,85 @@ describe("ProviderAccount setup", () => {
       expect(fixture.reports.at(-1)).toMatchObject({
         state: "failed",
         invocation_state: "settled",
-        validation: { state: "authentication_required", identity: null },
+        validation: { state: "authentication_required", method: "none" },
         failure_code: "setup_validation_failed",
       });
       expect(
         fixture.reports.some(
           (report) => report.validation?.state === "authenticated",
         ),
+      ).toBe(false);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("forbidden, unavailable, incompatible, and already-authenticated preflight physically invoke zero logins", async () => {
+    const cases = [
+      [
+        "forbidden_auth_method",
+        "api_key",
+        "setup_authentication_method_forbidden",
+      ],
+      [
+        "inspection_unavailable",
+        null,
+        "setup_authentication_preflight_unavailable",
+      ],
+      ["incompatible_status", null, "setup_authentication_status_incompatible"],
+      [
+        "authenticated",
+        "provider_account",
+        "setup_authentication_already_authenticated",
+      ],
+    ] as const;
+
+    for (const [state, method, failureCode] of cases) {
+      const fixture = await setupFixture({
+        fakeAuthentication: () => ({ state, method }),
+      });
+      try {
+        await fixture.coordinator.prepare(fixture.setupCommand);
+        expect(fixture.reports.at(-1)).toMatchObject({
+          state: "failed",
+          invocation_state: "not_requested",
+          preflight: { state, method },
+          failure_code: failureCode,
+          process: null,
+        });
+        expect(
+          fixture.store
+            .events(fixture.setupCommand.setup.setup_attempt_id)
+            .some((event) => event.eventType === "login_invocation_requested"),
+        ).toBe(false);
+        expect(
+          (fixture.coordinator as unknown as { active: Map<string, unknown> })
+            .active.size,
+        ).toBe(0);
+      } finally {
+        await fixture.coordinator.close();
+        await fixture.manager.close();
+      }
+    }
+  });
+
+  test("stale authorized evidence is re-inspected and rejected before durable login intent", async () => {
+    const fixture = await setupFixture();
+    try {
+      fixture.setupCommand.setup.authorized_authentication.evidence_identity =
+        "provider-auth-evidence-v1:stale";
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      expect(fixture.reports.at(-1)).toMatchObject({
+        state: "failed",
+        invocation_state: "not_requested",
+        preflight: { state: "authentication_required", method: "none" },
+        failure_code: "setup_authentication_preflight_mismatch",
+      });
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .some((event) => event.eventType === "login_invocation_requested"),
       ).toBe(false);
     } finally {
       await fixture.coordinator.close();
@@ -300,14 +392,20 @@ describe("ProviderAccount setup", () => {
   test("ambiguous spawn, input, and cancellation are terminal and never replayed", async () => {
     const spawn = await setupFixture();
     try {
-      spawn.manager.spawnSetupProcess = async () => {
-        throw new EnvironmentBackendError(
-          "injected_failure",
-          "ambiguous setup spawn",
-          "spawn_streamed",
-          "ambiguous",
-        );
-      };
+      const beginSetupProcess = spawn.manager.beginSetupProcess.bind(
+        spawn.manager,
+      );
+      spawn.manager.beginSetupProcess = (identity, beforeSpawn) =>
+        beginSetupProcess(identity, async (inspection, eligible) => {
+          await beforeSpawn(inspection, eligible);
+          if (eligible)
+            throw new EnvironmentBackendError(
+              "injected_failure",
+              "ambiguous setup spawn",
+              "spawn_streamed",
+              "ambiguous",
+            );
+        });
       await spawn.coordinator.prepare(spawn.setupCommand);
       expect(
         spawn.store.get(spawn.setupCommand.setup.setup_attempt_id),
@@ -375,7 +473,7 @@ describe("ProviderAccount setup", () => {
       };
       await cancellation.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 17,
+        protocol_version: 18,
         worker_id: cancellation.setupCommand.worker_id,
         connection_generation: cancellation.setupCommand.connection_generation,
         setup_attempt_id: cancellation.setupCommand.setup.setup_attempt_id,
@@ -507,7 +605,7 @@ describe("ProviderAccount setup", () => {
 
       await fixture.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 17,
+        protocol_version: 18,
         worker_id: fixture.setupCommand.worker_id,
         connection_generation: fixture.setupCommand.connection_generation,
         setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
@@ -595,14 +693,18 @@ function activeProcess(fixture: Awaited<ReturnType<typeof setupFixture>>) {
   return active.process;
 }
 
-async function setupFixture() {
+async function setupFixture(
+  options: ConstructorParameters<
+    typeof ProviderAccountEnvironmentManager
+  >[1] = {},
+) {
   const parent = join(process.cwd(), ".pi", "tmp");
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, "provider-account-setup-"));
   roots.push(root);
   const manager = new ProviderAccountEnvironmentManager(
     { workerId: "worker-setup", dataRoot: root, provider: "fake" },
-    { fake: true },
+    { ...options, fake: true },
   );
   const environmentCommand: ProviderAccountEnvironmentCommand = {
     providerAccountId: "account-setup",
@@ -616,7 +718,7 @@ async function setupFixture() {
   const environment = await manager.apply(environmentCommand);
   const setupCommand: ProviderAccountSetupCommand = {
     type: "prepare_provider_account_setup",
-    protocol_version: 17,
+    protocol_version: 18,
     worker_id: "worker-setup",
     connection_generation: 7,
     setup: {
@@ -635,6 +737,17 @@ async function setupFixture() {
         backend_kind: environment.backendKind as string,
         environment_id: environment.environmentId as string,
         incarnation: environment.incarnation as string,
+      },
+      authorized_authentication: {
+        state: "authentication_required",
+        method: "none",
+        configuration_identity: environment.authentication
+          ?.configurationIdentity as string,
+        environment_policy: environment.authentication
+          ?.environmentPolicy as string,
+        evidence_identity: environment.authentication
+          ?.evidenceIdentity as string,
+        inspected_at: environment.authentication?.inspectedAt as string,
       },
       interaction_public_key: interactionPublicKey,
       state: "authorized",
@@ -675,7 +788,7 @@ function responseCommand(
 ): RespondProviderAccountSetupCommand {
   return {
     type: "respond_provider_account_setup",
-    protocol_version: 17,
+    protocol_version: 18,
     worker_id: setup.worker_id,
     connection_generation: setup.connection_generation,
     setup_attempt_id: setup.setup.setup_attempt_id,

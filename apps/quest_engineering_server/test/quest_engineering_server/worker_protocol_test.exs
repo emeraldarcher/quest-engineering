@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 17
+  @protocol_version 18
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
@@ -151,6 +151,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         "kind" => "provider_authentication",
         "message" => "Complete deterministic sign-in."
       },
+      "preflight" => authentication("authentication_required", "none"),
       "validation" => nil,
       "failure_code" => nil,
       "observed_at" => "2026-10-15T00:00:00Z",
@@ -183,6 +184,25 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
              payload
              |> Map.put("state", "succeeded")
              |> Map.put("attention", nil)
+             |> Map.put("ephemeral_output", nil)
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+
+    assert {:ok,
+            %{
+              provider_account_setup: %{
+                state: "uncertain",
+                invocation_state: "uncertain",
+                process: nil,
+                preflight: nil
+              }
+            }} =
+             payload
+             |> Map.put("state", "uncertain")
+             |> Map.put("invocation_state", "uncertain")
+             |> Map.put("process", nil)
+             |> Map.put("attention", nil)
+             |> Map.put("preflight", nil)
+             |> Map.put("failure_code", "setup_process_lost")
              |> Map.put("ephemeral_output", nil)
              |> WorkerProtocol.decode_worker_message(@worker_id)
   end
@@ -229,6 +249,14 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         backend_kind: "fake-account",
         environment_id: "environment-1",
         environment_incarnation: "incarnation-1",
+        authorized_authentication: %{
+          state: "authentication_required",
+          method: "none",
+          configuration_identity: "qe-fake-provider-account-auth-v1",
+          environment_policy: "qe-fake-provider-account-explicit-environment-v1",
+          evidence_identity: "provider-auth-evidence-v1:test",
+          inspected_at: ~U[2026-10-15 00:00:00Z]
+        },
         interaction_public_key: "test-public-key",
         state: "authorized",
         invocation_state: "not_requested",
@@ -237,7 +265,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert command == %{
              "type" => "prepare_provider_account_setup",
-             "protocol_version" => 17,
+             "protocol_version" => 18,
              "worker_id" => @worker_id,
              "connection_generation" => 7,
              "setup" => %{
@@ -257,6 +285,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                  "environment_id" => "environment-1",
                  "incarnation" => "incarnation-1"
                },
+               "authorized_authentication" => authentication("authentication_required", "none"),
                "interaction_public_key" => "test-public-key",
                "state" => "authorized",
                "invocation_state" => "not_requested",
@@ -283,7 +312,8 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         "error_code" => nil,
         "error_message" => nil,
         "canary_persisted" => true,
-        "observed_at" => "2026-10-14T00:00:00.000000Z"
+        "observed_at" => "2026-10-14T00:00:00.000000Z",
+        "authentication" => authentication("authentication_required", "none")
       }
     }
 
@@ -293,6 +323,13 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert message.account_environment.worker_generation == 7
     assert message.account_environment.canary_persisted
     refute Map.has_key?(message.account_environment, :credential)
+
+    invalid_authentication =
+      payload
+      |> put_in(["environment", "authentication", "method"], "api_key")
+
+    assert {:error, %{code: :invalid_field}} =
+             WorkerProtocol.decode_worker_message(invalid_authentication, @worker_id)
 
     credential =
       put_in(
@@ -1056,6 +1093,17 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         source_occurrence_id: nil,
         logical_lineage_id: Ecto.UUID.generate()
       }
+    }
+  end
+
+  defp authentication(state, method) do
+    %{
+      "state" => state,
+      "method" => method,
+      "configuration_identity" => "qe-fake-provider-account-auth-v1",
+      "environment_policy" => "qe-fake-provider-account-explicit-environment-v1",
+      "evidence_identity" => "provider-auth-evidence-v1:test",
+      "inspected_at" => "2026-10-15T00:00:00Z"
     }
   end
 
