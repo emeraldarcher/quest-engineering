@@ -10,6 +10,8 @@ export const HISTORICAL_PROCESS_START_IDENTITY = "1677";
 export const HISTORICAL_PROCESS_GENERATION =
   "8aecbece-10bb-4897-b5d5-41c6ba538b82";
 export const HISTORICAL_EXECUTABLE = "/opt/qe/claude/claude";
+export const FAILED_GATE_ONE_OPERATION_ID =
+  "15428ed9-f6df-4b6d-bfcd-379c7c855eb4";
 
 export const CONTAINMENT_JOURNAL_SCHEMA_VERSION = 1;
 
@@ -17,7 +19,12 @@ export type ContainmentErrorCode =
   | "invalid_arguments"
   | "historical_evidence_missing"
   | "historical_evidence_incompatible"
-  | "cancellation_authority_invalid"
+  | "worker_evidence_missing"
+  | "worker_evidence_mismatch"
+  | "product_evidence_read_unavailable"
+  | "product_evidence_missing"
+  | "product_evidence_mismatch"
+  | "corroboration_mismatch"
   | "environment_evidence_incompatible"
   | "physical_identity_mismatch"
   | "physical_observation_unavailable"
@@ -66,18 +73,38 @@ export interface HistoricalTargetIdentity {
   authInspectedAt: string;
 }
 
+export type HistoricalWorkerPhysicalIdentity = Omit<
+  HistoricalTargetIdentity,
+  | "cancellationRequestId"
+  | "environmentDisplayName"
+  | "environmentMarkerDigest"
+  | "environmentNativeAgent"
+>;
+
 export interface WorkerV2Evidence {
-  target: Omit<
-    HistoricalTargetIdentity,
-    | "cancellationRequestId"
-    | "environmentDisplayName"
-    | "environmentMarkerDigest"
-    | "environmentNativeAgent"
-  >;
+  source: "worker_v2_immutable_snapshot";
+  invocationIntent: "login_invocation_requested";
+  intentRecordedAt: string;
+  workerState: "invocation_acknowledged";
+  invocationState: "acknowledged";
+  acknowledgedRecordedAt: string;
+  cancellationSubmission: "not_submitted";
+  historicalPhysicalIdentity: HistoricalWorkerPhysicalIdentity;
   digest: string;
 }
 
-export interface ProductCancellationEvidence {
+export interface ProductDatabaseIdentity {
+  databaseName: string;
+  schemaName: "public";
+  serverLocality: "local";
+  serverPort: number;
+  schemaMigrationVersion: string;
+  schemaMigrationCount: number;
+}
+
+export interface ProductSemanticAuthorityEvidence {
+  source: "product_repeatable_read_read_only_transaction";
+  databaseIdentity: ProductDatabaseIdentity;
   setupAttemptId: string;
   cancellationRequestId: string;
   authorizationId: string;
@@ -93,21 +120,18 @@ export interface ProductCancellationEvidence {
   backendKind: "sbx";
   environmentId: string;
   environmentIncarnation: string;
-  backendProcessId: string;
-  processStartIdentity: string;
-  processGeneration: string;
-  executable: string;
   authConfigurationIdentity: string;
   authEnvironmentPolicy: string;
   authEvidenceIdentity: string;
   authInspectedAt: string;
   state: "cancellation_requested";
-  invocationState: "acknowledged";
+  invocationState: "requested";
   invocationRequestedAt: string;
-  invocationAcknowledgedAt: string;
   authorizationCount: 1;
   setupAuthorizedEventCount: 1;
   cancellationRequestedEventCount: 1;
+  cancellationEventOccurredAt: string;
+  laterSemanticEventCount: 0;
   humanAttentionCount: 0;
   transactionReadOnly: true;
   digest: string;
@@ -130,12 +154,22 @@ export interface EnvironmentForensicEvidence {
   digest: string;
 }
 
+export interface SharedIdentityMatches {
+  contractVersion: "historical-containment-shared-identity-v1";
+  matchedFields: readonly string[];
+}
+
 export interface ValidatedContainmentEvidence {
   target: HistoricalTargetIdentity;
+  semanticAuthority: ProductSemanticAuthorityEvidence;
+  historicalPhysicalEvidence: WorkerV2Evidence;
+  historicalPhysicalIdentity: HistoricalWorkerPhysicalIdentity;
+  sharedIdentityMatches: SharedIdentityMatches;
+  environmentEvidence: EnvironmentForensicEvidence;
   workerEvidenceDigest: string;
   productEvidenceDigest: string;
   environmentEvidenceDigest: string;
-  targetIdentityDigest: string;
+  corroboratedEvidenceDigest: string;
 }
 
 export type PhysicalObservation =
@@ -192,7 +226,7 @@ export interface PhysicalProcessController {
 }
 
 export interface ProductEvidenceReader {
-  read(setupAttemptId: string): Promise<ProductCancellationEvidence>;
+  read(setupAttemptId: string): Promise<ProductSemanticAuthorityEvidence>;
   close(): Promise<void>;
 }
 
@@ -236,7 +270,7 @@ export interface ContainmentRunResult {
   operationId: string;
   setupAttemptId: string;
   cancellationRequestId: string;
-  targetIdentityDigest: string;
+  targetIdentityDigest: string | null;
   observation: PhysicalObservation;
   permittedAction:
     | "exact_cancellation"

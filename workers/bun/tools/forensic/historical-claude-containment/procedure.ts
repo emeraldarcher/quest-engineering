@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   readEnvironmentForensicEvidence,
   readHistoricalWorkerV2Evidence,
+  safeDigest,
   validateContainmentEvidence,
 } from "./evidence.ts";
 import { ContainmentJournal } from "./journal.ts";
@@ -10,6 +11,7 @@ import {
   ContainmentError,
   type ContainmentRunOptions,
   type ContainmentRunResult,
+  FAILED_GATE_ONE_OPERATION_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_SETUP_ATTEMPT_ID,
   type PhysicalObservation,
@@ -48,7 +50,7 @@ export async function runHistoricalContainment(
     snapshotRoot,
   );
   const evidence = validateContainmentEvidence(worker, product, environment);
-  validateExecutionInterlock(options, evidence);
+  validateExecutionRequest(options, evidence);
 
   const journal = new ContainmentJournal(
     options.journalPath,
@@ -58,11 +60,16 @@ export async function runHistoricalContainment(
     journal.prepare(options.containmentOperationId, evidence);
     journal.append(options.containmentOperationId, "authority_validated", {
       cancellation_request_id: evidence.target.cancellationRequestId,
-      target_identity_digest: evidence.targetIdentityDigest,
+      corroborated_evidence_digest: evidence.corroboratedEvidenceDigest,
     });
     const alreadyCrossedBoundary = journal.hasCancellationIntent(
       options.containmentOperationId,
     );
+    if (options.executeCancellation)
+      validateReviewedPhysicalIdentity(
+        options,
+        journal.reviewedPhysicalIdentityDigest(options.containmentOperationId),
+      );
     let observation = await dependencies.physical.inspect(evidence.target);
     appendObservation(journal, options.containmentOperationId, observation);
 
@@ -76,6 +83,10 @@ export async function runHistoricalContainment(
         );
       journal.append(options.containmentOperationId, "dry_run_completed", {
         permitted_action: permittedAction,
+        physical_identity_digest:
+          observation.kind === "live_exact"
+            ? physicalIdentityDigest(evidence, observation)
+            : null,
         signal_count: 0,
       });
       return result(
@@ -143,11 +154,21 @@ export async function runHistoricalContainment(
       );
     }
 
+    const currentPhysicalIdentityDigest = physicalIdentityDigest(
+      evidence,
+      observation,
+    );
+    if (currentPhysicalIdentityDigest !== options.confirmPhysicalIdentityDigest)
+      throw new ContainmentError(
+        "execution_interlock_failed",
+        "Current exact physical identity no longer matches the reviewed dry-run digest.",
+      );
+
     const intentRecorded = journal.recordCancellationIntentOnce(
       options.containmentOperationId,
       {
         cancellation_request_id: evidence.target.cancellationRequestId,
-        target_identity_digest: evidence.targetIdentityDigest,
+        physical_identity_digest: currentPhysicalIdentityDigest,
       },
     );
     if (!intentRecorded) {
@@ -317,13 +338,15 @@ function validateOptions(options: ContainmentRunOptions): void {
       "Containment operation ID must be an explicit UUID.",
     );
   if (
-    [HISTORICAL_SETUP_ATTEMPT_ID, HISTORICAL_CANCELLATION_REQUEST_ID].includes(
-      options.containmentOperationId,
-    )
+    [
+      HISTORICAL_SETUP_ATTEMPT_ID,
+      HISTORICAL_CANCELLATION_REQUEST_ID,
+      FAILED_GATE_ONE_OPERATION_ID,
+    ].includes(options.containmentOperationId)
   )
     throw new ContainmentError(
       "invalid_arguments",
-      "Containment operation ID must be independent from historical authority IDs.",
+      "Containment operation ID must be new and independent from historical or failed diagnostic IDs.",
     );
   const timeout = options.settlementTimeoutMs ?? 30_000;
   const poll = options.settlementPollMs ?? 250;
@@ -409,7 +432,7 @@ async function canonicalProspectivePath(path: string): Promise<string> {
   }
 }
 
-function validateExecutionInterlock(
+function validateExecutionRequest(
   options: ContainmentRunOptions,
   evidence: ValidatedContainmentEvidence,
 ): void {
@@ -419,12 +442,70 @@ function validateExecutionInterlock(
       HISTORICAL_CANCELLATION_REQUEST_ID ||
     options.confirmCancellationRequestId !==
       evidence.target.cancellationRequestId ||
-    options.confirmPhysicalIdentityDigest !== evidence.targetIdentityDigest
+    !options.confirmPhysicalIdentityDigest?.startsWith("sha256:")
   )
     throw new ContainmentError(
       "execution_interlock_failed",
-      "Destructive execution requires the exact cancellation request and reviewed dry-run identity digest.",
+      "Destructive execution requires the exact cancellation request and one reviewed dry-run physical identity digest.",
     );
+}
+
+function validateReviewedPhysicalIdentity(
+  options: ContainmentRunOptions,
+  reviewedDigest: string | null,
+): void {
+  if (
+    !reviewedDigest ||
+    options.confirmPhysicalIdentityDigest !== reviewedDigest
+  )
+    throw new ContainmentError(
+      "execution_interlock_failed",
+      "Destructive execution requires the physical identity digest persisted by this operation's successful dry run.",
+    );
+}
+
+export function physicalIdentityDigest(
+  evidence: ValidatedContainmentEvidence,
+  observation: Extract<PhysicalObservation, { kind: "live_exact" }>,
+): string {
+  if (
+    observation.environmentStatus !== "running" ||
+    observation.pidfdOpened !== true ||
+    observation.observedStartIdentity !==
+      evidence.target.processStartIdentity ||
+    observation.observedExecutable !== evidence.target.observedExecutable
+  )
+    throw new ContainmentError(
+      "physical_identity_mismatch",
+      "The claimed live observation does not exactly corroborate the historical Worker identity.",
+    );
+  return safeDigest({
+    contractVersion: "historical-containment-physical-identity-v2",
+    semanticAuthority: {
+      source: "product_repeatable_read_read_only_transaction",
+      digest: evidence.productEvidenceDigest,
+    },
+    historicalPhysicalIdentity: {
+      source: "worker_v2_immutable_snapshot",
+      digest: evidence.workerEvidenceDigest,
+    },
+    environmentEvidence: {
+      source: "worker_environment_immutable_snapshot",
+      digest: evidence.environmentEvidenceDigest,
+    },
+    sharedIdentityMatches: evidence.sharedIdentityMatches,
+    currentPhysicalIdentity: {
+      source: "sbx_pidfd_observation",
+      observation: "live_exact",
+      environmentId: evidence.target.environmentId,
+      environmentIncarnation: evidence.target.environmentIncarnation,
+      environmentStatus: observation.environmentStatus,
+      backendProcessId: evidence.target.backendProcessId,
+      pidfdOpened: observation.pidfdOpened,
+      observedStartIdentity: observation.observedStartIdentity,
+      observedExecutable: observation.observedExecutable,
+    },
+  });
 }
 
 function appendObservation(
@@ -521,7 +602,12 @@ function result(
     operationId: options.containmentOperationId,
     setupAttemptId: evidence.target.setupAttemptId,
     cancellationRequestId: evidence.target.cancellationRequestId,
-    targetIdentityDigest: evidence.targetIdentityDigest,
+    targetIdentityDigest:
+      observation.kind === "live_exact"
+        ? physicalIdentityDigest(evidence, observation)
+        : options.executeCancellation
+          ? (options.confirmPhysicalIdentityDigest ?? null)
+          : null,
     observation,
     permittedAction,
     cancellationSubmission,
