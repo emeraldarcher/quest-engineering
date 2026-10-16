@@ -70,6 +70,7 @@ import type {
   EnvironmentStopStatus,
   ExecutionEnvironmentBackend,
   HostLaunchDescriptor,
+  StreamedProcessCancellationReceipt,
   StreamedProcessHandle,
   StreamedProcessInfrastructureEvent,
   StreamedProcessReconciliation,
@@ -440,6 +441,87 @@ export class SbxExecutionEnvironmentBackend
 
   async retireStreamedProcesses(ref: EnvironmentRef): Promise<void> {
     await this.streamedProcesses.retire(ref);
+  }
+
+  async cancelStreamedProcess(
+    handle: StreamedProcessHandle,
+    cancellationId: string,
+  ): Promise<StreamedProcessCancellationReceipt> {
+    if (handle.backendKind !== this.kind || !cancellationId)
+      throw new EnvironmentBackendError(
+        "streamed_process_identity_mismatch",
+        "Detached cancellation identity is malformed.",
+        "cancel_streamed",
+      );
+    const attached = await this.streamedProcesses.cancelAttached(
+      handle,
+      cancellationId,
+    );
+    if (attached) return attached;
+
+    const current = await this.requireUsableLease(
+      this.requireCurrentRef(handle.environment, "cancel_streamed"),
+      "cancel_streamed",
+    );
+    if (
+      !/^\d+$/.test(handle.backendProcessId) ||
+      !handle.processStartIdentity ||
+      !handle.observedExecutable
+    )
+      throw new EnvironmentBackendError(
+        "streamed_process_identity_mismatch",
+        "Detached cancellation requires the exact PID, start identity, and observed executable.",
+        "cancel_streamed",
+      );
+
+    try {
+      const result = await this.client.exec(
+        current.displayName,
+        {
+          executable: "/usr/bin/python3",
+          args: [
+            "-c",
+            DETACHED_PROCESS_CANCELLATION_PROGRAM,
+            current.markerDigest ?? "marker-evidence-absent",
+            handle.processStartIdentity,
+            handle.observedExecutable,
+          ],
+          environment: {
+            QE_PID: handle.backendProcessId,
+            QE_CANCELLATION_ID: cancellationId,
+          },
+          timeoutMs: 5_000,
+        },
+        { allowNonZero: true },
+      );
+      const value = JSON.parse(result.stdout) as Record<string, unknown>;
+      if (result.exitCode === 0 && value.status === "signalled")
+        return { certainty: "acknowledged", cancellationId };
+      if (value.status === "gone")
+        throw new EnvironmentBackendError(
+          "streamed_process_gone",
+          "The exact streamed process was already physically settled.",
+          "cancel_streamed",
+        );
+      if (value.status === "identity_mismatch")
+        throw new EnvironmentBackendError(
+          "streamed_process_identity_mismatch",
+          "Detached cancellation found a different physical process identity.",
+          "cancel_streamed",
+        );
+      throw new EnvironmentBackendError(
+        "streamed_process_cancellation_uncertain",
+        "Detached cancellation could not prove whether termination was submitted.",
+        "cancel_streamed",
+      );
+    } catch (error) {
+      if (error instanceof EnvironmentBackendError) throw error;
+      throw new EnvironmentBackendError(
+        "streamed_process_cancellation_uncertain",
+        "Detached cancellation transport failed after the one allowed submission boundary.",
+        "cancel_streamed",
+      );
+    }
   }
 
   async stop(ref: EnvironmentRef): Promise<EnvironmentStopResult> {
@@ -2382,6 +2464,29 @@ function positiveMilliseconds(value: number, name: string): number {
     throw new Error(`${name} must be a positive integer.`);
   return value;
 }
+
+const DETACHED_PROCESS_CANCELLATION_PROGRAM = [
+  "import hashlib,json,os,pathlib,signal,sys",
+  "marker=pathlib.Path('/qe/state/environment-ownership.json')",
+  "pid_text=os.environ.get('QE_PID','')",
+  "def done(status,code): print(json.dumps({'status':status},separators=(',',':'))); raise SystemExit(code)",
+  "if not marker.is_file() or hashlib.sha256(marker.read_bytes()).hexdigest()!=sys.argv[1]: done('identity_mismatch',4)",
+  "if not pid_text.isdigit(): done('identity_mismatch',4)",
+  "pid=int(pid_text)",
+  "try: fd=os.pidfd_open(pid,0)",
+  "except ProcessLookupError: done('gone',3)",
+  "except Exception: done('unavailable',5)",
+  "try:",
+  " p=pathlib.Path('/proc')/pid",
+  " if not p.is_dir(): done('gone',3)",
+  " stat=(p/'stat').read_text(); close=stat.rfind(')'); fields=stat[close+2:].split()",
+  " start=fields[19]; state=fields[0]; exe=os.readlink(p/'exe') if (p/'exe').exists() else ''",
+  " if state=='Z': done('gone',3)",
+  " if start!=sys.argv[2] or exe!=sys.argv[3]: done('identity_mismatch',4)",
+  " signal.pidfd_send_signal(fd,signal.SIGTERM,None,0)",
+  " done('signalled',0)",
+  "finally: os.close(fd)",
+].join("\n");
 
 function processAlive(processId: number): boolean {
   try {

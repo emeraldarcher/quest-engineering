@@ -95,6 +95,7 @@ interface ManagedProcessState {
     certainty: "acknowledged";
     cancellationId: string;
   }> | null;
+  cancellationId: string | null;
   writeTail: Promise<void>;
   runTask: Promise<void>;
 }
@@ -188,6 +189,7 @@ export class StreamedProcessManager {
       disconnected: false,
       writeClosed: false,
       cancelPromise: null,
+      cancellationId: null,
       writeTail: Promise.resolve(),
       runTask: Promise.resolve(),
     } satisfies ManagedProcessState);
@@ -210,7 +212,8 @@ export class StreamedProcessManager {
       exit: exit.promise,
       write: (data) => this.write(state, data, false),
       closeStdin: () => this.write(state, new Uint8Array(), true),
-      cancel: () => this.cancel(state),
+      cancel: (cancellationId) =>
+        this.cancelState(state, cancellationId ?? randomUUID()),
       inspect: () => this.reconcileState(state),
       disconnect,
     };
@@ -236,6 +239,21 @@ export class StreamedProcessManager {
     return this.options.inspectDetached(structuredClone(handle));
   }
 
+  async cancelAttached(
+    handle: StreamedProcessHandle,
+    cancellationId: string,
+  ): Promise<{
+    certainty: "acknowledged";
+    cancellationId: string;
+  } | null> {
+    validateHandle(this.options.backendKind, handle);
+    await this.options.validate(handle.environment, "cancel_streamed");
+    const active = this.processes.get(handle.processGeneration);
+    if (!active) return null;
+    assertSameHandle(active.handle, handle, "cancel_streamed");
+    return this.cancelState(active, cancellationId);
+  }
+
   async retire(ref: EnvironmentRef): Promise<void> {
     await this.options.validate(ref, "retire_streamed");
     const owned = [...this.processes.values()].filter((state) =>
@@ -243,7 +261,8 @@ export class StreamedProcessManager {
     );
     await Promise.all(
       owned.map(async (state) => {
-        if (!state.terminal) await this.cancel(state).catch(() => undefined);
+        if (!state.terminal)
+          await this.cancelState(state, randomUUID()).catch(() => undefined);
         await this.disconnectState(state);
       }),
     );
@@ -408,20 +427,36 @@ export class StreamedProcessManager {
     return operation;
   }
 
-  private cancel(
+  private cancelState(
     state: ManagedProcessState,
+    cancellationId: string,
   ): Promise<{ certainty: "acknowledged"; cancellationId: string }> {
-    if (state.cancelPromise)
-      return this.validateState(state, "cancel_streamed").then(
-        () =>
-          state.cancelPromise as Promise<{
-            certainty: "acknowledged";
-            cancellationId: string;
-          }>,
+    if (!cancellationId)
+      return Promise.reject(
+        new EnvironmentBackendError(
+          "streamed_process_cancellation_uncertain",
+          "Streamed process cancellation requires a durable operation identity.",
+          "cancel_streamed",
+        ),
       );
+    if (state.cancelPromise)
+      return Promise.resolve(
+        this.options.validate(state.handle.environment, "cancel_streamed"),
+      ).then(() => {
+        if (state.cancellationId !== cancellationId)
+          throw new EnvironmentBackendError(
+            "streamed_process_cancellation_uncertain",
+            "A different cancellation operation already owns this process.",
+            "cancel_streamed",
+          );
+        return state.cancelPromise as Promise<{
+          certainty: "acknowledged";
+          cancellationId: string;
+        }>;
+      });
+    state.cancellationId = cancellationId;
     const operation = (async () => {
       await this.validateState(state, "cancel_streamed");
-      const cancellationId = randomUUID();
       this.emit(state.handle.environment, "process_cancel_requested", {
         processGeneration: state.handle.processGeneration,
         backendProcessId: state.handle.backendProcessId,

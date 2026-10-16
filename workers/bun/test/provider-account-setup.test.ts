@@ -7,7 +7,10 @@ import {
   type ProviderAccountEnvironmentCommand,
   ProviderAccountEnvironmentManager,
 } from "../src/execution-environment/provider-account.ts";
-import { EnvironmentBackendError } from "../src/execution-environment/types.ts";
+import {
+  EnvironmentBackendError,
+  type StreamedProcessHandle,
+} from "../src/execution-environment/types.ts";
 import {
   decodeCancelProviderAccountSetup,
   decodePrepareProviderAccountSetup,
@@ -18,8 +21,11 @@ import type {
   RespondProviderAccountSetupCommand,
 } from "../src/protocol/types.ts";
 import {
+  CLAUDE_LOGIN_INTERACTION_IDENTITY,
   ProviderAccountSetupCoordinator,
+  type ProviderAccountSetupCoordinatorOptions,
   type ProviderAccountSetupReport,
+  recognizeClaudeLoginInteraction,
 } from "../src/provider-account-setup.ts";
 import { ProviderAccountSetupStore } from "../src/provider-account-setup-store.ts";
 
@@ -34,7 +40,7 @@ afterEach(async () => {
 });
 
 describe("ProviderAccount setup", () => {
-  test("current-only SQLite rejects stale version-one and incomplete version-two state", async () => {
+  test("SQLite rejects stale version-one and incomplete version-two state", async () => {
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
     const staleRoot = await mkdtemp(
@@ -67,6 +73,88 @@ describe("ProviderAccount setup", () => {
     expect(() => new ProviderAccountSetupStore(incompleteRoot)).toThrow(
       "stale",
     );
+  });
+
+  test("schema two migrates retained cancellation intent and invocation generation", async () => {
+    const parent = join(process.cwd(), ".pi", "tmp");
+    await mkdir(parent, { recursive: true });
+    const root = await mkdtemp(join(parent, "provider-account-setup-v2-"));
+    roots.push(root);
+    const path = join(root, "provider-account-setups.sqlite");
+    const db = new Database(path);
+    db.exec(`
+      CREATE TABLE provider_account_setup_attempts(
+        setup_attempt_id TEXT PRIMARY KEY,
+        command_json TEXT NOT NULL,
+        state TEXT NOT NULL,
+        invocation_state TEXT NOT NULL,
+        process_json TEXT,
+        attention_id TEXT,
+        preflight_json TEXT,
+        validation_json TEXT,
+        failure_code TEXT,
+        cancellation_request_id TEXT,
+        input_delivery_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX provider_account_setup_one_active_per_account
+      ON provider_account_setup_attempts(json_extract(command_json,'$.setup.provider_account_id'))
+      WHERE state IN ('authorized','preparing','invocation_requested','invocation_acknowledged','human_interaction_required','validating','cancellation_requested');
+      CREATE TABLE provider_account_setup_events(
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        setup_attempt_id TEXT NOT NULL REFERENCES provider_account_setup_attempts(setup_attempt_id) ON DELETE RESTRICT,
+        event_type TEXT NOT NULL,
+        details_json TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+      );
+      CREATE INDEX provider_account_setup_events_attempt
+      ON provider_account_setup_events(setup_attempt_id,event_id);
+      PRAGMA user_version=2;
+    `);
+    const command = migrationSetupCommand();
+    db.query(
+      `INSERT INTO provider_account_setup_attempts
+       (setup_attempt_id,command_json,state,invocation_state,process_json,attention_id,preflight_json,validation_json,failure_code,cancellation_request_id,input_delivery_json,created_at,updated_at)
+       VALUES (?,?,'cancellation_requested','acknowledged',NULL,NULL,NULL,NULL,NULL,'retained-cancel',NULL,?,?)`,
+    ).run(
+      command.setup.setup_attempt_id,
+      JSON.stringify(command),
+      "2026-10-15T00:00:00.000Z",
+      "2026-10-15T00:00:01.000Z",
+    );
+    db.close();
+
+    const store = new ProviderAccountSetupStore(root);
+    expect(store.get(command.setup.setup_attempt_id)).toMatchObject({
+      invocationWorkerGeneration: 7,
+      invocationEnvironmentOperationId: "retained-environment-operation",
+      cancellationRequestId: "retained-cancel",
+      cancellationOperationId: null,
+      cancellationInvocationState: "intent_recorded",
+      cancellationObservation: "not_observed",
+    });
+    store.accept({
+      ...command,
+      connection_generation: 8,
+      setup: {
+        ...command.setup,
+        worker_generation: 8,
+        environment_operation_id: "reconciled-environment-operation",
+      },
+    });
+    expect(store.get(command.setup.setup_attempt_id)).toMatchObject({
+      command: {
+        connection_generation: 8,
+        setup: {
+          worker_generation: 8,
+          environment_operation_id: "reconciled-environment-operation",
+        },
+      },
+      invocationWorkerGeneration: 7,
+      invocationEnvironmentOperationId: "retained-environment-operation",
+    });
+    store.close();
   });
 
   test("protocol decoder requires exact setup and ephemeral-input fences", async () => {
@@ -389,7 +477,7 @@ describe("ProviderAccount setup", () => {
     }
   });
 
-  test("ambiguous spawn, input, and cancellation are terminal and never replayed", async () => {
+  test("ambiguous spawn/input are terminal and ambiguous cancellation is observed without replay", async () => {
     const spawn = await setupFixture();
     try {
       const beginSetupProcess = spawn.manager.beginSetupProcess.bind(
@@ -444,11 +532,18 @@ describe("ProviderAccount setup", () => {
           "never-persist-this-input",
         ),
       );
+      await eventually(
+        () =>
+          input.store.get(input.setupCommand.setup.setup_attempt_id)?.state ===
+          "uncertain",
+      );
       expect(
         input.store.get(input.setupCommand.setup.setup_attempt_id),
       ).toMatchObject({
         state: "uncertain",
         invocationState: "uncertain",
+        cancellationInvocationState: "settled",
+        cancellationObservation: "exited",
         failureCode: "input_delivery_uncertain",
         inputDelivery: { state: "delivery_uncertain" },
       });
@@ -460,10 +555,15 @@ describe("ProviderAccount setup", () => {
       await input.manager.close();
     }
 
-    const cancellation = await setupFixture();
+    const cancellation = await setupFixture(
+      {},
+      { coordinator: { cancellationSettlementTimeoutMs: 5 } },
+    );
     try {
       await cancellation.coordinator.prepare(cancellation.setupCommand);
+      let cancellationCalls = 0;
       activeProcess(cancellation).cancel = async () => {
+        cancellationCalls += 1;
         throw new EnvironmentBackendError(
           "streamed_process_cancellation_uncertain",
           "ambiguous setup cancellation",
@@ -487,21 +587,35 @@ describe("ProviderAccount setup", () => {
           cancellation.setupCommand.setup.setup_attempt_id,
         ),
       ).toMatchObject({
-        state: "uncertain",
-        invocationState: "uncertain",
-        failureCode: "setup_invocation_uncertain",
+        state: "cancellation_requested",
+        invocationState: "acknowledged",
+        cancellationInvocationState: "uncertain",
+        cancellationObservation: "running",
       });
+      await cancellation.coordinator.cancel({
+        type: "cancel_provider_account_setup",
+        protocol_version: 18,
+        worker_id: cancellation.setupCommand.worker_id,
+        connection_generation: cancellation.setupCommand.connection_generation,
+        setup_attempt_id: cancellation.setupCommand.setup.setup_attempt_id,
+        setup_generation: cancellation.setupCommand.setup.setup_generation,
+        process_generation: cancellation.reports.at(-1)?.process
+          ?.process_generation as string,
+        request_id: "ambiguous-cancel",
+      });
+      expect(cancellationCalls).toBe(1);
     } finally {
       await cancellation.coordinator.close();
       await cancellation.manager.close();
     }
   });
 
-  test("Worker restart marks a detached running setup uncertain without replay or validation", async () => {
+  test("Worker restart exactly terminates a detached running setup without replay or validation", async () => {
     const fixture = await setupFixture();
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
       expect(fixture.reports.at(-1)?.state).toBe("human_interaction_required");
+      const process = activeProcess(fixture);
       const coordinator = fixture.coordinator as unknown as {
         active: Map<string, unknown>;
       };
@@ -510,15 +624,30 @@ describe("ProviderAccount setup", () => {
         fixture.setupCommand.setup.setup_attempt_id,
       )?.process;
       if (!handle) throw new Error("Expected a durable setup process handle.");
+      let physicallyGone = false;
       fixture.manager.reconcileSetupProcess = async () => ({
         handle,
-        process: "running",
+        process: physicallyGone ? "gone" : "running",
         streamAttachment: "unavailable",
         streamRecovery: "not_recoverable",
       });
-      let retired = 0;
-      fixture.manager.retireSetupProcesses = async () => {
-        retired += 1;
+      let cancellationCalls = 0;
+      fixture.manager.cancelSetupProcess = async (
+        _identity,
+        exact,
+        operationId,
+      ) => {
+        cancellationCalls += 1;
+        expect(exact).toEqual(handle);
+        const receipt = await process.cancel(operationId);
+        await process.exit;
+        physicallyGone = true;
+        return receipt;
+      };
+      let validations = 0;
+      fixture.manager.validateSetup = async () => {
+        validations += 1;
+        throw new Error("validation must not run after stream loss");
       };
 
       await fixture.coordinator.reconcile([
@@ -532,8 +661,8 @@ describe("ProviderAccount setup", () => {
         },
       ]);
       expect(fixture.reports.at(-1)).toMatchObject({
-        state: "uncertain",
-        invocation_state: "uncertain",
+        state: "failed",
+        invocation_state: "settled",
         failure_code: "setup_process_lost",
       });
       expect(
@@ -541,7 +670,8 @@ describe("ProviderAccount setup", () => {
           (report) => report.state === "invocation_requested",
         ),
       ).toHaveLength(1);
-      expect(retired).toBe(1);
+      expect(cancellationCalls).toBe(1);
+      expect(validations).toBe(0);
     } finally {
       await fixture.manager.close();
       await Bun.sleep(10);
@@ -629,6 +759,283 @@ describe("ProviderAccount setup", () => {
     }
   });
 
+  test("registers process supervision before an invocation acknowledgement report can fail", async () => {
+    const fixture = await setupFixture(
+      {},
+      { rejectReportState: "invocation_acknowledged" },
+    );
+    try {
+      await expect(
+        fixture.coordinator.prepare(fixture.setupCommand),
+      ).rejects.toThrow("control-plane report rejection");
+      const process = activeProcess(fixture);
+      expect(process).toBeDefined();
+      const acknowledged = fixture.store.get(
+        fixture.setupCommand.setup.setup_attempt_id,
+      );
+      expect(acknowledged).toMatchObject({
+        state: "invocation_acknowledged",
+        invocationState: "acknowledged",
+      });
+
+      await fixture.coordinator.cancel({
+        type: "cancel_provider_account_setup",
+        protocol_version: 18,
+        worker_id: fixture.setupCommand.worker_id,
+        connection_generation: fixture.setupCommand.connection_generation,
+        setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
+        setup_generation: fixture.setupCommand.setup.setup_generation,
+        process_generation: acknowledged?.process?.processGeneration as string,
+        request_id: "cancel-after-report-loss",
+      });
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "cancelled",
+      );
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .map((event) => event.eventType),
+      ).toContain("cancellation_invocation_acknowledged");
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("a rejected cancellation report cannot prevent or ambiguate physical settlement", async () => {
+    const fixture = await setupFixture(
+      {},
+      { rejectReportState: "cancellation_requested" },
+    );
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const processGeneration = fixture.store.get(
+        fixture.setupCommand.setup.setup_attempt_id,
+      )?.process?.processGeneration;
+      await expect(
+        fixture.coordinator.cancel({
+          type: "cancel_provider_account_setup",
+          protocol_version: 18,
+          worker_id: fixture.setupCommand.worker_id,
+          connection_generation: fixture.setupCommand.connection_generation,
+          setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
+          setup_generation: fixture.setupCommand.setup.setup_generation,
+          process_generation: processGeneration as string,
+          request_id: "cancel-with-report-loss",
+        }),
+      ).rejects.toThrow("control-plane report rejection");
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "cancelled",
+      );
+      expect(
+        fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
+      ).toMatchObject({
+        state: "cancelled",
+        cancellationInvocationState: "settled",
+        cancellationObservation: "exited",
+      });
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .filter(
+            (event) => event.eventType === "cancellation_invocation_requested",
+          ),
+      ).toHaveLength(1);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("restart-safe cancellation revalidates and physically settles one exact detached process", async () => {
+    const fixture = await setupFixture();
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const process = activeProcess(fixture) as ReturnType<
+        typeof activeProcess
+      > & { exit: Promise<unknown>; handle: StreamedProcessHandle };
+      const durable = fixture.store.get(
+        fixture.setupCommand.setup.setup_attempt_id,
+      );
+      if (!durable?.process)
+        throw new Error("Expected exact process identity.");
+      const durableProcess = durable.process;
+      const coordinator = fixture.coordinator as unknown as {
+        active: Map<string, unknown>;
+      };
+      coordinator.active.clear();
+
+      let cancellationCalls = 0;
+      let physicallyGone = false;
+      fixture.manager.reconcileSetupProcess = async (identity, handle) => {
+        expect(identity).toMatchObject({
+          setupAttemptId: fixture.setupCommand.setup.setup_attempt_id,
+          setupGeneration: fixture.setupCommand.setup.setup_generation,
+          providerAccountId: fixture.setupCommand.setup.provider_account_id,
+          environmentGeneration:
+            fixture.setupCommand.setup.environment_generation,
+          backendKind: fixture.setupCommand.setup.environment.backend_kind,
+          environmentId: fixture.setupCommand.setup.environment.environment_id,
+          environmentIncarnation:
+            fixture.setupCommand.setup.environment.incarnation,
+        });
+        expect(handle).toEqual(durableProcess);
+        return {
+          handle,
+          process: physicallyGone ? "gone" : "running",
+          streamAttachment: "unavailable",
+          streamRecovery: "not_recoverable",
+        };
+      };
+      fixture.manager.cancelSetupProcess = async (
+        identity,
+        handle,
+        operationId,
+      ) => {
+        cancellationCalls += 1;
+        expect(identity.setupAttemptId).toBe(
+          fixture.setupCommand.setup.setup_attempt_id,
+        );
+        expect(handle).toEqual(durableProcess);
+        const receipt = await process.cancel(operationId);
+        await process.exit;
+        physicallyGone = true;
+        return receipt;
+      };
+
+      await fixture.coordinator.cancel({
+        type: "cancel_provider_account_setup",
+        protocol_version: 18,
+        worker_id: fixture.setupCommand.worker_id,
+        connection_generation: fixture.setupCommand.connection_generation,
+        setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
+        setup_generation: fixture.setupCommand.setup.setup_generation,
+        process_generation: durableProcess.processGeneration,
+        request_id: "detached-exact-cancel",
+      });
+      expect(cancellationCalls).toBe(1);
+      expect(
+        fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
+      ).toMatchObject({
+        state: "cancelled",
+        cancellationInvocationState: "settled",
+        cancellationObservation: "gone",
+      });
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("no recognized output expires discovery and physically terminates", async () => {
+    const fixture = await setupFixture(
+      {},
+      { coordinator: { interactionDiscoveryTimeoutMs: 5 } },
+    );
+    try {
+      const beginSetupProcess = fixture.manager.beginSetupProcess.bind(
+        fixture.manager,
+      );
+      fixture.manager.beginSetupProcess = async (identity, beforeSpawn) => {
+        const beginning = await beginSetupProcess(identity, beforeSpawn);
+        if (!beginning.process) return beginning;
+        const process = beginning.process;
+        const stdout = (async function* () {
+          for await (const event of process.stdout)
+            if (event.kind !== "data") yield event;
+        })();
+        return { ...beginning, process: { ...process, stdout } };
+      };
+
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "failed",
+      );
+      expect(
+        fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
+      ).toMatchObject({
+        state: "failed",
+        cancellationInvocationState: "settled",
+        cancellationObservation: "exited",
+        failureCode: "setup_interaction_discovery_timed_out",
+      });
+      expect(
+        fixture.reports.some(
+          (report) => report.state === "human_interaction_required",
+        ),
+      ).toBe(false);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("human-completion expiry physically terminates before reporting failure", async () => {
+    const fixture = await setupFixture(
+      {},
+      { coordinator: { humanCompletionTimeoutMs: 5 } },
+    );
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "failed",
+      );
+      expect(
+        fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
+      ).toMatchObject({
+        state: "failed",
+        invocationState: "settled",
+        cancellationInvocationState: "settled",
+        cancellationObservation: "exited",
+        failureCode: "setup_human_completion_timed_out",
+      });
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("recognizes only the pinned Claude 2.1.292 manual OAuth framing", () => {
+    const url = new URL("https://claude.com/cai/oauth/authorize");
+    url.searchParams.set("code", "true");
+    url.searchParams.set("client_id", "client");
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set(
+      "redirect_uri",
+      "https://platform.claude.com/oauth/code/callback",
+    );
+    url.searchParams.set("scope", "user:inference");
+    url.searchParams.set("code_challenge", "challenge");
+    url.searchParams.set("code_challenge_method", "S256");
+    url.searchParams.set("state", "state");
+    const prefix =
+      "Opening browser to sign in…\nIf the browser didn't open, visit: ";
+    const interaction = `${prefix}${url.toString()}\nPaste code here if prompted > `;
+    expect(recognizeClaudeLoginInteraction(prefix.slice(0, 12))).toBeNull();
+    expect(recognizeClaudeLoginInteraction(interaction)).toBe(interaction);
+    expect(() =>
+      recognizeClaudeLoginInteraction(
+        interaction.replace("https://claude.com", "https://example.invalid"),
+      ),
+    ).toThrow(CLAUDE_LOGIN_INTERACTION_IDENTITY);
+    expect(() =>
+      recognizeClaudeLoginInteraction(
+        interaction.replace("&state=state", "&state=state&state=replacement"),
+      ),
+    ).toThrow(CLAUDE_LOGIN_INTERACTION_IDENTITY);
+    expect(() => recognizeClaudeLoginInteraction("unversioned prompt")).toThrow(
+      CLAUDE_LOGIN_INTERACTION_IDENTITY,
+    );
+  });
+
   test("serializes one active attempt per account while allowing distinct accounts", async () => {
     const fixture = await setupFixture();
     try {
@@ -681,7 +1088,12 @@ function activeProcess(fixture: Awaited<ReturnType<typeof setupFixture>>) {
       {
         process: {
           write: (value: Uint8Array) => Promise<unknown>;
-          cancel: () => Promise<unknown>;
+          cancel: (cancellationId?: string) => Promise<{
+            certainty: "acknowledged";
+            cancellationId: string;
+          }>;
+          exit: Promise<unknown>;
+          handle: StreamedProcessHandle;
         };
       }
     >;
@@ -697,6 +1109,10 @@ async function setupFixture(
   options: ConstructorParameters<
     typeof ProviderAccountEnvironmentManager
   >[1] = {},
+  fixtureOptions: {
+    rejectReportState?: ProviderAccountSetupReport["state"];
+    coordinator?: ProviderAccountSetupCoordinatorOptions;
+  } = {},
 ) {
   const parent = join(process.cwd(), ".pi", "tmp");
   await mkdir(parent, { recursive: true });
@@ -763,10 +1179,14 @@ async function setupFixture(
     manager,
     async (report) => {
       reports.push(structuredClone(report));
+      if (report.state === fixtureOptions.rejectReportState)
+        throw new Error("injected control-plane report rejection");
     },
     async (delivery) => {
       deliveries.push(structuredClone(delivery));
     },
+    undefined,
+    fixtureOptions.coordinator,
   );
   return {
     root,
@@ -778,6 +1198,45 @@ async function setupFixture(
     deliveries,
     store,
     coordinator,
+  };
+}
+
+function migrationSetupCommand(): ProviderAccountSetupCommand {
+  return {
+    type: "prepare_provider_account_setup",
+    protocol_version: 18,
+    worker_id: "worker-setup",
+    connection_generation: 7,
+    setup: {
+      setup_attempt_id: "retained-attempt",
+      provider_account_id: "retained-account",
+      setup_generation: 4,
+      authorization_id: "retained-authorization",
+      authorization_kind: "provider_account_setup",
+      authorized_at: "2026-10-15T00:00:00.000Z",
+      credential_generation: 2,
+      environment_generation: 3,
+      worker_generation: 7,
+      environment_operation_id: "retained-environment-operation",
+      provider_key: "anthropic",
+      environment: {
+        backend_kind: "sbx",
+        environment_id: "retained-environment",
+        incarnation: "retained-incarnation",
+      },
+      authorized_authentication: {
+        state: "authentication_required",
+        method: "none",
+        configuration_identity: "claude-code-2.1.292-subscription-v1",
+        environment_policy: "claude-subscription-explicit-environment-v1",
+        evidence_identity: "retained-evidence",
+        inspected_at: "2026-10-15T00:00:00.000Z",
+      },
+      interaction_public_key: interactionPublicKey,
+      state: "cancellation_requested",
+      invocation_state: "acknowledged",
+      cancellation_request_id: "retained-cancel",
+    },
   };
 }
 

@@ -244,7 +244,7 @@ export interface StreamedProcess {
   write(data: Uint8Array): Promise<StreamedProcessWriteReceipt>;
   closeStdin(): Promise<StreamedProcessWriteReceipt>;
   /** Requests one physical termination action without signal escalation. */
-  cancel(): Promise<StreamedProcessCancellationReceipt>;
+  cancel(cancellationId?: string): Promise<StreamedProcessCancellationReceipt>;
   inspect(): Promise<StreamedProcessReconciliation>;
   /** Abandons transport and fail-closed terminates the attached process. */
   disconnect(): Promise<void>;
@@ -466,6 +466,14 @@ export interface ExecutionEnvironmentBackend {
   inspect(ref: EnvironmentRef): Promise<EnvironmentInspection>;
   /** Retire all attached streamed processes for this exact incarnation. */
   retireStreamedProcesses(ref: EnvironmentRef): Promise<void>;
+  /**
+   * Request termination of one exact durable process identity. Implementations
+   * must revalidate the full handle immediately before the one side effect.
+   */
+  cancelStreamedProcess?(
+    handle: StreamedProcessHandle,
+    cancellationId: string,
+  ): Promise<StreamedProcessCancellationReceipt>;
   /** Record intent, invoke the destructive provider operation at most once, then read back once. */
   stop(ref: EnvironmentRef): Promise<EnvironmentStopResult>;
   /** Reconcile the exact incarnation using read-only provider operations only. */

@@ -35,6 +35,7 @@ import type {
   ExecutionEnvironmentBackend,
   ProviderAccountEnvironmentSpec,
   StreamedProcess,
+  StreamedProcessCancellationReceipt,
   StreamedProcessHandle,
   StreamedProcessReconciliation,
 } from "./types.ts";
@@ -64,9 +65,13 @@ const FAKE_ACCOUNT_BROKER_CLIENT_PROGRAM = [
 export interface ProviderAccountSetupRuntimeIdentity {
   setupAttemptId: string;
   setupGeneration: number;
+  authorizationId: string;
   providerAccountId: string;
   providerKey: string;
+  credentialGeneration: number;
   environmentGeneration: number;
+  environmentOperationId: string;
+  workerGeneration: number;
   backendKind: string;
   environmentId: string;
   environmentIncarnation: string;
@@ -510,6 +515,46 @@ export class ProviderAccountEnvironmentManager {
       this.setupSpec(identity),
     );
     return lease.reconcileStreamedProcess(handle);
+  }
+
+  async cancelSetupProcess(
+    identity: ProviderAccountSetupRuntimeIdentity,
+    handle: StreamedProcessHandle,
+    cancellationId: string,
+  ): Promise<StreamedProcessCancellationReceipt> {
+    const record = this.setupRecord(identity);
+    const ref = recordRef(record);
+    if (
+      !sameRefIdentity(handle.environment, ref) ||
+      (!this.fake &&
+        (handle.executable !== SBX_CLAUDE_EXECUTABLE ||
+          handle.observedExecutable !== SBX_CLAUDE_EXECUTABLE))
+    )
+      throw new EnvironmentBackendError(
+        "streamed_process_identity_mismatch",
+        "ProviderAccount cancellation handle does not match the exact login executable and environment incarnation.",
+        "cancel_streamed",
+      );
+    if (this.fake) {
+      const receipt = await this.fakeSetupProcesses.cancelAttached(
+        handle,
+        cancellationId,
+      );
+      if (receipt) return receipt;
+      throw new EnvironmentBackendError(
+        "streamed_process_gone",
+        "The fake setup process is no longer attached.",
+        "cancel_streamed",
+      );
+    }
+    const backend = this.backend as ExecutionEnvironmentBackend;
+    if (!backend.cancelStreamedProcess)
+      throw new EnvironmentBackendError(
+        "backend_incompatible",
+        "The ProviderAccount backend cannot cancel an exact durable process identity.",
+        "cancel_streamed",
+      );
+    return backend.cancelStreamedProcess(handle, cancellationId);
   }
 
   validateSetup(
@@ -1070,7 +1115,7 @@ export class ProviderAccountEnvironmentManager {
   ): DurableEnvironmentRecord {
     const owner = providerAccountOwner(
       identity.providerAccountId,
-      identity.environmentGeneration,
+      identity.credentialGeneration,
     );
     const record = this.store.current(
       this.fake ? "fake-account" : "sbx",
@@ -1101,7 +1146,7 @@ export class ProviderAccountEnvironmentManager {
     return this.specForOwner(
       providerAccountOwner(
         identity.providerAccountId,
-        identity.environmentGeneration,
+        identity.credentialGeneration,
       ),
     );
   }
@@ -1376,6 +1421,18 @@ function recordRef(record: DurableEnvironmentRecord): EnvironmentRef {
     owner: structuredClone(record.owner),
     profile: { id: record.profileId, digest: record.profileDigest },
   };
+}
+
+function sameRefIdentity(left: EnvironmentRef, right: EnvironmentRef): boolean {
+  return (
+    left.backendKind === right.backendKind &&
+    left.environmentId === right.environmentId &&
+    left.incarnation === right.incarnation &&
+    left.workerId === right.workerId &&
+    sameEnvironmentOwner(left.owner, right.owner) &&
+    left.profile.id === right.profile.id &&
+    left.profile.digest === right.profile.digest
+  );
 }
 
 function ownerKey(owner: EnvironmentOwner): string {

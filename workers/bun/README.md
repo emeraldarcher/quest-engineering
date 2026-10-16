@@ -60,8 +60,11 @@ re-inspects under the account-operation lock, compares the fresh configuration
 and evidence to that authorization, durably commits invocation intent through
 the coordinator callback, and only then spawns. Every other state or mismatch
 returns `not_requested`; there is no PATH, API-key, cloud, gateway, host-state,
-or operator-side fallback. `provider-account-setups.sqlite` schema version 2
-persists canonical preflight/validation evidence and rejects obsolete state.
+or operator-side fallback. `provider-account-setups.sqlite` schema version 3
+persists canonical preflight/validation evidence plus exact cancellation
+operation/observation state. It narrowly migrates complete schema-2 state so an
+acknowledged process and retained cancellation request remain reconcilable;
+other obsolete or incomplete state is rejected.
 
 ## Account-to-Run workspace tool broker
 
@@ -159,14 +162,17 @@ Herdr's actual `blocked` agent state creates provider-neutral HumanAttention; Pi
 
 ## ProviderAccount setup (Phase B)
 
-`provider-account-setups.sqlite` is a current-only safe-metadata ledger separate
-from the legacy Run-bound harness setup store. One active attempt per account is
+`provider-account-setups.sqlite` is a safe-metadata ledger separate from the
+legacy Run-bound harness setup store. One active attempt per account is
 serialized through exact authorization, durable pre-spawn intent, acknowledged
 streamed-process identity, account-scoped HumanAttention, input-delivery
-certainty, cancellation, and local status validation. Sensitive fake-login
-output/input remains only in process memory and the Product's expiring relay; it
-is never accepted by a SQLite API or emitted to logs. Worker restart never
-replays a requested/ambiguous spawn or restores a lost interaction channel.
+certainty, exact cancellation, and local status validation. Sensitive login
+output/input remains only in process memory and the Product's expiring encrypted
+relay; it is never accepted by a SQLite API or emitted to logs. Worker restart
+never replays a requested/ambiguous spawn, input, or cancellation. A running
+process with a non-recoverable stream is revalidated and physically terminated
+before failure is reported. See
+[`../../docs/provider-account-login-supervision.md`](../../docs/provider-account-login-supervision.md).
 
 Phase B launches only `/usr/bin/python3` with QE's static deterministic fake
 login/status programs inside the exact ProviderAccount environment. It launches

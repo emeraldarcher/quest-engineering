@@ -8,7 +8,7 @@ append-only setup-attempt history, blocking HumanAttention, ephemeral process
 interaction, side-effect certainty, cancellation, restart reconciliation, and
 post-setup authentication validation.
 
-The original Phase B acceptance proof intentionally used only QE's deterministic fake provider/login process. Phase D adds the production Anthropic specialization without changing the provider-neutral Product lifecycle: `provider_key: "anthropic"` uses persistent `qe-claude-account-v1`, pinned Claude Code 2.1.292, `claude auth login`, exact Claude.ai status validation, and serialized account operations. Execution binds that account to the canonical `claude_code` harness and a separate workspace broker; see [`claude-code-managed-mod.md`](claude-code-managed-mod.md). Production preflight validation performs no real login, credential entry, external provider request, or inference.
+The original Phase B acceptance proof intentionally used only QE's deterministic fake provider/login process. Phase D adds the production Anthropic specialization without changing the provider-neutral Product lifecycle: `provider_key: "anthropic"` uses persistent `qe-claude-account-v1`, pinned Claude Code 2.1.292, `claude auth login`, exact Claude.ai status validation, and serialized account operations. Execution binds that account to the canonical `claude_code` harness and a separate workspace broker; see [`claude-code-managed-mod.md`](claude-code-managed-mod.md). Production preflight validation performs no real login, credential entry, external provider request, or inference. The pinned native interaction and exact cancellation contracts are detailed in [`provider-account-login-supervision.md`](provider-account-login-supervision.md).
 
 ## Product identity and semantic lifecycle
 
@@ -110,11 +110,15 @@ PostgreSQL owns:
   attention and delivery metadata with no response value.
 
 The Worker execution-environment SQLite schema remains current-only version 3.
-The separate ProviderAccount setup SQLite ledger is current-only version 2. It
-stores safe authorization identity, exact account/environment/process identity,
-canonical preflight and post-login evidence, invocation state, input-delivery
-certainty, validation class, and append-only safe events. Neither SQLite database accepts sensitive interaction bytes. Stale
-setup schemas fail startup and require explicit Worker-state recreation. Run rows
+The separate ProviderAccount setup SQLite ledger is version 3. It performs one
+narrow version-2 migration so an acknowledged process and an already-persisted
+cancellation request survive deployment of exact restart-safe cancellation;
+other stale or incomplete setup schemas fail startup. The ledger stores safe
+authorization identity, exact account/environment/process and invocation-Worker
+identity, cancellation operation/invocation/observation state, canonical
+preflight and post-login evidence, input-delivery certainty, validation class,
+and append-only safe events. Neither SQLite database accepts sensitive
+interaction bytes. Run rows
 and account rows cannot collide because ownership is part of every environment
 key.
 
@@ -183,25 +187,31 @@ The ordering is strict:
    `authentication_required / none`, persist `invocation_requested` through the
    coordinator callback;
 5. spawn only after that durable intent returns successfully;
-6. record the exact acknowledged process handle;
-7. expose only a safe account-scoped HumanAttention message;
+6. record the exact acknowledged process handle and install local supervision
+   before crossing the fallible acknowledgement-report boundary;
+7. discover only the pinned, bounded interaction contract within its own
+   deadline, then expose a safe account-scoped HumanAttention message;
 8. relay bounded process output/input through an in-memory, five-minute,
    setup-generation + attention + process-generation-bound channel;
 9. persist input-delivery metadata before the streamed write and classify it as
    acknowledged or uncertain without storing the input;
-10. observe process settlement;
-11. run deterministic local status validation with the same configuration and
+10. on cancellation, persist intent, revalidate exact identity, submit at most
+    one cancellation operation, and observe physical exit/absence;
+11. observe ordinary process settlement;
+12. run deterministic local status validation with the same configuration and
     physical identity; and
-12. only for exact `authenticated / provider_account` evidence mark
+13. only for exact `authenticated / provider_account` evidence mark
     authentication ready and advance credential generation.
 
 A rejected preflight retains `invocation_state=not_requested` and crosses zero
 login boundaries. A crash after invocation intent but before an acknowledged
 process handle is `uncertain` and is never replayed. An acknowledged process
 with lost stream attachment is inspected by exact handle. Restart never restores
-ephemeral I/O; it uses only exact process/environment/configuration evidence and
-fresh local validation. Ambiguous
-input or cancellation is terminally uncertain and not repeated. One partial
+ephemeral I/O: a still-running process whose stream cannot be recovered is
+terminated through the exact detached-process path before failure is reported.
+An ambiguous input triggers exact process termination and becomes terminally
+uncertain only after physical settlement. An ambiguous cancellation is never
+repeated and advances only through read-only physical reconciliation. One partial
 unique index plus Worker account tails admits one active setup per account;
 physical lifecycle mutations are rejected while setup is active. Different
 accounts remain independent.

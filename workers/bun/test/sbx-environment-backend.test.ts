@@ -172,6 +172,118 @@ test("SBX streamed process is non-PTY, fenced, Run-owned, and restart-classified
   });
 });
 
+test("restart-safe detached cancellation revalidates and signals one exact SBX process", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new DetachedCancellationClient(state);
+  let transport: FakeStreamedProcessTransport | null = null;
+  const first = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client,
+    verifier: new FakeSbxVerifier(state),
+    openStreamedProcess: async (context) => {
+      transport = new FakeStreamedProcessTransport({
+        backendProcessId: "4321",
+        processStartIdentity: client.expectedStartIdentity,
+        observedExecutable: context.command.executable,
+      });
+      return transport;
+    },
+  });
+  backends.push(first);
+  const spec = accountSpec("account-detached-cancel", 3);
+  const lease = await first.ensure(spec);
+  const process = await lease.spawnStreamed({
+    executable: "/opt/qe/claude/claude",
+    args: ["auth", "login"],
+    cwd: lease.paths.state,
+    environment: {},
+  });
+  const handle = structuredClone(process.handle);
+  client.expectedExecutable = handle.observedExecutable as string;
+
+  await first.close();
+  backends.splice(backends.indexOf(first), 1);
+  const restarted = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client,
+    verifier: new FakeSbxVerifier(state),
+  });
+  backends.push(restarted);
+  const recovered = await restarted.recover(lease.ref, spec);
+
+  await expect(
+    restarted.cancelStreamedProcess(handle, "durable-cancellation-operation"),
+  ).resolves.toEqual({
+    certainty: "acknowledged",
+    cancellationId: "durable-cancellation-operation",
+  });
+  expect(client.cancellationCommands).toHaveLength(1);
+  expect(client.cancellationCommands[0]).toMatchObject({
+    executable: "/usr/bin/python3",
+    environment: {
+      QE_PID: handle.backendProcessId,
+      QE_CANCELLATION_ID: "durable-cancellation-operation",
+    },
+  });
+  expect(await recovered.reconcileStreamedProcess(handle)).toMatchObject({
+    process: "gone",
+    streamAttachment: "unavailable",
+  });
+});
+
+test("detached cancellation rejects PID reuse evidence before signalling", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const client = new DetachedCancellationClient(state);
+  let transport: FakeStreamedProcessTransport | null = null;
+  const first = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client,
+    verifier: new FakeSbxVerifier(state),
+    openStreamedProcess: async (context) => {
+      transport = new FakeStreamedProcessTransport({
+        backendProcessId: "4321",
+        processStartIdentity: client.expectedStartIdentity,
+        observedExecutable: context.command.executable,
+      });
+      return transport;
+    },
+  });
+  backends.push(first);
+  const spec = accountSpec("account-detached-mismatch", 3);
+  const lease = await first.ensure(spec);
+  const process = await lease.spawnStreamed({
+    executable: "/opt/qe/claude/claude",
+    args: ["auth", "login"],
+    cwd: lease.paths.state,
+    environment: {},
+  });
+  const handle = structuredClone(process.handle);
+  client.expectedExecutable = handle.observedExecutable as string;
+  await first.close();
+  backends.splice(backends.indexOf(first), 1);
+  const restarted = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    client,
+    verifier: new FakeSbxVerifier(state),
+  });
+  backends.push(restarted);
+  await restarted.recover(lease.ref, spec);
+
+  await expect(
+    restarted.cancelStreamedProcess(
+      { ...handle, processStartIdentity: "reused-pid-start" },
+      "must-not-signal",
+    ),
+  ).rejects.toMatchObject({ code: "streamed_process_identity_mismatch" });
+  expect(client.signalCount).toBe(0);
+});
+
 test("creation disables ambient credential variables and carries only ownership identity", async () => {
   const fixture = await setup();
   await fixture.backend.ensure(sbxSpec("run-create-environment"));
@@ -856,6 +968,55 @@ type StopScenario =
   | "ambiguous_running"
   | "preinvoke_failed"
   | "replacement_at_boundary";
+
+class DetachedCancellationClient extends FakeSbxClient {
+  readonly expectedStartIdentity = "987654";
+  expectedExecutable = "/opt/qe/claude/claude";
+  readonly cancellationCommands: Array<Parameters<FakeSbxClient["exec"]>[1]> =
+    [];
+  signalCount = 0;
+  private running = true;
+
+  override async exec(
+    ...args: Parameters<FakeSbxClient["exec"]>
+  ): ReturnType<FakeSbxClient["exec"]> {
+    const command = args[1];
+    if (command.environment?.QE_CANCELLATION_ID) {
+      this.cancellationCommands.push(structuredClone(command));
+      const startIdentity = command.args?.at(-2);
+      const executable = command.args?.at(-1);
+      if (
+        startIdentity !== this.expectedStartIdentity ||
+        executable !== this.expectedExecutable
+      )
+        return {
+          exitCode: 4,
+          stdout: '{"status":"identity_mismatch"}',
+          stderr: "",
+        };
+      this.signalCount += 1;
+      this.running = false;
+      return {
+        exitCode: 0,
+        stdout: '{"status":"signalled"}',
+        stderr: "",
+      };
+    }
+    if (command.environment?.QE_PID)
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          markerMatch: true,
+          exists: this.running,
+          state: this.running ? "S" : "",
+          startIdentity: this.running ? this.expectedStartIdentity : "",
+          observedExecutable: this.running ? this.expectedExecutable : "",
+        }),
+        stderr: "",
+      };
+    return super.exec(...args);
+  }
+}
 
 class StopScenarioClient extends FakeSbxClient {
   invocationCalls = 0;
