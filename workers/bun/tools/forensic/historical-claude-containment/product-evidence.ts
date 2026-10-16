@@ -40,8 +40,14 @@ const PRODUCT_ROW_KEYS = [
   "attempt_auth_inspection_identity",
   "attempt_auth_inspected_at",
   "worker_id",
-  "worker_generation",
-  "environment_operation_id",
+  "current_worker_generation",
+  "current_environment_operation_id",
+  "authority_generation_event",
+  "authority_generation_event_count",
+  "invocation_requested_event",
+  "invocation_requested_event_count",
+  "environment_generation_refence_chain",
+  "setup_generation_refence_chain",
   "backend_kind",
   "environment_id",
   "environment_incarnation",
@@ -110,8 +116,80 @@ const PRODUCT_AUTHORITY_QUERY = `
     attempt.authorization_inspection_identity AS attempt_auth_inspection_identity,
     attempt.authorization_inspected_at AS attempt_auth_inspected_at,
     attempt.worker_id,
-    attempt.worker_generation,
-    attempt.environment_operation_id,
+    attempt.worker_generation AS current_worker_generation,
+    attempt.environment_operation_id AS current_environment_operation_id,
+    jsonb_build_object(
+      'event_type', authority_generation.event_type,
+      'worker_id', authority_generation.worker_id,
+      'worker_generation', authority_generation.worker_generation,
+      'environment_operation_id', authority_generation.operation_id,
+      'credential_generation', authority_generation.credential_generation,
+      'backend_kind', authority_generation.backend_kind,
+      'environment_id', authority_generation.environment_id,
+      'environment_incarnation', authority_generation.incarnation,
+      'physical_state', authority_generation.physical_state,
+      'lifecycle_state', authority_generation.lifecycle_state,
+      'details', authority_generation.details,
+      'occurred_at', authority_generation.occurred_at
+    ) AS authority_generation_event,
+    (SELECT count(*)::integer
+       FROM provider_account_lifecycle_events candidate
+      WHERE candidate.provider_account_id = attempt.provider_account_id
+        AND candidate.event_type = authority_generation.event_type
+        AND candidate.worker_id = authority_generation.worker_id
+        AND candidate.worker_generation = authority_generation.worker_generation
+        AND candidate.operation_id = authority_generation.operation_id
+        AND candidate.occurred_at = authority_generation.occurred_at) AS authority_generation_event_count,
+    jsonb_build_object(
+      'provider_account_id', invocation_requested_event.provider_account_id,
+      'setup_generation', invocation_requested_event.setup_generation,
+      'state', invocation_requested_event.state,
+      'invocation_state', invocation_requested_event.invocation_state,
+      'details', invocation_requested_event.details,
+      'occurred_at', invocation_requested_event.occurred_at
+    ) AS invocation_requested_event,
+    (SELECT count(*)::integer
+       FROM provider_account_setup_events candidate
+      WHERE candidate.setup_attempt_id = attempt.id
+        AND candidate.event_type = 'setup_state_observed'
+        AND candidate.details->>'observed_state' = 'invocation_requested') AS invocation_requested_event_count,
+    COALESCE(
+      (SELECT jsonb_agg(
+          jsonb_build_object(
+            'worker_id', event.worker_id,
+            'worker_generation', event.worker_generation,
+            'environment_operation_id', event.operation_id,
+            'credential_generation', event.credential_generation,
+            'backend_kind', event.backend_kind,
+            'environment_id', event.environment_id,
+            'environment_incarnation', event.incarnation,
+            'physical_state', event.physical_state,
+            'lifecycle_state', event.lifecycle_state,
+            'details', event.details,
+            'occurred_at', event.occurred_at
+          ) ORDER BY event.occurred_at, event.id)
+         FROM provider_account_lifecycle_events event
+        WHERE event.provider_account_id = attempt.provider_account_id
+          AND event.event_type = 'worker_generation_reconciled'
+          AND event.occurred_at > setup_authorization.authorized_at),
+      '[]'::jsonb
+    ) AS environment_generation_refence_chain,
+    COALESCE(
+      (SELECT jsonb_agg(
+          jsonb_build_object(
+            'provider_account_id', event.provider_account_id,
+            'setup_generation', event.setup_generation,
+            'state', event.state,
+            'invocation_state', event.invocation_state,
+            'details', event.details,
+            'occurred_at', event.occurred_at
+          ) ORDER BY event.occurred_at, event.id)
+         FROM provider_account_setup_events event
+        WHERE event.setup_attempt_id = attempt.id
+          AND event.event_type = 'worker_generation_reconciled'
+          AND event.occurred_at > setup_authorization.authorized_at),
+      '[]'::jsonb
+    ) AS setup_generation_refence_chain,
     attempt.backend_kind,
     attempt.environment_id,
     attempt.environment_incarnation,
@@ -174,6 +252,30 @@ const PRODUCT_AUTHORITY_QUERY = `
   FROM provider_account_setup_attempts attempt
   LEFT JOIN provider_account_setup_authorizations setup_authorization
     ON setup_authorization.setup_attempt_id = attempt.id
+  LEFT JOIN LATERAL (
+    SELECT event.*
+      FROM provider_account_lifecycle_events event
+     WHERE event.provider_account_id = attempt.provider_account_id
+       AND event.worker_id = attempt.worker_id
+       AND event.credential_generation = attempt.environment_generation
+       AND event.backend_kind = attempt.backend_kind
+       AND event.environment_id = attempt.environment_id
+       AND event.incarnation = attempt.environment_incarnation
+       AND event.physical_state = 'available'
+       AND event.event_type IN ('environment_ensured', 'worker_generation_reconciled')
+       AND event.occurred_at <= setup_authorization.authorized_at
+     ORDER BY event.occurred_at DESC, event.id DESC
+     LIMIT 1
+  ) authority_generation ON true
+  LEFT JOIN LATERAL (
+    SELECT event.*
+      FROM provider_account_setup_events event
+     WHERE event.setup_attempt_id = attempt.id
+       AND event.event_type = 'setup_state_observed'
+       AND event.details->>'observed_state' = 'invocation_requested'
+     ORDER BY event.occurred_at, event.id
+     LIMIT 1
+  ) invocation_requested_event ON true
   WHERE attempt.id = $1
 `;
 
@@ -525,9 +627,384 @@ export function parseProductEvidenceRow(
   exactCount(row.later_semantic_event_count, 0, "later semantic event count");
   exactCount(row.human_attention_count, 0, "HumanAttention count");
 
+  const workerId = text(row.worker_id, "Worker ID");
+  const credentialGeneration = positiveInteger(
+    row.credential_generation,
+    "credential generation",
+  );
+  const environmentGeneration = positiveInteger(
+    row.environment_generation,
+    "environment generation",
+  );
+  const currentWorkerGeneration = positiveInteger(
+    row.current_worker_generation,
+    "current Product Worker generation",
+  );
+  const currentEnvironmentOperationId = text(
+    row.current_environment_operation_id,
+    "current Product environment operation",
+  );
+  const authorityEvent = exactObject(
+    row.authority_generation_event,
+    [
+      "event_type",
+      "worker_id",
+      "worker_generation",
+      "environment_operation_id",
+      "credential_generation",
+      "backend_kind",
+      "environment_id",
+      "environment_incarnation",
+      "physical_state",
+      "lifecycle_state",
+      "details",
+      "occurred_at",
+    ],
+    "invocation-authority lifecycle event",
+  );
+  exactCount(
+    row.authority_generation_event_count,
+    1,
+    "invocation-authority lifecycle event count",
+  );
+  const authorityEventType = text(
+    authorityEvent.event_type,
+    "invocation-authority event type",
+  );
+  if (
+    authorityEventType !== "environment_ensured" &&
+    authorityEventType !== "worker_generation_reconciled"
+  )
+    throw mismatch("Product invocation-authority event type is invalid.");
+  exact(authorityEvent.worker_id, workerId, "invocation-authority Worker");
+  exact(
+    positiveInteger(
+      authorityEvent.credential_generation,
+      "invocation-authority credential generation",
+    ),
+    environmentGeneration,
+    "invocation-authority credential generation",
+  );
+  exact(authorityEvent.backend_kind, "sbx", "invocation-authority backend");
+  exact(
+    authorityEvent.environment_id,
+    HISTORICAL_ENVIRONMENT_ID,
+    "invocation-authority environment",
+  );
+  exact(
+    authorityEvent.environment_incarnation,
+    HISTORICAL_ENVIRONMENT_INCARNATION,
+    "invocation-authority environment incarnation",
+  );
+  exact(
+    authorityEvent.physical_state,
+    "available",
+    "invocation-authority physical state",
+  );
+  exact(
+    authorityEvent.lifecycle_state,
+    "connected",
+    "invocation-authority lifecycle state",
+  );
+  const authorityDetails = exactObject(
+    authorityEvent.details,
+    authorityEventType === "environment_ensured"
+      ? ["report", "canary_persisted"]
+      : [],
+    "invocation-authority event details",
+  );
+  if (authorityEventType === "environment_ensured") {
+    exact(
+      authorityDetails.report,
+      "credential_free",
+      "invocation-authority environment report",
+    );
+    exact(
+      authorityDetails.canary_persisted,
+      true,
+      "invocation-authority canary",
+    );
+  }
+  const invocationAuthorityWorkerGeneration = positiveInteger(
+    authorityEvent.worker_generation,
+    "invocation-authority Worker generation",
+  );
+  const invocationAuthorityEnvironmentOperationId = text(
+    authorityEvent.environment_operation_id,
+    "invocation-authority environment operation",
+  );
+  const authorityEventOccurredAt = timestamp(
+    authorityEvent.occurred_at,
+    "invocation-authority event timestamp",
+  );
+
+  const invocationEvent = exactObject(
+    row.invocation_requested_event,
+    [
+      "provider_account_id",
+      "setup_generation",
+      "state",
+      "invocation_state",
+      "details",
+      "occurred_at",
+    ],
+    "invocation-requested setup event",
+  );
+  exactCount(
+    row.invocation_requested_event_count,
+    1,
+    "invocation-requested setup event count",
+  );
+  exact(
+    invocationEvent.provider_account_id,
+    providerAccountId,
+    "invocation-requested event ProviderAccount",
+  );
+  exact(
+    positiveInteger(
+      invocationEvent.setup_generation,
+      "invocation-requested event setup generation",
+    ),
+    setupGeneration,
+    "invocation-requested event setup generation",
+  );
+  exact(
+    invocationEvent.state,
+    "invocation_requested",
+    "invocation-requested event state",
+  );
+  exact(
+    invocationEvent.invocation_state,
+    "requested",
+    "invocation-requested event invocation state",
+  );
+  const invocationEventDetails = exactObject(
+    invocationEvent.details,
+    ["observed_state"],
+    "invocation-requested event details",
+  );
+  exact(
+    invocationEventDetails.observed_state,
+    "invocation_requested",
+    "invocation-requested observed state",
+  );
+  const invocationRequestedEventOccurredAt = timestamp(
+    invocationEvent.occurred_at,
+    "invocation-requested event timestamp",
+  );
+  if (
+    Date.parse(authorityEventOccurredAt) > Date.parse(authorizedAt) ||
+    Date.parse(invocationRequestedAt) >
+      Date.parse(invocationRequestedEventOccurredAt)
+  )
+    throw mismatch("Product invocation-authority chronology is invalid.");
+
+  const environmentRefences = exactArray(
+    row.environment_generation_refence_chain,
+    "environment generation refence chain",
+  );
+  const setupRefences = exactArray(
+    row.setup_generation_refence_chain,
+    "setup generation refence chain",
+  );
+  if (environmentRefences.length !== setupRefences.length)
+    throw mismatch(
+      "Product environment and setup generation refence chains do not pair exactly.",
+    );
+  const refenceChain: Array<{
+    workerGeneration: number;
+    environmentOperationId: string;
+    environmentEventOccurredAt: string;
+    setupEventOccurredAt: string;
+  }> = [];
+  let expectedCurrentWorkerGeneration = invocationAuthorityWorkerGeneration;
+  let expectedCurrentEnvironmentOperationId =
+    invocationAuthorityEnvironmentOperationId;
+  let previousEventAt = invocationRequestedEventOccurredAt;
+  for (let index = 0; index < environmentRefences.length; index += 1) {
+    const environmentRefence = exactObject(
+      environmentRefences[index],
+      [
+        "worker_id",
+        "worker_generation",
+        "environment_operation_id",
+        "credential_generation",
+        "backend_kind",
+        "environment_id",
+        "environment_incarnation",
+        "physical_state",
+        "lifecycle_state",
+        "details",
+        "occurred_at",
+      ],
+      "environment generation refence",
+    );
+    const setupRefence = exactObject(
+      setupRefences[index],
+      [
+        "provider_account_id",
+        "setup_generation",
+        "state",
+        "invocation_state",
+        "details",
+        "occurred_at",
+      ],
+      "setup generation refence",
+    );
+    exact(environmentRefence.worker_id, workerId, "generation-refence Worker");
+    exact(
+      positiveInteger(
+        environmentRefence.credential_generation,
+        "generation-refence credential generation",
+      ),
+      environmentGeneration,
+      "generation-refence credential generation",
+    );
+    exact(environmentRefence.backend_kind, "sbx", "generation-refence backend");
+    exact(
+      environmentRefence.environment_id,
+      HISTORICAL_ENVIRONMENT_ID,
+      "generation-refence environment",
+    );
+    exact(
+      environmentRefence.environment_incarnation,
+      HISTORICAL_ENVIRONMENT_INCARNATION,
+      "generation-refence environment incarnation",
+    );
+    exact(
+      environmentRefence.physical_state,
+      "available",
+      "generation-refence physical state",
+    );
+    exact(
+      environmentRefence.lifecycle_state,
+      "connected",
+      "generation-refence lifecycle state",
+    );
+    exactObject(
+      environmentRefence.details,
+      [],
+      "environment generation-refence details",
+    );
+    exact(
+      setupRefence.provider_account_id,
+      providerAccountId,
+      "setup generation-refence ProviderAccount",
+    );
+    exact(
+      positiveInteger(
+        setupRefence.setup_generation,
+        "setup generation-refence setup generation",
+      ),
+      setupGeneration,
+      "setup generation-refence setup generation",
+    );
+    exact(
+      setupRefence.state,
+      "invocation_requested",
+      "setup generation-refence state",
+    );
+    exact(
+      setupRefence.invocation_state,
+      "requested",
+      "setup generation-refence invocation state",
+    );
+    exactObject(setupRefence.details, [], "setup generation-refence details");
+    const workerGeneration = positiveInteger(
+      environmentRefence.worker_generation,
+      "generation-refence Worker generation",
+    );
+    const environmentOperationId = text(
+      environmentRefence.environment_operation_id,
+      "generation-refence environment operation",
+    );
+    const environmentEventOccurredAt = timestamp(
+      environmentRefence.occurred_at,
+      "environment generation-refence timestamp",
+    );
+    const setupEventOccurredAt = timestamp(
+      setupRefence.occurred_at,
+      "setup generation-refence timestamp",
+    );
+    if (
+      workerGeneration !== expectedCurrentWorkerGeneration + 1 ||
+      environmentOperationId === expectedCurrentEnvironmentOperationId ||
+      Date.parse(environmentEventOccurredAt) <= Date.parse(previousEventAt) ||
+      Date.parse(setupEventOccurredAt) <
+        Date.parse(environmentEventOccurredAt) ||
+      Date.parse(setupEventOccurredAt) >=
+        Date.parse(cancellationEventOccurredAt)
+    )
+      throw mismatch("Product generation refence chronology is invalid.");
+    const nextEnvironmentRefence = environmentRefences[index + 1];
+    if (nextEnvironmentRefence) {
+      const next = exactObject(
+        nextEnvironmentRefence,
+        [
+          "worker_id",
+          "worker_generation",
+          "environment_operation_id",
+          "credential_generation",
+          "backend_kind",
+          "environment_id",
+          "environment_incarnation",
+          "physical_state",
+          "lifecycle_state",
+          "details",
+          "occurred_at",
+        ],
+        "next environment generation refence",
+      );
+      if (
+        Date.parse(setupEventOccurredAt) >=
+        Date.parse(
+          timestamp(
+            next.occurred_at,
+            "next environment generation-refence timestamp",
+          ),
+        )
+      )
+        throw mismatch("Product generation refence pairing is ambiguous.");
+    }
+    refenceChain.push({
+      workerGeneration,
+      environmentOperationId,
+      environmentEventOccurredAt,
+      setupEventOccurredAt,
+    });
+    expectedCurrentWorkerGeneration = workerGeneration;
+    expectedCurrentEnvironmentOperationId = environmentOperationId;
+    previousEventAt = setupEventOccurredAt;
+  }
+  exact(
+    currentWorkerGeneration,
+    expectedCurrentWorkerGeneration,
+    "current Product Worker-generation projection",
+  );
+  exact(
+    currentEnvironmentOperationId,
+    expectedCurrentEnvironmentOperationId,
+    "current Product environment-operation projection",
+  );
+  const invocationAuthority = Object.freeze({
+    source: "product_append_only_environment_and_setup_events" as const,
+    contractVersion: "product-invocation-authority-v1" as const,
+    workerGeneration: invocationAuthorityWorkerGeneration,
+    environmentOperationId: invocationAuthorityEnvironmentOperationId,
+    authorityEventType,
+    authorityEventOccurredAt,
+    invocationRequestedEventOccurredAt,
+    currentWorkerGeneration,
+    currentEnvironmentOperationId,
+    refenceChain: Object.freeze(
+      refenceChain.map((refence) => Object.freeze(refence)),
+    ),
+  });
+
   const safe = {
     source: "product_repeatable_read_read_only_transaction" as const,
     databaseIdentity: Object.freeze({ ...databaseIdentity }),
+    invocationAuthority,
     setupAttemptId: HISTORICAL_SETUP_ATTEMPT_ID,
     cancellationRequestId: HISTORICAL_CANCELLATION_REQUEST_ID,
     authorizationId: text(row.authorization_id, "authorization ID"),
@@ -535,23 +1012,9 @@ export function parseProductEvidenceRow(
     authorizedAt,
     providerAccountId,
     setupGeneration,
-    credentialGeneration: positiveInteger(
-      row.credential_generation,
-      "credential generation",
-    ),
-    environmentGeneration: positiveInteger(
-      row.environment_generation,
-      "environment generation",
-    ),
-    invocationWorkerGeneration: positiveInteger(
-      row.worker_generation,
-      "Worker generation",
-    ),
-    invocationEnvironmentOperationId: text(
-      row.environment_operation_id,
-      "environment operation ID",
-    ),
-    workerId: text(row.worker_id, "Worker ID"),
+    credentialGeneration,
+    environmentGeneration,
+    workerId,
     backendKind: "sbx" as const,
     environmentId: HISTORICAL_ENVIRONMENT_ID,
     environmentIncarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
@@ -578,8 +1041,16 @@ function exactRow(
   keys: readonly string[],
   name: string,
 ): Record<string, unknown> {
+  return exactObject(value, keys, `${name} row`);
+}
+
+function exactObject(
+  value: unknown,
+  keys: readonly string[],
+  name: string,
+): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw mismatch(`Product ${name} row is malformed.`);
+    throw mismatch(`Product ${name} is malformed.`);
   const row = value as Record<string, unknown>;
   if (
     JSON.stringify(Object.keys(row).sort()) !== JSON.stringify([...keys].sort())
@@ -588,12 +1059,23 @@ function exactRow(
   return row;
 }
 
+function exactArray(value: unknown, name: string): unknown[] {
+  if (!Array.isArray(value)) throw mismatch(`Product ${name} is malformed.`);
+  return value;
+}
+
 function timestamp(value: unknown, name: string): string {
   if (value instanceof Date && !Number.isNaN(value.valueOf()))
     return value.toISOString();
   const result = text(value, name);
-  if (Number.isNaN(Date.parse(result))) throw mismatch(`${name} is invalid.`);
-  return new Date(result).toISOString();
+  const utcResult = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(
+    result,
+  )
+    ? `${result.replace(" ", "T")}Z`
+    : result;
+  if (Number.isNaN(Date.parse(utcResult)))
+    throw mismatch(`${name} is invalid.`);
+  return new Date(utcResult).toISOString();
 }
 
 function text(value: unknown, name: string): string {

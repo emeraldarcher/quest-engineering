@@ -59,6 +59,18 @@ export const EVIDENCE_RESPONSIBILITY_TABLE = [
     physical: "not_applicable",
   },
   {
+    fact: "invocation authority generation and environment operation",
+    product: "authority_from_append_only_pre_refence_events",
+    workerV2: "authority_from_accepted_command",
+    physical: "not_applicable",
+  },
+  {
+    fact: "current/reconnected Worker generation and environment operation",
+    product: "current_projection_with_append_only_refence_chain",
+    workerV2: "not_comparable_to_invocation_authority",
+    physical: "not_applicable",
+  },
+  {
     fact: "invocation acknowledgement (state/invocation_state/process_json)",
     product: "not_source",
     workerV2: "authority",
@@ -104,8 +116,8 @@ export const SHARED_IDENTITY_FIELDS = [
   "setup_generation",
   "credential_generation",
   "environment_generation",
-  "invocation_worker_generation",
-  "invocation_environment_operation_id",
+  "invocation_authority_worker_generation",
+  "invocation_authority_environment_operation_id",
   "worker_id",
   "backend_kind",
   "environment_id",
@@ -355,16 +367,6 @@ export function validateContainmentEvidence(
       target.environmentGeneration,
       "environment generation",
     ],
-    [
-      product.invocationWorkerGeneration,
-      target.invocationWorkerGeneration,
-      "invocation Worker generation",
-    ],
-    [
-      product.invocationEnvironmentOperationId,
-      target.invocationEnvironmentOperationId,
-      "environment operation",
-    ],
     [product.workerId, target.workerId, "Worker"],
     [product.backendKind, target.backendKind, "backend"],
     [product.environmentId, target.environmentId, "environment"],
@@ -400,6 +402,25 @@ export function validateContainmentEvidence(
         "corroboration_mismatch",
         `Historical Product and Worker v2 ${name} identities do not corroborate exactly.`,
       );
+
+  const productInvocationAuthority = product.invocationAuthority;
+  const workerInvocationAuthority = worker.invocationAuthority;
+  if (
+    productInvocationAuthority.workerGeneration !==
+      workerInvocationAuthority.setupWorkerGeneration ||
+    productInvocationAuthority.workerGeneration !==
+      target.invocationWorkerGeneration ||
+    workerInvocationAuthority.connectionGeneration !==
+      target.invocationWorkerGeneration ||
+    productInvocationAuthority.environmentOperationId !==
+      workerInvocationAuthority.environmentOperationId ||
+    productInvocationAuthority.environmentOperationId !==
+      target.invocationEnvironmentOperationId
+  )
+    fail(
+      "worker_generation_handoff_unproven",
+      "Product append-only invocation authority does not match the exact Worker-v2 accepted-command generation and environment operation.",
+    );
 
   const environmentComparisons: Array<[unknown, unknown, string]> = [
     [environment.backendKind, target.backendKind, "environment-ledger backend"],
@@ -461,11 +482,23 @@ export function validateContainmentEvidence(
     environmentNativeAgent: environment.nativeAgent,
   });
   const sharedIdentityMatches = Object.freeze({
-    contractVersion: "historical-containment-shared-identity-v1" as const,
+    contractVersion: "historical-containment-shared-identity-v2" as const,
     matchedFields: Object.freeze([...SHARED_IDENTITY_FIELDS]),
   });
+  const generationAuthorityMatches = Object.freeze({
+    contractVersion: "historical-containment-generation-authority-v1" as const,
+    matchedFields: Object.freeze([
+      "invocation_authority_worker_generation",
+      "invocation_authority_environment_operation_id",
+    ]) as readonly [
+      "invocation_authority_worker_generation",
+      "invocation_authority_environment_operation_id",
+    ],
+    productInvocationAuthority,
+    workerInvocationAuthority,
+  });
   const corroboratedEvidenceDigest = safeDigest({
-    contractVersion: "historical-containment-corroborated-evidence-v2",
+    contractVersion: "historical-containment-corroborated-evidence-v3",
     semanticAuthority: {
       source: "product_repeatable_read_read_only_transaction",
       digest: product.digest,
@@ -479,6 +512,7 @@ export function validateContainmentEvidence(
       digest: environment.digest,
     },
     sharedIdentityMatches,
+    generationAuthorityMatches,
   });
   return Object.freeze({
     target: completeTarget,
@@ -486,6 +520,7 @@ export function validateContainmentEvidence(
     historicalPhysicalEvidence: worker,
     historicalPhysicalIdentity: target,
     sharedIdentityMatches,
+    generationAuthorityMatches,
     environmentEvidence: environment,
     workerEvidenceDigest: worker.digest,
     productEvidenceDigest: product.digest,
@@ -669,6 +704,12 @@ function parseWorkerRow(
         "Historical Worker event details are not the exact empty schema-2 contract.",
       );
   }
+  const commandAcceptedEvents = events.filter(
+    (event) => event.event_type === "authorization_accepted",
+  );
+  const commandReconciledEvents = events.filter(
+    (event) => event.event_type === "command_reconciled",
+  );
   const invocationRequestedEvents = events.filter(
     (event) => event.event_type === "login_invocation_requested",
   );
@@ -676,14 +717,20 @@ function parseWorkerRow(
     (event) => event.event_type === "login_invocation_acknowledged",
   );
   if (
+    commandAcceptedEvents.length !== 1 ||
+    commandReconciledEvents.length !== 0 ||
     invocationRequestedEvents.length !== 1 ||
     invocationAcknowledgedEvents.length !== 1 ||
     events.some((event) => event.event_type.includes("cancellation"))
   )
     fail(
       "historical_evidence_incompatible",
-      "Worker events do not prove one login intent, one physical acknowledgement, and zero cancellation activity.",
+      "Worker events do not prove one unreconciled accepted command, one login intent, one physical acknowledgement, and zero cancellation activity.",
     );
+  const commandAcceptedAt = timestampText(
+    commandAcceptedEvents[0]?.occurred_at,
+    "Worker accepted-command event timestamp",
+  );
   const intentRecordedAt = timestampText(
     invocationRequestedEvents[0]?.occurred_at,
     "Worker invocation intent event timestamp",
@@ -693,12 +740,13 @@ function parseWorkerRow(
     "Worker invocation acknowledgement event timestamp",
   );
   if (
-    Date.parse(attemptRecordedAt) > Date.parse(intentRecordedAt) ||
+    Date.parse(attemptRecordedAt) > Date.parse(commandAcceptedAt) ||
+    Date.parse(commandAcceptedAt) > Date.parse(intentRecordedAt) ||
     Date.parse(intentRecordedAt) > Date.parse(acknowledgedRecordedAt)
   )
     fail(
       "historical_evidence_incompatible",
-      "Worker acknowledgement chronology precedes its invocation intent.",
+      "Worker command acceptance, invocation intent, and acknowledgement chronology is invalid.",
     );
   const command = exactObject(parseJson(row.command_json), [
     "type",
@@ -765,6 +813,11 @@ function parseWorkerRow(
     setup.authorized_at,
     "authorization timestamp",
   );
+  if (Date.parse(authorizedAt) > Date.parse(commandAcceptedAt))
+    fail(
+      "historical_evidence_incompatible",
+      "Worker accepted-command event precedes its embedded authorization.",
+    );
   const commandEnvironment = exactObject(setup.environment, [
     "backend_kind",
     "environment_id",
@@ -868,6 +921,20 @@ function parseWorkerRow(
   ]);
   exactValue(owner.kind, "provider_account", "environment owner kind");
   const profile = exactObject(processEnvironment.profile, ["id", "digest"]);
+  const invocationAuthority = Object.freeze({
+    source: "worker_v2_command_json_and_authorization_accepted_event" as const,
+    commandAcceptedAt,
+    connectionGeneration,
+    setupWorkerGeneration: positiveInteger(
+      setup.worker_generation,
+      "accepted setup command Worker generation",
+    ),
+    environmentOperationId: text(
+      setup.environment_operation_id,
+      "accepted setup command environment operation",
+    ),
+    commandReconciliationCount: 0 as const,
+  });
   const target = {
     setupAttemptId: HISTORICAL_SETUP_ATTEMPT_ID,
     authorizationId: text(setup.authorization_id, "authorization ID"),
@@ -885,14 +952,9 @@ function parseWorkerRow(
       setup.environment_generation,
       "environment generation",
     ),
-    invocationWorkerGeneration: positiveInteger(
-      setup.worker_generation,
-      "invocation Worker generation",
-    ),
-    invocationEnvironmentOperationId: text(
-      setup.environment_operation_id,
-      "environment operation ID",
-    ),
+    invocationWorkerGeneration: invocationAuthority.setupWorkerGeneration,
+    invocationEnvironmentOperationId:
+      invocationAuthority.environmentOperationId,
     workerId,
     backendKind: "sbx" as const,
     environmentId: HISTORICAL_ENVIRONMENT_ID,
@@ -927,6 +989,7 @@ function parseWorkerRow(
   );
   const evidence = {
     source: "worker_v2_immutable_snapshot" as const,
+    invocationAuthority,
     invocationIntent: "login_invocation_requested" as const,
     intentRecordedAt,
     workerState: "invocation_acknowledged" as const,
