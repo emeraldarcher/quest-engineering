@@ -9,19 +9,41 @@ import type {
   ProviderAccountSetupValidation,
 } from "./protocol/types.ts";
 
-export const PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION = 2;
+export const PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION = 3;
+
+export type ProviderAccountSetupCancellationInvocationState =
+  | "not_requested"
+  | "intent_recorded"
+  | "requested"
+  | "acknowledged"
+  | "uncertain"
+  | "settled";
+
+export type ProviderAccountSetupCancellationObservation =
+  | "not_observed"
+  | "running"
+  | "exited"
+  | "gone"
+  | "unavailable"
+  | "identity_mismatch";
 
 export interface ProviderAccountSetupRecord {
   setupAttemptId: string;
   command: ProviderAccountSetupCommand;
   state: ProviderAccountSetupState;
   invocationState: ProviderAccountSetupInvocationState;
+  invocationWorkerGeneration: number | null;
+  invocationEnvironmentOperationId: string | null;
   process: StreamedProcessHandle | null;
   attentionId: string | null;
   preflight: ProviderAccountSetupValidation | null;
   validation: ProviderAccountSetupValidation | null;
   failureCode: string | null;
   cancellationRequestId: string | null;
+  cancellationOperationId: string | null;
+  cancellationInvocationState: ProviderAccountSetupCancellationInvocationState;
+  cancellationObservation: ProviderAccountSetupCancellationObservation;
+  supervisionFailureCode: string | null;
   inputDelivery: {
     attentionId: string;
     requestGeneration: number;
@@ -42,12 +64,18 @@ interface SetupRow {
   command_json: string;
   state: ProviderAccountSetupState;
   invocation_state: ProviderAccountSetupInvocationState;
+  invocation_worker_generation: number | null;
+  invocation_environment_operation_id: string | null;
   process_json: string | null;
   attention_id: string | null;
   preflight_json: string | null;
   validation_json: string | null;
   failure_code: string | null;
   cancellation_request_id: string | null;
+  cancellation_operation_id: string | null;
+  cancellation_invocation_state: ProviderAccountSetupCancellationInvocationState;
+  cancellation_observation: ProviderAccountSetupCancellationObservation;
+  supervision_failure_code: string | null;
   input_delivery_json: string | null;
   created_at: string;
   updated_at: string;
@@ -119,15 +147,25 @@ export class ProviderAccountSetupStore {
         this.db
           .query(
             `INSERT INTO provider_account_setup_attempts
-             (setup_attempt_id,command_json,state,invocation_state,process_json,attention_id,preflight_json,validation_json,failure_code,cancellation_request_id,input_delivery_json,created_at,updated_at)
-             VALUES (?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,NULL,?,?)`,
+             (setup_attempt_id,command_json,state,invocation_state,invocation_worker_generation,invocation_environment_operation_id,process_json,attention_id,preflight_json,validation_json,failure_code,cancellation_request_id,cancellation_operation_id,cancellation_invocation_state,cancellation_observation,supervision_failure_code,input_delivery_json,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,NULL,?,?,NULL,NULL,?,?)`,
           )
           .run(
             command.setup.setup_attempt_id,
             JSON.stringify(command),
             command.setup.state,
             command.setup.invocation_state,
+            command.setup.invocation_state === "not_requested"
+              ? null
+              : command.setup.worker_generation,
+            command.setup.invocation_state === "not_requested"
+              ? null
+              : command.setup.environment_operation_id,
             command.setup.cancellation_request_id,
+            command.setup.cancellation_request_id
+              ? "intent_recorded"
+              : "not_requested",
+            "not_observed",
             now,
             now,
           );
@@ -142,12 +180,18 @@ export class ProviderAccountSetupStore {
     attributes: Partial<{
       state: ProviderAccountSetupState;
       invocationState: ProviderAccountSetupInvocationState;
+      invocationWorkerGeneration: number | null;
+      invocationEnvironmentOperationId: string | null;
       process: StreamedProcessHandle | null;
       attentionId: string | null;
       preflight: ProviderAccountSetupValidation | null;
       validation: ProviderAccountSetupValidation | null;
       failureCode: string | null;
       cancellationRequestId: string | null;
+      cancellationOperationId: string | null;
+      cancellationInvocationState: ProviderAccountSetupCancellationInvocationState;
+      cancellationObservation: ProviderAccountSetupCancellationObservation;
+      supervisionFailureCode: string | null;
     }>,
     eventType: string,
   ): ProviderAccountSetupRecord {
@@ -158,6 +202,14 @@ export class ProviderAccountSetupStore {
           state: attributes.state ?? current.state,
           invocationState:
             attributes.invocationState ?? current.invocationState,
+          invocationWorkerGeneration:
+            attributes.invocationWorkerGeneration === undefined
+              ? current.invocationWorkerGeneration
+              : attributes.invocationWorkerGeneration,
+          invocationEnvironmentOperationId:
+            attributes.invocationEnvironmentOperationId === undefined
+              ? current.invocationEnvironmentOperationId
+              : attributes.invocationEnvironmentOperationId,
           process:
             attributes.process === undefined
               ? current.process
@@ -182,22 +234,42 @@ export class ProviderAccountSetupStore {
             attributes.cancellationRequestId === undefined
               ? current.cancellationRequestId
               : attributes.cancellationRequestId,
+          cancellationOperationId:
+            attributes.cancellationOperationId === undefined
+              ? current.cancellationOperationId
+              : attributes.cancellationOperationId,
+          cancellationInvocationState:
+            attributes.cancellationInvocationState ??
+            current.cancellationInvocationState,
+          cancellationObservation:
+            attributes.cancellationObservation ??
+            current.cancellationObservation,
+          supervisionFailureCode:
+            attributes.supervisionFailureCode === undefined
+              ? current.supervisionFailureCode
+              : attributes.supervisionFailureCode,
         };
         this.db
           .query(
             `UPDATE provider_account_setup_attempts
-             SET state=?,invocation_state=?,process_json=?,attention_id=?,preflight_json=?,validation_json=?,failure_code=?,cancellation_request_id=?,updated_at=?
+             SET state=?,invocation_state=?,invocation_worker_generation=?,invocation_environment_operation_id=?,process_json=?,attention_id=?,preflight_json=?,validation_json=?,failure_code=?,cancellation_request_id=?,cancellation_operation_id=?,cancellation_invocation_state=?,cancellation_observation=?,supervision_failure_code=?,updated_at=?
              WHERE setup_attempt_id=?`,
           )
           .run(
             next.state,
             next.invocationState,
+            next.invocationWorkerGeneration,
+            next.invocationEnvironmentOperationId,
             next.process ? JSON.stringify(next.process) : null,
             next.attentionId,
             next.preflight ? JSON.stringify(next.preflight) : null,
             next.validation ? JSON.stringify(next.validation) : null,
             next.failureCode,
             next.cancellationRequestId,
+            next.cancellationOperationId,
+            next.cancellationInvocationState,
+            next.cancellationObservation,
+            next.supervisionFailureCode,
             this.now(),
             id,
           );
@@ -336,12 +408,18 @@ export class ProviderAccountSetupStore {
           command_json TEXT NOT NULL,
           state TEXT NOT NULL CHECK(state IN ('authorized','preparing','invocation_requested','invocation_acknowledged','human_interaction_required','validating','succeeded','failed','uncertain','cancellation_requested','cancelled','invalidated')),
           invocation_state TEXT NOT NULL CHECK(invocation_state IN ('not_requested','requested','acknowledged','settled','uncertain')),
+          invocation_worker_generation INTEGER CHECK(invocation_worker_generation IS NULL OR invocation_worker_generation > 0),
+          invocation_environment_operation_id TEXT,
           process_json TEXT,
           attention_id TEXT,
           preflight_json TEXT,
           validation_json TEXT,
           failure_code TEXT,
           cancellation_request_id TEXT,
+          cancellation_operation_id TEXT,
+          cancellation_invocation_state TEXT NOT NULL CHECK(cancellation_invocation_state IN ('not_requested','intent_recorded','requested','acknowledged','uncertain','settled')),
+          cancellation_observation TEXT NOT NULL CHECK(cancellation_observation IN ('not_observed','running','exited','gone','unavailable','identity_mismatch')),
+          supervision_failure_code TEXT,
           input_delivery_json TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
@@ -378,12 +456,18 @@ export class ProviderAccountSetupStore {
       "command_json",
       "state",
       "invocation_state",
+      "invocation_worker_generation",
+      "invocation_environment_operation_id",
       "process_json",
       "attention_id",
       "preflight_json",
       "validation_json",
       "failure_code",
       "cancellation_request_id",
+      "cancellation_operation_id",
+      "cancellation_invocation_state",
+      "cancellation_observation",
+      "supervision_failure_code",
       "input_delivery_json",
       "created_at",
       "updated_at",
@@ -436,6 +520,8 @@ function mapRow(row: SetupRow): ProviderAccountSetupRecord {
     command: JSON.parse(row.command_json) as ProviderAccountSetupCommand,
     state: row.state,
     invocationState: row.invocation_state,
+    invocationWorkerGeneration: row.invocation_worker_generation,
+    invocationEnvironmentOperationId: row.invocation_environment_operation_id,
     process: row.process_json
       ? (JSON.parse(row.process_json) as StreamedProcessHandle)
       : null,
@@ -448,6 +534,10 @@ function mapRow(row: SetupRow): ProviderAccountSetupRecord {
       : null,
     failureCode: row.failure_code,
     cancellationRequestId: row.cancellation_request_id,
+    cancellationOperationId: row.cancellation_operation_id,
+    cancellationInvocationState: row.cancellation_invocation_state,
+    cancellationObservation: row.cancellation_observation,
+    supervisionFailureCode: row.supervision_failure_code,
     inputDelivery: row.input_delivery_json
       ? (JSON.parse(
           row.input_delivery_json,

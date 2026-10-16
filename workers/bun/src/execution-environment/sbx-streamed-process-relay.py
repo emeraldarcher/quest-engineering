@@ -81,7 +81,10 @@ def terminate_target():
 def relay_output(stream, frame_type, eof_type):
     try:
         while True:
-            chunk = stream.read(16384)
+            # BufferedReader.read(size) may wait for the whole size while the
+            # long-lived target is waiting for input. os.read returns the bytes
+            # currently available, so short prompts are supervised immediately.
+            chunk = os.read(stream.fileno(), 16384)
             if not chunk:
                 break
             send(frame_type, chunk)

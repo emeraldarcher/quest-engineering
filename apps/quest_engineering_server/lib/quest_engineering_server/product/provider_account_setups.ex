@@ -35,6 +35,15 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     "environment_identity_mismatch" => "The ProviderAccount environment identity changed.",
     "stale_setup_command" => "The setup command is stale.",
     "input_delivery_uncertain" => "Sensitive setup input delivery is uncertain.",
+    "setup_cancellation_uncertain" =>
+      "Physical setup-process cancellation could not be observed safely.",
+    "setup_interaction_discovery_timed_out" =>
+      "The provider login did not expose its expected interaction in time.",
+    "setup_interaction_incompatible" =>
+      "The provider login interaction did not match the pinned contract.",
+    "setup_human_completion_timed_out" =>
+      "The provider login was not completed within its human-interaction lifetime.",
+    "setup_worker_shutdown" => "The provider login was terminated during Worker shutdown.",
     "setup_authentication_already_authenticated" =>
       "Provider authentication is already present; login was not invoked.",
     "setup_authentication_method_forbidden" =>
@@ -911,7 +920,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
           request: %{
             "kind" => "provider_authentication",
             "message" =>
-              "Complete the deterministic provider sign-in flow. This does not authorize model inference."
+              "Open the provider sign-in link for this setup. If prompted after browser authorization, paste the one-time code. This does not authorize model inference."
           },
           response_state: "pending",
           delivery_state: "response_not_delivered",

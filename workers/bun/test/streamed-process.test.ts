@@ -219,9 +219,19 @@ test("exit outcomes keep nonzero and physical cancellation distinct from semanti
 
   const cancelled = await setup("run-cancelled");
   const process = await cancelled.lease.spawnStreamed(command(cancelled.lease));
-  expect(await process.cancel()).toMatchObject({ certainty: "acknowledged" });
+  expect(await process.cancel("durable-cancel")).toEqual({
+    certainty: "acknowledged",
+    cancellationId: "durable-cancel",
+  });
+  expect(await process.cancel("durable-cancel")).toEqual({
+    certainty: "acknowledged",
+    cancellationId: "durable-cancel",
+  });
+  await expect(process.cancel("different-cancel")).rejects.toMatchObject({
+    code: "streamed_process_cancellation_uncertain",
+  });
   expect(await process.exit).toEqual({ kind: "signaled", signal: "SIGTERM" });
-  expect(cancelled.transport.cancellationIds).toHaveLength(1);
+  expect(cancelled.transport.cancellationIds).toEqual(["durable-cancel"]);
   expect(cancelled.events.map((event) => event.event)).toEqual(
     expect.arrayContaining([
       "process_cancel_requested",
