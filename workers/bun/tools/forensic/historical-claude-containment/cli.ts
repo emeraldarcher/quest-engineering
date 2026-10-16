@@ -4,11 +4,15 @@ import { isAbsolute } from "node:path";
 import { CliSbxClient } from "../../../src/execution-environment/sbx-client.ts";
 import { SbxPidfdPhysicalProcessController } from "./physical.ts";
 import { runHistoricalContainment } from "./procedure.ts";
-import { ReadOnlyProductEvidenceReader } from "./product-evidence.ts";
+import {
+  HISTORICAL_PRODUCT_DATABASE_NAME,
+  ReadOnlyProductEvidenceReader,
+} from "./product-evidence.ts";
 import { ContainmentError, type ContainmentRunOptions } from "./types.ts";
 
 interface CliOptions extends ContainmentRunOptions {
   productDatabaseUrlEnvironment: string;
+  productDatabaseName: string;
   sbxExecutable: string;
 }
 
@@ -41,6 +45,11 @@ export function parseContainmentArguments(args: readonly string[]): CliOptions {
   const databaseEnvironment = required("--product-database-url-env");
   if (!/^[A-Z][A-Z0-9_]*$/.test(databaseEnvironment))
     invalid("Product database URL environment-variable name is invalid.");
+  const databaseName = required("--product-database-name");
+  if (databaseName !== HISTORICAL_PRODUCT_DATABASE_NAME)
+    invalid(
+      "Product database name does not match the reviewed historical target.",
+    );
   const timeout = optionalPositiveInteger(
     values.get("--settlement-timeout-ms"),
     "--settlement-timeout-ms",
@@ -56,6 +65,7 @@ export function parseContainmentArguments(args: readonly string[]): CliOptions {
     setupAttemptId: required("--setup-attempt-id"),
     containmentOperationId: required("--containment-operation-id"),
     productDatabaseUrlEnvironment: databaseEnvironment,
+    productDatabaseName: databaseName,
     sbxExecutable: required("--sbx-executable"),
     executeCancellation,
     ...(values.has("--confirm-cancellation-request-id")
@@ -91,7 +101,9 @@ async function main(): Promise<void> {
       invalid(
         `Environment variable ${options.productDatabaseUrlEnvironment} is unavailable.`,
       );
-    product = new ReadOnlyProductEvidenceReader(databaseUrl);
+    product = new ReadOnlyProductEvidenceReader(databaseUrl, {
+      expectedDatabaseName: options.productDatabaseName,
+    });
     const physical = new SbxPidfdPhysicalProcessController(
       new CliSbxClient(options.sbxExecutable),
     );
@@ -145,6 +157,7 @@ const VALUE_ARGUMENTS = new Set([
   "--environment-ledger",
   "--containment-journal",
   "--product-database-url-env",
+  "--product-database-name",
   "--sbx-executable",
   "--setup-attempt-id",
   "--containment-operation-id",
@@ -162,6 +175,7 @@ Default mode is inspect-only and submits zero signals:
     --environment-ledger /absolute/read-only/execution-environments.sqlite \\
     --containment-journal /absolute/separate/containment-journal.sqlite \\
     --product-database-url-env QE_CONTAINMENT_PRODUCT_DATABASE_URL \\
+    --product-database-name qe_phase_e_fresh_16f44656_v3 \\
     --sbx-executable /absolute/path/to/sbx \\
     --setup-attempt-id <exact-reviewed-attempt-id> \\
     --containment-operation-id <explicit-uuid>

@@ -194,7 +194,7 @@ export function validateContainmentEvidence(
   environment: EnvironmentForensicEvidence,
 ): ValidatedContainmentEvidence {
   const target = worker.target;
-  const comparisons: Array<[unknown, unknown, string]> = [
+  const productComparisons: Array<[unknown, unknown, string]> = [
     [product.setupAttemptId, target.setupAttemptId, "setup attempt"],
     [product.authorizationId, target.authorizationId, "authorization"],
     [product.authorizedAt, target.authorizedAt, "authorization timestamp"],
@@ -256,6 +256,15 @@ export function validateContainmentEvidence(
       target.authInspectedAt,
       "authentication inspection timestamp",
     ],
+  ];
+  for (const [actual, expected, name] of productComparisons)
+    if (actual !== expected)
+      fail(
+        "product_evidence_mismatch",
+        `Historical ${name} evidence does not corroborate exactly.`,
+      );
+
+  const environmentComparisons: Array<[unknown, unknown, string]> = [
     [environment.backendKind, target.backendKind, "environment-ledger backend"],
     [environment.workerId, target.workerId, "environment-ledger Worker"],
     [
@@ -285,10 +294,10 @@ export function validateContainmentEvidence(
       "environment-ledger profile digest",
     ],
   ];
-  for (const [actual, expected, name] of comparisons)
+  for (const [actual, expected, name] of environmentComparisons)
     if (actual !== expected)
       fail(
-        "historical_evidence_incompatible",
+        "environment_evidence_incompatible",
         `Historical ${name} evidence does not corroborate exactly.`,
       );
   if (
@@ -298,11 +307,12 @@ export function validateContainmentEvidence(
     product.authorizationCount !== 1 ||
     product.setupAuthorizedEventCount !== 1 ||
     product.cancellationRequestedEventCount !== 1 ||
+    product.laterSemanticEventCount !== 0 ||
     product.humanAttentionCount !== 0 ||
     product.transactionReadOnly !== true
   )
     fail(
-      "cancellation_authority_invalid",
+      "product_evidence_mismatch",
       "Product evidence does not prove the one acknowledged invocation and existing cancellation authority.",
     );
   const completeTarget: HistoricalTargetIdentity = {

@@ -31,21 +31,54 @@ schemas and required records are validated; unknown or missing fields fail
 closed. The journal path must differ from both inputs. No row is copied into
 current Worker persistence.
 
-Product evidence is queried directly using a PostgreSQL repeatable-read,
+Product evidence is queried directly using one PostgreSQL repeatable-read,
 server-enforced read-only transaction. Its URL is read only from the explicitly
 named environment variable and is never accepted on the command line, emitted,
-or journaled. The query corroborates one setup authorization, acknowledged
-invocation and complete process identity, one existing cancellation request,
-one cancellation event, and zero HumanAttention rows. The Product request is
-the only cancellation authority; the Worker v2 row is required to remain at its
-historical pre-delivery `invocation_acknowledged / acknowledged` truth and is
-not expected to contain the later cancellation request.
+or journaled. The separately required `--product-database-name` must equal the
+reviewed historical database `qe_phase_e_fresh_16f44656_v3`; the transaction
+then proves that name, the `public` schema, explicit local connection host,
+local/private server locality, port `5432`, and the exact `20261017000000`
+migration head/count before reading authority.
+Credentials are not included in evidence or identity digests.
+
+The authority query corroborates one setup authorization, acknowledged
+invocation and complete process identity, the exact existing cancellation
+request, exactly one matching cancellation event, zero later semantic events,
+and zero HumanAttention rows. The Product request is the only cancellation
+authority; the Worker v2 row is required to remain at its historical
+pre-delivery `invocation_acknowledged / acknowledged` truth and is not expected
+to contain the later cancellation request.
+
+## Product read outcomes and Gate-1 ordering
+
+Product evidence has four non-overlapping outcomes:
+
+- `product_evidence_read_unavailable`: connection, read-only transaction, or
+  safe read access could not be established;
+- `product_evidence_missing`: the selected and validated Product database was
+  read successfully but contains no exact target attempt;
+- `product_evidence_mismatch`: database/schema identity, query shape, or an
+  existing authority row violates an exact predicate; and
+- valid evidence: all identity and authority predicates pass.
+
+Only valid evidence permits any physical call. Gate 1 always parses immutable
+Worker-v2 evidence first, validates Product authority second, validates the
+environment third, and only then inspects the process. Missing, mismatched, or
+unavailable Product evidence produces no SBX lookup, `/proc` read, pidfd open,
+journal operation, or identity digest.
+
+Product-only validation of the retained database after fixing the SQL read path
+classifies the existing row as `product_evidence_mismatch`, not missing: Product
+retains `cancellation_requested / requested`, no invocation acknowledgement,
+and no Product process identity. Worker-v2 acknowledgement evidence does not
+weaken the separately required Product predicates. This finding does not run
+Gate 1 or authorize physical inspection.
 
 ## Default dry-run
 
-The CLI defaults to inspect-only. It:
+The CLI defaults to inspect-only. After Worker and Product authority pass, it:
 
-1. validates Worker, environment, and Product evidence;
+1. validates the environment forensic evidence;
 2. creates or validates the separate append-only operation journal;
 3. inventories the exact SBX identity;
 4. validates the ownership-marker digest;
@@ -85,8 +118,13 @@ absence records no fabricated exit status and never rewrites Product history.
 
 ## Execution interlock
 
+The failed Gate-1 diagnostic operation
+`15428ed9-f6df-4b6d-bfcd-379c7c855eb4` was never journal-bound and must never
+be reused. A future authorized Gate 1 must use a new explicit operation UUID.
+
 Destructive mode is not documented as a ready-to-run command. After a separately
-approved dry-run, a human must review its journal and returned identity digest.
+approved successful dry-run, a human must review its journal and returned
+identity digest.
 A future command must then include all of:
 
 - the exact historical setup-attempt ID;

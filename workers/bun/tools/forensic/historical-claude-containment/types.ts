@@ -10,6 +10,8 @@ export const HISTORICAL_PROCESS_START_IDENTITY = "1677";
 export const HISTORICAL_PROCESS_GENERATION =
   "8aecbece-10bb-4897-b5d5-41c6ba538b82";
 export const HISTORICAL_EXECUTABLE = "/opt/qe/claude/claude";
+export const FAILED_GATE_ONE_OPERATION_ID =
+  "15428ed9-f6df-4b6d-bfcd-379c7c855eb4";
 
 export const CONTAINMENT_JOURNAL_SCHEMA_VERSION = 1;
 
@@ -17,7 +19,9 @@ export type ContainmentErrorCode =
   | "invalid_arguments"
   | "historical_evidence_missing"
   | "historical_evidence_incompatible"
-  | "cancellation_authority_invalid"
+  | "product_evidence_read_unavailable"
+  | "product_evidence_missing"
+  | "product_evidence_mismatch"
   | "environment_evidence_incompatible"
   | "physical_identity_mismatch"
   | "physical_observation_unavailable"
@@ -77,7 +81,17 @@ export interface WorkerV2Evidence {
   digest: string;
 }
 
+export interface ProductDatabaseIdentity {
+  databaseName: string;
+  schemaName: "public";
+  serverLocality: "local";
+  serverPort: number;
+  schemaMigrationVersion: string;
+  schemaMigrationCount: number;
+}
+
 export interface ProductCancellationEvidence {
+  databaseIdentity: ProductDatabaseIdentity;
   setupAttemptId: string;
   cancellationRequestId: string;
   authorizationId: string;
@@ -108,6 +122,8 @@ export interface ProductCancellationEvidence {
   authorizationCount: 1;
   setupAuthorizedEventCount: 1;
   cancellationRequestedEventCount: 1;
+  cancellationEventOccurredAt: string;
+  laterSemanticEventCount: 0;
   humanAttentionCount: 0;
   transactionReadOnly: true;
   digest: string;

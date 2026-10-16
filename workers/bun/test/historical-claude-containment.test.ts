@@ -13,9 +13,16 @@ import {
   SbxPidfdPhysicalProcessController,
 } from "../tools/forensic/historical-claude-containment/physical.ts";
 import { runHistoricalContainment } from "../tools/forensic/historical-claude-containment/procedure.ts";
-import { parseProductEvidenceRow } from "../tools/forensic/historical-claude-containment/product-evidence.ts";
+import {
+  HISTORICAL_PRODUCT_DATABASE_NAME,
+  HISTORICAL_PRODUCT_SCHEMA_MIGRATION,
+  HISTORICAL_PRODUCT_SCHEMA_MIGRATION_COUNT,
+  parseProductEvidenceRow,
+} from "../tools/forensic/historical-claude-containment/product-evidence.ts";
 import {
   type CancellationSubmissionResult,
+  ContainmentError,
+  FAILED_GATE_ONE_OPERATION_ID,
   HISTORICAL_BACKEND_PROCESS_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_ENVIRONMENT_ID,
@@ -28,6 +35,7 @@ import {
   type PhysicalObservation,
   type PhysicalProcessController,
   type ProductCancellationEvidence,
+  type ProductDatabaseIdentity,
   type ProductEvidenceReader,
 } from "../tools/forensic/historical-claude-containment/types.ts";
 
@@ -211,7 +219,7 @@ describe("one-time historical Claude containment", () => {
     });
     const physical = new FakePhysical([liveObservation()]);
     await expect(dryRun(fixture, physical)).rejects.toMatchObject({
-      code: "cancellation_authority_invalid",
+      code: "product_evidence_mismatch",
     });
     expect(physical.inspectionCalls).toBe(0);
   });
@@ -225,8 +233,32 @@ describe("one-time historical Claude containment", () => {
       const fixture = await forensicFixture({ product });
       await expect(
         dryRun(fixture, new FakePhysical([liveObservation()])),
-      ).rejects.toMatchObject({ code: "cancellation_authority_invalid" });
+      ).rejects.toMatchObject({ code: "product_evidence_mismatch" });
     }
+  });
+
+  test.each([
+    "product_evidence_read_unavailable",
+    "product_evidence_missing",
+    "product_evidence_mismatch",
+  ] as const)("%s short-circuits before every physical access", async (errorCode) => {
+    const fixture = await forensicFixture();
+    const physical = new FakePhysical([liveObservation()]);
+    const product: ProductEvidenceReader = {
+      read: async () => {
+        throw new ContainmentError(errorCode, "Synthetic Product failure.");
+      },
+      close: async () => undefined,
+    };
+    await expect(
+      runHistoricalContainment(baseOptions(fixture), {
+        productEvidence: product,
+        physical,
+      }),
+    ).rejects.toMatchObject({ code: errorCode });
+    expect(physical.inspectionCalls).toBe(0);
+    expect(physical.cancellationCalls).toBe(0);
+    expect(await Bun.file(fixture.journal).exists()).toBe(false);
   });
 
   test("one journal binds the historical target to one containment operation", async () => {
@@ -553,6 +585,8 @@ describe("one-time historical Claude containment", () => {
       "/evidence/journal.sqlite",
       "--product-database-url-env",
       "QE_CONTAINMENT_PRODUCT_DATABASE_URL",
+      "--product-database-name",
+      HISTORICAL_PRODUCT_DATABASE_NAME,
       "--sbx-executable",
       "/usr/local/bin/sbx",
       "--setup-attempt-id",
@@ -566,17 +600,51 @@ describe("one-time historical Claude containment", () => {
     expect(() => parseContainmentArguments([...arguments_, "--force"])).toThrow(
       "Unknown argument --force",
     );
+    expect(() =>
+      parseContainmentArguments(
+        arguments_.map((value) =>
+          value === HISTORICAL_PRODUCT_DATABASE_NAME
+            ? "wrong-product-database"
+            : value,
+        ),
+      ),
+    ).toThrow("Product database name does not match");
   });
 
-  test("normal production Worker has no dependency on forensic containment", async () => {
-    const glob = new Bun.Glob("**/*.ts");
-    for await (const relative of glob.scan({
-      cwd: join(process.cwd(), "src"),
-      absolute: true,
-    })) {
-      const source = await Bun.file(relative).text();
-      expect(source).not.toContain("historical-claude-containment");
-      expect(source).not.toContain("readHistoricalWorkerV2Evidence");
+  test("failed Gate-1 operation ID cannot be reused", async () => {
+    const fixture = await forensicFixture();
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(
+      runHistoricalContainment(
+        {
+          ...baseOptions(fixture),
+          containmentOperationId: FAILED_GATE_ONE_OPERATION_ID,
+        },
+        { productEvidence: fixture.product, physical },
+      ),
+    ).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(fixture.product.reads).toBe(0);
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("normal Product, server, and Worker code have no forensic containment dependency", async () => {
+    for (const [root, pattern] of [
+      [join(process.cwd(), "src"), "**/*.ts"],
+      [
+        join(
+          process.cwd(),
+          "../../apps/quest_engineering_server/lib/quest_engineering_server",
+        ),
+        "**/*.ex",
+      ],
+    ] as const) {
+      const glob = new Bun.Glob(pattern);
+      for await (const relative of glob.scan({ cwd: root, absolute: true })) {
+        const source = await Bun.file(relative).text();
+        expect(source).not.toContain("historical-claude-containment");
+        expect(source).not.toContain("readHistoricalWorkerV2Evidence");
+        expect(source).not.toContain("ReadOnlyProductEvidenceReader");
+      }
     }
     const setupStore = await Bun.file(
       join(process.cwd(), "src/provider-account-setup-store.ts"),
@@ -847,6 +915,17 @@ function processHandle() {
   };
 }
 
+function productDatabaseIdentity(): ProductDatabaseIdentity {
+  return {
+    databaseName: HISTORICAL_PRODUCT_DATABASE_NAME,
+    schemaName: "public",
+    serverLocality: "local",
+    serverPort: 5432,
+    schemaMigrationVersion: HISTORICAL_PRODUCT_SCHEMA_MIGRATION,
+    schemaMigrationCount: HISTORICAL_PRODUCT_SCHEMA_MIGRATION_COUNT,
+  };
+}
+
 function productRow(): Record<string, unknown> {
   return {
     setup_attempt_id: HISTORICAL_SETUP_ATTEMPT_ID,
@@ -891,8 +970,13 @@ function productRow(): Record<string, unknown> {
     authorization_count: 1,
     setup_authorized_event_count: 1,
     cancellation_requested_event_count: 1,
+    cancellation_event_provider_account_id: "historical-account",
+    cancellation_event_setup_generation: 1,
+    cancellation_event_state: "cancellation_requested",
+    cancellation_event_invocation_state: "acknowledged",
+    cancellation_event_occurred_at: timestamp(),
+    later_semantic_event_count: 0,
     human_attention_count: 0,
-    transaction_read_only: "on",
   };
 }
 
@@ -904,7 +988,10 @@ class FakeProductReader implements ProductEvidenceReader {
 
   async read(): Promise<ProductCancellationEvidence> {
     this.reads += 1;
-    return parseProductEvidenceRow(structuredClone(this.row));
+    return parseProductEvidenceRow(
+      structuredClone(this.row),
+      productDatabaseIdentity(),
+    );
   }
 
   async close(): Promise<void> {}

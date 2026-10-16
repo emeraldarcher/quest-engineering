@@ -10,6 +10,7 @@ import {
   ContainmentError,
   type ContainmentRunOptions,
   type ContainmentRunResult,
+  FAILED_GATE_ONE_OPERATION_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_SETUP_ATTEMPT_ID,
   type PhysicalObservation,
@@ -317,13 +318,15 @@ function validateOptions(options: ContainmentRunOptions): void {
       "Containment operation ID must be an explicit UUID.",
     );
   if (
-    [HISTORICAL_SETUP_ATTEMPT_ID, HISTORICAL_CANCELLATION_REQUEST_ID].includes(
-      options.containmentOperationId,
-    )
+    [
+      HISTORICAL_SETUP_ATTEMPT_ID,
+      HISTORICAL_CANCELLATION_REQUEST_ID,
+      FAILED_GATE_ONE_OPERATION_ID,
+    ].includes(options.containmentOperationId)
   )
     throw new ContainmentError(
       "invalid_arguments",
-      "Containment operation ID must be independent from historical authority IDs.",
+      "Containment operation ID must be new and independent from historical or failed diagnostic IDs.",
     );
   const timeout = options.settlementTimeoutMs ?? 30_000;
   const poll = options.settlementPollMs ?? 250;
