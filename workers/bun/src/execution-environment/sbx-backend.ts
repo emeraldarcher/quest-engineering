@@ -13,6 +13,7 @@ import type {
   SbxSandboxSummary,
 } from "./sbx-client.ts";
 import { CliSbxClient, SbxClientError } from "./sbx-client.ts";
+import { DETACHED_PROCESS_CANCELLATION_PROGRAM } from "./sbx-detached-process.ts";
 import { SbxMixedCredentialProvisioner } from "./sbx-mixed-credential.ts";
 import { SbxPiCredentialProvisioner } from "./sbx-pi-credential.ts";
 import {
@@ -2464,29 +2465,6 @@ function positiveMilliseconds(value: number, name: string): number {
     throw new Error(`${name} must be a positive integer.`);
   return value;
 }
-
-const DETACHED_PROCESS_CANCELLATION_PROGRAM = [
-  "import hashlib,json,os,pathlib,signal,sys",
-  "marker=pathlib.Path('/qe/state/environment-ownership.json')",
-  "pid_text=os.environ.get('QE_PID','')",
-  "def done(status,code): print(json.dumps({'status':status},separators=(',',':'))); raise SystemExit(code)",
-  "if not marker.is_file() or hashlib.sha256(marker.read_bytes()).hexdigest()!=sys.argv[1]: done('identity_mismatch',4)",
-  "if not pid_text.isdigit(): done('identity_mismatch',4)",
-  "pid=int(pid_text)",
-  "try: fd=os.pidfd_open(pid,0)",
-  "except ProcessLookupError: done('gone',3)",
-  "except Exception: done('unavailable',5)",
-  "try:",
-  " p=pathlib.Path('/proc')/pid",
-  " if not p.is_dir(): done('gone',3)",
-  " stat=(p/'stat').read_text(); close=stat.rfind(')'); fields=stat[close+2:].split()",
-  " start=fields[19]; state=fields[0]; exe=os.readlink(p/'exe') if (p/'exe').exists() else ''",
-  " if state=='Z': done('gone',3)",
-  " if start!=sys.argv[2] or exe!=sys.argv[3]: done('identity_mismatch',4)",
-  " signal.pidfd_send_signal(fd,signal.SIGTERM,None,0)",
-  " done('signalled',0)",
-  "finally: os.close(fd)",
-].join("\n");
 
 function processAlive(processId: number): boolean {
   try {

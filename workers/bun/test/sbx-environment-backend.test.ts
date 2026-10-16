@@ -12,6 +12,7 @@ import {
   type SbxSandboxSummary,
   type SbxStopOptions,
 } from "../src/execution-environment/sbx-client.ts";
+import { DETACHED_PROCESS_CANCELLATION_PROGRAM } from "../src/execution-environment/sbx-detached-process.ts";
 import {
   SBX_EXECUTION_PROFILE_V1,
   SBX_PI_EXECUTION_PROFILE_V2,
@@ -40,6 +41,19 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
+});
+
+test("detached cancellation uses the PID text for procfs and submits one pidfd signal", () => {
+  expect(DETACHED_PROCESS_CANCELLATION_PROGRAM).toContain(
+    "pathlib.Path('/proc')/pid_text",
+  );
+  expect(DETACHED_PROCESS_CANCELLATION_PROGRAM).not.toContain(
+    "pathlib.Path('/proc')/pid\n",
+  );
+  expect(
+    DETACHED_PROCESS_CANCELLATION_PROGRAM.match(/pidfd_send_signal/g)?.length,
+  ).toBe(1);
+  expect(DETACHED_PROCESS_CANCELLATION_PROGRAM).not.toContain("os.kill");
 });
 
 executionEnvironmentConformance("Sbx", async () => {
