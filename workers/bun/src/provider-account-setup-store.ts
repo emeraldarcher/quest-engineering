@@ -440,17 +440,16 @@ export class ProviderAccountSetupStore {
       `);
       return;
     }
+    if (version !== PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION)
+      throw new Error(
+        `ProviderAccount setup SQLite schema ${version} is stale; expected ${PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION}. Recreate Worker state explicitly.`,
+      );
     const names = new Set(tables.map((table) => table.name));
     if (
       !names.has("provider_account_setup_attempts") ||
       !names.has("provider_account_setup_events")
     )
       throw new Error("ProviderAccount setup SQLite schema is incomplete.");
-    if (version === 2) this.migrateVersionTwo();
-    else if (version !== PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION)
-      throw new Error(
-        `ProviderAccount setup SQLite schema ${version} is stale; expected ${PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION}. Recreate Worker state explicitly.`,
-      );
 
     this.assertColumns("provider_account_setup_attempts", [
       "setup_attempt_id",
@@ -495,35 +494,6 @@ export class ProviderAccountSetupStore {
       !indexes.has("provider_account_setup_events_attempt")
     )
       throw new Error("ProviderAccount setup SQLite schema is incomplete.");
-  }
-
-  private migrateVersionTwo(): void {
-    this.db
-      .transaction(() => {
-        this.db.exec(`
-        ALTER TABLE provider_account_setup_attempts ADD COLUMN invocation_worker_generation INTEGER CHECK(invocation_worker_generation IS NULL OR invocation_worker_generation > 0);
-        ALTER TABLE provider_account_setup_attempts ADD COLUMN invocation_environment_operation_id TEXT;
-        ALTER TABLE provider_account_setup_attempts ADD COLUMN cancellation_operation_id TEXT;
-        ALTER TABLE provider_account_setup_attempts ADD COLUMN cancellation_invocation_state TEXT NOT NULL DEFAULT 'not_requested' CHECK(cancellation_invocation_state IN ('not_requested','intent_recorded','requested','acknowledged','uncertain','settled'));
-        ALTER TABLE provider_account_setup_attempts ADD COLUMN cancellation_observation TEXT NOT NULL DEFAULT 'not_observed' CHECK(cancellation_observation IN ('not_observed','running','exited','gone','unavailable','identity_mismatch'));
-        ALTER TABLE provider_account_setup_attempts ADD COLUMN supervision_failure_code TEXT;
-        UPDATE provider_account_setup_attempts
-        SET invocation_worker_generation = CASE
-              WHEN invocation_state = 'not_requested' THEN NULL
-              ELSE json_extract(command_json, '$.setup.worker_generation')
-            END,
-            invocation_environment_operation_id = CASE
-              WHEN invocation_state = 'not_requested' THEN NULL
-              ELSE json_extract(command_json, '$.setup.environment_operation_id')
-            END,
-            cancellation_invocation_state = CASE
-              WHEN cancellation_request_id IS NULL THEN 'not_requested'
-              ELSE 'intent_recorded'
-            END;
-        PRAGMA user_version=${PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION};
-      `);
-      })
-      .immediate();
   }
 
   private assertColumns(table: string, expected: readonly string[]): void {

@@ -60,11 +60,11 @@ re-inspects under the account-operation lock, compares the fresh configuration
 and evidence to that authorization, durably commits invocation intent through
 the coordinator callback, and only then spawns. Every other state or mismatch
 returns `not_requested`; there is no PATH, API-key, cloud, gateway, host-state,
-or operator-side fallback. `provider-account-setups.sqlite` schema version 3
-persists canonical preflight/validation evidence plus exact cancellation
-operation/observation state. It narrowly migrates complete schema-2 state so an
-acknowledged process and retained cancellation request remain reconcilable;
-other obsolete or incomplete state is rejected.
+or operator-side fallback. A fresh `provider-account-setups.sqlite` bootstraps
+schema version 3 directly and persists canonical preflight/validation evidence
+plus exact cancellation operation/observation state. Every obsolete version,
+including schema 2, is rejected with explicit reset guidance; production code
+contains no legacy-row conversion.
 
 ## Account-to-Run workspace tool broker
 

@@ -27,7 +27,10 @@ import {
   type ProviderAccountSetupReport,
   recognizeClaudeLoginInteraction,
 } from "../src/provider-account-setup.ts";
-import { ProviderAccountSetupStore } from "../src/provider-account-setup-store.ts";
+import {
+  PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION,
+  ProviderAccountSetupStore,
+} from "../src/provider-account-setup-store.ts";
 
 const roots: string[] = [];
 const interactionPublicKey = generateKeyPairSync("rsa", {
@@ -40,7 +43,40 @@ afterEach(async () => {
 });
 
 describe("ProviderAccount setup", () => {
-  test("SQLite rejects stale version-one and incomplete version-two state", async () => {
+  test("fresh SQLite bootstraps schema three directly", async () => {
+    const parent = join(process.cwd(), ".pi", "tmp");
+    await mkdir(parent, { recursive: true });
+    const root = await mkdtemp(join(parent, "provider-account-setup-v3-"));
+    roots.push(root);
+    const store = new ProviderAccountSetupStore(root);
+    store.close();
+
+    const db = new Database(join(root, "provider-account-setups.sqlite"));
+    const version = db.query("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    const columns = (
+      db
+        .query("PRAGMA table_info(provider_account_setup_attempts)")
+        .all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name);
+    db.close();
+    expect(version.user_version).toBe(PROVIDER_ACCOUNT_SETUP_SCHEMA_VERSION);
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        "invocation_worker_generation",
+        "invocation_environment_operation_id",
+        "cancellation_operation_id",
+        "cancellation_invocation_state",
+        "cancellation_observation",
+        "supervision_failure_code",
+      ]),
+    );
+  });
+
+  test("SQLite rejects schema two unchanged and rejects incomplete schema three", async () => {
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
     const staleRoot = await mkdtemp(
@@ -49,40 +85,7 @@ describe("ProviderAccount setup", () => {
     roots.push(staleRoot);
     const stalePath = join(staleRoot, "provider-account-setups.sqlite");
     const stale = new Database(stalePath);
-    stale.exec("PRAGMA user_version=2");
-    stale.close();
-    expect(() => new ProviderAccountSetupStore(staleRoot)).toThrow(
-      "incomplete",
-    );
-
-    const incompleteRoot = await mkdtemp(
-      join(parent, "provider-account-setup-incomplete-"),
-    );
-    roots.push(incompleteRoot);
-    const incompletePath = join(
-      incompleteRoot,
-      "provider-account-setups.sqlite",
-    );
-    const incomplete = new Database(incompletePath);
-    incomplete.exec(`
-      CREATE TABLE provider_account_setup_attempts(setup_attempt_id TEXT PRIMARY KEY);
-      CREATE TABLE provider_account_setup_events(event_id INTEGER PRIMARY KEY);
-      PRAGMA user_version=1;
-    `);
-    incomplete.close();
-    expect(() => new ProviderAccountSetupStore(incompleteRoot)).toThrow(
-      "stale",
-    );
-  });
-
-  test("schema two migrates retained cancellation intent and invocation generation", async () => {
-    const parent = join(process.cwd(), ".pi", "tmp");
-    await mkdir(parent, { recursive: true });
-    const root = await mkdtemp(join(parent, "provider-account-setup-v2-"));
-    roots.push(root);
-    const path = join(root, "provider-account-setups.sqlite");
-    const db = new Database(path);
-    db.exec(`
+    stale.exec(`
       CREATE TABLE provider_account_setup_attempts(
         setup_attempt_id TEXT PRIMARY KEY,
         command_json TEXT NOT NULL,
@@ -112,49 +115,67 @@ describe("ProviderAccount setup", () => {
       ON provider_account_setup_events(setup_attempt_id,event_id);
       PRAGMA user_version=2;
     `);
-    const command = migrationSetupCommand();
-    db.query(
-      `INSERT INTO provider_account_setup_attempts
-       (setup_attempt_id,command_json,state,invocation_state,process_json,attention_id,preflight_json,validation_json,failure_code,cancellation_request_id,input_delivery_json,created_at,updated_at)
-       VALUES (?,?,'cancellation_requested','acknowledged',NULL,NULL,NULL,NULL,NULL,'retained-cancel',NULL,?,?)`,
-    ).run(
-      command.setup.setup_attempt_id,
-      JSON.stringify(command),
-      "2026-10-15T00:00:00.000Z",
-      "2026-10-15T00:00:01.000Z",
+    stale
+      .query(
+        `INSERT INTO provider_account_setup_attempts
+         (setup_attempt_id,command_json,state,invocation_state,process_json,attention_id,preflight_json,validation_json,failure_code,cancellation_request_id,input_delivery_json,created_at,updated_at)
+         VALUES ('legacy-attempt','{"legacy":"evidence"}','cancellation_requested','acknowledged','{"processGeneration":"legacy-process"}',NULL,NULL,NULL,NULL,'legacy-cancellation',NULL,'2026-10-15T00:00:00.000Z','2026-10-15T00:00:01.000Z')`,
+      )
+      .run();
+    stale.close();
+    expect(() => new ProviderAccountSetupStore(staleRoot)).toThrow(
+      "schema 2 is stale; expected 3. Recreate Worker state explicitly",
     );
-    db.close();
+    const preserved = new Database(stalePath);
+    const preservedVersion = preserved.query("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+    const preservedColumns = (
+      preserved
+        .query("PRAGMA table_info(provider_account_setup_attempts)")
+        .all() as Array<{ name: string }>
+    ).map((column) => column.name);
+    expect(preservedVersion.user_version).toBe(2);
+    expect(preservedColumns).not.toContain("cancellation_operation_id");
+    expect(
+      preserved
+        .query(
+          `SELECT setup_attempt_id,command_json,process_json,cancellation_request_id
+           FROM provider_account_setup_attempts`,
+        )
+        .get(),
+    ).toEqual({
+      setup_attempt_id: "legacy-attempt",
+      command_json: '{"legacy":"evidence"}',
+      process_json: '{"processGeneration":"legacy-process"}',
+      cancellation_request_id: "legacy-cancellation",
+    });
+    preserved.close();
 
-    const store = new ProviderAccountSetupStore(root);
-    expect(store.get(command.setup.setup_attempt_id)).toMatchObject({
-      invocationWorkerGeneration: 7,
-      invocationEnvironmentOperationId: "retained-environment-operation",
-      cancellationRequestId: "retained-cancel",
-      cancellationOperationId: null,
-      cancellationInvocationState: "intent_recorded",
-      cancellationObservation: "not_observed",
-    });
-    store.accept({
-      ...command,
-      connection_generation: 8,
-      setup: {
-        ...command.setup,
-        worker_generation: 8,
-        environment_operation_id: "reconciled-environment-operation",
-      },
-    });
-    expect(store.get(command.setup.setup_attempt_id)).toMatchObject({
-      command: {
-        connection_generation: 8,
-        setup: {
-          worker_generation: 8,
-          environment_operation_id: "reconciled-environment-operation",
-        },
-      },
-      invocationWorkerGeneration: 7,
-      invocationEnvironmentOperationId: "retained-environment-operation",
-    });
-    store.close();
+    const incompleteRoot = await mkdtemp(
+      join(parent, "provider-account-setup-incomplete-"),
+    );
+    roots.push(incompleteRoot);
+    const incomplete = new Database(
+      join(incompleteRoot, "provider-account-setups.sqlite"),
+    );
+    incomplete.exec(`
+      CREATE TABLE provider_account_setup_attempts(setup_attempt_id TEXT PRIMARY KEY);
+      PRAGMA user_version=3;
+    `);
+    incomplete.close();
+    expect(() => new ProviderAccountSetupStore(incompleteRoot)).toThrow(
+      "incomplete",
+    );
+  });
+
+  test("production setup store contains no schema-two conversion path", async () => {
+    const source = await Bun.file(
+      new URL("../src/provider-account-setup-store.ts", import.meta.url),
+    ).text();
+    expect(source).not.toContain("migrateVersionTwo");
+    expect(source).not.toMatch(/version\s*===\s*2/);
+    expect(source).not.toContain("ALTER TABLE provider_account_setup_attempts");
   });
 
   test("protocol decoder requires exact setup and ephemeral-input fences", async () => {
@@ -1036,6 +1057,48 @@ describe("ProviderAccount setup", () => {
     );
   });
 
+  test("schema three preserves invocation identity across control-generation reconciliation", async () => {
+    const fixture = await setupFixture();
+    try {
+      let record = fixture.store.accept(fixture.setupCommand);
+      record = fixture.store.transition(
+        record.setupAttemptId,
+        {
+          state: "invocation_requested",
+          invocationState: "requested",
+          invocationWorkerGeneration:
+            fixture.setupCommand.setup.worker_generation,
+          invocationEnvironmentOperationId:
+            fixture.setupCommand.setup.environment_operation_id,
+        },
+        "login_invocation_requested",
+      );
+      fixture.store.accept({
+        ...fixture.setupCommand,
+        connection_generation: 8,
+        setup: {
+          ...fixture.setupCommand.setup,
+          worker_generation: 8,
+          environment_operation_id: "reconciled-environment-operation",
+        },
+      });
+      expect(fixture.store.get(record.setupAttemptId)).toMatchObject({
+        command: {
+          connection_generation: 8,
+          setup: {
+            worker_generation: 8,
+            environment_operation_id: "reconciled-environment-operation",
+          },
+        },
+        invocationWorkerGeneration: 7,
+        invocationEnvironmentOperationId: "environment-operation",
+      });
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
   test("serializes one active attempt per account while allowing distinct accounts", async () => {
     const fixture = await setupFixture();
     try {
@@ -1198,45 +1261,6 @@ async function setupFixture(
     deliveries,
     store,
     coordinator,
-  };
-}
-
-function migrationSetupCommand(): ProviderAccountSetupCommand {
-  return {
-    type: "prepare_provider_account_setup",
-    protocol_version: 18,
-    worker_id: "worker-setup",
-    connection_generation: 7,
-    setup: {
-      setup_attempt_id: "retained-attempt",
-      provider_account_id: "retained-account",
-      setup_generation: 4,
-      authorization_id: "retained-authorization",
-      authorization_kind: "provider_account_setup",
-      authorized_at: "2026-10-15T00:00:00.000Z",
-      credential_generation: 2,
-      environment_generation: 3,
-      worker_generation: 7,
-      environment_operation_id: "retained-environment-operation",
-      provider_key: "anthropic",
-      environment: {
-        backend_kind: "sbx",
-        environment_id: "retained-environment",
-        incarnation: "retained-incarnation",
-      },
-      authorized_authentication: {
-        state: "authentication_required",
-        method: "none",
-        configuration_identity: "claude-code-2.1.292-subscription-v1",
-        environment_policy: "claude-subscription-explicit-environment-v1",
-        evidence_identity: "retained-evidence",
-        inspected_at: "2026-10-15T00:00:00.000Z",
-      },
-      interaction_public_key: interactionPublicKey,
-      state: "cancellation_requested",
-      invocation_state: "acknowledged",
-      cancellation_request_id: "retained-cancel",
-    },
   };
 }
 

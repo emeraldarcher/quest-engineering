@@ -50,7 +50,7 @@ Expiry records an internal supervision-termination intent, performs exact cancel
 
 ## Exact cancellation lifecycle
 
-Worker setup SQLite schema `3` adds durable cancellation operation state and preserves schema-`2` attempts through a one-way migration. Worker Protocol remains `18`: no command or report shape changes, and the implementation now fulfills the existing physical-settlement meaning of `cancellation_requested`, `cancelled`, `failed`, and `uncertain`.
+Fresh Worker setup state bootstraps current-only SQLite schema `3` directly with durable cancellation operation state. Schema `2` and every other obsolete version are rejected with explicit reset guidance and are never converted in production. Worker Protocol remains `18`: no command or report shape changes, and the implementation now fulfills the existing physical-settlement meaning of `cancellation_requested`, `cancelled`, `failed`, and `uncertain`.
 
 1. Persist the Product cancellation request or internal supervision-termination intent.
 2. Revalidate the complete setup and process identity: account, authorization/setup identity, credential/environment/invocation Worker generations, environment operation and incarnation, backend process ID, start identity, process generation, executable, owner, profile, and Worker.
@@ -64,16 +64,12 @@ If the Worker could have crossed the cancellation boundary but did not durably r
 
 Loss of a non-recoverable stdout/stderr attachment is also fail-closed: the Worker records supervision termination intent and exactly cancels the detached process instead of leaving it running.
 
-## Post-merge retained-attempt reconciliation
+## Retained schema-2 attempt
 
-The retained historical attempt must be reconciled only after the reviewed fix is human-merged and deployed to the same retained Product/Worker state.
+The historical acknowledged attempt and its already-persisted Product cancellation request remain unresolved outside the production schema-3 path. Its original schema-2 ledger is forensic evidence: do not migrate, reset, rewrite, or import it into a fresh Worker database. Do not fabricate a replacement setup attempt, process handle, authorization, or cancellation request.
 
-1. Do not create another authorization, setup attempt, login invocation, account, or environment.
-2. Let the normal Product-to-Worker reconciliation resend the already-persisted cancellation request for the exact attempt.
-3. Let Worker schema `2` migrate to schema `3`; do not edit the SQLite database manually.
-4. The Worker must read-only reconcile the stored environment/process handle before any cancellation submission.
-5. If no cancellation submission may already have occurred, the Worker records one operation ID and invokes exact attached/detached cancellation once.
-6. If submission is ambiguous, do not retry it. Continue only read-only exact-process observation.
-7. Confirm physical `exited` or `gone` evidence and the truthful Product terminal state. Identity mismatch or unavailable evidence remains an explicit escalation; do not use a shell kill, PID-only signal, SBX attachment, Herdr, or provider-side workaround.
+The smallest read-only reconciliation question is whether the still-original schema-2 runtime retains its in-memory exact process attachment and can consume the existing Product cancellation authority through its existing normal command path. Investigating that possibility must not inspect provider output or account files, enter the SBX, attach another transport, send input, signal the process, or create provider activity.
 
-Only after that retained attempt is physically settled may a new Phase E begin from completely fresh state, and it requires a new explicit `PROCEED`.
+If the original runtime cannot safely complete that existing command, any fallback must be a separately approved, independently reviewed, one-time containment procedure—not permanent QE compatibility code. Such a procedure must read without modifying the original schema-2 ledger and Product cancellation evidence; validate the exact SBX environment/incarnation, backend PID, process start identity, executable, and process generation; reject mismatch or uncertainty; never launch or retry login; cross at most one already-authorized physical cancellation boundary; and write its result to separate evidence rather than rewriting history. This PR neither implements nor executes that procedure.
+
+The historical process must not be described as terminal until exact read-only reconciliation proves authoritative absence or an approved cancellation is physically observed. Fresh Phase E remains blocked until then and still requires completely fresh state plus a new explicit `PROCEED`.

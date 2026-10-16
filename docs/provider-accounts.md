@@ -110,15 +110,14 @@ PostgreSQL owns:
   attention and delivery metadata with no response value.
 
 The Worker execution-environment SQLite schema remains current-only version 3.
-The separate ProviderAccount setup SQLite ledger is version 3. It performs one
-narrow version-2 migration so an acknowledged process and an already-persisted
-cancellation request survive deployment of exact restart-safe cancellation;
-other stale or incomplete setup schemas fail startup. The ledger stores safe
-authorization identity, exact account/environment/process and invocation-Worker
-identity, cancellation operation/invocation/observation state, canonical
-preflight and post-login evidence, input-delivery certainty, validation class,
-and append-only safe events. Neither SQLite database accepts sensitive
-interaction bytes. Run rows
+The separate ProviderAccount setup SQLite ledger is current-only version 3.
+Fresh Worker state bootstraps that complete schema directly. Every obsolete
+version, including version 2, is rejected with explicit reset guidance; no
+legacy setup rows are converted. The ledger stores safe authorization identity,
+exact account/environment/process and invocation-Worker identity, cancellation
+operation/invocation/observation state, canonical preflight and post-login
+evidence, input-delivery certainty, validation class, and append-only safe
+events. Neither SQLite database accepts sensitive interaction bytes. Run rows
 and account rows cannot collide because ownership is part of every environment
 key.
 
