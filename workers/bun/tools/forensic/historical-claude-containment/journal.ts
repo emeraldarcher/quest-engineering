@@ -120,14 +120,14 @@ export class ContainmentJournal {
             evidence.target.processStartIdentity,
             evidence.target.processGeneration,
             evidence.target.executable,
-            evidence.targetIdentityDigest,
+            evidence.corroboratedEvidenceDigest,
             evidence.workerEvidenceDigest,
             evidence.productEvidenceDigest,
             evidence.environmentEvidenceDigest,
             occurredAt,
           );
         this.appendUnsafe(operationId, "prepared", {
-          target_identity_digest: evidence.targetIdentityDigest,
+          corroborated_evidence_digest: evidence.corroboratedEvidenceDigest,
         });
         return { created: true };
       })
@@ -179,6 +179,21 @@ export class ContainmentJournal {
         )
         .get(operationId),
     );
+  }
+
+  reviewedPhysicalIdentityDigest(operationId: string): string | null {
+    const row = this.database
+      .query(
+        `SELECT details_json FROM containment_events
+         WHERE operation_id=? AND event_type='dry_run_completed'
+         ORDER BY event_id DESC LIMIT 1`,
+      )
+      .get(operationId) as { details_json: string } | null;
+    if (!row) return null;
+    const details = JSON.parse(row.details_json) as Record<string, unknown>;
+    return typeof details.physical_identity_digest === "string"
+      ? details.physical_identity_digest
+      : null;
   }
 
   hasEvent(operationId: string, eventType: ContainmentEventType): boolean {
@@ -334,7 +349,7 @@ function assertOperation(
     row.process_start_identity !== evidence.target.processStartIdentity ||
     row.process_generation !== evidence.target.processGeneration ||
     row.executable !== evidence.target.executable ||
-    row.target_identity_digest !== evidence.targetIdentityDigest ||
+    row.target_identity_digest !== evidence.corroboratedEvidenceDigest ||
     row.worker_evidence_digest !== evidence.workerEvidenceDigest ||
     row.product_evidence_digest !== evidence.productEvidenceDigest ||
     row.environment_evidence_digest !== evidence.environmentEvidenceDigest

@@ -7,13 +7,9 @@ import {
   ReadOnlyProductEvidenceReader,
 } from "../tools/forensic/historical-claude-containment/product-evidence.ts";
 import {
-  HISTORICAL_BACKEND_PROCESS_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_ENVIRONMENT_ID,
   HISTORICAL_ENVIRONMENT_INCARNATION,
-  HISTORICAL_EXECUTABLE,
-  HISTORICAL_PROCESS_GENERATION,
-  HISTORICAL_PROCESS_START_IDENTITY,
   HISTORICAL_SETUP_ATTEMPT_ID,
 } from "../tools/forensic/historical-claude-containment/types.ts";
 
@@ -96,7 +92,7 @@ test.skipIf(!live)(
       const evidence = await reader.read(HISTORICAL_SETUP_ATTEMPT_ID);
       expect(evidence).toMatchObject({
         cancellationRequestId: HISTORICAL_CANCELLATION_REQUEST_ID,
-        invocationState: "acknowledged",
+        invocationState: "requested",
         authorizationCount: 1,
         humanAttentionCount: 0,
         laterSemanticEventCount: 0,
@@ -229,7 +225,7 @@ async function prepareTemporaryProductSchema(
        'claude-code-2.1.292-subscription-v1',
        'claude-subscription-explicit-environment-v1','authentication-evidence',$3,
        'historical-worker',7,'historical-environment-operation','sbx',$4,$5,
-       'cancellation_requested','acknowledged',$6,$7,$8,$9,$3,$3,$10,
+       'cancellation_requested','requested',NULL,NULL,NULL,NULL,$3,NULL,$6,
        'setup_cancelled')`,
     [
       HISTORICAL_SETUP_ATTEMPT_ID,
@@ -237,10 +233,6 @@ async function prepareTemporaryProductSchema(
       observedAt,
       HISTORICAL_ENVIRONMENT_ID,
       HISTORICAL_ENVIRONMENT_INCARNATION,
-      HISTORICAL_BACKEND_PROCESS_ID,
-      HISTORICAL_PROCESS_START_IDENTITY,
-      HISTORICAL_PROCESS_GENERATION,
-      HISTORICAL_EXECUTABLE,
       HISTORICAL_CANCELLATION_REQUEST_ID,
     ],
   );
@@ -262,7 +254,7 @@ async function prepareTemporaryProductSchema(
        ('authorization-event',$1,'historical-account',1,'setup_authorized',
         'authorized','not_requested',$2),
        ('cancellation-event',$1,'historical-account',1,'cancellation_requested',
-        'cancellation_requested','acknowledged',$3)`,
+        'cancellation_requested','requested',$3)`,
     [
       HISTORICAL_SETUP_ATTEMPT_ID,
       "2026-10-15T00:00:00.000Z",

@@ -8,13 +8,9 @@ import {
   ReadOnlyProductEvidenceReader,
 } from "../tools/forensic/historical-claude-containment/product-evidence.ts";
 import {
-  HISTORICAL_BACKEND_PROCESS_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_ENVIRONMENT_ID,
   HISTORICAL_ENVIRONMENT_INCARNATION,
-  HISTORICAL_EXECUTABLE,
-  HISTORICAL_PROCESS_GENERATION,
-  HISTORICAL_PROCESS_START_IDENTITY,
   HISTORICAL_SETUP_ATTEMPT_ID,
 } from "../tools/forensic/historical-claude-containment/types.ts";
 
@@ -32,7 +28,7 @@ describe("historical containment Product evidence reader", () => {
     expect(evidence).toMatchObject({
       setupAttemptId: HISTORICAL_SETUP_ATTEMPT_ID,
       cancellationRequestId: HISTORICAL_CANCELLATION_REQUEST_ID,
-      invocationState: "acknowledged",
+      invocationState: "requested",
       authorizationCount: 1,
       cancellationRequestedEventCount: 1,
       laterSemanticEventCount: 0,
@@ -43,12 +39,20 @@ describe("historical containment Product evidence reader", () => {
         schemaMigrationVersion: HISTORICAL_PRODUCT_SCHEMA_MIGRATION,
       },
     });
+    expect(evidence).not.toHaveProperty("backendProcessId");
+    expect(evidence).not.toHaveProperty("processStartIdentity");
+    expect(evidence).not.toHaveProperty("processGeneration");
+    expect(evidence).not.toHaveProperty("executable");
+    expect(evidence).not.toHaveProperty("invocationAcknowledgedAt");
     expect(sql.transactionOptions).toEqual([
       "isolation level repeatable read read only",
     ]);
     expect(sql.queries).toHaveLength(2);
     expect(sql.queries[1]).toContain("setup_authorization.id");
     expect(sql.queries[1]).not.toMatch(/\bauthorization\./);
+    expect(sql.queries[1]).not.toMatch(
+      /process_backend_id|process_start_identity|process_generation|process_executable|invocation_acknowledged_at/,
+    );
     expect(sql.queries.join("\n")).not.toMatch(
       /\b(?:INSERT|UPDATE|DELETE|ALTER|VACUUM|TRUNCATE)\b/,
     );
@@ -128,13 +132,43 @@ describe("historical containment Product evidence reader", () => {
       "cancellation belongs to another account",
       { cancellation_event_provider_account_id: randomUUID() },
     ],
-    ["invocation is not acknowledged", { invocation_state: "requested" }],
+    [
+      "Product falsely claims physical acknowledgement",
+      { invocation_state: "acknowledged" },
+    ],
     ["unexpected HumanAttention", { human_attention_count: 1 }],
     ["duplicate cancellation", { cancellation_requested_event_count: 2 }],
     ["later superseding event", { later_semantic_event_count: 1 }],
     ["invalid setup authorization count", { authorization_count: 2 }],
     ["wrong ProviderAccount", { provider_account_id: randomUUID() }],
   ] as const)("%s is product_evidence_mismatch", async (_name, mutation) => {
+    const reader = productReader(
+      new FakeProductSql({
+        identityRows: [identityRow()],
+        authorityRows: [{ ...authorityRow(), ...mutation }],
+      }),
+    );
+    await expect(
+      reader.read(HISTORICAL_SETUP_ATTEMPT_ID),
+    ).rejects.toMatchObject({ code: "product_evidence_mismatch" });
+  });
+
+  test.each([
+    [
+      "authorization after invocation intent",
+      {
+        invocation_requested_at: "2026-10-15T00:00:01.000Z",
+        authorization_authorized_at: "2026-10-15T00:00:02.000Z",
+      },
+    ],
+    [
+      "cancellation before invocation intent",
+      {
+        invocation_requested_at: "2026-10-15T00:00:02.000Z",
+        cancellation_event_occurred_at: "2026-10-15T00:00:01.000Z",
+      },
+    ],
+  ] as const)("%s is a Product chronology mismatch", async (_name, mutation) => {
     const reader = productReader(
       new FakeProductSql({
         identityRows: [identityRow()],
@@ -254,13 +288,8 @@ function authorityRow(): Record<string, unknown> {
     environment_id: HISTORICAL_ENVIRONMENT_ID,
     environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
     state: "cancellation_requested",
-    invocation_state: "acknowledged",
-    process_backend_id: HISTORICAL_BACKEND_PROCESS_ID,
-    process_start_identity: HISTORICAL_PROCESS_START_IDENTITY,
-    process_generation: HISTORICAL_PROCESS_GENERATION,
-    process_executable: HISTORICAL_EXECUTABLE,
+    invocation_state: "requested",
     invocation_requested_at: observedAt,
-    invocation_acknowledged_at: observedAt,
     cancellation_request_id: HISTORICAL_CANCELLATION_REQUEST_ID,
     failure_code: "setup_cancelled",
     authorization_id: "historical-authorization",
@@ -279,7 +308,7 @@ function authorityRow(): Record<string, unknown> {
     cancellation_event_provider_account_id: "historical-account",
     cancellation_event_setup_generation: 1,
     cancellation_event_state: "cancellation_requested",
-    cancellation_event_invocation_state: "acknowledged",
+    cancellation_event_invocation_state: "requested",
     cancellation_event_occurred_at: observedAt,
     later_semantic_event_count: 0,
     human_attention_count: 0,

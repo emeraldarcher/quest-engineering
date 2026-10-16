@@ -2,17 +2,13 @@ import { SQL } from "bun";
 import { safeDigest } from "./evidence.ts";
 import {
   ContainmentError,
-  HISTORICAL_BACKEND_PROCESS_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_ENVIRONMENT_ID,
   HISTORICAL_ENVIRONMENT_INCARNATION,
-  HISTORICAL_EXECUTABLE,
-  HISTORICAL_PROCESS_GENERATION,
-  HISTORICAL_PROCESS_START_IDENTITY,
   HISTORICAL_SETUP_ATTEMPT_ID,
-  type ProductCancellationEvidence,
   type ProductDatabaseIdentity,
   type ProductEvidenceReader,
+  type ProductSemanticAuthorityEvidence,
 } from "./types.ts";
 
 export const HISTORICAL_PRODUCT_DATABASE_NAME = "qe_phase_e_fresh_16f44656_v3";
@@ -51,12 +47,7 @@ const PRODUCT_ROW_KEYS = [
   "environment_incarnation",
   "state",
   "invocation_state",
-  "process_backend_id",
-  "process_start_identity",
-  "process_generation",
-  "process_executable",
   "invocation_requested_at",
-  "invocation_acknowledged_at",
   "cancellation_request_id",
   "failure_code",
   "authorization_id",
@@ -126,12 +117,7 @@ const PRODUCT_AUTHORITY_QUERY = `
     attempt.environment_incarnation,
     attempt.state,
     attempt.invocation_state,
-    attempt.process_backend_id,
-    attempt.process_start_identity,
-    attempt.process_generation,
-    attempt.process_executable,
     attempt.invocation_requested_at,
-    attempt.invocation_acknowledged_at,
     attempt.cancellation_request_id,
     attempt.failure_code,
     setup_authorization.id AS authorization_id,
@@ -280,7 +266,9 @@ export class ReadOnlyProductEvidenceReader implements ProductEvidenceReader {
     this.closeSql = dependencies.closeSql ?? !dependencies.sql;
   }
 
-  async read(setupAttemptId: string): Promise<ProductCancellationEvidence> {
+  async read(
+    setupAttemptId: string,
+  ): Promise<ProductSemanticAuthorityEvidence> {
     if (setupAttemptId !== HISTORICAL_SETUP_ATTEMPT_ID)
       throw mismatch(
         "Product lookup is restricted to the reviewed historical attempt.",
@@ -385,20 +373,20 @@ export function parseProductDatabaseIdentity(
   );
   const port = positiveInteger(row.server_port, "Product server port");
   exact(port, target.expectedServerPort, "Product server port");
-  return {
+  return Object.freeze({
     databaseName: target.expectedDatabaseName,
     schemaName: target.expectedSchemaName,
     serverLocality: target.expectedServerLocality,
     serverPort: port,
     schemaMigrationVersion: target.expectedSchemaMigration,
     schemaMigrationCount: target.expectedSchemaMigrationCount,
-  };
+  });
 }
 
 export function parseProductEvidenceRow(
   value: unknown,
   databaseIdentity: ProductDatabaseIdentity,
-): ProductCancellationEvidence {
+): ProductSemanticAuthorityEvidence {
   const row = exactRow(value, PRODUCT_ROW_KEYS, "evidence");
   exact(row.setup_attempt_id, HISTORICAL_SETUP_ATTEMPT_ID, "setup attempt");
   exact(
@@ -407,7 +395,7 @@ export function parseProductEvidenceRow(
     "cancellation request",
   );
   exact(row.state, "cancellation_requested", "Product setup state");
-  exact(row.invocation_state, "acknowledged", "Product invocation state");
+  exact(row.invocation_state, "requested", "Product invocation state");
   exact(row.backend_kind, "sbx", "backend");
   exact(row.environment_id, HISTORICAL_ENVIRONMENT_ID, "environment");
   exact(
@@ -415,18 +403,6 @@ export function parseProductEvidenceRow(
     HISTORICAL_ENVIRONMENT_INCARNATION,
     "environment incarnation",
   );
-  exact(row.process_backend_id, HISTORICAL_BACKEND_PROCESS_ID, "backend PID");
-  exact(
-    row.process_start_identity,
-    HISTORICAL_PROCESS_START_IDENTITY,
-    "process start identity",
-  );
-  exact(
-    row.process_generation,
-    HISTORICAL_PROCESS_GENERATION,
-    "process generation",
-  );
-  exact(row.process_executable, HISTORICAL_EXECUTABLE, "process executable");
   exact(row.authorization_kind, "provider_account_setup", "authorization kind");
   exact(
     row.attempt_authorization_auth_state,
@@ -501,14 +477,7 @@ export function parseProductEvidenceRow(
     row.invocation_requested_at,
     "invocation request",
   );
-  const invocationAcknowledgedAt = timestamp(
-    row.invocation_acknowledged_at,
-    "invocation acknowledgement",
-  );
-  if (
-    Date.parse(authorizedAt) > Date.parse(invocationRequestedAt) ||
-    Date.parse(invocationRequestedAt) > Date.parse(invocationAcknowledgedAt)
-  )
+  if (Date.parse(authorizedAt) > Date.parse(invocationRequestedAt))
     throw mismatch("Product authorization chronology is invalid.");
 
   exactCount(row.authorization_count, 1, "authorization count");
@@ -542,7 +511,7 @@ export function parseProductEvidenceRow(
   );
   exact(
     row.cancellation_event_invocation_state,
-    "acknowledged",
+    "requested",
     "cancellation event invocation state",
   );
   const cancellationEventOccurredAt = timestamp(
@@ -550,15 +519,15 @@ export function parseProductEvidenceRow(
     "cancellation event timestamp",
   );
   if (
-    Date.parse(cancellationEventOccurredAt) <
-    Date.parse(invocationAcknowledgedAt)
+    Date.parse(cancellationEventOccurredAt) < Date.parse(invocationRequestedAt)
   )
     throw mismatch("Product cancellation chronology is invalid.");
   exactCount(row.later_semantic_event_count, 0, "later semantic event count");
   exactCount(row.human_attention_count, 0, "HumanAttention count");
 
   const safe = {
-    databaseIdentity,
+    source: "product_repeatable_read_read_only_transaction" as const,
+    databaseIdentity: Object.freeze({ ...databaseIdentity }),
     setupAttemptId: HISTORICAL_SETUP_ATTEMPT_ID,
     cancellationRequestId: HISTORICAL_CANCELLATION_REQUEST_ID,
     authorizationId: text(row.authorization_id, "authorization ID"),
@@ -586,18 +555,13 @@ export function parseProductEvidenceRow(
     backendKind: "sbx" as const,
     environmentId: HISTORICAL_ENVIRONMENT_ID,
     environmentIncarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
-    backendProcessId: HISTORICAL_BACKEND_PROCESS_ID,
-    processStartIdentity: HISTORICAL_PROCESS_START_IDENTITY,
-    processGeneration: HISTORICAL_PROCESS_GENERATION,
-    executable: HISTORICAL_EXECUTABLE,
     authConfigurationIdentity,
     authEnvironmentPolicy,
     authEvidenceIdentity,
     authInspectedAt,
     state: "cancellation_requested" as const,
-    invocationState: "acknowledged" as const,
+    invocationState: "requested" as const,
     invocationRequestedAt,
-    invocationAcknowledgedAt,
     authorizationCount: 1 as const,
     setupAuthorizedEventCount: 1 as const,
     cancellationRequestedEventCount: 1 as const,
@@ -606,7 +570,7 @@ export function parseProductEvidenceRow(
     humanAttentionCount: 0 as const,
     transactionReadOnly: true as const,
   };
-  return { ...safe, digest: safeDigest(safe) };
+  return Object.freeze({ ...safe, digest: safeDigest(safe) });
 }
 
 function exactRow(

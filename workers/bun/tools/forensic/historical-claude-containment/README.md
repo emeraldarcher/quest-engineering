@@ -41,13 +41,20 @@ local/private server locality, port `5432`, and the exact `20261017000000`
 migration head/count before reading authority.
 Credentials are not included in evidence or identity digests.
 
-The authority query corroborates one setup authorization, acknowledged
-invocation and complete process identity, the exact existing cancellation
-request, exactly one matching cancellation event, zero later semantic events,
-and zero HumanAttention rows. The Product request is the only cancellation
-authority; the Worker v2 row is required to remain at its historical
-pre-delivery `invocation_acknowledged / acknowledged` truth and is not expected
-to contain the later cancellation request.
+The Product query proves semantic authority only: the exact setup attempt and
+account, one setup authorization, the historically truthful
+`cancellation_requested / requested` state, the exact existing cancellation
+request and event, valid Product-local chronology, zero later semantic events,
+and zero HumanAttention rows. It deliberately does not select or synthesize an
+invocation acknowledgement, PID, start identity, executable, or process
+generation.
+
+The immutable Worker-v2 row and events separately prove one
+`login_invocation_requested` intent, one `login_invocation_acknowledged` event,
+its `invocation_acknowledged / acknowledged` state, complete historical process
+and environment identity, and no Worker-side cancellation submission or event. The Product
+request remains the sole semantic cancellation authority. Neither source can
+replace the other.
 
 ## Product read outcomes and Gate-1 ordering
 
@@ -61,18 +68,66 @@ Product evidence has four non-overlapping outcomes:
   existing authority row violates an exact predicate; and
 - valid evidence: all identity and authority predicates pass.
 
-Only valid evidence permits any physical call. Gate 1 always parses immutable
-Worker-v2 evidence first, validates Product authority second, validates the
-environment third, and only then inspects the process. Missing, mismatched, or
-unavailable Product evidence produces no SBX lookup, `/proc` read, pidfd open,
-journal operation, or identity digest.
+Worker evidence independently reports `worker_evidence_missing` when the exact
+attempt is absent and `worker_evidence_mismatch` when schema-2 or its mandatory
+acknowledged physical evidence is contradictory. If independently valid
+Product and Worker evidence disagree on any shared identity,
+`corroboration_mismatch` is reported. These are distinct from Product failures.
 
-Product-only validation of the retained database after fixing the SQL read path
-classifies the existing row as `product_evidence_mismatch`, not missing: Product
-retains `cancellation_requested / requested`, no invocation acknowledgement,
-and no Product process identity. Worker-v2 acknowledgement evidence does not
-weaken the separately required Product predicates. This finding does not run
-Gate 1 or authorize physical inspection.
+Only full corroboration permits any physical call. Gate 1 parses immutable
+Worker-v2 evidence first, validates Product semantic authority second, validates
+the immutable environment ledger, compares every shared identity, and only then
+inspects the current SBX/process. Any earlier failure produces no SBX lookup,
+`/proc` read, pidfd open, journal operation, or physical identity digest.
+
+The retained asymmetry is expected and is not repaired:
+
+1. Product authorized setup and the Worker began the authorized login.
+2. Worker physically spawned it and durably recorded acknowledgement plus the
+   process handle.
+3. delivery of that acknowledgement report to Product was interrupted.
+4. Product therefore truthfully remained `invocation_requested / requested`.
+5. a human later requested cancellation, while the old Worker could not submit
+   detached cancellation.
+
+The corrected semantic model therefore expects the known Product shape to be
+Product-valid when its cancellation predicates pass, while Worker-v2 proves
+physical acknowledgement. This conclusion is based on reviewed/synthetic
+history shape only; updating this code does not run Gate 1 or authorize physical
+inspection.
+
+## Evidence responsibility
+
+| Fact / project fields | Product | Worker v2 | Current physical observation |
+| --- | --- | --- | --- |
+| Setup authorization (`authorization_id`, `authorized_at`) | authority | corroborates accepted command | — |
+| Cancellation authority (`cancellation_request_id`, state/event) | authority | not a source | — |
+| Setup attempt (`setup_attempt_id`) | authority | authority | — |
+| Account (`provider_account_id`) | authority | authority | corroborates environment owner |
+| Invocation intent | records pending `requested` state | one `login_invocation_requested` event is authoritative | — |
+| Invocation acknowledgement | not a source | one `login_invocation_acknowledged` event plus `invocation_acknowledged / acknowledged` row is authoritative | — |
+| PID, start identity, executable | not a source | historical authority from `process_json` | current PID/start/executable observed through pidfd |
+| Process generation | not a source | historical authority from `process_json` | bound to the current process by the exact pidfd/PID/start/executable tuple; not invented as a kernel field |
+| Profile/runtime identity | auth configuration where shared | historical profile identity | environment marker/SBX corroboration |
+| Current liveness | not a source | historical only | authority |
+| Cancellation submitted | Product request only | proves not submitted historically | authority if later submitted |
+| Current exact-process match | not a source | expected identity | authority |
+
+Shared comparisons are exact for setup attempt, authorization identity/time,
+account, setup/credential/environment/Worker generations, environment operation,
+Worker/backend/environment/incarnation, and authentication
+configuration/policy/evidence/time. Product did not persist profile, PID, start
+identity, executable, or process generation after the interrupted report, so
+Worker-v2 is the sole historical source for those fields; exact attempt,
+authorization, account, generations, Worker, and environment identities bind
+that handle uniquely to Product authority. No Worker field is copied into the
+Product evidence object.
+
+Chronology uses ordering within a defensible timestamp domain: Product
+authorization precedes Product invocation request, which precedes Product
+cancellation; Worker row creation does not follow its acknowledgement update.
+The utility does not impose nanosecond ordering between Product and Worker
+clocks.
 
 ## Default dry-run
 
@@ -84,7 +139,18 @@ The CLI defaults to inspect-only. After Worker and Product authority pass, it:
 4. validates the ownership-marker digest;
 5. opens a pidfd and reads only `/proc/<pid>/stat` and `/proc/<pid>/exe`;
 6. reports exact-live, authoritative absence, mismatch, or unavailable; and
-7. emits the physical-identity digest required by a later destructive command.
+7. only for exact-live, emits the physical-identity digest required by a later
+   destructive command.
+
+The internal corroborated-evidence object retains three attributed components:
+`semanticAuthority` from the Product read-only transaction,
+`historicalPhysicalEvidence` and `historicalPhysicalIdentity` from the immutable
+Worker-v2 snapshot, and `sharedIdentityMatches`. Environment-ledger evidence is
+also retained with its source digest. The final physical identity digest commits
+the versioned Product semantic digest, Worker physical digest, environment
+digest, explicit shared-match contract, and current exact SBX/pidfd
+PID/start/executable observation. It contains no credentials or provider
+output.
 
 It never reads stdout/stderr, stdin, process environment, account files,
 credentials, OAuth material, or provider state. It sends zero signals.
@@ -108,9 +174,9 @@ acknowledgement was recorded. There is no automatic replay.
 The physical helper revalidates the exact SBX identity and ownership marker,
 opens the exact PID as a pidfd, rechecks start identity and executable, and
 submits one `SIGTERM` with `pidfd_send_signal`. PID-only and shell signalling do
-not exist. Process generation is independently corroborated between the Worker
-handle and Product process evidence; the pidfd/start/executable tuple binds that
-handle to the current kernel process.
+not exist. Process generation remains mandatory Worker-v2 historical evidence; Product is
+not its source. The pidfd/start/executable tuple and exact SBX environment bind
+that Worker handle to the current kernel process.
 
 After acknowledgement or ambiguity, only bounded read-only settlement
 observation occurs. Slow settlement never causes a second signal. Authoritative
@@ -123,8 +189,9 @@ The failed Gate-1 diagnostic operation
 be reused. A future authorized Gate 1 must use a new explicit operation UUID.
 
 Destructive mode is not documented as a ready-to-run command. After a separately
-approved successful dry-run, a human must review its journal and returned
-identity digest.
+approved successful exact-live dry-run, a human must review its journal and
+returned identity digest. Destructive mode requires that same journal operation
+to contain the dry-run digest; a caller-supplied digest alone is insufficient.
 A future command must then include all of:
 
 - the exact historical setup-attempt ID;

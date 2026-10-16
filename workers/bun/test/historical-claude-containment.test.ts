@@ -5,7 +5,13 @@ import { link, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { SbxClient } from "../src/execution-environment/sbx-client.ts";
 import { parseContainmentArguments } from "../tools/forensic/historical-claude-containment/cli.ts";
-import { readHistoricalWorkerV2Evidence } from "../tools/forensic/historical-claude-containment/evidence.ts";
+import {
+  EVIDENCE_RESPONSIBILITY_TABLE,
+  readEnvironmentForensicEvidence,
+  readHistoricalWorkerV2Evidence,
+  SHARED_IDENTITY_FIELDS,
+  validateContainmentEvidence,
+} from "../tools/forensic/historical-claude-containment/evidence.ts";
 import { ContainmentJournal } from "../tools/forensic/historical-claude-containment/journal.ts";
 import {
   PIDFD_CANCELLATION_PROGRAM,
@@ -34,9 +40,9 @@ import {
   type HistoricalTargetIdentity,
   type PhysicalObservation,
   type PhysicalProcessController,
-  type ProductCancellationEvidence,
   type ProductDatabaseIdentity,
   type ProductEvidenceReader,
+  type ProductSemanticAuthorityEvidence,
 } from "../tools/forensic/historical-claude-containment/types.ts";
 
 const roots: string[] = [];
@@ -50,7 +56,7 @@ describe("one-time historical Claude containment", () => {
   test("synthetic schema-two parser reads only exact required identity and authority", async () => {
     const fixture = await forensicFixture();
     const evidence = await readHistoricalWorkerV2Evidence(fixture.workerLedger);
-    expect(evidence.target).toMatchObject({
+    expect(evidence.historicalPhysicalIdentity).toMatchObject({
       setupAttemptId: HISTORICAL_SETUP_ATTEMPT_ID,
       backendKind: "sbx",
       environmentId: HISTORICAL_ENVIRONMENT_ID,
@@ -72,7 +78,7 @@ describe("one-time historical Claude containment", () => {
     database.close();
     await expect(
       readHistoricalWorkerV2Evidence(fixture.workerLedger),
-    ).rejects.toMatchObject({ code: "historical_evidence_incompatible" });
+    ).rejects.toMatchObject({ code: "worker_evidence_mismatch" });
     const preserved = new Database(fixture.workerLedger, { readonly: true });
     expect(preserved.query("PRAGMA user_version").get()).toEqual({
       user_version: 2,
@@ -85,6 +91,69 @@ describe("one-time historical Claude containment", () => {
         .get(),
     ).toEqual({ cancellation_request_id: null });
     preserved.close();
+  });
+
+  test("missing Worker v2 attempt is worker_evidence_missing before physical access", async () => {
+    const fixture = await forensicFixture();
+    const database = new Database(fixture.workerLedger);
+    database
+      .query(
+        "DELETE FROM provider_account_setup_attempts WHERE setup_attempt_id=?",
+      )
+      .run(HISTORICAL_SETUP_ATTEMPT_ID);
+    database.close();
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "worker_evidence_missing",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("Worker row cannot replace missing invocation acknowledgement event", async () => {
+    const fixture = await forensicFixture();
+    const database = new Database(fixture.workerLedger);
+    database
+      .query(
+        "DELETE FROM provider_account_setup_events WHERE event_type='login_invocation_acknowledged'",
+      )
+      .run();
+    database.close();
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "worker_evidence_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("Worker-side cancellation event contradicts not-submitted physical history", async () => {
+    const fixture = await forensicFixture();
+    const database = new Database(fixture.workerLedger);
+    database
+      .query(
+        `INSERT INTO provider_account_setup_events
+         (setup_attempt_id,event_type,details_json,occurred_at)
+         VALUES (?,'cancellation_requested','{}',?)`,
+      )
+      .run(HISTORICAL_SETUP_ATTEMPT_ID, timestamp());
+    database.close();
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "worker_evidence_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("Worker acknowledgement chronology cannot precede Worker intent record", async () => {
+    const fixture = await forensicFixture();
+    mutateWorkerAttempt(fixture.workerLedger, {
+      created_at: "2026-10-15T00:00:02.000Z",
+      updated_at: "2026-10-15T00:00:01.000Z",
+    });
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "worker_evidence_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
   });
 
   test("WAL-backed v2 evidence is snapshotted without modifying original files", async () => {
@@ -113,7 +182,9 @@ describe("one-time historical Claude containment", () => {
         fixture.workerLedger,
         join(fixture.root, "forensic-snapshots"),
       );
-      expect(evidence.target.setupAttemptId).toBe(HISTORICAL_SETUP_ATTEMPT_ID);
+      expect(evidence.historicalPhysicalIdentity.setupAttemptId).toBe(
+        HISTORICAL_SETUP_ATTEMPT_ID,
+      );
       expect(await Promise.all(paths.map(fileDigest))).toEqual(before);
     } finally {
       writer.close();
@@ -145,6 +216,9 @@ describe("one-time historical Claude containment", () => {
       cancellationSubmission: "not_attempted",
     });
     expect(result.targetIdentityDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(readJournalDetails(fixture)).toContain(
+      `"physical_identity_digest":"${result.targetIdentityDigest}"`,
+    );
     expect(physical.cancellationCalls).toBe(0);
     const journal = await readFile(fixture.journal, "utf8");
     expect(journal).not.toContain("interaction-public-key");
@@ -159,22 +233,177 @@ describe("one-time historical Claude containment", () => {
     appendOnly.close();
   });
 
-  test("authoritative absence records no cancellation and no fabricated exit status", async () => {
+  test("responsibility table keeps semantic, historical physical, and current physical authority distinct", () => {
+    expect(EVIDENCE_RESPONSIBILITY_TABLE).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fact: expect.stringContaining("cancellation authority"),
+          product: "authority",
+          workerV2: "not_source",
+        }),
+        expect.objectContaining({
+          fact: expect.stringContaining("invocation acknowledgement"),
+          product: "not_source",
+          workerV2: "authority",
+        }),
+        expect.objectContaining({
+          fact: expect.stringContaining("process PID"),
+          product: "not_source",
+          workerV2: "authority_historical",
+          physical: "authority_current_observation",
+        }),
+        expect.objectContaining({
+          fact: "process generation",
+          product: "not_source",
+          workerV2: "authority_historical",
+          physical: "bound_by_current_pidfd_start_executable_tuple",
+        }),
+      ]),
+    );
+  });
+
+  test("exact historical asymmetry corroborates Product semantic authority with Worker physical acknowledgement", async () => {
+    const fixture = await forensicFixture();
+    const worker = await readHistoricalWorkerV2Evidence(fixture.workerLedger);
+    const product = await fixture.product.read(HISTORICAL_SETUP_ATTEMPT_ID);
+    const environment = await readEnvironmentForensicEvidence(
+      fixture.environmentLedger,
+      worker,
+    );
+    const corroborated = validateContainmentEvidence(
+      worker,
+      product,
+      environment,
+    );
+
+    expect(product).toMatchObject({
+      source: "product_repeatable_read_read_only_transaction",
+      state: "cancellation_requested",
+      invocationState: "requested",
+    });
+    expect(product).not.toHaveProperty("backendProcessId");
+    expect(product).not.toHaveProperty("processGeneration");
+    expect(worker).toMatchObject({
+      source: "worker_v2_immutable_snapshot",
+      invocationIntent: "login_invocation_requested",
+      workerState: "invocation_acknowledged",
+      invocationState: "acknowledged",
+      cancellationSubmission: "not_submitted",
+      historicalPhysicalIdentity: {
+        backendProcessId: HISTORICAL_BACKEND_PROCESS_ID,
+        processStartIdentity: HISTORICAL_PROCESS_START_IDENTITY,
+        processGeneration: HISTORICAL_PROCESS_GENERATION,
+        executable: HISTORICAL_EXECUTABLE,
+      },
+    });
+    expect(Object.isFrozen(product)).toBe(true);
+    expect(Object.isFrozen(worker)).toBe(true);
+    expect(Object.isFrozen(corroborated)).toBe(true);
+    expect(Object.isFrozen(corroborated.sharedIdentityMatches)).toBe(true);
+    expect(corroborated).toMatchObject({
+      semanticAuthority: { invocationState: "requested" },
+      historicalPhysicalEvidence: { invocationState: "acknowledged" },
+      sharedIdentityMatches: {
+        contractVersion: "historical-containment-shared-identity-v1",
+        matchedFields: [...SHARED_IDENTITY_FIELDS],
+      },
+    });
+    const physical = new FakePhysical([liveObservation()]);
+    const result = await dryRun(fixture, physical);
+    expect(result.permittedAction).toBe("exact_cancellation");
+    expect(physical.inspectionCalls).toBe(1);
+    expect(physical.cancellationCalls).toBe(0);
+  });
+
+  test.each([
+    [
+      "acknowledgement",
+      {
+        state: "invocation_requested",
+        invocation_state: "requested",
+        process_json: JSON.stringify(processHandle()),
+      },
+    ],
+    [
+      "complete process identity",
+      {
+        state: "invocation_acknowledged",
+        invocation_state: "acknowledged",
+        process_json: null,
+      },
+    ],
+  ] as const)("Product-valid evidence cannot replace missing Worker %s", async (_name, workerMutation) => {
+    const fixture = await forensicFixture();
+    mutateWorkerAttempt(fixture.workerLedger, workerMutation);
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "worker_evidence_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+    expect(physical.cancellationCalls).toBe(0);
+  });
+
+  test("cross-attempt Product evidence is rejected before physical inspection", async () => {
+    const fixture = await forensicFixture({
+      product: { setup_attempt_id: randomUUID() },
+    });
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "product_evidence_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("independently valid cross-account evidence is corroboration_mismatch", async () => {
+    const fixture = await forensicFixture({
+      product: {
+        provider_account_id: "different-account",
+        cancellation_event_provider_account_id: "different-account",
+      },
+    });
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "corroboration_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test.each([
+    [
+      "setup generation",
+      {
+        setup_generation: 99,
+        authorization_setup_generation: 99,
+        cancellation_event_setup_generation: 99,
+      },
+    ],
+    ["credential generation", { credential_generation: 99 }],
+    ["environment generation", { environment_generation: 99 }],
+    ["Worker generation", { worker_generation: 99 }],
+    [
+      "environment operation",
+      { environment_operation_id: "different-environment-operation" },
+    ],
+  ] as const)("%s cross-source mismatch is rejected before physical inspection", async (_name, productMutation) => {
+    const fixture = await forensicFixture({ product: productMutation });
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "corroboration_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("authoritative absence records no cancellation, digest, or fabricated exit status", async () => {
     const fixture = await forensicFixture();
     const physical = new FakePhysical([
       absentObservation("environment_absent"),
-      absentObservation("environment_absent"),
     ]);
-    const reviewed = await dryRun(fixture, physical);
-    const result = await execute(
-      fixture,
-      physical,
-      reviewed.targetIdentityDigest,
-    );
+    const result = await dryRun(fixture, physical);
     expect(result).toMatchObject({
       permittedAction: "record_authoritative_absence",
       cancellationSubmission: "not_attempted",
       settlement: "terminal",
+      targetIdentityDigest: null,
     });
     expect(physical.cancellationCalls).toBe(0);
     const events = journalEvents(fixture);
@@ -188,16 +417,12 @@ describe("one-time historical Claude containment", () => {
     ["PID reused", "pid_reuse"],
     ["start identity differs", "process_start_identity"],
     ["executable differs", "process_executable"],
-  ] as const)("%s rejects destructive execution", async (_name, reason) => {
+  ] as const)("%s produces no reviewable physical digest", async (_name, reason) => {
     const fixture = await forensicFixture();
-    const physical = new FakePhysical([
-      mismatchObservation(reason),
-      mismatchObservation(reason),
-    ]);
+    const physical = new FakePhysical([mismatchObservation(reason)]);
     const reviewed = await dryRun(fixture, physical);
-    await expect(
-      execute(fixture, physical, reviewed.targetIdentityDigest),
-    ).rejects.toMatchObject({ code: "physical_identity_mismatch" });
+    expect(reviewed.targetIdentityDigest).toBeNull();
+    expect(reviewed.permittedAction).toBe("none");
     expect(physical.cancellationCalls).toBe(0);
   });
 
@@ -213,13 +438,14 @@ describe("one-time historical Claude containment", () => {
     expect(physical.inspectionCalls).toBe(0);
   });
 
-  test("process generation mismatch fails before physical inspection", async () => {
-    const fixture = await forensicFixture({
-      product: { process_generation: "replacement-process-generation" },
+  test("Worker process generation mismatch fails before physical inspection", async () => {
+    const fixture = await forensicFixture();
+    mutateWorkerProcess(fixture.workerLedger, {
+      processGeneration: "replacement-process-generation",
     });
     const physical = new FakePhysical([liveObservation()]);
     await expect(dryRun(fixture, physical)).rejects.toMatchObject({
-      code: "product_evidence_mismatch",
+      code: "worker_evidence_mismatch",
     });
     expect(physical.inspectionCalls).toBe(0);
   });
@@ -231,9 +457,12 @@ describe("one-time historical Claude containment", () => {
       { cancellation_requested_event_count: 0 },
     ]) {
       const fixture = await forensicFixture({ product });
-      await expect(
-        dryRun(fixture, new FakePhysical([liveObservation()])),
-      ).rejects.toMatchObject({ code: "product_evidence_mismatch" });
+      const physical = new FakePhysical([liveObservation()]);
+      await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+        code: "product_evidence_mismatch",
+      });
+      expect(physical.inspectionCalls).toBe(0);
+      expect(physical.cancellationCalls).toBe(0);
     }
   });
 
@@ -272,7 +501,7 @@ describe("one-time historical Claude containment", () => {
         {
           ...baseOptions(fixture),
           containmentOperationId: randomUUID(),
-          confirmPhysicalIdentityDigest: reviewed.targetIdentityDigest,
+          confirmPhysicalIdentityDigest: reviewedDigest(reviewed),
         },
         {
           productEvidence: fixture.product,
@@ -546,6 +775,24 @@ describe("one-time historical Claude containment", () => {
     expect(execCalls).toBe(1);
   });
 
+  test("destructive mode rejects a caller digest without this operation's successful dry run", async () => {
+    const fixture = await forensicFixture();
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(
+      runHistoricalContainment(
+        {
+          ...baseOptions(fixture),
+          executeCancellation: true,
+          confirmCancellationRequestId: HISTORICAL_CANCELLATION_REQUEST_ID,
+          confirmPhysicalIdentityDigest: `sha256:${"a".repeat(64)}`,
+        },
+        { productEvidence: fixture.product, physical },
+      ),
+    ).rejects.toMatchObject({ code: "execution_interlock_failed" });
+    expect(physical.inspectionCalls).toBe(0);
+    expect(physical.cancellationCalls).toBe(0);
+  });
+
   test("destructive mode requires exact request and reviewed identity digest", async () => {
     const fixture = await forensicFixture();
     const physical = new FakePhysical([liveObservation(), liveObservation()]);
@@ -556,7 +803,7 @@ describe("one-time historical Claude containment", () => {
           ...baseOptions(fixture),
           executeCancellation: true,
           confirmCancellationRequestId: randomUUID(),
-          confirmPhysicalIdentityDigest: reviewed.targetIdentityDigest,
+          confirmPhysicalIdentityDigest: reviewedDigest(reviewed),
         },
         { productEvidence: fixture.product, physical },
       ),
@@ -761,6 +1008,19 @@ function createWorkerLedger(path: string): void {
       timestamp(),
       timestamp(),
     );
+  for (const eventType of [
+    "authorization_accepted",
+    "setup_preparing",
+    "login_invocation_requested",
+    "login_invocation_acknowledged",
+  ])
+    database
+      .query(
+        `INSERT INTO provider_account_setup_events
+         (setup_attempt_id,event_type,details_json,occurred_at)
+         VALUES (?,?,'{}',?)`,
+      )
+      .run(HISTORICAL_SETUP_ATTEMPT_ID, eventType, timestamp());
   database.close();
 }
 
@@ -833,6 +1093,71 @@ function createEnvironmentLedger(path: string): void {
       timestamp(),
       timestamp(),
       timestamp(),
+    );
+  database.close();
+}
+
+function mutateWorkerAttempt(
+  path: string,
+  mutation: Readonly<{
+    state?: string;
+    invocation_state?: string;
+    process_json?: string | null;
+    created_at?: string;
+    updated_at?: string;
+  }>,
+): void {
+  const database = new Database(path);
+  if (mutation.state !== undefined)
+    database
+      .query(
+        "UPDATE provider_account_setup_attempts SET state=? WHERE setup_attempt_id=?",
+      )
+      .run(mutation.state, HISTORICAL_SETUP_ATTEMPT_ID);
+  if (mutation.invocation_state !== undefined)
+    database
+      .query(
+        "UPDATE provider_account_setup_attempts SET invocation_state=? WHERE setup_attempt_id=?",
+      )
+      .run(mutation.invocation_state, HISTORICAL_SETUP_ATTEMPT_ID);
+  if (mutation.process_json !== undefined)
+    database
+      .query(
+        "UPDATE provider_account_setup_attempts SET process_json=? WHERE setup_attempt_id=?",
+      )
+      .run(mutation.process_json, HISTORICAL_SETUP_ATTEMPT_ID);
+  if (mutation.created_at !== undefined)
+    database
+      .query(
+        "UPDATE provider_account_setup_attempts SET created_at=? WHERE setup_attempt_id=?",
+      )
+      .run(mutation.created_at, HISTORICAL_SETUP_ATTEMPT_ID);
+  if (mutation.updated_at !== undefined)
+    database
+      .query(
+        "UPDATE provider_account_setup_attempts SET updated_at=? WHERE setup_attempt_id=?",
+      )
+      .run(mutation.updated_at, HISTORICAL_SETUP_ATTEMPT_ID);
+  database.close();
+}
+
+function mutateWorkerProcess(
+  path: string,
+  mutation: Partial<ReturnType<typeof processHandle>>,
+): void {
+  const database = new Database(path);
+  const row = database
+    .query(
+      "SELECT process_json FROM provider_account_setup_attempts WHERE setup_attempt_id=?",
+    )
+    .get(HISTORICAL_SETUP_ATTEMPT_ID) as { process_json: string };
+  database
+    .query(
+      "UPDATE provider_account_setup_attempts SET process_json=? WHERE setup_attempt_id=?",
+    )
+    .run(
+      JSON.stringify({ ...JSON.parse(row.process_json), ...mutation }),
+      HISTORICAL_SETUP_ATTEMPT_ID,
     );
   database.close();
 }
@@ -948,13 +1273,8 @@ function productRow(): Record<string, unknown> {
     environment_id: HISTORICAL_ENVIRONMENT_ID,
     environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
     state: "cancellation_requested",
-    invocation_state: "acknowledged",
-    process_backend_id: HISTORICAL_BACKEND_PROCESS_ID,
-    process_start_identity: HISTORICAL_PROCESS_START_IDENTITY,
-    process_generation: HISTORICAL_PROCESS_GENERATION,
-    process_executable: HISTORICAL_EXECUTABLE,
+    invocation_state: "requested",
     invocation_requested_at: timestamp(),
-    invocation_acknowledged_at: timestamp(),
     cancellation_request_id: HISTORICAL_CANCELLATION_REQUEST_ID,
     failure_code: "setup_cancelled",
     authorization_id: "historical-authorization",
@@ -973,7 +1293,7 @@ function productRow(): Record<string, unknown> {
     cancellation_event_provider_account_id: "historical-account",
     cancellation_event_setup_generation: 1,
     cancellation_event_state: "cancellation_requested",
-    cancellation_event_invocation_state: "acknowledged",
+    cancellation_event_invocation_state: "requested",
     cancellation_event_occurred_at: timestamp(),
     later_semantic_event_count: 0,
     human_attention_count: 0,
@@ -986,7 +1306,9 @@ class FakeProductReader implements ProductEvidenceReader {
 
   constructor(private readonly row: Record<string, unknown>) {}
 
-  async read(): Promise<ProductCancellationEvidence> {
+  async read(
+    _setupAttemptId = HISTORICAL_SETUP_ATTEMPT_ID,
+  ): Promise<ProductSemanticAuthorityEvidence> {
     this.reads += 1;
     return parseProductEvidenceRow(
       structuredClone(this.row),
@@ -1037,9 +1359,10 @@ async function dryRun(fixture: Fixture, physical: FakePhysical) {
 async function execute(
   fixture: Fixture,
   physical: FakePhysical,
-  identityDigest: string,
+  identityDigest: string | null,
   bounds: { settlementTimeoutMs?: number; settlementPollMs?: number } = {},
 ) {
+  if (!identityDigest) throw new Error("Test requires one reviewed digest.");
   return runHistoricalContainment(
     {
       ...baseOptions(fixture),
@@ -1050,6 +1373,14 @@ async function execute(
     },
     { productEvidence: fixture.product, physical },
   );
+}
+
+function reviewedDigest(result: {
+  targetIdentityDigest: string | null;
+}): string {
+  if (!result.targetIdentityDigest)
+    throw new Error("Test requires one reviewed physical identity digest.");
+  return result.targetIdentityDigest;
 }
 
 function baseOptions(fixture: Fixture) {

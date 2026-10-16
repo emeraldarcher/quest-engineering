@@ -22,10 +22,99 @@ import {
   HISTORICAL_PROCESS_START_IDENTITY,
   HISTORICAL_SETUP_ATTEMPT_ID,
   type HistoricalTargetIdentity,
-  type ProductCancellationEvidence,
+  type ProductSemanticAuthorityEvidence,
   type ValidatedContainmentEvidence,
   type WorkerV2Evidence,
 } from "./types.ts";
+
+export const EVIDENCE_RESPONSIBILITY_TABLE = [
+  {
+    fact: "setup authorization (authorization_id/authorized_at)",
+    product: "authority",
+    workerV2: "corroborate",
+    physical: "not_applicable",
+  },
+  {
+    fact: "cancellation authority (cancellation_request_id/state/event)",
+    product: "authority",
+    workerV2: "not_source",
+    physical: "not_applicable",
+  },
+  {
+    fact: "setup attempt identity (setup_attempt_id)",
+    product: "authority",
+    workerV2: "authority",
+    physical: "not_applicable",
+  },
+  {
+    fact: "account identity (provider_account_id)",
+    product: "authority",
+    workerV2: "authority",
+    physical: "corroborate_environment_owner",
+  },
+  {
+    fact: "invocation intent (invocation_state/requested_at)",
+    product: "recorded_pending_state",
+    workerV2: "authority",
+    physical: "not_applicable",
+  },
+  {
+    fact: "invocation acknowledgement (state/invocation_state/process_json)",
+    product: "not_source",
+    workerV2: "authority",
+    physical: "not_applicable",
+  },
+  {
+    fact: "process PID/start identity/executable",
+    product: "not_source",
+    workerV2: "authority_historical",
+    physical: "authority_current_observation",
+  },
+  {
+    fact: "process generation",
+    product: "not_source",
+    workerV2: "authority_historical",
+    physical: "bound_by_current_pidfd_start_executable_tuple",
+  },
+  {
+    fact: "current liveness",
+    product: "not_source",
+    workerV2: "historical_only",
+    physical: "authority",
+  },
+  {
+    fact: "physical cancellation submission",
+    product: "request_only",
+    workerV2: "authority_not_submitted",
+    physical: "authority_if_later_submitted",
+  },
+  {
+    fact: "current exact-process match",
+    product: "not_source",
+    workerV2: "expected_identity",
+    physical: "authority",
+  },
+] as const;
+
+export const SHARED_IDENTITY_FIELDS = [
+  "setup_attempt_id",
+  "authorization_id",
+  "authorized_at",
+  "provider_account_id",
+  "setup_generation",
+  "credential_generation",
+  "environment_generation",
+  "invocation_worker_generation",
+  "invocation_environment_operation_id",
+  "worker_id",
+  "backend_kind",
+  "environment_id",
+  "environment_incarnation",
+  "auth_configuration_identity",
+  "auth_environment_policy",
+  "auth_evidence_identity",
+  "auth_inspected_at",
+] as const;
 
 const V2_ATTEMPT_COLUMNS = [
   "attention_id",
@@ -85,6 +174,14 @@ interface WorkerRow {
   invocation_state: string;
   process_json: string | null;
   cancellation_request_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface WorkerEventRow {
+  event_type: string;
+  details_json: string;
+  occurred_at: string;
 }
 
 interface EnvironmentRow {
@@ -109,40 +206,77 @@ export async function readHistoricalWorkerV2Evidence(
   databasePath: string,
   snapshotRoot?: string,
 ): Promise<WorkerV2Evidence> {
-  return withForensicDatabase(databasePath, snapshotRoot, (database) => {
-    const version = database.query("PRAGMA user_version").get() as {
-      user_version: number;
-    };
-    if (version.user_version !== 2)
-      fail(
-        "historical_evidence_incompatible",
-        "Historical Worker ledger is not exact schema version 2.",
-      );
-    assertExactColumns(
-      database,
-      "provider_account_setup_attempts",
-      V2_ATTEMPT_COLUMNS,
-      "historical Worker attempt table",
-    );
-    assertExactColumns(
-      database,
-      "provider_account_setup_events",
-      V2_EVENT_COLUMNS,
-      "historical Worker event table",
-    );
-    const rows = database
-      .query(
-        `SELECT setup_attempt_id,command_json,state,invocation_state,process_json,cancellation_request_id
+  try {
+    return await withForensicDatabase(
+      databasePath,
+      snapshotRoot,
+      (database) => {
+        const version = database.query("PRAGMA user_version").get() as {
+          user_version: number;
+        };
+        if (version.user_version !== 2)
+          fail(
+            "historical_evidence_incompatible",
+            "Historical Worker ledger is not exact schema version 2.",
+          );
+        assertExactColumns(
+          database,
+          "provider_account_setup_attempts",
+          V2_ATTEMPT_COLUMNS,
+          "historical Worker attempt table",
+        );
+        assertExactColumns(
+          database,
+          "provider_account_setup_events",
+          V2_EVENT_COLUMNS,
+          "historical Worker event table",
+        );
+        const rows = database
+          .query(
+            `SELECT setup_attempt_id,command_json,state,invocation_state,process_json,cancellation_request_id,
+                created_at,updated_at
          FROM provider_account_setup_attempts WHERE setup_attempt_id=?`,
+          )
+          .all(HISTORICAL_SETUP_ATTEMPT_ID) as WorkerRow[];
+        if (rows.length !== 1)
+          fail(
+            "historical_evidence_missing",
+            "Historical Worker ledger must contain exactly one target attempt.",
+          );
+        const events = database
+          .query(
+            `SELECT event_type,details_json,occurred_at
+             FROM provider_account_setup_events
+             WHERE setup_attempt_id=? ORDER BY event_id`,
+          )
+          .all(HISTORICAL_SETUP_ATTEMPT_ID) as WorkerEventRow[];
+        return parseWorkerRow(rows[0] as WorkerRow, events);
+      },
+    );
+  } catch (error) {
+    if (error instanceof ContainmentError) {
+      if (
+        error.code === "worker_evidence_missing" ||
+        error.code === "worker_evidence_mismatch" ||
+        error.code === "invalid_arguments"
       )
-      .all(HISTORICAL_SETUP_ATTEMPT_ID) as WorkerRow[];
-    if (rows.length !== 1)
-      fail(
-        "historical_evidence_missing",
-        "Historical Worker ledger must contain exactly one target attempt.",
-      );
-    return parseWorkerRow(rows[0] as WorkerRow);
-  });
+        throw error;
+      if (error.code === "historical_evidence_missing")
+        throw new ContainmentError(
+          "worker_evidence_missing",
+          "Historical Worker v2 evidence is missing.",
+        );
+      if (error.code === "historical_evidence_incompatible")
+        throw new ContainmentError(
+          "worker_evidence_mismatch",
+          "Historical Worker v2 physical evidence does not match the exact forensic contract.",
+        );
+    }
+    throw new ContainmentError(
+      "worker_evidence_mismatch",
+      "Historical Worker v2 physical evidence could not be read exactly.",
+    );
+  }
 }
 
 export async function readEnvironmentForensicEvidence(
@@ -190,10 +324,21 @@ export async function readEnvironmentForensicEvidence(
 
 export function validateContainmentEvidence(
   worker: WorkerV2Evidence,
-  product: ProductCancellationEvidence,
+  product: ProductSemanticAuthorityEvidence,
   environment: EnvironmentForensicEvidence,
 ): ValidatedContainmentEvidence {
-  const target = worker.target;
+  const target = worker.historicalPhysicalIdentity;
+  if (
+    worker.source !== "worker_v2_immutable_snapshot" ||
+    worker.invocationIntent !== "login_invocation_requested" ||
+    worker.workerState !== "invocation_acknowledged" ||
+    worker.invocationState !== "acknowledged" ||
+    worker.cancellationSubmission !== "not_submitted"
+  )
+    fail(
+      "worker_evidence_mismatch",
+      "Worker v2 does not prove the exact acknowledged physical invocation without prior cancellation submission.",
+    );
   const productComparisons: Array<[unknown, unknown, string]> = [
     [product.setupAttemptId, target.setupAttemptId, "setup attempt"],
     [product.authorizationId, target.authorizationId, "authorization"],
@@ -228,14 +373,6 @@ export function validateContainmentEvidence(
       target.environmentIncarnation,
       "environment incarnation",
     ],
-    [product.backendProcessId, target.backendProcessId, "backend process"],
-    [
-      product.processStartIdentity,
-      target.processStartIdentity,
-      "process start identity",
-    ],
-    [product.processGeneration, target.processGeneration, "process generation"],
-    [product.executable, target.executable, "executable"],
     [
       product.authConfigurationIdentity,
       target.authConfigurationIdentity,
@@ -260,8 +397,8 @@ export function validateContainmentEvidence(
   for (const [actual, expected, name] of productComparisons)
     if (actual !== expected)
       fail(
-        "product_evidence_mismatch",
-        `Historical ${name} evidence does not corroborate exactly.`,
+        "corroboration_mismatch",
+        `Historical Product and Worker v2 ${name} identities do not corroborate exactly.`,
       );
 
   const environmentComparisons: Array<[unknown, unknown, string]> = [
@@ -301,8 +438,9 @@ export function validateContainmentEvidence(
         `Historical ${name} evidence does not corroborate exactly.`,
       );
   if (
+    product.source !== "product_repeatable_read_read_only_transaction" ||
     product.state !== "cancellation_requested" ||
-    product.invocationState !== "acknowledged" ||
+    product.invocationState !== "requested" ||
     product.authorizationKind !== "provider_account_setup" ||
     product.authorizationCount !== 1 ||
     product.setupAuthorizedEventCount !== 1 ||
@@ -313,22 +451,47 @@ export function validateContainmentEvidence(
   )
     fail(
       "product_evidence_mismatch",
-      "Product evidence does not prove the one acknowledged invocation and existing cancellation authority.",
+      "Product evidence does not prove the exact semantic cancellation authority.",
     );
-  const completeTarget: HistoricalTargetIdentity = {
+  const completeTarget: HistoricalTargetIdentity = Object.freeze({
     ...target,
     cancellationRequestId: product.cancellationRequestId,
     environmentDisplayName: environment.displayName,
     environmentMarkerDigest: environment.markerDigest,
     environmentNativeAgent: environment.nativeAgent,
-  };
-  return {
+  });
+  const sharedIdentityMatches = Object.freeze({
+    contractVersion: "historical-containment-shared-identity-v1" as const,
+    matchedFields: Object.freeze([...SHARED_IDENTITY_FIELDS]),
+  });
+  const corroboratedEvidenceDigest = safeDigest({
+    contractVersion: "historical-containment-corroborated-evidence-v2",
+    semanticAuthority: {
+      source: "product_repeatable_read_read_only_transaction",
+      digest: product.digest,
+    },
+    historicalPhysicalIdentity: {
+      source: "worker_v2_immutable_snapshot",
+      digest: worker.digest,
+    },
+    environmentEvidence: {
+      source: "worker_environment_immutable_snapshot",
+      digest: environment.digest,
+    },
+    sharedIdentityMatches,
+  });
+  return Object.freeze({
     target: completeTarget,
+    semanticAuthority: product,
+    historicalPhysicalEvidence: worker,
+    historicalPhysicalIdentity: target,
+    sharedIdentityMatches,
+    environmentEvidence: environment,
     workerEvidenceDigest: worker.digest,
     productEvidenceDigest: product.digest,
     environmentEvidenceDigest: environment.digest,
-    targetIdentityDigest: safeDigest(completeTarget),
-  };
+    corroboratedEvidenceDigest,
+  });
 }
 
 export function safeDigest(value: unknown): string {
@@ -472,7 +635,10 @@ async function fileSignature(
   };
 }
 
-function parseWorkerRow(row: WorkerRow): WorkerV2Evidence {
+function parseWorkerRow(
+  row: WorkerRow,
+  events: WorkerEventRow[],
+): WorkerV2Evidence {
   if (
     row.setup_attempt_id !== HISTORICAL_SETUP_ATTEMPT_ID ||
     row.state !== "invocation_acknowledged" ||
@@ -483,6 +649,56 @@ function parseWorkerRow(row: WorkerRow): WorkerV2Evidence {
     fail(
       "historical_evidence_incompatible",
       "Historical Worker row does not retain the exact acknowledged pre-cancellation state.",
+    );
+  const attemptRecordedAt = timestampText(
+    row.created_at,
+    "Worker attempt record timestamp",
+  );
+  timestampText(row.updated_at, "Worker attempt update timestamp");
+  for (const event of events) {
+    timestampText(event.occurred_at, "Worker event timestamp");
+    const details = parseJson(event.details_json);
+    if (
+      !details ||
+      typeof details !== "object" ||
+      Array.isArray(details) ||
+      Object.keys(details as Record<string, unknown>).length !== 0
+    )
+      fail(
+        "historical_evidence_incompatible",
+        "Historical Worker event details are not the exact empty schema-2 contract.",
+      );
+  }
+  const invocationRequestedEvents = events.filter(
+    (event) => event.event_type === "login_invocation_requested",
+  );
+  const invocationAcknowledgedEvents = events.filter(
+    (event) => event.event_type === "login_invocation_acknowledged",
+  );
+  if (
+    invocationRequestedEvents.length !== 1 ||
+    invocationAcknowledgedEvents.length !== 1 ||
+    events.some((event) => event.event_type.includes("cancellation"))
+  )
+    fail(
+      "historical_evidence_incompatible",
+      "Worker events do not prove one login intent, one physical acknowledgement, and zero cancellation activity.",
+    );
+  const intentRecordedAt = timestampText(
+    invocationRequestedEvents[0]?.occurred_at,
+    "Worker invocation intent event timestamp",
+  );
+  const acknowledgedRecordedAt = timestampText(
+    invocationAcknowledgedEvents[0]?.occurred_at,
+    "Worker invocation acknowledgement event timestamp",
+  );
+  if (
+    Date.parse(attemptRecordedAt) > Date.parse(intentRecordedAt) ||
+    Date.parse(intentRecordedAt) > Date.parse(acknowledgedRecordedAt)
+  )
+    fail(
+      "historical_evidence_incompatible",
+      "Worker acknowledgement chronology precedes its invocation intent.",
     );
   const command = exactObject(parseJson(row.command_json), [
     "type",
@@ -709,7 +925,17 @@ function parseWorkerRow(row: WorkerRow): WorkerV2Evidence {
     target.credentialGeneration,
     "process owner generation",
   );
-  return { target, digest: safeDigest(target) };
+  const evidence = {
+    source: "worker_v2_immutable_snapshot" as const,
+    invocationIntent: "login_invocation_requested" as const,
+    intentRecordedAt,
+    workerState: "invocation_acknowledged" as const,
+    invocationState: "acknowledged" as const,
+    acknowledgedRecordedAt,
+    cancellationSubmission: "not_submitted" as const,
+    historicalPhysicalIdentity: Object.freeze(target),
+  };
+  return Object.freeze({ ...evidence, digest: safeDigest(evidence) });
 }
 
 function parseEnvironmentRow(
@@ -749,17 +975,19 @@ function parseEnvironmentRow(
     state: text(row.state, "environment state"),
   };
   if (
-    evidence.workerId !== worker.target.workerId ||
-    evidence.providerAccountId !== worker.target.providerAccountId ||
-    evidence.credentialGeneration !== worker.target.credentialGeneration ||
-    evidence.profileId !== worker.target.profileId ||
-    evidence.profileDigest !== worker.target.profileDigest
+    evidence.workerId !== worker.historicalPhysicalIdentity.workerId ||
+    evidence.providerAccountId !==
+      worker.historicalPhysicalIdentity.providerAccountId ||
+    evidence.credentialGeneration !==
+      worker.historicalPhysicalIdentity.credentialGeneration ||
+    evidence.profileId !== worker.historicalPhysicalIdentity.profileId ||
+    evidence.profileDigest !== worker.historicalPhysicalIdentity.profileDigest
   )
     fail(
       "environment_evidence_incompatible",
       "Environment ownership does not match the historical process handle.",
     );
-  return { ...evidence, digest: safeDigest(evidence) };
+  return Object.freeze({ ...evidence, digest: safeDigest(evidence) });
 }
 
 function assertExactColumns(
