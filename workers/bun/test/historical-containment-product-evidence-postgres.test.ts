@@ -93,6 +93,12 @@ test.skipIf(!live)(
       expect(evidence).toMatchObject({
         cancellationRequestId: HISTORICAL_CANCELLATION_REQUEST_ID,
         invocationState: "requested",
+        invocationAuthority: {
+          workerGeneration: 7,
+          environmentOperationId: "historical-environment-operation",
+          currentWorkerGeneration: 7,
+          refenceChain: [],
+        },
         authorizationCount: 1,
         humanAttentionCount: 0,
         laterSemanticEventCount: 0,
@@ -196,6 +202,23 @@ async function prepareTemporaryProductSchema(
       event_type text NOT NULL,
       state text NOT NULL,
       invocation_state text NOT NULL,
+      details jsonb NOT NULL DEFAULT '{}'::jsonb,
+      occurred_at timestamptz NOT NULL
+    );
+    CREATE TEMP TABLE provider_account_lifecycle_events(
+      id text PRIMARY KEY,
+      provider_account_id text NOT NULL,
+      credential_generation bigint NOT NULL,
+      worker_id text NOT NULL,
+      worker_generation bigint,
+      operation_id text NOT NULL,
+      event_type text NOT NULL,
+      lifecycle_state text NOT NULL,
+      physical_state text NOT NULL,
+      backend_kind text,
+      environment_id text,
+      incarnation text,
+      details jsonb NOT NULL DEFAULT '{}'::jsonb,
       occurred_at timestamptz NOT NULL
     );
     CREATE TEMP TABLE provider_account_human_attention_requests(
@@ -247,14 +270,28 @@ async function prepareTemporaryProductSchema(
     [HISTORICAL_SETUP_ATTEMPT_ID, observedAt],
   );
   await sql.unsafe(
+    `INSERT INTO provider_account_lifecycle_events(
+       id,provider_account_id,credential_generation,worker_id,worker_generation,
+       operation_id,event_type,lifecycle_state,physical_state,backend_kind,
+       environment_id,incarnation,details,occurred_at
+     ) VALUES ('environment-event','historical-account',3,'historical-worker',7,
+       'historical-environment-operation','environment_ensured','connected',
+       'available','sbx',$1,$2,
+       '{"report":"credential_free","canary_persisted":true}'::jsonb,$3)`,
+    [HISTORICAL_ENVIRONMENT_ID, HISTORICAL_ENVIRONMENT_INCARNATION, observedAt],
+  );
+  await sql.unsafe(
     `INSERT INTO provider_account_setup_events(
        id,setup_attempt_id,provider_account_id,setup_generation,event_type,
-       state,invocation_state,occurred_at
+       state,invocation_state,details,occurred_at
      ) VALUES
        ('authorization-event',$1,'historical-account',1,'setup_authorized',
-        'authorized','not_requested',$2),
+        'authorized','not_requested','{}'::jsonb,$2),
+       ('invocation-event',$1,'historical-account',1,'setup_state_observed',
+        'invocation_requested','requested',
+        '{"observed_state":"invocation_requested"}'::jsonb,$2),
        ('cancellation-event',$1,'historical-account',1,'cancellation_requested',
-        'cancellation_requested','requested',$3)`,
+        'cancellation_requested','requested','{}'::jsonb,$3)`,
     [
       HISTORICAL_SETUP_ATTEMPT_ID,
       "2026-10-15T00:00:00.000Z",
@@ -269,6 +306,7 @@ async function fixtureState(sql: SQL): Promise<unknown> {
       (SELECT count(*)::integer FROM provider_account_setup_attempts) AS attempts,
       (SELECT count(*)::integer FROM provider_account_setup_authorizations) AS authorizations,
       (SELECT count(*)::integer FROM provider_account_setup_events) AS events,
+      (SELECT count(*)::integer FROM provider_account_lifecycle_events) AS lifecycle_events,
       (SELECT count(*)::integer FROM provider_account_human_attention_requests) AS attention,
       (SELECT state FROM provider_account_setup_attempts WHERE id='${HISTORICAL_SETUP_ATTEMPT_ID}') AS state,
       (SELECT cancellation_request_id FROM provider_account_setup_attempts WHERE id='${HISTORICAL_SETUP_ATTEMPT_ID}') AS cancellation_request_id

@@ -29,6 +29,7 @@ import {
   type CancellationSubmissionResult,
   ContainmentError,
   FAILED_GATE_ONE_OPERATION_ID,
+  FAILED_GATE_ONE_RETRY_OPERATION_ID,
   HISTORICAL_BACKEND_PROCESS_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_ENVIRONMENT_ID,
@@ -107,6 +108,26 @@ describe("one-time historical Claude containment", () => {
       code: "worker_evidence_missing",
     });
     expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("Worker accepted-command provenance requires one acceptance and no command reconciliation", async () => {
+    for (const eventMutation of [
+      "DELETE FROM provider_account_setup_events WHERE event_type='authorization_accepted'",
+      `INSERT INTO provider_account_setup_events
+       (setup_attempt_id,event_type,details_json,occurred_at)
+       VALUES ('${HISTORICAL_SETUP_ATTEMPT_ID}','command_reconciled','{}','${timestamp()}')`,
+      "UPDATE provider_account_setup_events SET occurred_at='2026-10-14T00:00:00.000Z' WHERE event_type='authorization_accepted'",
+    ]) {
+      const fixture = await forensicFixture();
+      const database = new Database(fixture.workerLedger);
+      database.exec(eventMutation);
+      database.close();
+      const physical = new FakePhysical([liveObservation()]);
+      await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+        code: "worker_evidence_mismatch",
+      });
+      expect(physical.inspectionCalls).toBe(0);
+    }
   });
 
   test("Worker row cannot replace missing invocation acknowledgement event", async () => {
@@ -253,6 +274,16 @@ describe("one-time historical Claude containment", () => {
           physical: "authority_current_observation",
         }),
         expect.objectContaining({
+          fact: "invocation authority generation and environment operation",
+          product: "authority_from_append_only_pre_refence_events",
+          workerV2: "authority_from_accepted_command",
+        }),
+        expect.objectContaining({
+          fact: "current/reconnected Worker generation and environment operation",
+          product: "current_projection_with_append_only_refence_chain",
+          workerV2: "not_comparable_to_invocation_authority",
+        }),
+        expect.objectContaining({
           fact: "process generation",
           product: "not_source",
           workerV2: "authority_historical",
@@ -300,12 +331,22 @@ describe("one-time historical Claude containment", () => {
     expect(Object.isFrozen(worker)).toBe(true);
     expect(Object.isFrozen(corroborated)).toBe(true);
     expect(Object.isFrozen(corroborated.sharedIdentityMatches)).toBe(true);
+    expect(Object.isFrozen(corroborated.generationAuthorityMatches)).toBe(true);
+    expect(Object.isFrozen(product.invocationAuthority)).toBe(true);
+    expect(Object.isFrozen(worker.invocationAuthority)).toBe(true);
     expect(corroborated).toMatchObject({
       semanticAuthority: { invocationState: "requested" },
       historicalPhysicalEvidence: { invocationState: "acknowledged" },
       sharedIdentityMatches: {
-        contractVersion: "historical-containment-shared-identity-v1",
+        contractVersion: "historical-containment-shared-identity-v2",
         matchedFields: [...SHARED_IDENTITY_FIELDS],
+      },
+      generationAuthorityMatches: {
+        contractVersion: "historical-containment-generation-authority-v1",
+        matchedFields: [
+          "invocation_authority_worker_generation",
+          "invocation_authority_environment_operation_id",
+        ],
       },
     });
     const physical = new FakePhysical([liveObservation()]);
@@ -359,6 +400,14 @@ describe("one-time historical Claude containment", () => {
       product: {
         provider_account_id: "different-account",
         cancellation_event_provider_account_id: "different-account",
+        invocation_requested_event: {
+          provider_account_id: "different-account",
+          setup_generation: 1,
+          state: "invocation_requested",
+          invocation_state: "requested",
+          details: { observed_state: "invocation_requested" },
+          occurred_at: invocationTimestamp(),
+        },
       },
     });
     const physical = new FakePhysical([liveObservation()]);
@@ -375,15 +424,17 @@ describe("one-time historical Claude containment", () => {
         setup_generation: 99,
         authorization_setup_generation: 99,
         cancellation_event_setup_generation: 99,
+        invocation_requested_event: {
+          provider_account_id: "historical-account",
+          setup_generation: 99,
+          state: "invocation_requested",
+          invocation_state: "requested",
+          details: { observed_state: "invocation_requested" },
+          occurred_at: invocationTimestamp(),
+        },
       },
     ],
     ["credential generation", { credential_generation: 99 }],
-    ["environment generation", { environment_generation: 99 }],
-    ["Worker generation", { worker_generation: 99 }],
-    [
-      "environment operation",
-      { environment_operation_id: "different-environment-operation" },
-    ],
   ] as const)("%s cross-source mismatch is rejected before physical inspection", async (_name, productMutation) => {
     const fixture = await forensicFixture({ product: productMutation });
     const physical = new FakePhysical([liveObservation()]);
@@ -391,6 +442,95 @@ describe("one-time historical Claude containment", () => {
       code: "corroboration_mismatch",
     });
     expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test("same invocation-authority generation corroborates without a reconnect projection", async () => {
+    const fixture = await forensicFixture();
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).resolves.toMatchObject({
+      permittedAction: "exact_cancellation",
+    });
+    expect(physical.inspectionCalls).toBe(1);
+  });
+
+  test("later Product reconnect projection preserves exact invocation authority", async () => {
+    const fixture = await forensicFixture({
+      product: productGenerationProjection(
+        7,
+        "historical-environment-operation",
+        [
+          generationRefence(8, "reconnected-environment-operation-8", 2),
+          generationRefence(9, "reconnected-environment-operation-9", 4),
+        ],
+      ),
+    });
+    const physical = new FakePhysical([liveObservation()]);
+    const projected = await dryRun(fixture, physical);
+    expect(projected.permittedAction).toBe("exact_cancellation");
+    const baseline = await forensicFixture();
+    const baselineResult = await dryRun(
+      baseline,
+      new FakePhysical([liveObservation()]),
+    );
+    expect(projected.targetIdentityDigest).not.toBe(
+      baselineResult.targetIdentityDigest,
+    );
+    expect(physical.inspectionCalls).toBe(1);
+  });
+
+  test.each([
+    {
+      current_worker_generation: 8,
+      current_environment_operation_id: "unproven-environment-operation-8",
+    },
+    productGenerationProjection(7, "historical-environment-operation", [
+      generationRefence(9, "skipped-environment-operation-9", 2),
+    ]),
+  ])("an unproven Product generation projection is rejected before physical inspection", async (product) => {
+    const fixture = await forensicFixture({ product });
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "product_evidence_mismatch",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+  });
+
+  test.each([
+    [8, "historical-environment-operation"],
+    [7, "different-invocation-environment-operation"],
+  ] as const)("wrong invocation authority generation/operation is not accepted as a handoff", async (generation, operationId) => {
+    const fixture = await forensicFixture({
+      product: productGenerationProjection(generation, operationId, []),
+    });
+    const physical = new FakePhysical([liveObservation()]);
+    await expect(dryRun(fixture, physical)).rejects.toMatchObject({
+      code: "worker_generation_handoff_unproven",
+    });
+    expect(physical.inspectionCalls).toBe(0);
+    expect(physical.cancellationCalls).toBe(0);
+  });
+
+  test("sanitized retained 1-to-2-to-3 reconnect projection corroborates generation one invocation", async () => {
+    const fixture = await forensicFixture({
+      product: productGenerationProjection(
+        1,
+        "c2ae641c-a5b5-4237-9874-9792ac016c59",
+        [
+          generationRefence(2, "225f7e51-2782-4cf1-9b9c-b6960f2f2110", 2),
+          generationRefence(3, "01b87913-f7c7-4f9a-ae13-6e42f98d024f", 4),
+        ],
+      ),
+    });
+    mutateWorkerInvocationAuthority(
+      fixture.workerLedger,
+      1,
+      "c2ae641c-a5b5-4237-9874-9792ac016c59",
+    );
+    const physical = new FakePhysical([liveObservation()]);
+    const result = await dryRun(fixture, physical);
+    expect(result.permittedAction).toBe("exact_cancellation");
+    expect(physical.inspectionCalls).toBe(1);
+    expect(physical.cancellationCalls).toBe(0);
   });
 
   test("authoritative absence records no cancellation, digest, or fabricated exit status", async () => {
@@ -858,14 +998,17 @@ describe("one-time historical Claude containment", () => {
     ).toThrow("Product database name does not match");
   });
 
-  test("failed Gate-1 operation ID cannot be reused", async () => {
+  test.each([
+    FAILED_GATE_ONE_OPERATION_ID,
+    FAILED_GATE_ONE_RETRY_OPERATION_ID,
+  ])("failed Gate-1 operation ID %s cannot be reused", async (operationId) => {
     const fixture = await forensicFixture();
     const physical = new FakePhysical([liveObservation()]);
     await expect(
       runHistoricalContainment(
         {
           ...baseOptions(fixture),
-          containmentOperationId: FAILED_GATE_ONE_OPERATION_ID,
+          containmentOperationId: operationId,
         },
         { productEvidence: fixture.product, physical },
       ),
@@ -1141,6 +1284,31 @@ function mutateWorkerAttempt(
   database.close();
 }
 
+function mutateWorkerInvocationAuthority(
+  path: string,
+  generation: number,
+  environmentOperationId: string,
+): void {
+  const database = new Database(path);
+  const row = database
+    .query(
+      "SELECT command_json FROM provider_account_setup_attempts WHERE setup_attempt_id=?",
+    )
+    .get(HISTORICAL_SETUP_ATTEMPT_ID) as { command_json: string };
+  const command = JSON.parse(row.command_json) as ReturnType<
+    typeof workerCommand
+  >;
+  command.connection_generation = generation;
+  command.setup.worker_generation = generation;
+  command.setup.environment_operation_id = environmentOperationId;
+  database
+    .query(
+      "UPDATE provider_account_setup_attempts SET command_json=? WHERE setup_attempt_id=?",
+    )
+    .run(JSON.stringify(command), HISTORICAL_SETUP_ATTEMPT_ID);
+  database.close();
+}
+
 function mutateWorkerProcess(
   path: string,
   mutation: Partial<ReturnType<typeof processHandle>>,
@@ -1251,6 +1419,74 @@ function productDatabaseIdentity(): ProductDatabaseIdentity {
   };
 }
 
+interface SyntheticGenerationRefence {
+  workerGeneration: number;
+  environmentOperationId: string;
+  environmentEventOccurredAt: string;
+  setupEventOccurredAt: string;
+}
+
+function generationRefence(
+  workerGeneration: number,
+  environmentOperationId: string,
+  second: number,
+): SyntheticGenerationRefence {
+  return {
+    workerGeneration,
+    environmentOperationId,
+    environmentEventOccurredAt: syntheticAt(second),
+    setupEventOccurredAt: syntheticAt(second + 1),
+  };
+}
+
+function productGenerationProjection(
+  authorityGeneration: number,
+  authorityEnvironmentOperationId: string,
+  refences: readonly SyntheticGenerationRefence[],
+): Record<string, unknown> {
+  const current = refences.at(-1);
+  return {
+    current_worker_generation: current?.workerGeneration ?? authorityGeneration,
+    current_environment_operation_id:
+      current?.environmentOperationId ?? authorityEnvironmentOperationId,
+    authority_generation_event: {
+      event_type: "environment_ensured",
+      worker_id: "historical-worker",
+      worker_generation: authorityGeneration,
+      environment_operation_id: authorityEnvironmentOperationId,
+      credential_generation: 3,
+      backend_kind: "sbx",
+      environment_id: HISTORICAL_ENVIRONMENT_ID,
+      environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
+      physical_state: "available",
+      lifecycle_state: "connected",
+      details: { report: "credential_free", canary_persisted: true },
+      occurred_at: timestamp(),
+    },
+    environment_generation_refence_chain: refences.map((refence) => ({
+      worker_id: "historical-worker",
+      worker_generation: refence.workerGeneration,
+      environment_operation_id: refence.environmentOperationId,
+      credential_generation: 3,
+      backend_kind: "sbx",
+      environment_id: HISTORICAL_ENVIRONMENT_ID,
+      environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
+      physical_state: "available",
+      lifecycle_state: "connected",
+      details: {},
+      occurred_at: refence.environmentEventOccurredAt,
+    })),
+    setup_generation_refence_chain: refences.map((refence) => ({
+      provider_account_id: "historical-account",
+      setup_generation: 1,
+      state: "invocation_requested",
+      invocation_state: "requested",
+      details: {},
+      occurred_at: refence.setupEventOccurredAt,
+    })),
+  };
+}
+
 function productRow(): Record<string, unknown> {
   return {
     setup_attempt_id: HISTORICAL_SETUP_ATTEMPT_ID,
@@ -1267,14 +1503,40 @@ function productRow(): Record<string, unknown> {
     attempt_auth_inspection_identity: "authentication-evidence",
     attempt_auth_inspected_at: timestamp(),
     worker_id: "historical-worker",
-    worker_generation: 7,
-    environment_operation_id: "historical-environment-operation",
+    current_worker_generation: 7,
+    current_environment_operation_id: "historical-environment-operation",
+    authority_generation_event: {
+      event_type: "environment_ensured",
+      worker_id: "historical-worker",
+      worker_generation: 7,
+      environment_operation_id: "historical-environment-operation",
+      credential_generation: 3,
+      backend_kind: "sbx",
+      environment_id: HISTORICAL_ENVIRONMENT_ID,
+      environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
+      physical_state: "available",
+      lifecycle_state: "connected",
+      details: { report: "credential_free", canary_persisted: true },
+      occurred_at: timestamp(),
+    },
+    authority_generation_event_count: 1,
+    invocation_requested_event: {
+      provider_account_id: "historical-account",
+      setup_generation: 1,
+      state: "invocation_requested",
+      invocation_state: "requested",
+      details: { observed_state: "invocation_requested" },
+      occurred_at: invocationTimestamp(),
+    },
+    invocation_requested_event_count: 1,
+    environment_generation_refence_chain: [],
+    setup_generation_refence_chain: [],
     backend_kind: "sbx",
     environment_id: HISTORICAL_ENVIRONMENT_ID,
     environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
     state: "cancellation_requested",
     invocation_state: "requested",
-    invocation_requested_at: timestamp(),
+    invocation_requested_at: invocationTimestamp(),
     cancellation_request_id: HISTORICAL_CANCELLATION_REQUEST_ID,
     failure_code: "setup_cancelled",
     authorization_id: "historical-authorization",
@@ -1294,7 +1556,7 @@ function productRow(): Record<string, unknown> {
     cancellation_event_setup_generation: 1,
     cancellation_event_state: "cancellation_requested",
     cancellation_event_invocation_state: "requested",
-    cancellation_event_occurred_at: timestamp(),
+    cancellation_event_occurred_at: cancellationTimestamp(),
     later_semantic_event_count: 0,
     human_attention_count: 0,
   };
@@ -1484,5 +1746,17 @@ async function fileDigest(path: string): Promise<string | null> {
 }
 
 function timestamp(): string {
-  return "2026-10-15T00:00:00.000Z";
+  return syntheticAt(0);
+}
+
+function invocationTimestamp(): string {
+  return syntheticAt(1);
+}
+
+function cancellationTimestamp(): string {
+  return syntheticAt(10);
+}
+
+function syntheticAt(second: number): string {
+  return `2026-10-15T00:00:${String(second).padStart(2, "0")}.000Z`;
 }

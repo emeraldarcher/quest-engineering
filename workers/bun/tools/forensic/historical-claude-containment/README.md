@@ -41,20 +41,25 @@ local/private server locality, port `5432`, and the exact `20261017000000`
 migration head/count before reading authority.
 Credentials are not included in evidence or identity digests.
 
-The Product query proves semantic authority only: the exact setup attempt and
+The Product query proves semantic authority: the exact setup attempt and
 account, one setup authorization, the historically truthful
 `cancellation_requested / requested` state, the exact existing cancellation
 request and event, valid Product-local chronology, zero later semantic events,
-and zero HumanAttention rows. It deliberately does not select or synthesize an
-invocation acknowledgement, PID, start identity, executable, or process
-generation.
+and zero HumanAttention rows. It also proves invocation-generation provenance
+from append-only Product events: the exact available environment generation and
+operation in force at authorization, the accepted `invocation_requested` event,
+and every later environment/setup re-fence pair through the current mutable
+projection. It deliberately does not select or synthesize an invocation
+acknowledgement, PID, start identity, executable, or process generation.
 
-The immutable Worker-v2 row and events separately prove one
+The immutable Worker-v2 row and events separately prove exactly one original
+`authorization_accepted` command, no `command_reconciled` event, one
 `login_invocation_requested` intent, one `login_invocation_acknowledged` event,
 its `invocation_acknowledged / acknowledged` state, complete historical process
-and environment identity, and no Worker-side cancellation submission or event. The Product
-request remains the sole semantic cancellation authority. Neither source can
-replace the other.
+and environment identity, and no Worker-side cancellation submission or event.
+The accepted command envelope generation and setup generation must be equal.
+The Product request remains the sole semantic cancellation authority. Neither
+source can replace the other.
 
 ## Product read outcomes and Gate-1 ordering
 
@@ -70,9 +75,12 @@ Product evidence has four non-overlapping outcomes:
 
 Worker evidence independently reports `worker_evidence_missing` when the exact
 attempt is absent and `worker_evidence_mismatch` when schema-2 or its mandatory
-acknowledged physical evidence is contradictory. If independently valid
-Product and Worker evidence disagree on any shared identity,
-`corroboration_mismatch` is reported. These are distinct from Product failures.
+acknowledged physical evidence is contradictory. If independently valid Product and Worker evidence disagree on an ordinary
+shared identity, `corroboration_mismatch` is reported. If Product's append-only
+invocation-authority generation/operation does not equal the Worker-v2 accepted
+command generation/operation, `worker_generation_handoff_unproven` is reported.
+A later Product current-generation projection is not compared directly to the
+historical Worker invocation. These are distinct from Product failures.
 
 Only full corroboration permits any physical call. Gate 1 parses immutable
 Worker-v2 evidence first, validates Product semantic authority second, validates
@@ -104,7 +112,9 @@ inspection.
 | Cancellation authority (`cancellation_request_id`, state/event) | authority | not a source | — |
 | Setup attempt (`setup_attempt_id`) | authority | authority | — |
 | Account (`provider_account_id`) | authority | authority | corroborates environment owner |
-| Invocation intent | records pending `requested` state | one `login_invocation_requested` event is authoritative | — |
+| Invocation intent | records pending `requested` state and append-only observed event | one `login_invocation_requested` event is authoritative | — |
+| Invocation-authority generation and operation | latest exact available-environment event at authorization, before the accepted invocation event | accepted command envelope/setup plus `authorization_accepted` event | — |
+| Current/reconnected generation and operation | mutable current projection, proved from paired append-only environment/setup re-fence events | not comparable to original invocation authority | — |
 | Invocation acknowledgement | not a source | one `login_invocation_acknowledged` event plus `invocation_acknowledged / acknowledged` row is authoritative | — |
 | PID, start identity, executable | not a source | historical authority from `process_json` | current PID/start/executable observed through pidfd |
 | Process generation | not a source | historical authority from `process_json` | bound to the current process by the exact pidfd/PID/start/executable tuple; not invented as a kernel field |
@@ -114,14 +124,28 @@ inspection.
 | Current exact-process match | not a source | expected identity | authority |
 
 Shared comparisons are exact for setup attempt, authorization identity/time,
-account, setup/credential/environment/Worker generations, environment operation,
-Worker/backend/environment/incarnation, and authentication
-configuration/policy/evidence/time. Product did not persist profile, PID, start
-identity, executable, or process generation after the interrupted report, so
-Worker-v2 is the sole historical source for those fields; exact attempt,
-authorization, account, generations, Worker, and environment identities bind
-that handle uniquely to Product authority. No Worker field is copied into the
-Product evidence object.
+account, setup/credential/environment generations, invocation-authority Worker
+generation and environment operation, stable Worker ID,
+backend/environment/incarnation, and authentication
+configuration/policy/evidence/time. The mutable Product attempt fields are
+explicitly named the current generation/operation projection. They are accepted
+only when an ordered one-to-one chain of append-only
+`worker_generation_reconciled` environment and setup events proves every
+re-fence from invocation authority to that current projection.
+
+At historical production commit
+`16f446563b7ba7811af96c50783c230fe1135002`, setup authorization copied the
+then-current environment generation/operation, dispatch required that generation
+to equal the connected ready Worker generation, and routing used the same
+generation. Reconnect reconciliation later rewrote the active Product attempt's
+`worker_generation` and `environment_operation_id`. Worker schema 2, by
+contrast, retained the accepted generation-one command and no command
+reconciliation. Therefore the old equality compared different lifecycle
+projections. The corrected decision is **B: compare the proper immutable
+invocation-authority fields**, not a generation handoff and not a relaxation.
+Product did not persist profile, PID, start identity, executable, or process
+generation after the rejected report, so Worker-v2 remains the sole historical
+source for those fields. No Worker field is copied into Product evidence.
 
 Chronology uses ordering within a defensible timestamp domain: Product
 authorization precedes Product invocation request, which precedes Product
@@ -142,15 +166,19 @@ The CLI defaults to inspect-only. After Worker and Product authority pass, it:
 7. only for exact-live, emits the physical-identity digest required by a later
    destructive command.
 
-The internal corroborated-evidence object retains three attributed components:
+The internal corroborated-evidence object retains attributed components:
 `semanticAuthority` from the Product read-only transaction,
 `historicalPhysicalEvidence` and `historicalPhysicalIdentity` from the immutable
-Worker-v2 snapshot, and `sharedIdentityMatches`. Environment-ledger evidence is
-also retained with its source digest. The final physical identity digest commits
-the versioned Product semantic digest, Worker physical digest, environment
-digest, explicit shared-match contract, and current exact SBX/pidfd
-PID/start/executable observation. It contains no credentials or provider
-output.
+Worker-v2 snapshot, `sharedIdentityMatches`, and
+`generationAuthorityMatches`, which includes Product invocation authority,
+Worker accepted-command authority, Product's current projection, and its full
+re-fence chain. Environment-ledger evidence is also retained with its source
+digest. This semantic correction versions the shared identity contract as v2,
+the corroborated-evidence contract as v3, and the physical-identity digest as
+v3. The final physical identity digest commits the Product semantic digest,
+Worker physical digest, environment digest, explicit shared and generation
+contracts, and current exact SBX/pidfd PID/start/executable observation. It
+contains no credentials or provider output.
 
 It never reads stdout/stderr, stdin, process environment, account files,
 credentials, OAuth material, or provider state. It sends zero signals.
@@ -184,8 +212,9 @@ absence records no fabricated exit status and never rewrites Product history.
 
 ## Execution interlock
 
-The failed Gate-1 diagnostic operation
-`15428ed9-f6df-4b6d-bfcd-379c7c855eb4` was never journal-bound and must never
+The failed Gate-1 diagnostic operations
+`15428ed9-f6df-4b6d-bfcd-379c7c855eb4` and
+`486ffc35-b53c-4579-8a71-e92ec263e936` were never journal-bound and must never
 be reused. A future authorized Gate 1 must use a new explicit operation UUID.
 
 Destructive mode is not documented as a ready-to-run command. After a separately

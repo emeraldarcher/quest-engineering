@@ -29,6 +29,12 @@ describe("historical containment Product evidence reader", () => {
       setupAttemptId: HISTORICAL_SETUP_ATTEMPT_ID,
       cancellationRequestId: HISTORICAL_CANCELLATION_REQUEST_ID,
       invocationState: "requested",
+      invocationAuthority: {
+        workerGeneration: 7,
+        environmentOperationId: "historical-environment-operation",
+        currentWorkerGeneration: 7,
+        refenceChain: [],
+      },
       authorizationCount: 1,
       cancellationRequestedEventCount: 1,
       laterSemanticEventCount: 0,
@@ -49,6 +55,9 @@ describe("historical containment Product evidence reader", () => {
     ]);
     expect(sql.queries).toHaveLength(2);
     expect(sql.queries[1]).toContain("setup_authorization.id");
+    expect(sql.queries[1]).toContain("provider_account_lifecycle_events");
+    expect(sql.queries[1]).toContain("environment_generation_refence_chain");
+    expect(sql.queries[1]).toContain("setup_generation_refence_chain");
     expect(sql.queries[1]).not.toMatch(/\bauthorization\./);
     expect(sql.queries[1]).not.toMatch(
       /process_backend_id|process_start_identity|process_generation|process_executable|invocation_acknowledged_at/,
@@ -56,6 +65,24 @@ describe("historical containment Product evidence reader", () => {
     expect(sql.queries.join("\n")).not.toMatch(
       /\b(?:INSERT|UPDATE|DELETE|ALTER|VACUUM|TRUNCATE)\b/,
     );
+  });
+
+  test("PostgreSQL JSON timestamps without zone are interpreted as schema-defined UTC", async () => {
+    const row = authorityRow();
+    (row.authority_generation_event as Record<string, unknown>).occurred_at =
+      "2026-10-15T00:00:00.000";
+    (row.invocation_requested_event as Record<string, unknown>).occurred_at =
+      "2026-10-15T00:00:00.000";
+    const evidence = await productReader(
+      new FakeProductSql({
+        identityRows: [identityRow()],
+        authorityRows: [row],
+      }),
+    ).read(HISTORICAL_SETUP_ATTEMPT_ID);
+    expect(evidence.invocationAuthority).toMatchObject({
+      authorityEventOccurredAt: "2026-10-15T00:00:00.000Z",
+      invocationRequestedEventOccurredAt: "2026-10-15T00:00:00.000Z",
+    });
   });
 
   test("successful query with no exact target is product_evidence_missing", async () => {
@@ -282,8 +309,34 @@ function authorityRow(): Record<string, unknown> {
     attempt_auth_inspection_identity: "authentication-evidence",
     attempt_auth_inspected_at: observedAt,
     worker_id: "historical-worker",
-    worker_generation: 7,
-    environment_operation_id: "historical-environment-operation",
+    current_worker_generation: 7,
+    current_environment_operation_id: "historical-environment-operation",
+    authority_generation_event: {
+      event_type: "environment_ensured",
+      worker_id: "historical-worker",
+      worker_generation: 7,
+      environment_operation_id: "historical-environment-operation",
+      credential_generation: 3,
+      backend_kind: "sbx",
+      environment_id: HISTORICAL_ENVIRONMENT_ID,
+      environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,
+      physical_state: "available",
+      lifecycle_state: "connected",
+      details: { report: "credential_free", canary_persisted: true },
+      occurred_at: observedAt,
+    },
+    authority_generation_event_count: 1,
+    invocation_requested_event: {
+      provider_account_id: "historical-account",
+      setup_generation: 1,
+      state: "invocation_requested",
+      invocation_state: "requested",
+      details: { observed_state: "invocation_requested" },
+      occurred_at: observedAt,
+    },
+    invocation_requested_event_count: 1,
+    environment_generation_refence_chain: [],
+    setup_generation_refence_chain: [],
     backend_kind: "sbx",
     environment_id: HISTORICAL_ENVIRONMENT_ID,
     environment_incarnation: HISTORICAL_ENVIRONMENT_INCARNATION,

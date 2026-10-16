@@ -12,6 +12,8 @@ export const HISTORICAL_PROCESS_GENERATION =
 export const HISTORICAL_EXECUTABLE = "/opt/qe/claude/claude";
 export const FAILED_GATE_ONE_OPERATION_ID =
   "15428ed9-f6df-4b6d-bfcd-379c7c855eb4";
+export const FAILED_GATE_ONE_RETRY_OPERATION_ID =
+  "486ffc35-b53c-4579-8a71-e92ec263e936";
 
 export const CONTAINMENT_JOURNAL_SCHEMA_VERSION = 1;
 
@@ -25,6 +27,7 @@ export type ContainmentErrorCode =
   | "product_evidence_missing"
   | "product_evidence_mismatch"
   | "corroboration_mismatch"
+  | "worker_generation_handoff_unproven"
   | "environment_evidence_incompatible"
   | "physical_identity_mismatch"
   | "physical_observation_unavailable"
@@ -81,8 +84,18 @@ export type HistoricalWorkerPhysicalIdentity = Omit<
   | "environmentNativeAgent"
 >;
 
+export interface WorkerInvocationAuthorityEvidence {
+  source: "worker_v2_command_json_and_authorization_accepted_event";
+  commandAcceptedAt: string;
+  connectionGeneration: number;
+  setupWorkerGeneration: number;
+  environmentOperationId: string;
+  commandReconciliationCount: 0;
+}
+
 export interface WorkerV2Evidence {
   source: "worker_v2_immutable_snapshot";
+  invocationAuthority: WorkerInvocationAuthorityEvidence;
   invocationIntent: "login_invocation_requested";
   intentRecordedAt: string;
   workerState: "invocation_acknowledged";
@@ -102,9 +115,30 @@ export interface ProductDatabaseIdentity {
   schemaMigrationCount: number;
 }
 
+export interface ProductGenerationRefenceEvidence {
+  workerGeneration: number;
+  environmentOperationId: string;
+  environmentEventOccurredAt: string;
+  setupEventOccurredAt: string;
+}
+
+export interface ProductInvocationAuthorityEvidence {
+  source: "product_append_only_environment_and_setup_events";
+  contractVersion: "product-invocation-authority-v1";
+  workerGeneration: number;
+  environmentOperationId: string;
+  authorityEventType: "environment_ensured" | "worker_generation_reconciled";
+  authorityEventOccurredAt: string;
+  invocationRequestedEventOccurredAt: string;
+  currentWorkerGeneration: number;
+  currentEnvironmentOperationId: string;
+  refenceChain: readonly ProductGenerationRefenceEvidence[];
+}
+
 export interface ProductSemanticAuthorityEvidence {
   source: "product_repeatable_read_read_only_transaction";
   databaseIdentity: ProductDatabaseIdentity;
+  invocationAuthority: ProductInvocationAuthorityEvidence;
   setupAttemptId: string;
   cancellationRequestId: string;
   authorizationId: string;
@@ -114,8 +148,6 @@ export interface ProductSemanticAuthorityEvidence {
   setupGeneration: number;
   credentialGeneration: number;
   environmentGeneration: number;
-  invocationWorkerGeneration: number;
-  invocationEnvironmentOperationId: string;
   workerId: string;
   backendKind: "sbx";
   environmentId: string;
@@ -155,8 +187,18 @@ export interface EnvironmentForensicEvidence {
 }
 
 export interface SharedIdentityMatches {
-  contractVersion: "historical-containment-shared-identity-v1";
+  contractVersion: "historical-containment-shared-identity-v2";
   matchedFields: readonly string[];
+}
+
+export interface GenerationAuthorityMatches {
+  contractVersion: "historical-containment-generation-authority-v1";
+  matchedFields: readonly [
+    "invocation_authority_worker_generation",
+    "invocation_authority_environment_operation_id",
+  ];
+  productInvocationAuthority: ProductInvocationAuthorityEvidence;
+  workerInvocationAuthority: WorkerInvocationAuthorityEvidence;
 }
 
 export interface ValidatedContainmentEvidence {
@@ -165,6 +207,7 @@ export interface ValidatedContainmentEvidence {
   historicalPhysicalEvidence: WorkerV2Evidence;
   historicalPhysicalIdentity: HistoricalWorkerPhysicalIdentity;
   sharedIdentityMatches: SharedIdentityMatches;
+  generationAuthorityMatches: GenerationAuthorityMatches;
   environmentEvidence: EnvironmentForensicEvidence;
   workerEvidenceDigest: string;
   productEvidenceDigest: string;

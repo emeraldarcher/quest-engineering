@@ -12,6 +12,7 @@ import {
   type ContainmentRunOptions,
   type ContainmentRunResult,
   FAILED_GATE_ONE_OPERATION_ID,
+  FAILED_GATE_ONE_RETRY_OPERATION_ID,
   HISTORICAL_CANCELLATION_REQUEST_ID,
   HISTORICAL_SETUP_ATTEMPT_ID,
   type PhysicalObservation,
@@ -342,6 +343,7 @@ function validateOptions(options: ContainmentRunOptions): void {
       HISTORICAL_SETUP_ATTEMPT_ID,
       HISTORICAL_CANCELLATION_REQUEST_ID,
       FAILED_GATE_ONE_OPERATION_ID,
+      FAILED_GATE_ONE_RETRY_OPERATION_ID,
     ].includes(options.containmentOperationId)
   )
     throw new ContainmentError(
@@ -480,7 +482,7 @@ export function physicalIdentityDigest(
       "The claimed live observation does not exactly corroborate the historical Worker identity.",
     );
   return safeDigest({
-    contractVersion: "historical-containment-physical-identity-v2",
+    contractVersion: "historical-containment-physical-identity-v3",
     semanticAuthority: {
       source: "product_repeatable_read_read_only_transaction",
       digest: evidence.productEvidenceDigest,
@@ -494,6 +496,7 @@ export function physicalIdentityDigest(
       digest: evidence.environmentEvidenceDigest,
     },
     sharedIdentityMatches: evidence.sharedIdentityMatches,
+    generationAuthorityMatches: evidence.generationAuthorityMatches,
     currentPhysicalIdentity: {
       source: "sbx_pidfd_observation",
       observation: "live_exact",
