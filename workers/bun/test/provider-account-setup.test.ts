@@ -265,7 +265,10 @@ describe("ProviderAccount setup", () => {
     const secretInput = "sensitive-one-time-fake-input";
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
-      const waiting = fixture.reports.at(-1);
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
       expect(waiting).toMatchObject({
         state: "human_interaction_required",
         invocation_state: "acknowledged",
@@ -366,7 +369,10 @@ describe("ProviderAccount setup", () => {
     const fixture = await setupFixture();
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
-      const waiting = fixture.reports.at(-1) as ProviderAccountSetupReport;
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
       const validateSetup = fixture.manager.validateSetup.bind(fixture.manager);
       fixture.manager.validateSetup = async (identity) => ({
         ...(await validateSetup(identity)),
@@ -546,7 +552,10 @@ describe("ProviderAccount setup", () => {
     const input = await setupFixture();
     try {
       await input.coordinator.prepare(input.setupCommand);
-      const waiting = input.reports.at(-1) as ProviderAccountSetupReport;
+      const waiting = await reportedSetupState(
+        input,
+        "human_interaction_required",
+      );
       activeProcess(input).write = async () => {
         throw new EnvironmentBackendError(
           "streamed_process_write_uncertain",
@@ -644,7 +653,7 @@ describe("ProviderAccount setup", () => {
     const fixture = await setupFixture();
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
-      expect(fixture.reports.at(-1)?.state).toBe("human_interaction_required");
+      await reportedSetupState(fixture, "human_interaction_required");
       const process = activeProcess(fixture);
       const coordinator = fixture.coordinator as unknown as {
         active: Map<string, unknown>;
@@ -706,7 +715,8 @@ describe("ProviderAccount setup", () => {
           },
         },
       ]);
-      expect(fixture.reports.at(-1)).toMatchObject({
+      const failed = await reportedSetupState(fixture, "failed");
+      expect(failed).toMatchObject({
         worker_generation: 8,
         environment_operation_id: "reconciled-environment-operation",
         invocation_worker_generation: 7,
@@ -769,7 +779,10 @@ describe("ProviderAccount setup", () => {
     const fixture = await setupFixture();
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
-      const waiting = fixture.reports.at(-1) as ProviderAccountSetupReport;
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
       await expect(
         fixture.coordinator.respond({
           ...responseCommand(fixture.setupCommand, waiting, "ignored"),
@@ -815,18 +828,25 @@ describe("ProviderAccount setup", () => {
       { rejectReportState: "invocation_acknowledged" },
     );
     try {
-      await expect(
-        fixture.coordinator.prepare(fixture.setupCommand),
-      ).rejects.toThrow("control-plane report rejection");
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      await eventually(() =>
+        fixture.reports.some(
+          (report) => report.state === "invocation_acknowledged",
+        ),
+      );
       const process = activeProcess(fixture);
       expect(process).toBeDefined();
       const acknowledged = fixture.store.get(
         fixture.setupCommand.setup.setup_attempt_id,
       );
+      if (!acknowledged) throw new Error("Expected local acknowledgement.");
       expect(acknowledged).toMatchObject({
-        state: "invocation_acknowledged",
         invocationState: "acknowledged",
       });
+      expect([
+        "invocation_acknowledged",
+        "human_interaction_required",
+      ]).toContain(acknowledged.state);
 
       const reconciled = await Promise.race([
         fixture.manager.apply(
@@ -1000,13 +1020,15 @@ describe("ProviderAccount setup", () => {
         request_id: "detached-exact-cancel",
       });
       expect(cancellationCalls).toBe(1);
-      expect(
-        fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
-      ).toMatchObject({
+      const cancelled = fixture.store.get(
+        fixture.setupCommand.setup.setup_attempt_id,
+      );
+      expect(cancelled).toMatchObject({
         state: "cancelled",
         cancellationInvocationState: "settled",
-        cancellationObservation: "gone",
       });
+      if (!cancelled) throw new Error("Expected terminal cancellation state.");
+      expect(["gone", "exited"]).toContain(cancelled.cancellationObservation);
     } finally {
       await fixture.coordinator.close();
       await fixture.manager.close();
@@ -1285,6 +1307,163 @@ describe("ProviderAccount setup", () => {
     }
   });
 
+  test("acknowledged silent supervisor releases the coordinator tail across routing generations and timeout", async () => {
+    const fixture = await setupFixture(
+      {},
+      { coordinator: { interactionDiscoveryTimeoutMs: 200 } },
+    );
+    const beginSetupProcess = fixture.manager.beginSetupProcess.bind(
+      fixture.manager,
+    );
+    fixture.manager.beginSetupProcess = async (
+      identity,
+      beforeSpawn,
+      acknowledgeSpawn,
+    ) =>
+      beginSetupProcess(identity, beforeSpawn, async (spawned) => {
+        const stdout = (async function* () {
+          for await (const event of spawned.stdout)
+            if (event.kind !== "data") yield event;
+        })();
+        await acknowledgeSpawn({ ...spawned, stdout });
+      });
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const acknowledged = fixture.store.get(
+        fixture.setupCommand.setup.setup_attempt_id,
+      );
+      if (!acknowledged?.process)
+        throw new Error("Expected acknowledged process identity.");
+
+      for (const generation of [8, 9]) {
+        const currentCommand: ProviderAccountSetupCommand = {
+          ...fixture.setupCommand,
+          connection_generation: generation,
+          setup: {
+            ...fixture.setupCommand.setup,
+            worker_generation: generation,
+            environment_operation_id: `route-${generation}`,
+            invocation_worker_generation: 7,
+            invocation_environment_operation_id: "environment-operation",
+            state: "invocation_acknowledged",
+            invocation_state: "acknowledged",
+          },
+        };
+        await Promise.race([
+          fixture.coordinator.reconcile([currentCommand]),
+          Bun.sleep(100).then(() => {
+            throw new Error("setup coordinator tail remained held");
+          }),
+        ]);
+        expect(
+          fixture.store.get(currentCommand.setup.setup_attempt_id),
+        ).toMatchObject({
+          command: {
+            connection_generation: generation,
+            setup: {
+              worker_generation: generation,
+              environment_operation_id: `route-${generation}`,
+            },
+          },
+          invocationWorkerGeneration: 7,
+          invocationEnvironmentOperationId: "environment-operation",
+          process: acknowledged.process,
+        });
+      }
+
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "failed",
+      );
+      const terminal = await reportedSetupState(fixture, "failed");
+      expect(terminal).toMatchObject({
+        worker_generation: 9,
+        environment_operation_id: "route-9",
+        invocation_worker_generation: 7,
+        invocation_environment_operation_id: "environment-operation",
+        invocation_state: "settled",
+        failure_code: "setup_interaction_discovery_timed_out",
+      });
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
+      ).toHaveLength(1);
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .filter(
+            (event) => event.eventType === "cancellation_invocation_requested",
+          ),
+      ).toHaveLength(1);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("lost terminal report is re-emitted under the latest routing generation", async () => {
+    const fixture = await setupFixture(
+      {},
+      {
+        rejectReportState: "failed",
+        coordinator: { interactionDiscoveryTimeoutMs: 5 },
+      },
+    );
+    const beginSetupProcess = fixture.manager.beginSetupProcess.bind(
+      fixture.manager,
+    );
+    fixture.manager.beginSetupProcess = async (
+      identity,
+      beforeSpawn,
+      acknowledgeSpawn,
+    ) =>
+      beginSetupProcess(identity, beforeSpawn, async (spawned) => {
+        const stdout = (async function* () {
+          for await (const event of spawned.stdout)
+            if (event.kind !== "data") yield event;
+        })();
+        await acknowledgeSpawn({ ...spawned, stdout });
+      });
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "failed",
+      );
+      const currentCommand: ProviderAccountSetupCommand = {
+        ...fixture.setupCommand,
+        connection_generation: 8,
+        setup: {
+          ...fixture.setupCommand.setup,
+          worker_generation: 8,
+          environment_operation_id: "terminal-route-8",
+          invocation_worker_generation: 7,
+          invocation_environment_operation_id: "environment-operation",
+          state: "failed",
+          invocation_state: "settled",
+        },
+      };
+      await fixture.coordinator.reconcile([currentCommand]);
+      await eventually(() =>
+        fixture.reports.some(
+          (report) =>
+            report.state === "failed" && report.worker_generation === 8,
+        ),
+      );
+      expect(
+        fixture.store
+          .events(currentCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
+      ).toHaveLength(1);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
   test("preflight and local acknowledgement failures release the environment lock", async () => {
     const preflight = await setupFixture({
       fakeAuthentication: () => ({
@@ -1510,7 +1689,10 @@ describe("ProviderAccount setup", () => {
     const fixture = await setupFixture();
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
-      const waiting = fixture.reports.at(-1) as ProviderAccountSetupReport;
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
       expect(waiting).toMatchObject({
         worker_generation: 7,
         environment_operation_id: "environment-operation",
@@ -1836,6 +2018,20 @@ function responseCommand(
     delivery_attempt_id: "delivery-1",
     value,
   };
+}
+
+async function reportedSetupState(
+  fixture: Awaited<ReturnType<typeof setupFixture>>,
+  state: ProviderAccountSetupReport["state"],
+): Promise<ProviderAccountSetupReport> {
+  await eventually(() =>
+    fixture.reports.some((report) => report.state === state),
+  );
+  const report = fixture.reports.findLast(
+    (candidate) => candidate.state === state,
+  );
+  if (!report) throw new Error(`Expected setup report state ${state}.`);
+  return report;
 }
 
 async function eventually(check: () => boolean, attempts = 100): Promise<void> {

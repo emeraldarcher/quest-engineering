@@ -194,9 +194,11 @@ The ordering is strict:
    coordinator callback;
 5. spawn only after that durable intent returns successfully;
 6. record the exact acknowledged process handle and immutable invocation owner,
-   install local supervision, then release the account environment-operation
-   lock before crossing the fallible acknowledgement-report boundary;
-7. while supervision owns the process lifetime, permit reconnect reconciliation
+   register one explicit local supervisor, then release both the account
+   environment-operation lock and setup coordinator transition tail before
+   crossing the fallible acknowledgement-report boundary;
+7. while the tracked supervisor owns the process/output/timer lifetime without
+   either lock, permit reconnect reconciliation
    to inspect only the same exact available environment and refresh current
    routing; explicitly fence stop, removal, generation rollover, missing or
    replacement environments, and a second setup;
@@ -225,10 +227,13 @@ uncertain only after physical settlement. An ambiguous cancellation is never
 repeated and advances only through read-only physical reconciliation. One partial
 unique index plus the durable active-setup predicate admits one active setup per
 account; physical lifecycle mutations are explicitly rejected while setup is
-active. The environment-operation lock covers only exact preflight, intent,
-spawn, local acknowledgement, and supervision registration. It is not retained
-across interaction, human, timeout, cancellation, or process-settlement waits.
-Different accounts remain independent.
+active. The environment-operation lock and coordinator transition tail cover
+only exact preflight, intent, spawn, local acknowledgement, and supervisor
+registration. The explicit supervisor registry owns output, interaction,
+timeout, cancellation, and process settlement without either lock. Every later
+ledger mutation briefly reacquires only the coordinator tail and releases it
+before physical operations or Product reporting. Different accounts remain
+independent.
 
 Sensitive output/input, auth-like URLs/codes, raw provider output, and response
 values are absent from PostgreSQL, Worker SQLite, lifecycle/setup events, API

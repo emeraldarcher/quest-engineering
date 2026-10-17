@@ -313,11 +313,18 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
     GenServer.stop(generation_one_channel, :normal)
     assert_eventually(fn -> worker_ready?(worker_id, 2) end, 800)
     assert_eventually(fn -> ProviderAccountSetups.fetch(attempt.id).worker_generation == 2 end)
+    assert_eventually(fn -> environment_reconciled?(account.id, 2) end, 800)
+    generation_two_environment = Repo.get!(ProviderAccountEnvironment, account.id)
 
     assert_eventually(
       fn -> worker_setup_command_generation(worker_root, attempt.id) == 2 end,
       800
     )
+
+    generation_two_setup_at =
+      worker_setup_reconcile_time(worker_root, attempt.id, 1)
+
+    assert event_count(physical_events(worker_root), "process_exit_observed") == 0
 
     assert {:ok, %{pid: generation_two_channel, generation: 2}} =
              WorkerConnections.lookup(worker_id)
@@ -325,11 +332,18 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
     GenServer.stop(generation_two_channel, :normal)
     assert_eventually(fn -> worker_ready?(worker_id, 3) end, 800)
     assert_eventually(fn -> ProviderAccountSetups.fetch(attempt.id).worker_generation == 3 end)
+    assert_eventually(fn -> environment_reconciled?(account.id, 3) end, 800)
+    generation_three_environment = Repo.get!(ProviderAccountEnvironment, account.id)
 
     assert_eventually(
       fn -> worker_setup_command_generation(worker_root, attempt.id) == 3 end,
       800
     )
+
+    generation_three_setup_at =
+      worker_setup_reconcile_time(worker_root, attempt.id, 2)
+
+    assert event_count(physical_events(worker_root), "process_exit_observed") == 0
 
     routed = ProviderAccountSetups.fetch(attempt.id)
     assert routed.worker_generation == 3
@@ -361,6 +375,24 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
     assert event_count(physical_events, "streamed_process_spawned") == 1
     assert event_count(physical_events, "process_cancel_requested") == 1
     assert event_count(physical_events, "process_cancelled") == 1
+    assert event_count(physical_events, "process_exit_observed") == 1
+
+    assert Enum.any?(
+             physical_events,
+             &(&1["event"] == "process_exit_observed" and &1["outcome"] == "signaled")
+           )
+
+    assert worker_setup_event_count(worker_root, attempt.id, "login_invocation_requested") == 1
+    assert worker_setup_event_count(worker_root, attempt.id, "login_invocation_acknowledged") == 1
+
+    assert worker_setup_event_count(
+             worker_root,
+             attempt.id,
+             "setup_interaction_discovery_timed_out"
+           ) == 1
+
+    assert worker_setup_event_count(worker_root, attempt.id, "cancellation_invocation_requested") ==
+             1
 
     assert {:error, %{code: :stale_provider_account_setup_report}} =
              ProviderAccountSetups.record(
@@ -384,6 +416,14 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
       invocation_owner_generation: 1,
       invocation_environment_operation_id: owner_operation_id,
       routing_generations: [1, 2, 3],
+      generation_two_environment_reconciled_at:
+        DateTime.to_iso8601(generation_two_environment.observed_at),
+      generation_two_setup_reconciled_at: generation_two_setup_at,
+      generation_three_environment_reconciled_at:
+        DateTime.to_iso8601(generation_three_environment.observed_at),
+      generation_three_setup_reconciled_at: generation_three_setup_at,
+      generation_two_setup_reconciled_while_process_live: true,
+      generation_three_setup_reconciled_while_process_live: true,
       reconciled_by_generation: terminal.worker_generation,
       process: %{
         backend_process_id: terminal.process_backend_id,
@@ -394,6 +434,10 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
       physical_spawn_count: 1,
       duplicate_spawn_count: 0,
       physical_cancel_submission_count: 1,
+      invocation_intent_count: 1,
+      invocation_acknowledgement_count: 1,
+      discovery_timeout_count: 1,
+      physical_process_final_state: "signaled",
       terminal_state: terminal.state,
       invocation_state: terminal.invocation_state,
       failure_code: terminal.failure_code,
@@ -502,6 +546,17 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
   defp environment_available?(account_id) do
     match?(
       %{physical_state: "available", canary_persisted: true},
+      Repo.get(ProviderAccountEnvironment, account_id)
+    )
+  end
+
+  defp environment_reconciled?(account_id, generation) do
+    match?(
+      %{
+        worker_generation: ^generation,
+        physical_state: "available",
+        canary_persisted: true
+      },
       Repo.get(ProviderAccountEnvironment, account_id)
     )
   end
@@ -670,6 +725,32 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
         end
       end
     end
+  end
+
+  defp worker_setup_reconcile_time(worker_root, attempt_id, offset) do
+    worker_setup_scalar!(
+      worker_root,
+      "SELECT occurred_at FROM provider_account_setup_events " <>
+        "WHERE setup_attempt_id='#{attempt_id}' AND event_type='command_reconciled' " <>
+        "ORDER BY event_id LIMIT 1 OFFSET #{offset - 1}"
+    )
+  end
+
+  defp worker_setup_event_count(worker_root, attempt_id, event_type) do
+    worker_root
+    |> worker_setup_scalar!(
+      "SELECT count(*) FROM provider_account_setup_events " <>
+        "WHERE setup_attempt_id='#{attempt_id}' AND event_type='#{event_type}'"
+    )
+    |> String.to_integer()
+  end
+
+  defp worker_setup_scalar!(worker_root, query) do
+    database = Path.join(worker_root, "provider-account-setups.sqlite")
+    {value, 0} = System.cmd("sqlite3", [database, query], stderr_to_stdout: true)
+    value = String.trim(value)
+    assert value != ""
+    value
   end
 
   defp worker_ready?(worker_id, generation) do

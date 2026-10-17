@@ -102,10 +102,24 @@ interface ActiveProcess {
   process: StreamedProcess;
   output: Promise<void>;
   monitor: Promise<void>;
+  discovery: Promise<void>;
+  prompt: Deferred<string>;
+  discoveryDeadline: Deferred<void>;
   interaction: string | null;
+  activated: boolean;
   discoveryTimer: ReturnType<typeof setTimeout> | null;
   humanTimer: ReturnType<typeof setTimeout> | null;
 }
+
+type PrepareOutcome =
+  | { kind: "activate"; setupAttemptId: string }
+  | {
+      kind: "report";
+      record: ProviderAccountSetupRecord;
+      ephemeralOutput: string | null;
+    }
+  | { kind: "reconcile"; record: ProviderAccountSetupRecord }
+  | { kind: "cancel"; record: ProviderAccountSetupRecord };
 
 /**
  * Provider-neutral account setup coordinator. Login is reached only through an
@@ -114,6 +128,7 @@ interface ActiveProcess {
 export class ProviderAccountSetupCoordinator {
   private readonly active = new Map<string, ActiveProcess>();
   private readonly accountTails = new Map<string, Promise<void>>();
+  private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly desiredAttemptIds = new Set<string>();
   private readonly unregisterActiveSetupLookup: () => void;
   private closed = false;
@@ -146,226 +161,199 @@ export class ProviderAccountSetupCoordinator {
     if (this.closed)
       throw new Error("ProviderAccount setup coordinator is closed.");
     this.desiredAttemptIds.add(command.setup.setup_attempt_id);
-    await this.withAccount(command.setup.provider_account_id, async () => {
-      let record = this.store.accept(command);
-      if (
-        command.setup.state === "cancellation_requested" &&
-        !isTerminal(record.state) &&
-        record.state !== "cancellation_requested"
-      )
-        record = this.store.transition(
-          record.setupAttemptId,
-          {
-            state: "cancellation_requested",
-            cancellationRequestId: command.setup.cancellation_request_id,
-            cancellationInvocationState:
-              record.cancellationInvocationState === "not_requested"
-                ? "intent_recorded"
-                : record.cancellationInvocationState,
-          },
-          "cancellation_reconciled",
-        );
-      if (record.state === "cancellation_requested") {
-        await this.cancelRecord(record);
-        return;
-      }
-      if (isTerminal(record.state)) {
-        await this.publish(record);
-        return;
-      }
-      if (record.invocationState !== "not_requested") {
-        await this.reconcileRecord(record);
-        return;
-      }
 
-      record = this.store.transition(
-        record.setupAttemptId,
-        { state: "preparing" },
-        "setup_preparing",
-      );
-      await this.publish(record);
-
-      let process: StreamedProcess;
-      const prompt = deferred<string>();
-      const discoveryDeadline = deferred<void>();
-      let intentCommitted = false;
-      try {
-        const beginning = await this.environments.beginSetupProcess(
-          runtimeIdentity(record),
-          async (inspection, eligible, launchAuthority) => {
-            const preflight = authenticationPayload(inspection);
-            if (eligible && launchAuthority) {
-              // Exact fresh preflight and durable intent are committed while the
-              // account lock is held, immediately before physical spawn.
+    const outcome = await this.withAccount(
+      command.setup.provider_account_id,
+      async (): Promise<PrepareOutcome> => {
+        let record = this.store.accept(command);
+        if (
+          command.setup.state === "cancellation_requested" &&
+          !isTerminal(record.state) &&
+          record.state !== "cancellation_requested"
+        )
+          record = this.store.transition(
+            record.setupAttemptId,
+            {
+              state: "cancellation_requested",
+              cancellationRequestId: command.setup.cancellation_request_id,
+              cancellationInvocationState:
+                record.cancellationInvocationState === "not_requested"
+                  ? "intent_recorded"
+                  : record.cancellationInvocationState,
+            },
+            "cancellation_reconciled",
+          );
+        if (record.state === "cancellation_requested")
+          return { kind: "cancel", record };
+        if (isTerminal(record.state))
+          return { kind: "report", record, ephemeralOutput: null };
+        if (record.invocationState !== "not_requested") {
+          const active = this.active.get(record.setupAttemptId);
+          if (active && this.activeMatchesRecord(active, record)) {
+            if (
+              record.state === "invocation_acknowledged" &&
+              active.interaction !== null
+            ) {
+              this.clearDiscoveryTimer(active);
               record = this.store.transition(
                 record.setupAttemptId,
                 {
-                  state: "invocation_requested",
-                  invocationState: "requested",
-                  invocationWorkerGeneration:
-                    record.command.setup.worker_generation,
-                  invocationEnvironmentOperationId:
-                    record.command.setup.environment_operation_id,
-                  setupLaunchAuthority: launchAuthority,
-                  preflight,
+                  state: "human_interaction_required",
+                  attentionId: record.attentionId ?? randomUUID(),
                 },
-                "login_invocation_requested",
+                "human_interaction_reconciled",
               );
-              intentCommitted = true;
-            } else {
-              record = this.store.transition(
-                record.setupAttemptId,
-                {
-                  state: "failed",
-                  invocationState: "not_requested",
-                  preflight,
-                  failureCode: preflightFailureCode(inspection),
-                },
-                "login_preflight_rejected",
-              );
+              this.startHumanCompletionTimer(record, active);
             }
-            // Product reporting is deliberately outside the environment lock.
-            // Local durable intent is sufficient to cross the physical spawn
-            // boundary and remains recoverable if the connection is lost.
-          },
-          async (spawned) => {
-            // The manager still owns the account environment-operation lock.
-            // Persist the exact process acknowledgement and install supervision
-            // before returning and allowing that lock to be released.
-            const recognize = interactionRecognizer(record);
-            record = this.store.transition(
-              record.setupAttemptId,
-              {
-                state: "invocation_acknowledged",
-                invocationState: "acknowledged",
-                process: spawned.handle,
-              },
-              "login_invocation_acknowledged",
-            );
-            process = spawned;
-            const output = collectInteraction(
-              spawned.stdout,
-              prompt,
-              recognize,
-            );
-            const diagnostics = discard(spawned.stderr);
-            const active: ActiveProcess = {
-              process: spawned,
-              output: Promise.all([output, diagnostics]).then(() => undefined),
-              monitor: Promise.resolve(),
-              interaction: null,
-              discoveryTimer: null,
-              humanTimer: null,
+            return {
+              kind: "report",
+              record,
+              ephemeralOutput: active.interaction,
             };
-            this.active.set(record.setupAttemptId, active);
-            active.monitor = this.monitor(record.setupAttemptId, spawned).catch(
-              () => undefined,
-            );
-            void prompt.promise.then(
-              (interaction) => {
-                active.interaction = interaction;
-              },
-              () => undefined,
-            );
-            active.discoveryTimer = this.deadline(
-              this.interactionDiscoveryTimeoutMs(),
-              () => {
-                discoveryDeadline.resolve();
-                void this.withAccount(
-                  record.command.setup.provider_account_id,
-                  () =>
-                    this.requestSupervisionTermination(
-                      record.setupAttemptId,
-                      "setup_interaction_discovery_timed_out",
-                    ),
-                ).catch(() => undefined);
-              },
-            );
-          },
-        );
-        if (!beginning.process) {
-          await this.publish(record);
-          return;
+          }
+          return { kind: "reconcile", record };
         }
-        process = beginning.process;
-      } catch (error) {
-        const ambiguous =
-          intentCommitted &&
-          error instanceof EnvironmentBackendError &&
-          error.sideEffectCertainty === "ambiguous";
+
         record = this.store.transition(
           record.setupAttemptId,
-          {
-            state: ambiguous ? "uncertain" : "failed",
-            invocationState: ambiguous
-              ? "uncertain"
-              : intentCommitted
-                ? "requested"
-                : "not_requested",
-            failureCode: ambiguous
-              ? "setup_invocation_uncertain"
-              : intentCommitted
-                ? "setup_spawn_failed"
-                : "setup_authentication_preflight_unavailable",
-          },
-          ambiguous
-            ? "login_invocation_uncertain"
-            : intentCommitted
-              ? "login_invocation_rejected"
-              : "login_preflight_unavailable",
+          { state: "preparing" },
+          "setup_preparing",
         );
-        await this.publish(record);
-        return;
-      }
 
-      const active = this.active.get(record.setupAttemptId);
-      if (!active)
-        throw new Error(
-          "ProviderAccount setup supervision was not registered before lock release.",
-        );
-      // The account environment-operation lock is already released. This
-      // fallible report cannot retain it for the process or human lifetime.
-      await this.publish(record);
+        let intentCommitted = false;
+        const registration: { supervisor: ActiveProcess | null } = {
+          supervisor: null,
+        };
+        try {
+          const beginning = await this.environments.beginSetupProcess(
+            runtimeIdentity(record),
+            async (inspection, eligible, launchAuthority) => {
+              const preflight = authenticationPayload(inspection);
+              if (eligible && launchAuthority) {
+                record = this.store.transition(
+                  record.setupAttemptId,
+                  {
+                    state: "invocation_requested",
+                    invocationState: "requested",
+                    invocationWorkerGeneration:
+                      record.command.setup.worker_generation,
+                    invocationEnvironmentOperationId:
+                      record.command.setup.environment_operation_id,
+                    setupLaunchAuthority: launchAuthority,
+                    preflight,
+                  },
+                  "login_invocation_requested",
+                );
+                intentCommitted = true;
+              } else {
+                record = this.store.transition(
+                  record.setupAttemptId,
+                  {
+                    state: "failed",
+                    invocationState: "not_requested",
+                    preflight,
+                    failureCode: preflightFailureCode(inspection),
+                  },
+                  "login_preflight_rejected",
+                );
+              }
+            },
+            async (spawned) => {
+              const recognize = interactionRecognizer(record);
+              const prompt = deferred<string>();
+              const discoveryDeadline = deferred<void>();
+              const output = collectInteraction(
+                spawned.stdout,
+                prompt,
+                recognize,
+              );
+              const diagnostics = discard(spawned.stderr);
+              const supervisor: ActiveProcess = {
+                process: spawned,
+                output: Promise.all([output, diagnostics]).then(
+                  () => undefined,
+                ),
+                monitor: Promise.resolve(),
+                discovery: Promise.resolve(),
+                prompt,
+                discoveryDeadline,
+                interaction: null,
+                activated: false,
+                discoveryTimer: null,
+                humanTimer: null,
+              };
+              this.active.set(record.setupAttemptId, supervisor);
+              registration.supervisor = supervisor;
+              record = this.store.transition(
+                record.setupAttemptId,
+                {
+                  state: "invocation_acknowledged",
+                  invocationState: "acknowledged",
+                  process: spawned.handle,
+                },
+                "login_invocation_acknowledged",
+              );
+            },
+          );
+          if (!beginning.process)
+            return { kind: "report", record, ephemeralOutput: null };
+        } catch (error) {
+          const registeredSupervisor = registration.supervisor;
+          if (registeredSupervisor) {
+            if (this.active.get(record.setupAttemptId) === registeredSupervisor)
+              this.active.delete(record.setupAttemptId);
+            this.trackBackground(registeredSupervisor.output);
+          }
+          const ambiguous =
+            intentCommitted &&
+            error instanceof EnvironmentBackendError &&
+            error.sideEffectCertainty === "ambiguous";
+          record = this.store.transition(
+            record.setupAttemptId,
+            {
+              state: ambiguous ? "uncertain" : "failed",
+              invocationState: ambiguous
+                ? "uncertain"
+                : intentCommitted
+                  ? "requested"
+                  : "not_requested",
+              failureCode: ambiguous
+                ? "setup_invocation_uncertain"
+                : intentCommitted
+                  ? "setup_spawn_failed"
+                  : "setup_authentication_preflight_unavailable",
+            },
+            ambiguous
+              ? "login_invocation_uncertain"
+              : intentCommitted
+                ? "login_invocation_rejected"
+                : "login_preflight_unavailable",
+          );
+          return { kind: "report", record, ephemeralOutput: null };
+        }
 
-      let ephemeral: string;
-      try {
-        ephemeral = await Promise.race([
-          prompt.promise,
-          process.exit.then(() => {
-            throw new ProcessExitedBeforeInteractionError();
-          }),
-          discoveryDeadline.promise.then(() => {
-            throw new InteractionDiscoveryTimeoutError();
-          }),
-        ]);
-      } catch (error) {
-        if (error instanceof InteractionDiscoveryTimeoutError)
-          await this.requestSupervisionTermination(
-            record.setupAttemptId,
-            "setup_interaction_discovery_timed_out",
+        if (!this.active.has(record.setupAttemptId))
+          throw new Error(
+            "ProviderAccount setup supervision was not registered before lock release.",
           );
-        else if (!(error instanceof ProcessExitedBeforeInteractionError))
-          await this.requestSupervisionTermination(
-            record.setupAttemptId,
-            "setup_interaction_incompatible",
-          );
+        return { kind: "activate", setupAttemptId: record.setupAttemptId };
+      },
+    );
+
+    switch (outcome.kind) {
+      case "activate":
+        this.activateSupervisor(outcome.setupAttemptId);
         return;
-      }
-      this.clearDiscoveryTimer(active);
-      const current = this.store.get(record.setupAttemptId);
-      if (!current || current.state !== "invocation_acknowledged") return;
-      const attentionId = randomUUID();
-      const waiting = this.store.transition(
-        current.setupAttemptId,
-        {
-          state: "human_interaction_required",
-          attentionId,
-        },
-        "human_interaction_required",
-      );
-      this.startHumanCompletionTimer(waiting, active);
-      await this.publish(waiting, ephemeral);
-    });
+      case "report":
+        this.queueReport(outcome.record, outcome.ephemeralOutput);
+        return;
+      case "reconcile":
+        await this.reconcileRecord(outcome.record);
+        return;
+      case "cancel":
+        this.queueReport(outcome.record);
+        this.trackBackground(this.cancelRecord(outcome.record));
+    }
   }
 
   async respond(command: RespondProviderAccountSetupCommand): Promise<void> {
@@ -374,10 +362,10 @@ export class ProviderAccountSetupCoordinator {
       throw new Error(
         "ProviderAccount setup response targets an unknown attempt.",
       );
-    await this.withAccount(
+    const delivery = await this.withAccount(
       existing.command.setup.provider_account_id,
       async () => {
-        let record = this.required(command.setup_attempt_id);
+        const record = this.required(command.setup_attempt_id);
         const active = this.active.get(record.setupAttemptId);
         if (
           record.command.connection_generation !==
@@ -393,49 +381,58 @@ export class ProviderAccountSetupCoordinator {
           throw new Error("ProviderAccount setup response is stale.");
 
         validateInteractionResponse(record, command.value);
-        record = this.store.requestInputDelivery({
+        const requested = this.store.requestInputDelivery({
           setupAttemptId: record.setupAttemptId,
           attentionId: command.attention_id,
           requestGeneration: command.request_generation,
           deliveryAttemptId: command.delivery_attempt_id,
         });
-        if (record.inputDelivery?.state === "delivery_acknowledged") {
-          await this.publishInputDelivery(record);
-          return;
-        }
-        if (record.inputDelivery?.state === "delivery_uncertain") {
-          await this.publishInputDelivery(record);
-          return;
-        }
-
-        try {
-          await active.process.write(
-            new TextEncoder().encode(`${command.value}\n`),
-          );
-          record = this.store.settleInputDelivery(
-            record.setupAttemptId,
-            "delivery_acknowledged",
-          );
-          await this.publishInputDelivery(record);
-        } catch {
-          record = this.store.settleInputDelivery(
-            record.setupAttemptId,
-            "delivery_uncertain",
-          );
-          await this.publishInputDelivery(record);
-          record = this.store.transition(
-            record.setupAttemptId,
-            {
-              failureCode: "input_delivery_uncertain",
-              supervisionFailureCode: "input_delivery_uncertain",
-              cancellationInvocationState: "intent_recorded",
-            },
-            "setup_input_uncertain_termination_requested",
-          );
-          await this.cancelRecord(record);
-        }
+        return { record: requested, active };
       },
     );
+
+    if (delivery.record.inputDelivery?.state !== "delivery_requested") {
+      await this.publishInputDelivery(delivery.record);
+      return;
+    }
+
+    try {
+      await delivery.active.process.write(
+        new TextEncoder().encode(`${command.value}\n`),
+      );
+      const acknowledged = await this.withAccount(
+        existing.command.setup.provider_account_id,
+        async () =>
+          this.store.settleInputDelivery(
+            command.setup_attempt_id,
+            "delivery_acknowledged",
+          ),
+      );
+      await this.publishInputDelivery(acknowledged);
+    } catch {
+      const uncertain = await this.withAccount(
+        existing.command.setup.provider_account_id,
+        async () => {
+          let record = this.store.settleInputDelivery(
+            command.setup_attempt_id,
+            "delivery_uncertain",
+          );
+          if (!isTerminal(record.state))
+            record = this.store.transition(
+              record.setupAttemptId,
+              {
+                failureCode: "input_delivery_uncertain",
+                supervisionFailureCode: "input_delivery_uncertain",
+                cancellationInvocationState: "intent_recorded",
+              },
+              "setup_input_uncertain_termination_requested",
+            );
+          return record;
+        },
+      );
+      await this.publishInputDelivery(uncertain);
+      if (!isTerminal(uncertain.state)) await this.cancelRecord(uncertain);
+    }
   }
 
   async cancel(command: CancelProviderAccountSetupCommand): Promise<void> {
@@ -444,59 +441,59 @@ export class ProviderAccountSetupCoordinator {
       throw new Error(
         "ProviderAccount setup cancellation targets an unknown attempt.",
       );
-    await this.withAccount(
+    const record = await this.withAccount(
       existing.command.setup.provider_account_id,
       async () => {
-        let record = this.required(command.setup_attempt_id);
+        let current = this.required(command.setup_attempt_id);
         if (
-          record.command.connection_generation !==
+          current.command.connection_generation !==
             command.connection_generation ||
-          record.command.setup.setup_generation !== command.setup_generation ||
+          current.command.setup.setup_generation !== command.setup_generation ||
           (command.process_generation !== null &&
-            record.process?.processGeneration !== command.process_generation)
+            current.process?.processGeneration !== command.process_generation)
         )
           throw new Error("ProviderAccount setup cancellation is stale.");
-        if (record.state === "cancelled") {
-          if (record.cancellationRequestId !== command.request_id)
+        if (current.state === "cancelled") {
+          if (current.cancellationRequestId !== command.request_id)
             throw new Error("ProviderAccount setup cancellation conflicts.");
-          await this.publish(record);
-          return;
+          return current;
         }
-        if (record.state === "cancellation_requested") {
-          if (record.cancellationRequestId !== command.request_id)
+        if (current.state === "cancellation_requested") {
+          if (current.cancellationRequestId !== command.request_id)
             throw new Error("ProviderAccount setup cancellation conflicts.");
-          await this.cancelRecord(record);
-          return;
+          return current;
         }
-        if (isTerminal(record.state))
+        if (isTerminal(current.state))
           throw new Error("ProviderAccount setup is already terminal.");
         if (
-          record.cancellationRequestId &&
-          record.cancellationRequestId !== command.request_id
+          current.cancellationRequestId &&
+          current.cancellationRequestId !== command.request_id
         )
           throw new Error("ProviderAccount setup cancellation conflicts.");
-        record = this.store.transition(
-          record.setupAttemptId,
+        current = this.store.transition(
+          current.setupAttemptId,
           {
             state: "cancellation_requested",
             cancellationRequestId: command.request_id,
             cancellationInvocationState:
-              record.cancellationInvocationState === "not_requested"
+              current.cancellationInvocationState === "not_requested"
                 ? "intent_recorded"
-                : record.cancellationInvocationState,
+                : current.cancellationInvocationState,
           },
           "cancellation_requested",
         );
-        let reportError: unknown = null;
-        try {
-          await this.publish(record);
-        } catch (error) {
-          reportError = error;
-        }
-        await this.cancelRecord(record);
-        if (reportError) throw reportError;
+        return current;
       },
     );
+
+    let reportError: unknown = null;
+    try {
+      await this.publish(record);
+    } catch (error) {
+      reportError = error;
+    }
+    if (!isTerminal(record.state)) await this.cancelRecord(record);
+    if (reportError) throw reportError;
   }
 
   async reconcile(
@@ -510,11 +507,9 @@ export class ProviderAccountSetupCoordinator {
     for (const command of commands) await this.prepare(command);
     for (const record of this.store.list()) {
       if (!isTerminal(record.state) && !desiredIds.has(record.setupAttemptId))
-        await this.withAccount(record.command.setup.provider_account_id, () =>
-          this.requestSupervisionTermination(
-            record.setupAttemptId,
-            "stale_setup_command",
-          ),
+        await this.requestSupervisionTermination(
+          record.setupAttemptId,
+          "stale_setup_command",
         );
     }
   }
@@ -581,11 +576,9 @@ export class ProviderAccountSetupCoordinator {
         (record): record is ProviderAccountSetupRecord => record !== null,
       );
     for (const record of records)
-      await this.withAccount(record.command.setup.provider_account_id, () =>
-        this.requestSupervisionTermination(
-          record.setupAttemptId,
-          "setup_worker_shutdown",
-        ),
+      await this.requestSupervisionTermination(
+        record.setupAttemptId,
+        "setup_worker_shutdown",
       ).catch(() => undefined);
     const supervised = [...this.active.values()];
     for (const entry of supervised) this.clearTimers(entry);
@@ -600,6 +593,7 @@ export class ProviderAccountSetupCoordinator {
     );
     await Promise.all(remaining.map((entry) => entry.monitor));
     this.active.clear();
+    await Promise.all([...this.backgroundTasks]);
     this.unregisterActiveSetupLookup();
     this.store.close();
   }
@@ -632,36 +626,157 @@ export class ProviderAccountSetupCoordinator {
     };
   }
 
+  private activeMatchesRecord(
+    active: ActiveProcess,
+    record: ProviderAccountSetupRecord,
+  ): boolean {
+    const expected = record.process;
+    const observed = active.process.handle;
+    return (
+      expected !== null &&
+      expected.contractVersion === observed.contractVersion &&
+      expected.backendKind === observed.backendKind &&
+      expected.backendProcessId === observed.backendProcessId &&
+      expected.processStartIdentity === observed.processStartIdentity &&
+      expected.processGeneration === observed.processGeneration &&
+      expected.executable === observed.executable &&
+      expected.observedExecutable === observed.observedExecutable &&
+      expected.environment.backendKind === observed.environment.backendKind &&
+      expected.environment.environmentId ===
+        observed.environment.environmentId &&
+      expected.environment.incarnation === observed.environment.incarnation &&
+      expected.environment.workerId === observed.environment.workerId
+    );
+  }
+
+  private activateSupervisor(setupAttemptId: string): void {
+    const active = this.active.get(setupAttemptId);
+    if (!active || active.activated) return;
+    active.activated = true;
+    active.discoveryTimer = this.deadline(
+      this.interactionDiscoveryTimeoutMs(),
+      () => active.discoveryDeadline.resolve(),
+    );
+    active.monitor = this.trackBackground(
+      this.monitor(setupAttemptId, active.process),
+    );
+    active.discovery = this.trackBackground(
+      this.superviseInteraction(setupAttemptId, active),
+    );
+    const acknowledged = this.store.get(setupAttemptId);
+    if (acknowledged) this.queueReport(acknowledged);
+  }
+
+  private async superviseInteraction(
+    setupAttemptId: string,
+    active: ActiveProcess,
+  ): Promise<void> {
+    let interaction: string;
+    try {
+      interaction = await Promise.race([
+        active.prompt.promise,
+        active.process.exit.then(() => {
+          throw new ProcessExitedBeforeInteractionError();
+        }),
+        active.discoveryDeadline.promise.then(() => {
+          throw new InteractionDiscoveryTimeoutError();
+        }),
+      ]);
+    } catch (error) {
+      if (error instanceof InteractionDiscoveryTimeoutError)
+        await this.requestSupervisionTermination(
+          setupAttemptId,
+          "setup_interaction_discovery_timed_out",
+        );
+      else if (!(error instanceof ProcessExitedBeforeInteractionError))
+        await this.requestSupervisionTermination(
+          setupAttemptId,
+          "setup_interaction_incompatible",
+        );
+      return;
+    }
+
+    active.interaction = interaction;
+    this.clearDiscoveryTimer(active);
+    const existing = this.store.get(setupAttemptId);
+    if (!existing) return;
+    const waiting = await this.withAccount(
+      existing.command.setup.provider_account_id,
+      async () => {
+        const current = this.required(setupAttemptId);
+        if (
+          current.state !== "invocation_acknowledged" ||
+          !this.activeMatchesRecord(active, current)
+        )
+          return null;
+        return this.store.transition(
+          current.setupAttemptId,
+          {
+            state: "human_interaction_required",
+            attentionId: current.attentionId ?? randomUUID(),
+          },
+          "human_interaction_required",
+        );
+      },
+    );
+    if (!waiting) return;
+    this.startHumanCompletionTimer(waiting, active);
+    this.queueReport(waiting, interaction);
+  }
+
+  private queueReport(
+    record: ProviderAccountSetupRecord,
+    ephemeralOutput: string | null = null,
+  ): void {
+    const payload = this.payload(record, ephemeralOutput);
+    this.trackBackground(this.report(payload));
+  }
+
+  private trackBackground(operation: Promise<unknown>): Promise<void> {
+    let tracked!: Promise<void>;
+    tracked = operation
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => this.backgroundTasks.delete(tracked));
+    this.backgroundTasks.add(tracked);
+    return tracked;
+  }
+
   private async reconcileRecord(
     record: ProviderAccountSetupRecord,
   ): Promise<void> {
+    const accountId = record.command.setup.provider_account_id;
     if (record.invocationState !== "not_requested" && !record.process) {
       const acknowledged = ["acknowledged", "settled"].includes(
         record.invocationState,
       );
-      const uncertain = this.store.transition(
-        record.setupAttemptId,
-        {
-          state: "uncertain",
-          invocationState: "uncertain",
-          failureCode: acknowledged
-            ? "setup_process_lost"
-            : "setup_invocation_uncertain",
-        },
-        acknowledged
-          ? "restart_process_identity_missing"
-          : "restart_invocation_uncertain",
-      );
+      const uncertain = await this.withAccount(accountId, async () => {
+        const current = this.required(record.setupAttemptId);
+        return this.store.transition(
+          current.setupAttemptId,
+          {
+            state: "uncertain",
+            invocationState: "uncertain",
+            failureCode: acknowledged
+              ? "setup_process_lost"
+              : "setup_invocation_uncertain",
+          },
+          acknowledged
+            ? "restart_process_identity_missing"
+            : "restart_invocation_uncertain",
+        );
+      });
       await this.environments
         .retireSetupProcesses(runtimeIdentity(record))
         .catch(() => undefined);
-      await this.publish(uncertain);
+      this.queueReport(uncertain);
       return;
     }
     if (!record.process) {
-      await this.publish(record);
+      this.queueReport(record);
       return;
     }
+
     let inspection: StreamedProcessReconciliation;
     try {
       inspection = await this.environments.reconcileSetupProcess(
@@ -669,51 +784,67 @@ export class ProviderAccountSetupCoordinator {
         record.process,
       );
     } catch {
-      const uncertain = this.store.transition(
-        record.setupAttemptId,
-        {
-          state: "uncertain",
-          invocationState: "uncertain",
-          failureCode: "setup_process_lost",
-        },
-        "restart_process_inspection_failed",
-      );
+      const uncertain = await this.withAccount(accountId, async () => {
+        const current = this.required(record.setupAttemptId);
+        return this.store.transition(
+          current.setupAttemptId,
+          {
+            state: "uncertain",
+            invocationState: "uncertain",
+            failureCode: "setup_process_lost",
+          },
+          "restart_process_inspection_failed",
+        );
+      });
       await this.environments
         .retireSetupProcesses(runtimeIdentity(record))
         .catch(() => undefined);
-      await this.publish(uncertain);
+      this.queueReport(uncertain);
       return;
     }
+
     if (inspection.process === "running") {
-      const active = this.active.get(record.setupAttemptId);
-      if (inspection.streamAttachment === "attached" && active) {
+      const reconciled = await this.withAccount(accountId, async () => {
+        let current = this.required(record.setupAttemptId);
+        const active = this.active.get(current.setupAttemptId);
         if (
-          record.state === "invocation_acknowledged" &&
-          active.interaction !== null
+          inspection.streamAttachment === "attached" &&
+          active &&
+          this.activeMatchesRecord(active, current)
         ) {
-          this.clearDiscoveryTimer(active);
-          record = this.store.transition(
-            record.setupAttemptId,
-            {
-              state: "human_interaction_required",
-              attentionId: record.attentionId ?? randomUUID(),
-            },
-            "human_interaction_reconciled",
-          );
-          this.startHumanCompletionTimer(record, active);
+          if (
+            current.state === "invocation_acknowledged" &&
+            active.interaction !== null
+          ) {
+            this.clearDiscoveryTimer(active);
+            current = this.store.transition(
+              current.setupAttemptId,
+              {
+                state: "human_interaction_required",
+                attentionId: current.attentionId ?? randomUUID(),
+              },
+              "human_interaction_reconciled",
+            );
+            this.startHumanCompletionTimer(current, active);
+          }
+          return { kind: "report" as const, record: current, active };
         }
-        await this.publish(record, active.interaction);
-        return;
+        const terminating = this.store.transition(
+          current.setupAttemptId,
+          {
+            supervisionFailureCode: "setup_process_lost",
+            cancellationInvocationState: "intent_recorded",
+          },
+          "restart_process_unattached_termination_requested",
+        );
+        return { kind: "cancel" as const, record: terminating };
+      });
+      if (reconciled.kind === "report")
+        this.queueReport(reconciled.record, reconciled.active.interaction);
+      else {
+        this.queueReport(reconciled.record);
+        this.trackBackground(this.cancelRecord(reconciled.record));
       }
-      const terminating = this.store.transition(
-        record.setupAttemptId,
-        {
-          supervisionFailureCode: "setup_process_lost",
-          cancellationInvocationState: "intent_recorded",
-        },
-        "restart_process_unattached_termination_requested",
-      );
-      await this.cancelRecord(terminating);
       return;
     }
     await this.settleAfterLostProcess(record);
@@ -722,48 +853,53 @@ export class ProviderAccountSetupCoordinator {
   private async settleAfterLostProcess(
     record: ProviderAccountSetupRecord,
   ): Promise<void> {
-    let validation: ProviderAuthenticationInspection;
+    let validation: ProviderAuthenticationInspection | null = null;
+    let available = true;
     try {
       validation = await this.environments.validateSetup(
         runtimeIdentity(record),
       );
     } catch {
-      const uncertain = this.store.transition(
-        record.setupAttemptId,
-        {
-          state: "uncertain",
-          invocationState: "uncertain",
-          failureCode: "setup_process_lost",
-        },
-        "restart_validation_unavailable",
-      );
-      await this.publish(uncertain);
-      return;
+      available = false;
     }
-    if (validAuthenticatedInspection(record, validation)) {
-      const succeeded = this.store.transition(
-        record.setupAttemptId,
-        {
-          state: "succeeded",
-          invocationState: "settled",
-          validation: authenticationPayload(validation),
-        },
-        "restart_validation_succeeded",
-      );
-      await this.publish(succeeded);
-      return;
-    }
-    const failed = this.store.transition(
-      record.setupAttemptId,
-      {
-        state: "failed",
-        invocationState: "settled",
-        validation: authenticationPayload(validation),
-        failureCode: "setup_process_lost",
+    const settled = await this.withAccount(
+      record.command.setup.provider_account_id,
+      async () => {
+        const current = this.required(record.setupAttemptId);
+        if (isTerminal(current.state)) return current;
+        if (!available || !validation)
+          return this.store.transition(
+            current.setupAttemptId,
+            {
+              state: "uncertain",
+              invocationState: "uncertain",
+              failureCode: "setup_process_lost",
+            },
+            "restart_validation_unavailable",
+          );
+        if (validAuthenticatedInspection(current, validation))
+          return this.store.transition(
+            current.setupAttemptId,
+            {
+              state: "succeeded",
+              invocationState: "settled",
+              validation: authenticationPayload(validation),
+            },
+            "restart_validation_succeeded",
+          );
+        return this.store.transition(
+          current.setupAttemptId,
+          {
+            state: "failed",
+            invocationState: "settled",
+            validation: authenticationPayload(validation),
+            failureCode: "setup_process_lost",
+          },
+          "restart_validation_failed",
+        );
       },
-      "restart_validation_failed",
     );
-    await this.publish(failed);
+    this.queueReport(settled);
   }
 
   private async monitor(id: string, process: StreamedProcess): Promise<void> {
@@ -774,42 +910,52 @@ export class ProviderAccountSetupCoordinator {
     this.active.delete(id);
     const existing = this.store.get(id);
     if (!existing || isTerminal(existing.state)) return;
-    await this.withAccount(
+
+    const observed = await this.withAccount(
       existing.command.setup.provider_account_id,
       async () => {
-        let record = this.required(id);
-        if (isTerminal(record.state)) return;
+        const record = this.required(id);
+        if (isTerminal(record.state))
+          return { record, validate: false, report: false };
         if (
           record.state === "cancellation_requested" ||
           record.supervisionFailureCode
         ) {
-          if (!physicalExitObserved(exit)) {
-            record = this.store.transition(
-              id,
-              {
-                state: "uncertain",
-                invocationState: "uncertain",
-                cancellationInvocationState: "uncertain",
-                cancellationObservation: "unavailable",
-                failureCode: "setup_cancellation_uncertain",
-              },
-              "setup_cancellation_observation_uncertain",
-            );
-          } else if (record.state === "cancellation_requested") {
-            record = this.store.transition(
-              id,
-              {
-                state: "cancelled",
-                invocationState: "settled",
-                cancellationInvocationState: "settled",
-                cancellationObservation: "exited",
-              },
-              "setup_cancelled",
-            );
-          } else {
-            const semanticallyUncertain =
-              record.supervisionFailureCode === "input_delivery_uncertain";
-            record = this.store.transition(
+          if (!physicalExitObserved(exit))
+            return {
+              record: this.store.transition(
+                id,
+                {
+                  state: "uncertain",
+                  invocationState: "uncertain",
+                  cancellationInvocationState: "uncertain",
+                  cancellationObservation: "unavailable",
+                  failureCode: "setup_cancellation_uncertain",
+                },
+                "setup_cancellation_observation_uncertain",
+              ),
+              validate: false,
+              report: true,
+            };
+          if (record.state === "cancellation_requested")
+            return {
+              record: this.store.transition(
+                id,
+                {
+                  state: "cancelled",
+                  invocationState: "settled",
+                  cancellationInvocationState: "settled",
+                  cancellationObservation: "exited",
+                },
+                "setup_cancelled",
+              ),
+              validate: false,
+              report: true,
+            };
+          const semanticallyUncertain =
+            record.supervisionFailureCode === "input_delivery_uncertain";
+          return {
+            record: this.store.transition(
               id,
               {
                 state: semanticallyUncertain ? "uncertain" : "failed",
@@ -823,35 +969,49 @@ export class ProviderAccountSetupCoordinator {
               semanticallyUncertain
                 ? "setup_supervision_settled_uncertain"
                 : "setup_supervision_failed",
-            );
-          }
-          await this.publish(record);
-          return;
+            ),
+            validate: false,
+            report: true,
+          };
         }
-        if (exit.kind !== "exited" || exit.exitCode !== 0) {
-          record = this.store.transition(
+        if (exit.kind !== "exited" || exit.exitCode !== 0)
+          return {
+            record: this.store.transition(
+              id,
+              {
+                state: "failed",
+                invocationState: "settled",
+                failureCode: "setup_process_failed",
+              },
+              "setup_process_failed",
+            ),
+            validate: false,
+            report: true,
+          };
+        return {
+          record: this.store.transition(
             id,
-            {
-              state: "failed",
-              invocationState: "settled",
-              failureCode: "setup_process_failed",
-            },
-            "setup_process_failed",
-          );
-          await this.publish(record);
-          return;
-        }
-        record = this.store.transition(
-          id,
-          { state: "validating", invocationState: "settled" },
-          "post_login_validation_requested",
-        );
-        await this.publish(record);
-        const validation = await this.environments
-          .validateSetup(runtimeIdentity(record))
-          .catch(() => null);
-        if (validation && validAuthenticatedInspection(record, validation)) {
-          record = this.store.transition(
+            { state: "validating", invocationState: "settled" },
+            "post_login_validation_requested",
+          ),
+          validate: true,
+          report: true,
+        };
+      },
+    );
+    if (observed.report) this.queueReport(observed.record);
+    if (!observed.validate) return;
+
+    const validation = await this.environments
+      .validateSetup(runtimeIdentity(observed.record))
+      .catch(() => null);
+    const terminal = await this.withAccount(
+      observed.record.command.setup.provider_account_id,
+      async () => {
+        const current = this.required(id);
+        if (current.state !== "validating") return current;
+        if (validation && validAuthenticatedInspection(current, validation))
+          return this.store.transition(
             id,
             {
               state: "succeeded",
@@ -859,26 +1019,25 @@ export class ProviderAccountSetupCoordinator {
             },
             "post_login_validation_succeeded",
           );
-        } else {
-          record = this.store.transition(
-            id,
-            {
-              state: "failed",
-              validation: validation ? authenticationPayload(validation) : null,
-              failureCode: "setup_validation_failed",
-            },
-            "post_login_validation_failed",
-          );
-        }
-        await this.publish(record);
+        return this.store.transition(
+          id,
+          {
+            state: "failed",
+            validation: validation ? authenticationPayload(validation) : null,
+            failureCode: "setup_validation_failed",
+          },
+          "post_login_validation_failed",
+        );
       },
     );
+    this.queueReport(terminal);
   }
 
   private async cancelRecord(
     initial: ProviderAccountSetupRecord,
   ): Promise<void> {
     let record = this.required(initial.setupAttemptId);
+    const accountId = record.command.setup.provider_account_id;
     const active = this.active.get(record.setupAttemptId);
     if (active) this.clearTimers(active);
 
@@ -908,9 +1067,9 @@ export class ProviderAccountSetupCoordinator {
       return;
     }
     if (inspection.process !== "running") {
-      if (inspection.process === "exited" || inspection.process === "gone") {
+      if (inspection.process === "exited" || inspection.process === "gone")
         await this.settleCancellation(record, inspection.process);
-      } else {
+      else
         await this.markCancellationUncertain(
           record,
           "cancellation_process_identity_unavailable",
@@ -918,56 +1077,64 @@ export class ProviderAccountSetupCoordinator {
             ? "identity_mismatch"
             : "unavailable",
         );
-      }
       return;
     }
 
-    record = this.store.transition(
-      record.setupAttemptId,
-      { cancellationObservation: "running" },
-      "cancellation_process_revalidated",
-    );
-
-    if (
-      record.cancellationInvocationState === "requested" ||
-      record.cancellationInvocationState === "uncertain"
-    ) {
-      // The one destructive boundary may already have been crossed. Never
-      // replay it; continue only read-only physical observation.
-      record = this.store.transition(
-        record.setupAttemptId,
-        {
-          cancellationInvocationState: "uncertain",
-          cancellationObservation: "running",
-        },
-        "cancellation_invocation_reconciliation_uncertain",
+    const decision = await this.withAccount(accountId, async () => {
+      let current = this.required(record.setupAttemptId);
+      if (isTerminal(current.state))
+        return { kind: "settled" as const, record: current };
+      current = this.store.transition(
+        current.setupAttemptId,
+        { cancellationObservation: "running" },
+        "cancellation_process_revalidated",
       );
-      await this.publish(record);
-      if (!active) await this.observeDetachedCancellation(record);
-      return;
-    }
-    if (record.cancellationInvocationState === "acknowledged") {
-      if (!active) await this.observeDetachedCancellation(record);
-      return;
-    }
-    if (record.cancellationInvocationState === "settled") return;
+      if (
+        current.cancellationInvocationState === "requested" ||
+        current.cancellationInvocationState === "uncertain"
+      ) {
+        current = this.store.transition(
+          current.setupAttemptId,
+          {
+            cancellationInvocationState: "uncertain",
+            cancellationObservation: "running",
+          },
+          "cancellation_invocation_reconciliation_uncertain",
+        );
+        return { kind: "observe" as const, record: current, report: true };
+      }
+      if (current.cancellationInvocationState === "acknowledged")
+        return { kind: "observe" as const, record: current, report: false };
+      if (current.cancellationInvocationState === "settled")
+        return { kind: "settled" as const, record: current };
 
-    const operationId = record.cancellationOperationId ?? randomUUID();
-    record = this.store.transition(
-      record.setupAttemptId,
-      {
-        cancellationOperationId: operationId,
-        cancellationInvocationState: "requested",
-      },
-      "cancellation_invocation_requested",
-    );
+      const operationId = current.cancellationOperationId ?? randomUUID();
+      current = this.store.transition(
+        current.setupAttemptId,
+        {
+          cancellationOperationId: operationId,
+          cancellationInvocationState: "requested",
+        },
+        "cancellation_invocation_requested",
+      );
+      return { kind: "submit" as const, record: current, operationId };
+    });
+
+    record = decision.record;
+    if (decision.kind === "settled") return;
+    if (decision.kind === "observe") {
+      if (decision.report) this.queueReport(record);
+      if (!active) await this.observeDetachedCancellation(record);
+      return;
+    }
+
     try {
-      if (active) await active.process.cancel(operationId);
+      if (active) await active.process.cancel(decision.operationId);
       else
         await this.environments.cancelSetupProcess(
           runtimeIdentity(record),
           processHandle,
-          operationId,
+          decision.operationId,
         );
     } catch {
       const observed = await this.environments
@@ -978,16 +1145,20 @@ export class ProviderAccountSetupCoordinator {
         return;
       }
       if (observed?.process === "running") {
-        record = this.store.transition(
-          record.setupAttemptId,
-          {
-            cancellationInvocationState: "uncertain",
-            cancellationObservation: "running",
-          },
-          "setup_cancellation_uncertain",
-        );
-        await this.publish(record);
-        if (!active) await this.observeDetachedCancellation(record);
+        const uncertain = await this.withAccount(accountId, async () => {
+          const current = this.required(record.setupAttemptId);
+          if (isTerminal(current.state)) return current;
+          return this.store.transition(
+            current.setupAttemptId,
+            {
+              cancellationInvocationState: "uncertain",
+              cancellationObservation: "running",
+            },
+            "setup_cancellation_uncertain",
+          );
+        });
+        this.queueReport(uncertain);
+        if (!active) await this.observeDetachedCancellation(uncertain);
         return;
       }
       await this.markCancellationUncertain(
@@ -1000,19 +1171,17 @@ export class ProviderAccountSetupCoordinator {
       return;
     }
 
-    record = this.store.transition(
-      record.setupAttemptId,
-      { cancellationInvocationState: "acknowledged" },
-      "cancellation_invocation_acknowledged",
-    );
-    let reportError: unknown = null;
-    try {
-      await this.publish(record);
-    } catch (error) {
-      reportError = error;
-    }
-    if (!active) await this.observeDetachedCancellation(record);
-    if (reportError) throw reportError;
+    const acknowledged = await this.withAccount(accountId, async () => {
+      const current = this.required(record.setupAttemptId);
+      if (isTerminal(current.state)) return current;
+      return this.store.transition(
+        current.setupAttemptId,
+        { cancellationInvocationState: "acknowledged" },
+        "cancellation_invocation_acknowledged",
+      );
+    });
+    this.queueReport(acknowledged);
+    if (!active) await this.observeDetachedCancellation(acknowledged);
   }
 
   private async observeDetachedCancellation(
@@ -1057,48 +1226,62 @@ export class ProviderAccountSetupCoordinator {
       if (Date.now() >= deadline) break;
       await Bun.sleep(25);
     }
-    const waiting = this.store.transition(
-      record.setupAttemptId,
-      { cancellationObservation: "running" },
-      "cancellation_settlement_pending",
+    const waiting = await this.withAccount(
+      record.command.setup.provider_account_id,
+      async () => {
+        const current = this.required(record.setupAttemptId);
+        if (isTerminal(current.state)) return current;
+        return this.store.transition(
+          current.setupAttemptId,
+          { cancellationObservation: "running" },
+          "cancellation_settlement_pending",
+        );
+      },
     );
-    await this.publish(waiting);
+    this.queueReport(waiting);
   }
 
   private async settleCancellation(
     record: ProviderAccountSetupRecord,
     observation: "exited" | "gone",
   ): Promise<void> {
-    const external = record.state === "cancellation_requested";
-    const semanticallyUncertain =
-      record.supervisionFailureCode === "input_delivery_uncertain";
-    const settled = this.store.transition(
-      record.setupAttemptId,
-      {
-        state: external
-          ? "cancelled"
-          : semanticallyUncertain
-            ? "uncertain"
-            : "failed",
-        invocationState:
-          record.invocationState === "not_requested"
-            ? "not_requested"
+    const settled = await this.withAccount(
+      record.command.setup.provider_account_id,
+      async () => {
+        const current = this.required(record.setupAttemptId);
+        if (isTerminal(current.state)) return current;
+        const external = current.state === "cancellation_requested";
+        const semanticallyUncertain =
+          current.supervisionFailureCode === "input_delivery_uncertain";
+        return this.store.transition(
+          current.setupAttemptId,
+          {
+            state: external
+              ? "cancelled"
+              : semanticallyUncertain
+                ? "uncertain"
+                : "failed",
+            invocationState:
+              current.invocationState === "not_requested"
+                ? "not_requested"
+                : semanticallyUncertain
+                  ? "uncertain"
+                  : "settled",
+            cancellationInvocationState: "settled",
+            cancellationObservation: observation,
+            failureCode: external
+              ? current.failureCode
+              : (current.supervisionFailureCode ?? "setup_process_failed"),
+          },
+          external
+            ? "setup_cancelled"
             : semanticallyUncertain
-              ? "uncertain"
-              : "settled",
-        cancellationInvocationState: "settled",
-        cancellationObservation: observation,
-        failureCode: external
-          ? record.failureCode
-          : (record.supervisionFailureCode ?? "setup_process_failed"),
+              ? "setup_supervision_settled_uncertain"
+              : "setup_supervision_failed",
+        );
       },
-      external
-        ? "setup_cancelled"
-        : semanticallyUncertain
-          ? "setup_supervision_settled_uncertain"
-          : "setup_supervision_failed",
     );
-    await this.publish(settled);
+    this.queueReport(settled);
   }
 
   private async markCancellationUncertain(
@@ -1106,40 +1289,54 @@ export class ProviderAccountSetupCoordinator {
     eventType: string,
     observation: ProviderAccountSetupRecord["cancellationObservation"],
   ): Promise<void> {
-    const uncertain = this.store.transition(
-      record.setupAttemptId,
-      {
-        state: "uncertain",
-        invocationState: "uncertain",
-        cancellationInvocationState: "uncertain",
-        cancellationObservation: observation,
-        failureCode: "setup_cancellation_uncertain",
+    const uncertain = await this.withAccount(
+      record.command.setup.provider_account_id,
+      async () => {
+        const current = this.required(record.setupAttemptId);
+        if (isTerminal(current.state)) return current;
+        return this.store.transition(
+          current.setupAttemptId,
+          {
+            state: "uncertain",
+            invocationState: "uncertain",
+            cancellationInvocationState: "uncertain",
+            cancellationObservation: observation,
+            failureCode: "setup_cancellation_uncertain",
+          },
+          eventType,
+        );
       },
-      eventType,
     );
-    await this.publish(uncertain);
+    this.queueReport(uncertain);
   }
 
   private async requestSupervisionTermination(
     id: string,
     failureCode: string,
   ): Promise<void> {
-    const current = this.store.get(id);
-    if (
-      !current ||
-      isTerminal(current.state) ||
-      current.cancellationInvocationState !== "not_requested"
-    )
-      return;
-    const record = this.store.transition(
-      id,
-      {
-        supervisionFailureCode: failureCode,
-        cancellationInvocationState: "intent_recorded",
+    const existing = this.store.get(id);
+    if (!existing) return;
+    const record = await this.withAccount(
+      existing.command.setup.provider_account_id,
+      async () => {
+        const current = this.store.get(id);
+        if (
+          !current ||
+          isTerminal(current.state) ||
+          current.cancellationInvocationState !== "not_requested"
+        )
+          return null;
+        return this.store.transition(
+          id,
+          {
+            supervisionFailureCode: failureCode,
+            cancellationInvocationState: "intent_recorded",
+          },
+          failureCode,
+        );
       },
-      failureCode,
     );
-    await this.cancelRecord(record);
+    if (record) await this.cancelRecord(record);
   }
 
   private startHumanCompletionTimer(
@@ -1148,12 +1345,12 @@ export class ProviderAccountSetupCoordinator {
   ): void {
     if (active.humanTimer) return;
     active.humanTimer = this.deadline(this.humanCompletionTimeoutMs(), () => {
-      void this.withAccount(record.command.setup.provider_account_id, () =>
+      this.trackBackground(
         this.requestSupervisionTermination(
           record.setupAttemptId,
           "setup_human_completion_timed_out",
         ),
-      ).catch(() => undefined);
+      );
     });
   }
 
