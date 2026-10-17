@@ -8,8 +8,9 @@ Two independent defects explained the retained setup attempt:
 
 1. **Supervision was registered after a fallible report.** The Worker persisted and physically spawned the login process, then awaited the `invocation_acknowledged` control-plane report before adding the process to its active supervisor map. A rejected report could therefore leave an acknowledged process running without local cancellation or output supervision.
 2. **The guest relay buffered short output.** The relay used `BufferedReader.read(16384)` for target stdout and stderr. A long-lived login process could write a short prompt and wait for input while that read continued waiting for more bytes. The CLI had produced the interaction, but the Worker never received it.
+3. **The account environment-operation lock covered the entire login lifetime.** `ProviderAccountEnvironmentManager.beginSetupProcess` acquired the per-account promise-tail lock before preflight but released it only from `process.exit`. Worker registration reconciles account environments before setup attempts, so reconnect reconciliation blocked behind the live generation-1 login and could not refresh setup routing before timeout settlement.
 
-The fixes are independent: supervision is installed before the acknowledgement report, and the relay now uses `os.read`, which returns currently available pipe bytes.
+The fixes are independent: supervision is installed before the acknowledgement report, the relay now uses `os.read`, which returns currently available pipe bytes, and the account environment-operation lock ends after local durable invocation acknowledgement plus supervision registration rather than process exit.
 
 The retained Phase-E chronology also exposed a separate Product settlement defect. At `2026-10-17T04:56:19.473Z`, Worker generation 1 reported the exact acknowledged `/opt/qe/claude/claude` process. Product rejected it as `stale_provider_account_setup_report` because the executable allowlist omitted that pinned production path. Error serialization then received `%{code: :stale_provider_account_setup_report, ...}` but accepted only `%{type: ...}`, raising `FunctionClauseError`; the channel closed at `04:56:19.490Z` and generation 2 registered at `04:56:20.142Z`. Each reconnect rewrote the attempt's sole `worker_generation`/environment operation fields, so the durable generation-1 invocation could no longer satisfy the current route and the same application-error crash repeated through generation 7. Protocol 19 fixes these independently: it allows the exact pinned executable, serializes code-shaped domain errors without raising, and separates immutable invocation ownership from current routing authority.
 
@@ -51,6 +52,16 @@ The setup path has separate bounds:
 - **Cancellation settlement:** bounds a synchronous read-only observation loop after a detached cancellation acknowledgement.
 
 Expiry records an internal supervision-termination intent, performs exact cancellation, observes physical exit/gone evidence, and only then reports failure. It does not report a timeout as terminal while a process is known to remain alive.
+
+## Environment-operation lock boundary
+
+`ProviderAccountEnvironmentManager` serializes short physical environment transitions with a per-account promise tail. Setup preflight acquires that lock before validating the exact account owner, credential generation, environment ID/incarnation, authentication evidence, trusted launcher, and launch specification. Under the same lock, the coordinator durably records invocation intent, the manager launches and validates the exact process handle, and the coordinator durably records immutable invocation ownership and process identity and installs the output, timeout, exit, and cancellation supervisor.
+
+The manager releases the lock as soon as that local acknowledgement callback returns. The release occurs before any `invocation_acknowledged` Product report and is independent of control-plane report success. Interaction discovery, HumanAttention, input delivery, human completion, process settlement, timeout handling, and cancellation settlement are owned by setup supervision and never retain this environment lock.
+
+Releasing the lock does not release the account for mutation. The setup coordinator exposes a Worker-local predicate derived from the existing durable setup ledger. While an attempt is active or physically uncertain, environment reconciliation permits only read-only recovery of the same provider account, credential generation, backend, environment ID, and incarnation with desired state `available`. Stop, remove, credential-generation rollover, stale cleanup, and replacement identity are rejected. A missing or changed environment fails closed and is never recreated or adopted for the old invocation. The setup ledger's one-active-attempt rule independently prevents a second login; safety does not depend on lock contention.
+
+This allows Worker registration to retain its environment-before-setup ordering. A new connection generation first recovers the exact same environment without creating or replacing it, then setup reconciliation updates mutable routing while preserving the original invocation Worker generation, environment operation, launcher authority, and process identity.
 
 ## Exact cancellation lifecycle
 

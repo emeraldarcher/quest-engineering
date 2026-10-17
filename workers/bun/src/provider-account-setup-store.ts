@@ -1,6 +1,10 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  type ProviderAccountSetupLaunchAuthority,
+  validateSetupLaunchAuthority,
+} from "./execution-environment/provider-account-setup-launcher.ts";
 import type { StreamedProcessHandle } from "./execution-environment/types.ts";
 import type {
   ProviderAccountSetupCommand,
@@ -34,6 +38,7 @@ export interface ProviderAccountSetupRecord {
   invocationState: ProviderAccountSetupInvocationState;
   invocationWorkerGeneration: number | null;
   invocationEnvironmentOperationId: string | null;
+  setupLaunchAuthority: ProviderAccountSetupLaunchAuthority | null;
   process: StreamedProcessHandle | null;
   attentionId: string | null;
   preflight: ProviderAccountSetupValidation | null;
@@ -99,6 +104,8 @@ export class ProviderAccountSetupStore {
     );
     try {
       this.bootstrap();
+      // Current-only durable JSON contracts fail closed at process startup.
+      this.list();
     } catch (error) {
       this.db.close();
       throw error;
@@ -187,6 +194,7 @@ export class ProviderAccountSetupStore {
       invocationState: ProviderAccountSetupInvocationState;
       invocationWorkerGeneration: number | null;
       invocationEnvironmentOperationId: string | null;
+      setupLaunchAuthority: ProviderAccountSetupLaunchAuthority | null;
       process: StreamedProcessHandle | null;
       attentionId: string | null;
       preflight: ProviderAccountSetupValidation | null;
@@ -215,6 +223,10 @@ export class ProviderAccountSetupStore {
             attributes.invocationEnvironmentOperationId === undefined
               ? current.invocationEnvironmentOperationId
               : attributes.invocationEnvironmentOperationId,
+          setupLaunchAuthority:
+            attributes.setupLaunchAuthority === undefined
+              ? current.setupLaunchAuthority
+              : attributes.setupLaunchAuthority,
           process:
             attributes.process === undefined
               ? current.process
@@ -254,6 +266,21 @@ export class ProviderAccountSetupStore {
               ? current.supervisionFailureCode
               : attributes.supervisionFailureCode,
         };
+        if (
+          current.setupLaunchAuthority &&
+          attributes.setupLaunchAuthority &&
+          JSON.stringify(current.setupLaunchAuthority) !==
+            JSON.stringify(attributes.setupLaunchAuthority)
+        )
+          throw new Error(
+            "ProviderAccount setup launcher authority is immutable.",
+          );
+        if (next.process && !next.setupLaunchAuthority)
+          throw new Error(
+            "ProviderAccount setup process requires trusted launcher authority.",
+          );
+        if (next.setupLaunchAuthority)
+          validateSetupLaunchAuthority(next.setupLaunchAuthority);
         this.db
           .query(
             `UPDATE provider_account_setup_attempts
@@ -265,7 +292,7 @@ export class ProviderAccountSetupStore {
             next.invocationState,
             next.invocationWorkerGeneration,
             next.invocationEnvironmentOperationId,
-            next.process ? JSON.stringify(next.process) : null,
+            encodeInvocation(next.setupLaunchAuthority, next.process),
             next.attentionId,
             next.preflight ? JSON.stringify(next.preflight) : null,
             next.validation ? JSON.stringify(next.validation) : null,
@@ -520,6 +547,7 @@ export class ProviderAccountSetupStore {
 }
 
 function mapRow(row: SetupRow): ProviderAccountSetupRecord {
+  const invocation = decodeInvocation(row.process_json);
   return {
     setupAttemptId: row.setup_attempt_id,
     command: JSON.parse(row.command_json) as ProviderAccountSetupCommand,
@@ -527,9 +555,8 @@ function mapRow(row: SetupRow): ProviderAccountSetupRecord {
     invocationState: row.invocation_state,
     invocationWorkerGeneration: row.invocation_worker_generation,
     invocationEnvironmentOperationId: row.invocation_environment_operation_id,
-    process: row.process_json
-      ? (JSON.parse(row.process_json) as StreamedProcessHandle)
-      : null,
+    setupLaunchAuthority: invocation.launchAuthority,
+    process: invocation.process,
     attentionId: row.attention_id,
     preflight: row.preflight_json
       ? (JSON.parse(row.preflight_json) as ProviderAccountSetupValidation)
@@ -551,6 +578,54 @@ function mapRow(row: SetupRow): ProviderAccountSetupRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function encodeInvocation(
+  launchAuthority: ProviderAccountSetupLaunchAuthority | null,
+  process: StreamedProcessHandle | null,
+): string | null {
+  if (!launchAuthority && !process) return null;
+  if (!launchAuthority)
+    throw new Error(
+      "ProviderAccount setup process requires trusted launcher authority.",
+    );
+  validateSetupLaunchAuthority(launchAuthority);
+  return JSON.stringify({
+    contractVersion: 1,
+    launchAuthority,
+    process,
+  });
+}
+
+function decodeInvocation(value: string | null): {
+  launchAuthority: ProviderAccountSetupLaunchAuthority | null;
+  process: StreamedProcessHandle | null;
+} {
+  if (value === null) return { launchAuthority: null, process: null };
+  const parsed = JSON.parse(value) as Record<string, unknown>;
+  const keys = Object.keys(parsed).sort();
+  if (
+    keys.length !== 3 ||
+    keys[0] !== "contractVersion" ||
+    keys[1] !== "launchAuthority" ||
+    keys[2] !== "process" ||
+    parsed.contractVersion !== 1
+  )
+    throw new Error(
+      "ProviderAccount setup durable invocation identity is incompatible.",
+    );
+  const launchAuthority =
+    parsed.launchAuthority as ProviderAccountSetupLaunchAuthority | null;
+  validateSetupLaunchAuthority(launchAuthority);
+  const process = parsed.process as StreamedProcessHandle | null;
+  if (
+    process !== null &&
+    (typeof process !== "object" || Array.isArray(process))
+  )
+    throw new Error(
+      "ProviderAccount setup durable process identity is incompatible.",
+    );
+  return { launchAuthority, process };
 }
 
 function assertCompatible(

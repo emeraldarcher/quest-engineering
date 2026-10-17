@@ -7,6 +7,7 @@ import {
   type ProviderAccountEnvironmentCommand,
   ProviderAccountEnvironmentManager,
 } from "../src/execution-environment/provider-account.ts";
+import { ClaudeSubscriptionSetupLauncher } from "../src/execution-environment/provider-account-setup-launcher.ts";
 import { cleanupExecutionEnvironment } from "../src/execution-environment/run-cleanup.ts";
 import { ExecutionEnvironmentStore } from "../src/execution-environment/store.ts";
 import type { ProviderAccountEnvironmentSpec } from "../src/execution-environment/types.ts";
@@ -158,7 +159,7 @@ test("reconciliation retains a bounded failure report for the exact operation", 
   const store = new ExecutionEnvironmentStore(root);
   const manager = new ProviderAccountEnvironmentManager(
     { workerId: "worker-account-test", dataRoot: root, provider: "fake" },
-    { fake: true, store },
+    { fake: true, store, setupLauncher: null },
   );
   const firstCommand = desired("account-failure", 1, 4, "failure-initial");
   await manager.apply(firstCommand);
@@ -204,7 +205,7 @@ test("reconciliation reports an unbound durable creation intent without inventin
   });
   const manager = new ProviderAccountEnvironmentManager(
     { workerId: "worker-account-test", dataRoot: root, provider: "fake" },
-    { fake: true, store },
+    { fake: true, store, setupLauncher: null },
   );
 
   expect(manager.reportsFor([command])).toMatchObject([
@@ -224,7 +225,7 @@ test("concurrent commands serialize by stable account identity across credential
   const store = new ExecutionEnvironmentStore(root);
   const manager = new ProviderAccountEnvironmentManager(
     { workerId: "worker-account-test", dataRoot: root, provider: "fake" },
-    { fake: true, store },
+    { fake: true, store, setupLauncher: null },
   );
 
   await Promise.all([
@@ -307,7 +308,7 @@ test("reconciliation never retires account environments owned by another Worker"
   });
   const manager = new ProviderAccountEnvironmentManager(
     { workerId: "worker-account-test", dataRoot: root, provider: "fake" },
-    { fake: true, store },
+    { fake: true, store, setupLauncher: null },
   );
 
   await manager.reconcile([]);
@@ -489,7 +490,10 @@ test.skipIf(process.env.QE_LIVE_SBX !== "1")(
     const command = desired(`live-${crypto.randomUUID()}`, 1, 1, "live-ensure");
     let manager = new ProviderAccountEnvironmentManager(
       { workerId: "worker-account-live", dataRoot: root, provider: "pi" },
-      { fake: false },
+      {
+        fake: false,
+        setupLauncher: new ClaudeSubscriptionSetupLauncher(),
+      },
     );
     const ensured = await manager.apply(command);
     expect(ensured).toMatchObject({
@@ -501,7 +505,10 @@ test.skipIf(process.env.QE_LIVE_SBX !== "1")(
 
     manager = new ProviderAccountEnvironmentManager(
       { workerId: "worker-account-live", dataRoot: root, provider: "pi" },
-      { fake: false },
+      {
+        fake: false,
+        setupLauncher: new ClaudeSubscriptionSetupLauncher(),
+      },
     );
     const restarted = await manager.apply({
       ...command,
@@ -567,7 +574,7 @@ function accountSpec(
 function fakeManager(root: string): ProviderAccountEnvironmentManager {
   return new ProviderAccountEnvironmentManager(
     { workerId: "worker-account-test", dataRoot: root, provider: "fake" },
-    { fake: true },
+    { fake: true, setupLauncher: null },
   );
 }
 

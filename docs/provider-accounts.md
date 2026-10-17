@@ -193,20 +193,25 @@ The ordering is strict:
    `authentication_required / none`, persist `invocation_requested` through the
    coordinator callback;
 5. spawn only after that durable intent returns successfully;
-6. record the exact acknowledged process handle and install local supervision
-   before crossing the fallible acknowledgement-report boundary;
-7. discover only the pinned, bounded interaction contract within its own
+6. record the exact acknowledged process handle and immutable invocation owner,
+   install local supervision, then release the account environment-operation
+   lock before crossing the fallible acknowledgement-report boundary;
+7. while supervision owns the process lifetime, permit reconnect reconciliation
+   to inspect only the same exact available environment and refresh current
+   routing; explicitly fence stop, removal, generation rollover, missing or
+   replacement environments, and a second setup;
+8. discover only the pinned, bounded interaction contract within its own
    deadline, then expose a safe account-scoped HumanAttention message;
-8. relay bounded process output/input through an in-memory, five-minute,
+9. relay bounded process output/input through an in-memory, five-minute,
    setup-generation + attention + process-generation-bound channel;
-9. persist input-delivery metadata before the streamed write and classify it as
-   acknowledged or uncertain without storing the input;
-10. on cancellation, persist intent, revalidate exact identity, submit at most
+10. persist input-delivery metadata before the streamed write and classify it as
+    acknowledged or uncertain without storing the input;
+11. on cancellation, persist intent, revalidate exact identity, submit at most
     one cancellation operation, and observe physical exit/absence;
-11. observe ordinary process settlement;
-12. run deterministic local status validation with the same configuration and
+12. observe ordinary process settlement;
+13. run deterministic local status validation with the same configuration and
     physical identity; and
-13. only for exact `authenticated / provider_account` evidence mark
+14. only for exact `authenticated / provider_account` evidence mark
     authentication ready and advance credential generation.
 
 A rejected preflight retains `invocation_state=not_requested` and crosses zero
@@ -218,9 +223,12 @@ terminated through the exact detached-process path before failure is reported.
 An ambiguous input triggers exact process termination and becomes terminally
 uncertain only after physical settlement. An ambiguous cancellation is never
 repeated and advances only through read-only physical reconciliation. One partial
-unique index plus Worker account tails admits one active setup per account;
-physical lifecycle mutations are rejected while setup is active. Different
-accounts remain independent.
+unique index plus the durable active-setup predicate admits one active setup per
+account; physical lifecycle mutations are explicitly rejected while setup is
+active. The environment-operation lock covers only exact preflight, intent,
+spawn, local acknowledgement, and supervision registration. It is not retained
+across interaction, human, timeout, cancellation, or process-settlement waits.
+Different accounts remain independent.
 
 Sensitive output/input, auth-like URLs/codes, raw provider output, and response
 values are absent from PostgreSQL, Worker SQLite, lifecycle/setup events, API

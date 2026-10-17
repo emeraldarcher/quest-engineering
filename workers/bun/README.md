@@ -169,9 +169,14 @@ streamed-process identity, account-scoped HumanAttention, input-delivery
 certainty, exact cancellation, and local status validation. Sensitive login
 output/input remains only in process memory and the Product's expiring encrypted
 relay; it is never accepted by a SQLite API or emitted to logs. Worker restart
-never replays a requested/ambiguous spawn, input, or cancellation. A running
-process with a non-recoverable stream is revalidated and physically terminated
-before failure is reported. See
+never replays a requested/ambiguous spawn, input, or cancellation. The
+per-account environment-operation lock ends only after exact process identity is
+durably acknowledged and local supervision is installed, but before the
+fallible Product acknowledgement report. The durable active-setup predicate
+then permits read-only reconciliation of only that same environment while
+fencing stop, removal, credential rollover, replacement, and a second login. A
+running process with a non-recoverable stream is revalidated and physically
+terminated before failure is reported. See
 [`../../docs/provider-account-login-supervision.md`](../../docs/provider-account-login-supervision.md).
 
 Phase B launches only `/usr/bin/python3` with QE's static deterministic fake

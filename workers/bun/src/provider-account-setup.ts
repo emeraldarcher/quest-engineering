@@ -6,9 +6,11 @@ import {
   randomUUID,
 } from "node:crypto";
 import type {
+  ActiveProviderAccountSetupFence,
   ProviderAccountEnvironmentManager,
   ProviderAccountSetupRuntimeIdentity,
 } from "./execution-environment/provider-account.ts";
+import { CLAUDE_LOGIN_INTERACTION_IDENTITY } from "./execution-environment/provider-account-setup-launcher.ts";
 import type {
   StreamedProcess,
   StreamedProcessReconciliation,
@@ -31,12 +33,12 @@ import {
   type ProviderAuthenticationInspection,
 } from "./provider-auth.ts";
 
+export { CLAUDE_LOGIN_INTERACTION_IDENTITY } from "./execution-environment/provider-account-setup-launcher.ts";
+
 const INTERACTION_LIMIT_BYTES = 16_384;
 const DEFAULT_INTERACTION_DISCOVERY_TIMEOUT_MS = 30_000;
 const DEFAULT_HUMAN_COMPLETION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_CANCELLATION_SETTLEMENT_TIMEOUT_MS = 30_000;
-export const CLAUDE_LOGIN_INTERACTION_IDENTITY =
-  "claude-code-2.1.292-auth-login-stdout-v1";
 const CLAUDE_LOGIN_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_LOGIN_OAUTH_SCOPES = [
   "org:create_api_key",
@@ -113,6 +115,7 @@ export class ProviderAccountSetupCoordinator {
   private readonly active = new Map<string, ActiveProcess>();
   private readonly accountTails = new Map<string, Promise<void>>();
   private readonly desiredAttemptIds = new Set<string>();
+  private readonly unregisterActiveSetupLookup: () => void;
   private closed = false;
 
   constructor(
@@ -132,7 +135,12 @@ export class ProviderAccountSetupCoordinator {
     }) => Promise<void>,
     private readonly clock: () => Date = () => new Date(),
     private readonly options: ProviderAccountSetupCoordinatorOptions = {},
-  ) {}
+  ) {
+    this.unregisterActiveSetupLookup =
+      this.environments.registerActiveSetupLookup((providerAccountId) =>
+        this.activeSetupFence(providerAccountId),
+      );
+  }
 
   async prepare(command: ProviderAccountSetupCommand): Promise<void> {
     if (this.closed)
@@ -178,13 +186,15 @@ export class ProviderAccountSetupCoordinator {
       await this.publish(record);
 
       let process: StreamedProcess;
+      const prompt = deferred<string>();
+      const discoveryDeadline = deferred<void>();
       let intentCommitted = false;
       try {
         const beginning = await this.environments.beginSetupProcess(
           runtimeIdentity(record),
-          async (inspection, eligible) => {
+          async (inspection, eligible, launchAuthority) => {
             const preflight = authenticationPayload(inspection);
-            if (eligible) {
+            if (eligible && launchAuthority) {
               // Exact fresh preflight and durable intent are committed while the
               // account lock is held, immediately before physical spawn.
               record = this.store.transition(
@@ -196,6 +206,7 @@ export class ProviderAccountSetupCoordinator {
                     record.command.setup.worker_generation,
                   invocationEnvironmentOperationId:
                     record.command.setup.environment_operation_id,
+                  setupLaunchAuthority: launchAuthority,
                   preflight,
                 },
                 "login_invocation_requested",
@@ -213,10 +224,69 @@ export class ProviderAccountSetupCoordinator {
                 "login_preflight_rejected",
               );
             }
-            await this.publish(record);
+            // Product reporting is deliberately outside the environment lock.
+            // Local durable intent is sufficient to cross the physical spawn
+            // boundary and remains recoverable if the connection is lost.
+          },
+          async (spawned) => {
+            // The manager still owns the account environment-operation lock.
+            // Persist the exact process acknowledgement and install supervision
+            // before returning and allowing that lock to be released.
+            const recognize = interactionRecognizer(record);
+            record = this.store.transition(
+              record.setupAttemptId,
+              {
+                state: "invocation_acknowledged",
+                invocationState: "acknowledged",
+                process: spawned.handle,
+              },
+              "login_invocation_acknowledged",
+            );
+            process = spawned;
+            const output = collectInteraction(
+              spawned.stdout,
+              prompt,
+              recognize,
+            );
+            const diagnostics = discard(spawned.stderr);
+            const active: ActiveProcess = {
+              process: spawned,
+              output: Promise.all([output, diagnostics]).then(() => undefined),
+              monitor: Promise.resolve(),
+              interaction: null,
+              discoveryTimer: null,
+              humanTimer: null,
+            };
+            this.active.set(record.setupAttemptId, active);
+            active.monitor = this.monitor(record.setupAttemptId, spawned).catch(
+              () => undefined,
+            );
+            void prompt.promise.then(
+              (interaction) => {
+                active.interaction = interaction;
+              },
+              () => undefined,
+            );
+            active.discoveryTimer = this.deadline(
+              this.interactionDiscoveryTimeoutMs(),
+              () => {
+                discoveryDeadline.resolve();
+                void this.withAccount(
+                  record.command.setup.provider_account_id,
+                  () =>
+                    this.requestSupervisionTermination(
+                      record.setupAttemptId,
+                      "setup_interaction_discovery_timed_out",
+                    ),
+                ).catch(() => undefined);
+              },
+            );
           },
         );
-        if (!beginning.process) return;
+        if (!beginning.process) {
+          await this.publish(record);
+          return;
+        }
         process = beginning.process;
       } catch (error) {
         const ambiguous =
@@ -248,58 +318,13 @@ export class ProviderAccountSetupCoordinator {
         return;
       }
 
-      record = this.store.transition(
-        record.setupAttemptId,
-        {
-          state: "invocation_acknowledged",
-          invocationState: "acknowledged",
-          process: process.handle,
-        },
-        "login_invocation_acknowledged",
-      );
-
-      // Register supervision before crossing the fallible control-plane report
-      // boundary. A rejected acknowledgement must never orphan the process in
-      // this still-running Worker generation.
-      const prompt = deferred<string>();
-      const output = collectInteraction(
-        process.stdout,
-        prompt,
-        interactionRecognizer(record),
-      );
-      const diagnostics = discard(process.stderr);
-      const active: ActiveProcess = {
-        process,
-        output: Promise.all([output, diagnostics]).then(() => undefined),
-        monitor: Promise.resolve(),
-        interaction: null,
-        discoveryTimer: null,
-        humanTimer: null,
-      };
-      this.active.set(record.setupAttemptId, active);
-      active.monitor = this.monitor(record.setupAttemptId, process).catch(
-        () => undefined,
-      );
-      void prompt.promise.then(
-        (interaction) => {
-          active.interaction = interaction;
-        },
-        () => undefined,
-      );
-      const discoveryDeadline = deferred<void>();
-      active.discoveryTimer = this.deadline(
-        this.interactionDiscoveryTimeoutMs(),
-        () => {
-          discoveryDeadline.resolve();
-          void this.withAccount(record.command.setup.provider_account_id, () =>
-            this.requestSupervisionTermination(
-              record.setupAttemptId,
-              "setup_interaction_discovery_timed_out",
-            ),
-          ).catch(() => undefined);
-        },
-      );
-
+      const active = this.active.get(record.setupAttemptId);
+      if (!active)
+        throw new Error(
+          "ProviderAccount setup supervision was not registered before lock release.",
+        );
+      // The account environment-operation lock is already released. This
+      // fallible report cannot retain it for the process or human lifetime.
       await this.publish(record);
 
       let ephemeral: string;
@@ -575,7 +600,36 @@ export class ProviderAccountSetupCoordinator {
     );
     await Promise.all(remaining.map((entry) => entry.monitor));
     this.active.clear();
+    this.unregisterActiveSetupLookup();
     this.store.close();
+  }
+
+  private activeSetupFence(
+    providerAccountId: string,
+  ): ActiveProviderAccountSetupFence | null {
+    const active = this.store
+      .list()
+      .filter(
+        (record) =>
+          record.command.setup.provider_account_id === providerAccountId &&
+          (!isTerminal(record.state) ||
+            record.invocationState === "uncertain" ||
+            record.cancellationInvocationState === "uncertain"),
+      );
+    if (active.length > 1)
+      throw new Error(
+        "ProviderAccount has conflicting durable active setup authority.",
+      );
+    const record = active[0];
+    if (!record) return null;
+    return {
+      setupAttemptId: record.setupAttemptId,
+      providerAccountId,
+      credentialGeneration: record.command.setup.credential_generation,
+      backendKind: record.command.setup.environment.backend_kind,
+      environmentId: record.command.setup.environment.environment_id,
+      environmentIncarnation: record.command.setup.environment.incarnation,
+    };
   }
 
   private async reconcileRecord(
@@ -598,7 +652,9 @@ export class ProviderAccountSetupCoordinator {
           ? "restart_process_identity_missing"
           : "restart_invocation_uncertain",
       );
-      await this.environments.retireSetupProcesses(runtimeIdentity(record));
+      await this.environments
+        .retireSetupProcesses(runtimeIdentity(record))
+        .catch(() => undefined);
       await this.publish(uncertain);
       return;
     }
@@ -622,7 +678,9 @@ export class ProviderAccountSetupCoordinator {
         },
         "restart_process_inspection_failed",
       );
-      await this.environments.retireSetupProcesses(runtimeIdentity(record));
+      await this.environments
+        .retireSetupProcesses(runtimeIdentity(record))
+        .catch(() => undefined);
       await this.publish(uncertain);
       return;
     }
@@ -1272,6 +1330,7 @@ function runtimeIdentity(
     backendKind: setup.environment.backend_kind,
     environmentId: setup.environment.environment_id,
     environmentIncarnation: setup.environment.incarnation,
+    setupLaunchAuthority: record.setupLaunchAuthority,
     expectedAuthentication: {
       state: setup.authorized_authentication.state,
       method: setup.authorized_authentication.method,
@@ -1342,6 +1401,8 @@ function interactionRecognizer(
 ): InteractionRecognizer {
   const setup = record.command.setup;
   if (
+    record.setupLaunchAuthority?.interactionRecognizerIdentity ===
+      CLAUDE_LOGIN_INTERACTION_IDENTITY &&
     setup.provider_key === "anthropic" &&
     setup.authorized_authentication.configuration_identity ===
       CLAUDE_SUBSCRIPTION_CONFIGURATION.identity

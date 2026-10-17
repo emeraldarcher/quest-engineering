@@ -7,6 +7,7 @@ import {
   type ProviderAccountEnvironmentCommand,
   ProviderAccountEnvironmentManager,
 } from "../src/execution-environment/provider-account.ts";
+import { ExecutionEnvironmentStore } from "../src/execution-environment/store.ts";
 import {
   EnvironmentBackendError,
   type StreamedProcessHandle,
@@ -504,17 +505,25 @@ describe("ProviderAccount setup", () => {
       const beginSetupProcess = spawn.manager.beginSetupProcess.bind(
         spawn.manager,
       );
-      spawn.manager.beginSetupProcess = (identity, beforeSpawn) =>
-        beginSetupProcess(identity, async (inspection, eligible) => {
-          await beforeSpawn(inspection, eligible);
-          if (eligible)
-            throw new EnvironmentBackendError(
-              "injected_failure",
-              "ambiguous setup spawn",
-              "spawn_streamed",
-              "ambiguous",
-            );
-        });
+      spawn.manager.beginSetupProcess = (
+        identity,
+        beforeSpawn,
+        acknowledgeSpawn,
+      ) =>
+        beginSetupProcess(
+          identity,
+          async (inspection, eligible, launchAuthority) => {
+            await beforeSpawn(inspection, eligible, launchAuthority);
+            if (eligible)
+              throw new EnvironmentBackendError(
+                "injected_failure",
+                "ambiguous setup spawn",
+                "spawn_streamed",
+                "ambiguous",
+              );
+          },
+          acknowledgeSpawn,
+        );
       await spawn.coordinator.prepare(spawn.setupCommand);
       expect(
         spawn.store.get(spawn.setupCommand.setup.setup_attempt_id),
@@ -707,9 +716,9 @@ describe("ProviderAccount setup", () => {
         failure_code: "setup_process_lost",
       });
       expect(
-        fixture.reports.filter(
-          (report) => report.state === "invocation_requested",
-        ),
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
       ).toHaveLength(1);
       expect(cancellationCalls).toBe(1);
       expect(validations).toBe(0);
@@ -800,7 +809,7 @@ describe("ProviderAccount setup", () => {
     }
   });
 
-  test("registers process supervision before an invocation acknowledgement report can fail", async () => {
+  test("registers process supervision and releases the environment lock before an acknowledgement report can fail", async () => {
     const fixture = await setupFixture(
       {},
       { rejectReportState: "invocation_acknowledged" },
@@ -819,13 +828,45 @@ describe("ProviderAccount setup", () => {
         invocationState: "acknowledged",
       });
 
+      const reconciled = await Promise.race([
+        fixture.manager.apply(
+          exactEnvironmentCommand(fixture, 8, "report-loss-reconcile"),
+        ),
+        Bun.sleep(100).then(() => {
+          throw new Error("environment lock remained held after local ack");
+        }),
+      ]);
+      expect(reconciled).toMatchObject({
+        physicalState: "available",
+        workerGeneration: 8,
+        operationId: "report-loss-reconcile",
+      });
+      const currentCommand = routedSetupCommand(
+        fixture,
+        8,
+        "report-loss-reconcile",
+      );
+      await fixture.coordinator.reconcile([currentCommand]);
+      expect(fixture.reports.at(-1)).toMatchObject({
+        worker_generation: 8,
+        invocation_worker_generation: 7,
+        process: {
+          process_generation: acknowledged?.process?.processGeneration,
+        },
+      });
+      expect(
+        fixture.store
+          .events(currentCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
+      ).toHaveLength(1);
+
       await fixture.coordinator.cancel({
         type: "cancel_provider_account_setup",
         protocol_version: 19,
-        worker_id: fixture.setupCommand.worker_id,
-        connection_generation: fixture.setupCommand.connection_generation,
-        setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
-        setup_generation: fixture.setupCommand.setup.setup_generation,
+        worker_id: currentCommand.worker_id,
+        connection_generation: currentCommand.connection_generation,
+        setup_attempt_id: currentCommand.setup.setup_attempt_id,
+        setup_generation: currentCommand.setup.setup_generation,
         process_generation: acknowledged?.process?.processGeneration as string,
         request_id: "cancel-after-report-loss",
       });
@@ -972,27 +1013,48 @@ describe("ProviderAccount setup", () => {
     }
   });
 
-  test("no recognized output expires discovery and physically terminates", async () => {
+  test("no environment lock is retained across discovery timeout or cancellation settlement", async () => {
     const fixture = await setupFixture(
       {},
-      { coordinator: { interactionDiscoveryTimeoutMs: 5 } },
+      { coordinator: { interactionDiscoveryTimeoutMs: 200 } },
     );
     try {
       const beginSetupProcess = fixture.manager.beginSetupProcess.bind(
         fixture.manager,
       );
-      fixture.manager.beginSetupProcess = async (identity, beforeSpawn) => {
-        const beginning = await beginSetupProcess(identity, beforeSpawn);
-        if (!beginning.process) return beginning;
-        const process = beginning.process;
-        const stdout = (async function* () {
-          for await (const event of process.stdout)
-            if (event.kind !== "data") yield event;
-        })();
-        return { ...beginning, process: { ...process, stdout } };
-      };
+      fixture.manager.beginSetupProcess = async (
+        identity,
+        beforeSpawn,
+        acknowledgeSpawn,
+      ) =>
+        beginSetupProcess(identity, beforeSpawn, async (spawned) => {
+          const stdout = (async function* () {
+            for await (const event of spawned.stdout)
+              if (event.kind !== "data") yield event;
+          })();
+          await acknowledgeSpawn({ ...spawned, stdout });
+        });
 
-      await fixture.coordinator.prepare(fixture.setupCommand);
+      const preparing = fixture.coordinator.prepare(fixture.setupCommand);
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "invocation_acknowledged",
+      );
+      expect(
+        await Promise.race([
+          fixture.manager.apply(
+            exactEnvironmentCommand(fixture, 8, "discovery-wait-reconcile"),
+          ),
+          Bun.sleep(100).then(() => {
+            throw new Error("environment lock remained held during discovery");
+          }),
+        ]),
+      ).toMatchObject({
+        physicalState: "available",
+        operationId: "discovery-wait-reconcile",
+      });
+      await preparing;
       await eventually(
         () =>
           fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
@@ -1147,6 +1209,297 @@ describe("ProviderAccount setup", () => {
         invocationWorkerGeneration: 7,
         invocationEnvironmentOperationId: "environment-operation",
       });
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("holds the environment lock through local acknowledgement but releases it for same-environment reconnect", async () => {
+    const fixture = await setupFixture();
+    let enteredAcknowledgement!: () => void;
+    let permitAcknowledgement!: () => void;
+    const acknowledgementEntered = new Promise<void>((resolve) => {
+      enteredAcknowledgement = resolve;
+    });
+    const acknowledgementPermitted = new Promise<void>((resolve) => {
+      permitAcknowledgement = resolve;
+    });
+    const beginSetupProcess = fixture.manager.beginSetupProcess.bind(
+      fixture.manager,
+    );
+    fixture.manager.beginSetupProcess = (
+      identity,
+      beforeSpawn,
+      acknowledgeSpawn,
+    ) =>
+      beginSetupProcess(identity, beforeSpawn, async (spawned) => {
+        enteredAcknowledgement();
+        await acknowledgementPermitted;
+        await acknowledgeSpawn(spawned);
+      });
+    try {
+      const preparing = fixture.coordinator.prepare(fixture.setupCommand);
+      await acknowledgementEntered;
+
+      let environmentReconciled = false;
+      const reconciliation = fixture.manager
+        .apply(exactEnvironmentCommand(fixture, 8, "blocked-before-ack"))
+        .then((report) => {
+          environmentReconciled = true;
+          return report;
+        });
+      await Bun.sleep(20);
+      expect(environmentReconciled).toBe(false);
+
+      permitAcknowledgement();
+      await preparing;
+      expect(await reconciliation).toMatchObject({
+        physicalState: "available",
+        workerGeneration: 8,
+        operationId: "blocked-before-ack",
+      });
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
+      ).toHaveLength(1);
+
+      const acknowledged = fixture.store.get(
+        fixture.setupCommand.setup.setup_attempt_id,
+      );
+      await fixture.coordinator.cancel({
+        type: "cancel_provider_account_setup",
+        protocol_version: 19,
+        worker_id: fixture.setupCommand.worker_id,
+        connection_generation: fixture.setupCommand.connection_generation,
+        setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
+        setup_generation: fixture.setupCommand.setup.setup_generation,
+        process_generation: acknowledged?.process?.processGeneration as string,
+        request_id: "cancel-boundary-test",
+      });
+    } finally {
+      permitAcknowledgement();
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("preflight and local acknowledgement failures release the environment lock", async () => {
+    const preflight = await setupFixture({
+      fakeAuthentication: () => ({
+        state: "authenticated",
+        method: "provider_account",
+      }),
+    });
+    try {
+      await preflight.coordinator.prepare(preflight.setupCommand);
+      expect(
+        await preflight.manager.apply(
+          exactEnvironmentCommand(preflight, 8, "after-preflight-rejection"),
+        ),
+      ).toMatchObject({
+        physicalState: "available",
+        operationId: "after-preflight-rejection",
+      });
+    } finally {
+      await preflight.coordinator.close();
+      await preflight.manager.close();
+    }
+
+    const acknowledgement = await setupFixture();
+    const transition = acknowledgement.store.transition.bind(
+      acknowledgement.store,
+    );
+    let acknowledgementRejected = false;
+    acknowledgement.store.transition = (id, attributes, eventType) => {
+      if (
+        eventType === "login_invocation_acknowledged" &&
+        !acknowledgementRejected
+      ) {
+        acknowledgementRejected = true;
+        throw new Error("injected acknowledgement persistence failure");
+      }
+      return transition(id, attributes, eventType);
+    };
+    try {
+      await acknowledgement.coordinator.prepare(acknowledgement.setupCommand);
+      expect(
+        acknowledgement.store.get(
+          acknowledgement.setupCommand.setup.setup_attempt_id,
+        ),
+      ).toMatchObject({
+        state: "failed",
+        invocationState: "requested",
+        failureCode: "setup_spawn_failed",
+      });
+      expect(
+        await acknowledgement.manager.apply(
+          exactEnvironmentCommand(
+            acknowledgement,
+            8,
+            "after-acknowledgement-failure",
+          ),
+        ),
+      ).toMatchObject({
+        physicalState: "available",
+        operationId: "after-acknowledgement-failure",
+      });
+    } finally {
+      await acknowledgement.coordinator.close();
+      await acknowledgement.manager.close();
+    }
+  });
+
+  test("active setup permits exact reconnect but fences second login and destructive environment races", async () => {
+    const fixture = await setupFixture();
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const first = fixture.store.get(
+        fixture.setupCommand.setup.setup_attempt_id,
+      );
+      const firstProcess = first?.process;
+      if (!firstProcess)
+        throw new Error("Expected acknowledged process identity.");
+
+      expect(
+        await fixture.manager.apply(
+          exactEnvironmentCommand(fixture, 8, "same-environment-generation-8"),
+        ),
+      ).toMatchObject({
+        physicalState: "available",
+        workerGeneration: 8,
+      });
+
+      const currentCommand = routedSetupCommand(
+        fixture,
+        8,
+        "same-environment-generation-8",
+      );
+      await fixture.coordinator.reconcile([currentCommand]);
+      expect(
+        fixture.store.get(currentCommand.setup.setup_attempt_id),
+      ).toMatchObject({
+        command: {
+          connection_generation: 8,
+          setup: {
+            worker_generation: 8,
+            environment_operation_id: "same-environment-generation-8",
+          },
+        },
+        invocationWorkerGeneration: 7,
+        invocationEnvironmentOperationId: "environment-operation",
+        process: firstProcess,
+      });
+
+      for (const desiredState of ["stopped", "removed"] as const) {
+        expect(
+          await fixture.manager.apply({
+            ...exactEnvironmentCommand(fixture, 8, `active-${desiredState}`),
+            desiredState,
+          }),
+        ).toMatchObject({
+          physicalState: "degraded",
+          errorCode: "environment_operation_failed",
+        });
+      }
+      expect(
+        await fixture.manager.apply({
+          ...exactEnvironmentCommand(fixture, 8, "active-rollover"),
+          credentialGeneration: 2,
+          expectedPhysicalIdentity: null,
+        }),
+      ).toMatchObject({
+        physicalState: "degraded",
+        errorCode: "environment_operation_failed",
+      });
+
+      await expect(
+        fixture.coordinator.prepare({
+          ...currentCommand,
+          setup: {
+            ...currentCommand.setup,
+            setup_attempt_id: "setup-attempt-second",
+            setup_generation: 2,
+            authorization_id: "authorization-second",
+            state: "authorized",
+            invocation_state: "not_requested",
+            invocation_worker_generation: null,
+            invocation_environment_operation_id: null,
+          },
+        }),
+      ).rejects.toThrow();
+      expect(
+        fixture.store
+          .events(currentCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
+      ).toHaveLength(1);
+      expect(activeProcess(fixture).handle).toEqual(firstProcess);
+
+      await fixture.coordinator.cancel({
+        type: "cancel_provider_account_setup",
+        protocol_version: 19,
+        worker_id: currentCommand.worker_id,
+        connection_generation: currentCommand.connection_generation,
+        setup_attempt_id: currentCommand.setup.setup_attempt_id,
+        setup_generation: currentCommand.setup.setup_generation,
+        process_generation: firstProcess.processGeneration,
+        request_id: "cancel-active-fence-test",
+      });
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("active setup never recreates or adopts a missing or replacement environment", async () => {
+    const fixture = await setupFixture(
+      {},
+      { coordinator: { cancellationSettlementTimeoutMs: 5 } },
+    );
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const original = fixture.environmentStore
+        .list()
+        .find(
+          (record) =>
+            record.environmentId === fixture.environment.environmentId,
+        );
+      if (!original) throw new Error("Expected the setup environment record.");
+      fixture.environmentStore.markState(original.recordId, "stopped");
+      fixture.environmentStore.retire(original.recordId);
+
+      expect(
+        await fixture.manager.apply(
+          exactEnvironmentCommand(fixture, 8, "missing-active-environment"),
+        ),
+      ).toMatchObject({
+        physicalState: "degraded",
+        errorCode: "environment_identity_mismatch",
+      });
+      expect(
+        await fixture.manager.apply({
+          ...exactEnvironmentCommand(fixture, 8, "replacement-incarnation"),
+          expectedPhysicalIdentity: {
+            backendKind: fixture.environment.backendKind as string,
+            environmentId: "replacement-environment",
+            incarnation: "replacement-incarnation",
+          },
+        }),
+      ).toMatchObject({
+        physicalState: "degraded",
+        errorCode: "environment_identity_mismatch",
+      });
+      expect(
+        fixture.environmentStore
+          .list()
+          .filter((record) => record.retiredAt === null),
+      ).toHaveLength(0);
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
+      ).toHaveLength(1);
     } finally {
       await fixture.coordinator.close();
       await fixture.manager.close();
@@ -1320,9 +1673,10 @@ function activeProcess(fixture: Awaited<ReturnType<typeof setupFixture>>) {
 }
 
 async function setupFixture(
-  options: ConstructorParameters<
-    typeof ProviderAccountEnvironmentManager
-  >[1] = {},
+  options: Omit<
+    ConstructorParameters<typeof ProviderAccountEnvironmentManager>[1],
+    "setupLauncher"
+  > = {},
   fixtureOptions: {
     rejectReportState?: ProviderAccountSetupReport["state"];
     coordinator?: ProviderAccountSetupCoordinatorOptions;
@@ -1332,9 +1686,10 @@ async function setupFixture(
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, "provider-account-setup-"));
   roots.push(root);
+  const environmentStore = new ExecutionEnvironmentStore(root);
   const manager = new ProviderAccountEnvironmentManager(
     { workerId: "worker-setup", dataRoot: root, provider: "fake" },
-    { ...options, fake: true },
+    { ...options, fake: true, store: environmentStore, setupLauncher: null },
   );
   const environmentCommand: ProviderAccountEnvironmentCommand = {
     providerAccountId: "account-setup",
@@ -1390,13 +1745,19 @@ async function setupFixture(
   const reports: ProviderAccountSetupReport[] = [];
   const deliveries: Array<{ state: string }> = [];
   const store = new ProviderAccountSetupStore(root);
+  let reportRejected = false;
   const coordinator = new ProviderAccountSetupCoordinator(
     store,
     manager,
     async (report) => {
       reports.push(structuredClone(report));
-      if (report.state === fixtureOptions.rejectReportState)
+      if (
+        report.state === fixtureOptions.rejectReportState &&
+        !reportRejected
+      ) {
+        reportRejected = true;
         throw new Error("injected control-plane report rejection");
+      }
     },
     async (delivery) => {
       deliveries.push(structuredClone(delivery));
@@ -1407,6 +1768,7 @@ async function setupFixture(
   return {
     root,
     manager,
+    environmentStore,
     environment,
     environmentCommand,
     setupCommand,
@@ -1414,6 +1776,45 @@ async function setupFixture(
     deliveries,
     store,
     coordinator,
+  };
+}
+
+function exactEnvironmentCommand(
+  fixture: Awaited<ReturnType<typeof setupFixture>>,
+  workerGeneration: number,
+  operationId: string,
+): ProviderAccountEnvironmentCommand {
+  return {
+    ...fixture.environmentCommand,
+    workerGeneration,
+    operationId,
+    expectedPhysicalIdentity: {
+      backendKind: fixture.environment.backendKind as string,
+      environmentId: fixture.environment.environmentId as string,
+      incarnation: fixture.environment.incarnation as string,
+    },
+  };
+}
+
+function routedSetupCommand(
+  fixture: Awaited<ReturnType<typeof setupFixture>>,
+  workerGeneration: number,
+  environmentOperationId: string,
+): ProviderAccountSetupCommand {
+  return {
+    ...fixture.setupCommand,
+    connection_generation: workerGeneration,
+    setup: {
+      ...fixture.setupCommand.setup,
+      worker_generation: workerGeneration,
+      environment_operation_id: environmentOperationId,
+      invocation_worker_generation:
+        fixture.setupCommand.setup.worker_generation,
+      invocation_environment_operation_id:
+        fixture.setupCommand.setup.environment_operation_id,
+      state: "human_interaction_required",
+      invocation_state: "acknowledged",
+    },
   };
 }
 
