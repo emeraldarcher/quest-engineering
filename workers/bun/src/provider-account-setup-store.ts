@@ -138,9 +138,18 @@ export class ProviderAccountSetupStore {
           this.db
             .query(
               `UPDATE provider_account_setup_attempts
-               SET command_json=?,updated_at=? WHERE setup_attempt_id=?`,
+               SET command_json=?,
+                   invocation_worker_generation=COALESCE(invocation_worker_generation,?),
+                   invocation_environment_operation_id=COALESCE(invocation_environment_operation_id,?),
+                   updated_at=? WHERE setup_attempt_id=?`,
             )
-            .run(JSON.stringify(command), now, existing.setupAttemptId);
+            .run(
+              JSON.stringify(command),
+              command.setup.invocation_worker_generation,
+              command.setup.invocation_environment_operation_id,
+              now,
+              existing.setupAttemptId,
+            );
           this.event(existing.setupAttemptId, "command_reconciled");
           return this.required(existing.setupAttemptId);
         }
@@ -155,12 +164,8 @@ export class ProviderAccountSetupStore {
             JSON.stringify(command),
             command.setup.state,
             command.setup.invocation_state,
-            command.setup.invocation_state === "not_requested"
-              ? null
-              : command.setup.worker_generation,
-            command.setup.invocation_state === "not_requested"
-              ? null
-              : command.setup.environment_operation_id,
+            command.setup.invocation_worker_generation,
+            command.setup.invocation_environment_operation_id,
             command.setup.cancellation_request_id,
             command.setup.cancellation_request_id
               ? "intent_recorded"
@@ -569,7 +574,29 @@ function assertCompatible(
     left.environment.incarnation === right.environment.incarnation &&
     JSON.stringify(left.authorized_authentication) ===
       JSON.stringify(right.authorized_authentication);
-  if (!stable)
+  const invocationRank = {
+    not_requested: 0,
+    requested: 1,
+    acknowledged: 2,
+    settled: 3,
+    uncertain: 3,
+  } as const;
+  const incomingInvocationOwner =
+    right.invocation_worker_generation === null
+      ? null
+      : `${right.invocation_worker_generation}\0${right.invocation_environment_operation_id}`;
+  const durableInvocationOwner =
+    existing.invocationWorkerGeneration === null
+      ? null
+      : `${existing.invocationWorkerGeneration}\0${existing.invocationEnvironmentOperationId}`;
+  if (
+    !stable ||
+    invocationRank[right.invocation_state] >
+      invocationRank[existing.invocationState] ||
+    (incomingInvocationOwner !== null &&
+      durableInvocationOwner !== null &&
+      incomingInvocationOwner !== durableInvocationOwner)
+  )
     throw new Error(
       "ProviderAccount setup command conflicts with durable identity.",
     );

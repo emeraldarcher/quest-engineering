@@ -37,6 +37,16 @@ const DEFAULT_HUMAN_COMPLETION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_CANCELLATION_SETTLEMENT_TIMEOUT_MS = 30_000;
 export const CLAUDE_LOGIN_INTERACTION_IDENTITY =
   "claude-code-2.1.292-auth-login-stdout-v1";
+const CLAUDE_LOGIN_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_LOGIN_OAUTH_SCOPES = [
+  "org:create_api_key",
+  "user:profile",
+  "user:inference",
+  "user:sessions:claude_code",
+  "user:mcp_servers",
+  "user:file_upload",
+  "user:plugins",
+] as const;
 
 export interface ProviderAccountSetupCoordinatorOptions {
   interactionDiscoveryTimeoutMs?: number;
@@ -58,8 +68,11 @@ export interface ProviderAccountSetupReport {
   setup_generation: number;
   credential_generation: number;
   environment_generation: number;
+  /** Current routing authority; not physical invocation ownership. */
   worker_generation: number;
   environment_operation_id: string;
+  invocation_worker_generation: number | null;
+  invocation_environment_operation_id: string | null;
   backend_kind: string;
   environment_id: string;
   environment_incarnation: string;
@@ -1163,6 +1176,9 @@ export class ProviderAccountSetupCoordinator {
       environment_generation: setup.environment_generation,
       worker_generation: setup.worker_generation,
       environment_operation_id: setup.environment_operation_id,
+      invocation_worker_generation: record.invocationWorkerGeneration,
+      invocation_environment_operation_id:
+        record.invocationEnvironmentOperationId,
       backend_kind: setup.environment.backend_kind,
       environment_id: setup.environment.environment_id,
       environment_incarnation: setup.environment.incarnation,
@@ -1395,12 +1411,17 @@ export function recognizeClaudeLoginInteraction(value: string): string | null {
     );
   const end = value.indexOf(suffix, prefix.length);
   if (end === -1) return null;
+  const interactionEnd = end + suffix.length;
+  if (value.length !== interactionEnd)
+    throw new Error(
+      `${CLAUDE_LOGIN_INTERACTION_IDENTITY} output suffix was incompatible.`,
+    );
   const rawUrl = value.slice(prefix.length, end);
   if (!validClaudeManualAuthorizationUrl(rawUrl))
     throw new Error(
       `${CLAUDE_LOGIN_INTERACTION_IDENTITY} authorization URL was incompatible.`,
     );
-  return value.slice(0, end + suffix.length);
+  return value;
 }
 
 function validClaudeManualAuthorizationUrl(value: string): boolean {
@@ -1427,7 +1448,22 @@ function validClaudeManualAuthorizationUrl(value: string): boolean {
     ]);
     const singleton = (name: string) =>
       url.searchParams.getAll(name).length === 1;
-    const scope = url.searchParams.get("scope")?.split(" ") ?? [];
+    const requiredFields = [
+      "code",
+      "client_id",
+      "response_type",
+      "redirect_uri",
+      "scope",
+      "code_challenge",
+      "code_challenge_method",
+      "state",
+    ];
+    const optionalFields = ["orgUUID", "login_hint", "login_method"];
+    const actualFields = [...url.searchParams.keys()];
+    const expectedFields = [
+      ...requiredFields,
+      ...optionalFields.filter((name) => url.searchParams.has(name)),
+    ];
     return (
       url.origin === "https://claude.com" &&
       url.pathname === "/cai/oauth/authorize" &&
@@ -1435,27 +1471,32 @@ function validClaudeManualAuthorizationUrl(value: string): boolean {
       url.port === "" &&
       url.username === "" &&
       url.password === "" &&
-      [...url.searchParams.keys()].every((name) => allowed.has(name)) &&
+      actualFields.every((name) => allowed.has(name)) &&
+      actualFields.length === expectedFields.length &&
+      actualFields.every((name, index) => name === expectedFields[index]) &&
       [...allowed].every((name) => url.searchParams.getAll(name).length <= 1) &&
-      [
-        "code",
-        "client_id",
-        "response_type",
-        "redirect_uri",
-        "scope",
-        "code_challenge",
-        "code_challenge_method",
-        "state",
-      ].every(singleton) &&
+      requiredFields.every(singleton) &&
       url.searchParams.get("code") === "true" &&
+      url.searchParams.get("client_id") === CLAUDE_LOGIN_OAUTH_CLIENT_ID &&
       url.searchParams.get("response_type") === "code" &&
       url.searchParams.get("redirect_uri") ===
         "https://platform.claude.com/oauth/code/callback" &&
+      url.searchParams.get("scope") === CLAUDE_LOGIN_OAUTH_SCOPES.join(" ") &&
+      /^[A-Za-z0-9_-]{43}$/.test(
+        url.searchParams.get("code_challenge") ?? "",
+      ) &&
       url.searchParams.get("code_challenge_method") === "S256" &&
-      Boolean(url.searchParams.get("client_id")) &&
-      scope.includes("user:inference") &&
-      Boolean(url.searchParams.get("code_challenge")) &&
-      Boolean(url.searchParams.get("state"))
+      /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get("state") ?? "") &&
+      (!url.searchParams.has("orgUUID") ||
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          url.searchParams.get("orgUUID") ?? "",
+        )) &&
+      (!url.searchParams.has("login_hint") ||
+        ((url.searchParams.get("login_hint")?.length ?? 0) > 0 &&
+          (url.searchParams.get("login_hint")?.length ?? 0) <= 320 &&
+          !/[\p{Cc}\p{Cf}]/u.test(url.searchParams.get("login_hint") ?? ""))) &&
+      (!url.searchParams.has("login_method") ||
+        url.searchParams.get("login_method") === "sso")
     );
   } catch {
     return false;

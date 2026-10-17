@@ -1,4 +1,4 @@
-export const WORKER_PROTOCOL_VERSION = 18 as const;
+export const WORKER_PROTOCOL_VERSION = 19 as const;
 
 export type JsonValue =
   | string
@@ -262,8 +262,12 @@ export interface ProviderAccountSetupCommand {
     authorized_at: string;
     credential_generation: number;
     environment_generation: number;
+    /** Mutable current control-plane routing authority. */
     worker_generation: number;
     environment_operation_id: string;
+    /** Immutable owner of the physical invocation, once intent exists. */
+    invocation_worker_generation: number | null;
+    invocation_environment_operation_id: string | null;
     provider_key: string;
     environment: {
       backend_kind: string;

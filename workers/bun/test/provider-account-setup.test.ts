@@ -234,7 +234,7 @@ describe("ProviderAccount setup", () => {
         decodeCancelProviderAccountSetup(
           {
             type: "cancel_provider_account_setup",
-            protocol_version: 18,
+            protocol_version: 19,
             worker_id: "worker-setup",
             connection_generation: 7,
             setup_attempt_id: "setup-attempt-1",
@@ -594,7 +594,7 @@ describe("ProviderAccount setup", () => {
       };
       await cancellation.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: cancellation.setupCommand.worker_id,
         connection_generation: cancellation.setupCommand.connection_generation,
         setup_attempt_id: cancellation.setupCommand.setup.setup_attempt_id,
@@ -615,7 +615,7 @@ describe("ProviderAccount setup", () => {
       });
       await cancellation.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: cancellation.setupCommand.worker_id,
         connection_generation: cancellation.setupCommand.connection_generation,
         setup_attempt_id: cancellation.setupCommand.setup.setup_attempt_id,
@@ -631,7 +631,7 @@ describe("ProviderAccount setup", () => {
     }
   });
 
-  test("Worker restart exactly terminates a detached running setup without replay or validation", async () => {
+  test("current generation restart terminates the exact detached older-generation setup without replay", async () => {
     const fixture = await setupFixture();
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
@@ -646,19 +646,30 @@ describe("ProviderAccount setup", () => {
       )?.process;
       if (!handle) throw new Error("Expected a durable setup process handle.");
       let physicallyGone = false;
-      fixture.manager.reconcileSetupProcess = async () => ({
-        handle,
-        process: physicallyGone ? "gone" : "running",
-        streamAttachment: "unavailable",
-        streamRecovery: "not_recoverable",
-      });
+      fixture.manager.reconcileSetupProcess = async (identity, exact) => {
+        expect(identity).toMatchObject({
+          workerGeneration: 7,
+          environmentOperationId: "environment-operation",
+        });
+        expect(exact).toEqual(handle);
+        return {
+          handle,
+          process: physicallyGone ? "gone" : "running",
+          streamAttachment: "unavailable",
+          streamRecovery: "not_recoverable",
+        };
+      };
       let cancellationCalls = 0;
       fixture.manager.cancelSetupProcess = async (
-        _identity,
+        identity,
         exact,
         operationId,
       ) => {
         cancellationCalls += 1;
+        expect(identity).toMatchObject({
+          workerGeneration: 7,
+          environmentOperationId: "environment-operation",
+        });
         expect(exact).toEqual(handle);
         const receipt = await process.cancel(operationId);
         await process.exit;
@@ -674,14 +685,23 @@ describe("ProviderAccount setup", () => {
       await fixture.coordinator.reconcile([
         {
           ...fixture.setupCommand,
+          connection_generation: 8,
           setup: {
             ...fixture.setupCommand.setup,
+            worker_generation: 8,
+            environment_operation_id: "reconciled-environment-operation",
+            invocation_worker_generation: 7,
+            invocation_environment_operation_id: "environment-operation",
             state: "human_interaction_required",
             invocation_state: "acknowledged",
           },
         },
       ]);
       expect(fixture.reports.at(-1)).toMatchObject({
+        worker_generation: 8,
+        environment_operation_id: "reconciled-environment-operation",
+        invocation_worker_generation: 7,
+        invocation_environment_operation_id: "environment-operation",
         state: "failed",
         invocation_state: "settled",
         failure_code: "setup_process_lost",
@@ -756,7 +776,7 @@ describe("ProviderAccount setup", () => {
 
       await fixture.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: fixture.setupCommand.worker_id,
         connection_generation: fixture.setupCommand.connection_generation,
         setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
@@ -801,7 +821,7 @@ describe("ProviderAccount setup", () => {
 
       await fixture.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: fixture.setupCommand.worker_id,
         connection_generation: fixture.setupCommand.connection_generation,
         setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
@@ -838,7 +858,7 @@ describe("ProviderAccount setup", () => {
       await expect(
         fixture.coordinator.cancel({
           type: "cancel_provider_account_setup",
-          protocol_version: 18,
+          protocol_version: 19,
           worker_id: fixture.setupCommand.worker_id,
           connection_generation: fixture.setupCommand.connection_generation,
           setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
@@ -930,7 +950,7 @@ describe("ProviderAccount setup", () => {
 
       await fixture.coordinator.cancel({
         type: "cancel_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: fixture.setupCommand.worker_id,
         connection_generation: fixture.setupCommand.connection_generation,
         setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
@@ -1027,20 +1047,35 @@ describe("ProviderAccount setup", () => {
   test("recognizes only the pinned Claude 2.1.292 manual OAuth framing", () => {
     const url = new URL("https://claude.com/cai/oauth/authorize");
     url.searchParams.set("code", "true");
-    url.searchParams.set("client_id", "client");
+    url.searchParams.set("client_id", "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
     url.searchParams.set("response_type", "code");
     url.searchParams.set(
       "redirect_uri",
       "https://platform.claude.com/oauth/code/callback",
     );
-    url.searchParams.set("scope", "user:inference");
-    url.searchParams.set("code_challenge", "challenge");
+    url.searchParams.set(
+      "scope",
+      "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins",
+    );
+    url.searchParams.set("code_challenge", "c".repeat(43));
     url.searchParams.set("code_challenge_method", "S256");
-    url.searchParams.set("state", "state");
+    url.searchParams.set("state", "s".repeat(43));
     const prefix =
       "Opening browser to sign in…\nIf the browser didn't open, visit: ";
     const interaction = `${prefix}${url.toString()}\nPaste code here if prompted > `;
-    expect(recognizeClaudeLoginInteraction(prefix.slice(0, 12))).toBeNull();
+    let streamed = "";
+    for (const chunk of [
+      "Opening browser ",
+      "to sign in…\nIf the browser didn't open, visit: ",
+      url.toString().slice(0, 30),
+      url.toString().slice(30),
+      "\nPaste code here if prompted > ",
+    ]) {
+      streamed += chunk;
+      const recognized = recognizeClaudeLoginInteraction(streamed);
+      if (streamed === interaction) expect(recognized).toBe(interaction);
+      else expect(recognized).toBeNull();
+    }
     expect(recognizeClaudeLoginInteraction(interaction)).toBe(interaction);
     expect(() =>
       recognizeClaudeLoginInteraction(
@@ -1049,8 +1084,27 @@ describe("ProviderAccount setup", () => {
     ).toThrow(CLAUDE_LOGIN_INTERACTION_IDENTITY);
     expect(() =>
       recognizeClaudeLoginInteraction(
-        interaction.replace("&state=state", "&state=state&state=replacement"),
+        interaction.replace(
+          `&state=${"s".repeat(43)}`,
+          `&state=${"s".repeat(43)}&state=replacement`,
+        ),
       ),
+    ).toThrow(CLAUDE_LOGIN_INTERACTION_IDENTITY);
+    expect(() =>
+      recognizeClaudeLoginInteraction(
+        interaction.replace(
+          "scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins",
+          "scope=user%3Aprofile",
+        ),
+      ),
+    ).toThrow(CLAUDE_LOGIN_INTERACTION_IDENTITY);
+    expect(() =>
+      recognizeClaudeLoginInteraction(
+        `\u001b]8;;${url.toString()}\u0007${interaction}`,
+      ),
+    ).toThrow(CLAUDE_LOGIN_INTERACTION_IDENTITY);
+    expect(() =>
+      recognizeClaudeLoginInteraction(`${interaction}\u001b]0;decorated\u0007`),
     ).toThrow(CLAUDE_LOGIN_INTERACTION_IDENTITY);
     expect(() => recognizeClaudeLoginInteraction("unversioned prompt")).toThrow(
       CLAUDE_LOGIN_INTERACTION_IDENTITY,
@@ -1093,6 +1147,103 @@ describe("ProviderAccount setup", () => {
         invocationWorkerGeneration: 7,
         invocationEnvironmentOperationId: "environment-operation",
       });
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("current routing generation reconciles and cancels one exact older-generation invocation", async () => {
+    const fixture = await setupFixture();
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const waiting = fixture.reports.at(-1) as ProviderAccountSetupReport;
+      expect(waiting).toMatchObject({
+        worker_generation: 7,
+        environment_operation_id: "environment-operation",
+        invocation_worker_generation: 7,
+        invocation_environment_operation_id: "environment-operation",
+        state: "human_interaction_required",
+        invocation_state: "acknowledged",
+      });
+
+      const currentCommand: ProviderAccountSetupCommand = {
+        ...fixture.setupCommand,
+        connection_generation: 8,
+        setup: {
+          ...fixture.setupCommand.setup,
+          worker_generation: 8,
+          environment_operation_id: "reconciled-environment-operation",
+          invocation_worker_generation: 7,
+          invocation_environment_operation_id: "environment-operation",
+          state: "human_interaction_required",
+          invocation_state: "acknowledged",
+        },
+      };
+      expect(
+        decodePrepareProviderAccountSetup(currentCommand, "worker-setup", 8),
+      ).toEqual(currentCommand);
+
+      await fixture.coordinator.reconcile([currentCommand]);
+      const reconciled = fixture.reports.at(-1);
+      expect(reconciled).toMatchObject({
+        worker_generation: 8,
+        environment_operation_id: "reconciled-environment-operation",
+        invocation_worker_generation: 7,
+        invocation_environment_operation_id: "environment-operation",
+        process: waiting.process,
+        state: "human_interaction_required",
+      });
+
+      await expect(
+        fixture.coordinator.cancel({
+          type: "cancel_provider_account_setup",
+          protocol_version: 19,
+          worker_id: currentCommand.worker_id,
+          connection_generation: 7,
+          setup_attempt_id: currentCommand.setup.setup_attempt_id,
+          setup_generation: currentCommand.setup.setup_generation,
+          process_generation: waiting.process?.process_generation as string,
+          request_id: "stale-routing-cancel",
+        }),
+      ).rejects.toThrow("stale");
+
+      await fixture.coordinator.cancel({
+        type: "cancel_provider_account_setup",
+        protocol_version: 19,
+        worker_id: currentCommand.worker_id,
+        connection_generation: 8,
+        setup_attempt_id: currentCommand.setup.setup_attempt_id,
+        setup_generation: currentCommand.setup.setup_generation,
+        process_generation: waiting.process?.process_generation as string,
+        request_id: "current-routing-cancel",
+      });
+      await eventually(
+        () =>
+          fixture.store.get(currentCommand.setup.setup_attempt_id)?.state ===
+          "cancelled",
+      );
+      const cancelled = fixture.reports.at(-1);
+      expect(cancelled).toMatchObject({
+        worker_generation: 8,
+        invocation_worker_generation: 7,
+        state: "cancelled",
+        invocation_state: "settled",
+      });
+
+      await fixture.coordinator.reconcile([currentCommand]);
+      expect(fixture.reports.at(-1)).toMatchObject({
+        worker_generation: 8,
+        invocation_worker_generation: 7,
+        state: "cancelled",
+      });
+      expect(
+        fixture.store
+          .events(currentCommand.setup.setup_attempt_id)
+          .filter(
+            (event) => event.eventType === "cancellation_invocation_requested",
+          ),
+      ).toHaveLength(1);
     } finally {
       await fixture.coordinator.close();
       await fixture.manager.close();
@@ -1197,7 +1348,7 @@ async function setupFixture(
   const environment = await manager.apply(environmentCommand);
   const setupCommand: ProviderAccountSetupCommand = {
     type: "prepare_provider_account_setup",
-    protocol_version: 18,
+    protocol_version: 19,
     worker_id: "worker-setup",
     connection_generation: 7,
     setup: {
@@ -1211,6 +1362,8 @@ async function setupFixture(
       environment_generation: 1,
       worker_generation: 7,
       environment_operation_id: environmentCommand.operationId,
+      invocation_worker_generation: null,
+      invocation_environment_operation_id: null,
       provider_key: "fake-provider",
       environment: {
         backend_kind: environment.backendKind as string,
@@ -1271,7 +1424,7 @@ function responseCommand(
 ): RespondProviderAccountSetupCommand {
   return {
     type: "respond_provider_account_setup",
-    protocol_version: 18,
+    protocol_version: 19,
     worker_id: setup.worker_id,
     connection_generation: setup.connection_generation,
     setup_attempt_id: setup.setup.setup_attempt_id,

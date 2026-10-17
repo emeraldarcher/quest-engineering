@@ -68,7 +68,7 @@ test.skipIf(!live)(
       };
       const command: ProviderAccountSetupCommand = {
         type: "prepare_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: workerId,
         connection_generation: 1,
         setup: {
@@ -82,6 +82,8 @@ test.skipIf(!live)(
           environment_generation: 1,
           worker_generation: 1,
           environment_operation_id: environmentCommand.operationId,
+          invocation_worker_generation: null,
+          invocation_environment_operation_id: null,
           provider_key: environmentCommand.providerKey,
           environment: {
             backend_kind: physical.backendKind,
@@ -123,7 +125,7 @@ test.skipIf(!live)(
       const sensitiveInput = "deterministic-fake-approval";
       await coordinator.respond({
         type: "respond_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: command.worker_id,
         connection_generation: 1,
         setup_attempt_id: command.setup.setup_attempt_id,

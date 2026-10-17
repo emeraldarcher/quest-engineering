@@ -300,7 +300,7 @@ defmodule QuestEngineering.ServerWeb.ProductApiTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_harness_setup",
-                      "protocol_version" => 18,
+                      "protocol_version" => 19,
                       "worker_id" => ^worker_id,
                       "connection_generation" => generation
                     } = setup_command}

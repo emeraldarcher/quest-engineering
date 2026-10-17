@@ -671,7 +671,7 @@ policy; QE does not export a portable credential bundle.
 
 ## Protocol consequences
 
-Worker Protocol v18 implements account inventory, canonical provider-neutral
+Worker Protocol v19 implements account inventory, canonical provider-neutral
 authentication observations, exact Product authorization evidence, immediate
 pre-login reinspection, account-scoped safe HumanAttention, ephemeral interaction
 correlation, environment/process identity, and setup lifecycle/reconciliation.

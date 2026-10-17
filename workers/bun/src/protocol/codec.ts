@@ -65,6 +65,8 @@ export function decodePrepareProviderAccountSetup(
       "environment_generation",
       "worker_generation",
       "environment_operation_id",
+      "invocation_worker_generation",
+      "invocation_environment_operation_id",
       "provider_key",
       "environment",
       "authorized_authentication",
@@ -113,6 +115,37 @@ export function decodePrepareProviderAccountSetup(
     authentication.inspected_at,
     "setup.authorized_authentication.inspected_at",
   );
+  const invocationState = oneOf(
+    setup.invocation_state,
+    [
+      "not_requested",
+      "requested",
+      "acknowledged",
+      "settled",
+      "uncertain",
+    ] as const,
+    "setup.invocation_state",
+  );
+  const invocationWorkerGeneration = nullablePositiveInteger(
+    setup.invocation_worker_generation,
+    "setup.invocation_worker_generation",
+  );
+  const invocationEnvironmentOperationId = nullableString(
+    setup.invocation_environment_operation_id,
+    "setup.invocation_environment_operation_id",
+  );
+  if (
+    (invocationWorkerGeneration === null) !==
+      (invocationEnvironmentOperationId === null) ||
+    (invocationState === "not_requested") !==
+      (invocationWorkerGeneration === null) ||
+    (invocationWorkerGeneration !== null &&
+      invocationWorkerGeneration > expectedGeneration)
+  )
+    throw new ProtocolDecodeError(
+      "setup.invocation_worker_generation",
+      "must identify one complete invocation owner no newer than current routing authority",
+    );
   return {
     type: "prepare_provider_account_setup",
     protocol_version: WORKER_PROTOCOL_VERSION,
@@ -150,6 +183,8 @@ export function decodePrepareProviderAccountSetup(
         setup.environment_operation_id,
         "setup.environment_operation_id",
       ),
+      invocation_worker_generation: invocationWorkerGeneration,
+      invocation_environment_operation_id: invocationEnvironmentOperationId,
       provider_key: string(setup.provider_key, "setup.provider_key"),
       environment: {
         backend_kind: string(
@@ -204,17 +239,7 @@ export function decodePrepareProviderAccountSetup(
         ] as const,
         "setup.state",
       ),
-      invocation_state: oneOf(
-        setup.invocation_state,
-        [
-          "not_requested",
-          "requested",
-          "acknowledged",
-          "settled",
-          "uncertain",
-        ] as const,
-        "setup.invocation_state",
-      ),
+      invocation_state: invocationState,
       cancellation_request_id: nullableString(
         setup.cancellation_request_id,
         "setup.cancellation_request_id",
@@ -1302,6 +1327,10 @@ function positiveInteger(value: unknown, field: string): number {
   if (!Number.isInteger(value) || Number(value) <= 0)
     throw new ProtocolDecodeError(field, "must be a positive integer");
   return Number(value);
+}
+function nullablePositiveInteger(value: unknown, field: string): number | null {
+  if (value === null) return null;
+  return positiveInteger(value, field);
 }
 function nonNegativeInteger(value: unknown, field: string): number {
   if (!Number.isInteger(value) || Number(value) < 0)

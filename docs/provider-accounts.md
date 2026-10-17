@@ -100,9 +100,10 @@ PostgreSQL owns:
 - `provider_account_environments` — current desired/observed physical binding. Its durable `desired_environment_state` (`available | stopped | removed`) is independent from `physical_state`; pending or intermediate observations never erase operator intent;
 - `provider_account_lifecycle_events` — append-only lifecycle and fencing
   evidence;
-- `provider_account_setup_attempts` — retained account-scoped attempts, exact
-  environment/process fences, invocation certainty, validation class, and safe
-  terminal outcome;
+- `provider_account_setup_attempts` — retained account-scoped attempts, mutable
+  current routing generation/operation, immutable invocation-owner
+  generation/operation, exact environment/process fences, invocation certainty,
+  validation class, and safe terminal outcome;
 - `provider_account_setup_authorizations` — one immutable explicit
   `provider_account_setup` authorization per attempt/request ID;
 - `provider_account_setup_events` — append-only safe state/side-effect history;
@@ -119,7 +120,11 @@ operation/invocation/observation state, canonical preflight and post-login
 evidence, input-delivery certainty, validation class, and append-only safe
 events. Neither SQLite database accepts sensitive interaction bytes. Run rows
 and account rows cannot collide because ownership is part of every environment
-key.
+key. The Product invocation-owner columns are nullable for pre-invocation and
+retained historical rows; the migration performs no historical backfill or
+state rewrite. New routing authorities are recorded in append-only setup-event
+details so a later current generation can corroborate, but never invent, an
+older invocation owner.
 
 A deterministic, credential-free canary is written within the account
 incarnation and read after adoption. Fake mode stores the same canary evidence
@@ -129,7 +134,7 @@ claim.
 
 ## Protocol and fencing
 
-Worker Protocol v18 carries the environment and setup messages, and adds canonical authentication evidence:
+Worker Protocol v19 carries the environment and setup messages, canonical authentication evidence, and distinct routing/invocation ownership:
 
 - Product → Worker `reconcile_provider_account_environment`;
 - Product → Worker desired `provider_accounts` on `reconcile_request`;
@@ -146,12 +151,14 @@ Worker Protocol v18 carries the environment and setup messages, and adds canonic
 
 The Product accepts a report only when all of these match current authority:
 
-- stable ProviderAccount ID;
-- credential generation;
-- assigned Worker ID;
-- Worker connection generation;
-- operation ID;
-- existing backend/physical ID/incarnation, if already bound.
+- stable setup attempt, setup generation, ProviderAccount ID, and credential/environment generations;
+- assigned Worker ID plus the current channel and reported routing generation;
+- current environment operation ID;
+- exact backend, physical environment ID, and incarnation;
+- a complete immutable invocation Worker generation and environment operation once invocation intent exists;
+- the previously persisted backend process ID, process start identity, process generation, and allowed executable once a process is acknowledged.
+
+Reconnect changes only routing generation and the current environment operation. It never rewrites invocation ownership. A current-generation reconciliation may settle an older-generation invocation, including an invocation whose original report was lost, only by presenting the older immutable owner together with the exact current environment and process fences. Once Product records that owner, conflicting or incomplete ownership is stale. Repeated identical terminal reconciliation is idempotent.
 
 Stop, remove, and same-incarnation start commands carry that current physical
 identity as an expected fence; the Worker refuses to act when its durable owner

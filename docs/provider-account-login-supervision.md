@@ -11,6 +11,8 @@ Two independent defects explained the retained setup attempt:
 
 The fixes are independent: supervision is installed before the acknowledgement report, and the relay now uses `os.read`, which returns currently available pipe bytes.
 
+The retained Phase-E chronology also exposed a separate Product settlement defect. At `2026-10-17T04:56:19.473Z`, Worker generation 1 reported the exact acknowledged `/opt/qe/claude/claude` process. Product rejected it as `stale_provider_account_setup_report` because the executable allowlist omitted that pinned production path. Error serialization then received `%{code: :stale_provider_account_setup_report, ...}` but accepted only `%{type: ...}`, raising `FunctionClauseError`; the channel closed at `04:56:19.490Z` and generation 2 registered at `04:56:20.142Z`. Each reconnect rewrote the attempt's sole `worker_generation`/environment operation fields, so the durable generation-1 invocation could no longer satisfy the current route and the same application-error crash repeated through generation 7. Protocol 19 fixes these independently: it allows the exact pinned executable, serializes code-shaped domain errors without raising, and separates immutable invocation ownership from current routing authority.
+
 ## Pinned Claude Code evidence
 
 The supported interaction decoder is identified as:
@@ -33,7 +35,9 @@ Evidence extracted from the pinned `2.1.292` runtime establishes the following b
 | Hyperlinks | The URL formatter emits a plain URL when `process.stdout.isTTY` is false. QE's streamed process is non-PTY, so OSC hyperlink framing is not expected. |
 | CLI buffering | `process.stdout.write` exposes the prompt immediately. The missing interaction was caused by QE relay buffering, not by Claude Code buffering. |
 
-The recognizer accepts only the exact opening/prompt framing and a validated HTTPS authorization URL for `https://claude.com/cai/oauth/authorize` with the pinned manual redirect, PKCE challenge method, state, client, scope, and response-type fields. Unknown framing fails closed. OAuth URLs, state, PKCE material, codes, and credentials remain in memory and use the existing encrypted ephemeral HumanAttention transport; they are never written to the setup SQLite ledger, protocol history, event details, or telemetry.
+The non-PTY stdout sequence is exactly `Opening browser to sign in…\n`, `If the browser didn't open, visit: <manual-url>\n`, and `Paste code here if prompted > ` (no trailing newline on the prompt). Browser-helper success does not remove or reorder this manual fallback. A submitted stdin line is trimmed, split at `#`, and passed to `handleManualAuthCodeInput` as `authorizationCode` plus `state`; QE deliberately accepts a stricter single-`#`, bounded character framing than the native parser. Invalid native framing writes `Invalid code. Please make sure the full code was copied.\n` to stderr and continues waiting. Successful exchange writes `Login successful.\n` to stdout and exits zero; OAuth/login failures write diagnostics to stderr and exit nonzero.
+
+The recognizer accepts only that exact opening/prompt framing and a validated HTTPS authorization URL for `https://claude.com/cai/oauth/authorize` with the pinned public client ID, exact native scope sequence, manual redirect, 32-byte base64url PKCE challenge and state, response type, query order, and bounded native optional fields. ANSI/OSC decoration (including trailing decoration), control characters, duplicate or reordered query fields, unknown framing, wrong origins, and wrong redirects fail closed. OAuth URLs, state, PKCE material, codes, and credentials remain in memory and use the existing encrypted ephemeral HumanAttention transport; they are never written to the setup SQLite ledger, protocol history, event details, or telemetry.
 
 The durable HumanAttention message is semantic only. It contains no URL, code, state, or credential.
 
@@ -50,7 +54,7 @@ Expiry records an internal supervision-termination intent, performs exact cancel
 
 ## Exact cancellation lifecycle
 
-Fresh Worker setup state bootstraps current-only SQLite schema `3` directly with durable cancellation operation state. Schema `2` and every other obsolete version are rejected with explicit reset guidance and are never converted in production. Worker Protocol remains `18`: no command or report shape changes, and the implementation now fulfills the existing physical-settlement meaning of `cancellation_requested`, `cancelled`, `failed`, and `uncertain`.
+Fresh Worker setup state bootstraps current-only SQLite schema `3` directly with durable cancellation operation state. Schema `2` and every other obsolete version are rejected with explicit reset guidance and are never converted in production. Worker Protocol `19` separates mutable current routing (`worker_generation` and `environment_operation_id`) from nullable immutable invocation ownership (`invocation_worker_generation` and `invocation_environment_operation_id`). Once invocation intent exists, every report carries both identities. The current channel may reconcile or settle an older-generation invocation only when the complete setup, environment incarnation, process handle, executable, and immutable invocation owner all match.
 
 1. Persist the Product cancellation request or internal supervision-termination intent.
 2. Revalidate the complete setup and process identity: account, authorization/setup identity, credential/environment/invocation Worker generations, environment operation and incarnation, backend process ID, start identity, process generation, executable, owner, profile, and Worker.
