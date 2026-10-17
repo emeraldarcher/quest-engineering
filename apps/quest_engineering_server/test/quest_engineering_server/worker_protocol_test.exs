@@ -19,12 +19,12 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
   alias QuestEngineering.Server.WorkerProtocol
 
   @worker_id "worker-protocol-test"
-  @protocol_version 18
+  @protocol_version 19
   @workspace_id "00000000-0000-4000-8000-000000000001"
   @worktree_id "00000000-0000-4000-8000-000000000002"
   @binding_id "00000000-0000-4000-8000-000000000003"
 
-  test "accepts explicit protocol v17 logical Workspace bindings" do
+  test "accepts explicit protocol v19 logical Workspace bindings" do
     assert {:ok, hello} = WorkerProtocol.decode_hello(hello())
     assert hello.worker_id == @worker_id
     assert hello.capabilities["max_concurrency"] == 2
@@ -32,6 +32,26 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert hello.capabilities["tags"] == ["fake"]
     assert hello.capabilities["features"] == ["run_delivery_v1"]
     assert hd(hello.capabilities["workspace_bindings"])["workspace_id"] == @workspace_id
+  end
+
+  test "application errors serialize both typed structs and code-shaped domain errors" do
+    assert %{
+             "type" => "protocol_error",
+             "error" => %{
+               "code" => "stale_provider_account_setup_report",
+               "details" => %{setup_attempt_id: "setup-1"}
+             }
+           } =
+             WorkerProtocol.application_error(%{
+               code: :stale_provider_account_setup_report,
+               details: %{setup_attempt_id: "setup-1"}
+             })
+
+    assert %{"error" => %{"code" => "dispatch_rejected"}} =
+             WorkerProtocol.application_error(%{type: :dispatch_rejected})
+
+    assert %{"error" => %{"code" => "application_error"}} =
+             WorkerProtocol.application_error(:unexpected_shape)
   end
 
   test "workspace broker commands and activity use exact versioned safe fields" do
@@ -134,7 +154,9 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
       "credential_generation" => 3,
       "environment_generation" => 1,
       "worker_generation" => 7,
-      "environment_operation_id" => "environment-operation-1",
+      "environment_operation_id" => "environment-operation-current",
+      "invocation_worker_generation" => 5,
+      "invocation_environment_operation_id" => "environment-operation-invocation",
       "backend_kind" => "fake-account",
       "environment_id" => "environment-1",
       "environment_incarnation" => "incarnation-1",
@@ -165,6 +187,9 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                 setup_attempt_id: "setup-1",
                 credential_generation: 3,
                 environment_generation: 1,
+                worker_generation: 7,
+                invocation_worker_generation: 5,
+                invocation_environment_operation_id: "environment-operation-invocation",
                 state: "human_interaction_required"
               },
               ephemeral: ^sealed_output
@@ -173,6 +198,17 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
     assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
              payload
              |> Map.put("credential", "forbidden")
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             payload
+             |> Map.put("invocation_worker_generation", nil)
+             |> Map.put("invocation_environment_operation_id", nil)
+             |> WorkerProtocol.decode_worker_message(@worker_id)
+
+    assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
+             payload
+             |> Map.put("invocation_worker_generation", 8)
              |> WorkerProtocol.decode_worker_message(@worker_id)
 
     assert {:error, %WorkerProtocol.Error{code: :invalid_field}} =
@@ -245,6 +281,8 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
         environment_generation: 1,
         worker_generation: 7,
         environment_operation_id: "environment-operation-1",
+        invocation_worker_generation: nil,
+        invocation_environment_operation_id: nil,
         provider_key: "fake",
         backend_kind: "fake-account",
         environment_id: "environment-1",
@@ -265,7 +303,7 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
 
     assert command == %{
              "type" => "prepare_provider_account_setup",
-             "protocol_version" => 18,
+             "protocol_version" => 19,
              "worker_id" => @worker_id,
              "connection_generation" => 7,
              "setup" => %{
@@ -279,6 +317,8 @@ defmodule QuestEngineering.Server.WorkerProtocolTest do
                "environment_generation" => 1,
                "worker_generation" => 7,
                "environment_operation_id" => "environment-operation-1",
+               "invocation_worker_generation" => nil,
+               "invocation_environment_operation_id" => nil,
                "provider_key" => "fake",
                "environment" => %{
                  "backend_kind" => "fake-account",

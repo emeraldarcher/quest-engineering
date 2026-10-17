@@ -15,6 +15,15 @@ import {
 } from "../provider-auth.ts";
 import { FakeStreamedProcessTransport } from "./fake.ts";
 import { providerAccountOwner, sameEnvironmentOwner } from "./ownership.ts";
+import {
+  assertTrustedSetupLaunchAuthority,
+  immutableSetupLaunchSpec,
+  type ProviderAccountSetupLaunchAuthority,
+  type ProviderAccountSetupLauncher,
+  type ProviderAccountSetupLaunchSpec,
+  prepareClaudeAccountDirectories,
+  setupLaunchAuthority,
+} from "./provider-account-setup-launcher.ts";
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
   SBX_CLAUDE_ACCOUNT_PROFILE,
@@ -75,6 +84,7 @@ export interface ProviderAccountSetupRuntimeIdentity {
   backendKind: string;
   environmentId: string;
   environmentIncarnation: string;
+  setupLaunchAuthority: ProviderAccountSetupLaunchAuthority | null;
   expectedAuthentication: {
     state: "authentication_required";
     method: "none";
@@ -109,6 +119,16 @@ export interface ProviderAccountEnvironmentCommand {
     environmentId: string;
     incarnation: string;
   } | null;
+}
+
+/** Durable setup authority that fences destructive account-environment changes. */
+export interface ActiveProviderAccountSetupFence {
+  setupAttemptId: string;
+  providerAccountId: string;
+  credentialGeneration: number;
+  backendKind: string;
+  environmentId: string;
+  environmentIncarnation: string;
 }
 
 export interface ProviderAccountAuthenticationReport {
@@ -157,6 +177,8 @@ export interface ProviderAccountEnvironmentManagerOptions {
   store?: ExecutionEnvironmentStore;
   fake?: boolean;
   clock?: () => Date;
+  /** Required trusted composition authority; null is valid only for the in-memory fake backend. */
+  setupLauncher: ProviderAccountSetupLauncher | null;
   fakeAuthentication?: (
     identity: ProviderAccountSetupRuntimeIdentity | null,
   ) => {
@@ -177,6 +199,7 @@ export class ProviderAccountEnvironmentManager {
   private readonly backend: ExecutionEnvironmentBackend | null;
   private readonly fake: boolean;
   private readonly clock: () => Date;
+  private readonly setupLauncher: ProviderAccountSetupLauncher | null;
   private readonly latestReports = new Map<
     string,
     ProviderAccountEnvironmentReport
@@ -187,6 +210,9 @@ export class ProviderAccountEnvironmentManager {
     | ProviderAccountEnvironmentManagerOptions["fakeAuthentication"]
     | null;
   private readonly fakeSetupProcesses: StreamedProcessManager;
+  private activeSetupLookup:
+    | ((providerAccountId: string) => ActiveProviderAccountSetupFence | null)
+    | null = null;
   private closed = false;
 
   constructor(
@@ -194,11 +220,20 @@ export class ProviderAccountEnvironmentManager {
       WorkerConfig,
       "workerId" | "dataRoot" | "provider"
     >,
-    options: ProviderAccountEnvironmentManagerOptions = {},
+    options: ProviderAccountEnvironmentManagerOptions,
   ) {
     this.store =
       options.store ?? new ExecutionEnvironmentStore(config.dataRoot);
     this.fake = options.fake ?? config.provider === "fake";
+    this.setupLauncher = options.setupLauncher;
+    if (this.fake && this.setupLauncher !== null)
+      throw new Error(
+        "The in-memory fake ProviderAccount backend cannot use a physical setup launcher.",
+      );
+    if (!this.fake && this.setupLauncher === null)
+      throw new Error(
+        "A physical ProviderAccount backend requires an explicit trusted setup launcher.",
+      );
     this.backend =
       options.backend ??
       (this.fake
@@ -240,6 +275,25 @@ export class ProviderAccountEnvironmentManager {
     });
   }
 
+  /**
+   * Binds the setup coordinator's durable active-attempt predicate. This is a
+   * Worker-local defense in depth; it is not a selectable launch policy.
+   */
+  registerActiveSetupLookup(
+    lookup: (
+      providerAccountId: string,
+    ) => ActiveProviderAccountSetupFence | null,
+  ): () => void {
+    if (this.activeSetupLookup)
+      throw new Error(
+        "ProviderAccount active setup authority is already registered.",
+      );
+    this.activeSetupLookup = lookup;
+    return () => {
+      if (this.activeSetupLookup === lookup) this.activeSetupLookup = null;
+    };
+  }
+
   async reconcile(
     desired: readonly ProviderAccountEnvironmentCommand[],
   ): Promise<ProviderAccountEnvironmentReport[]> {
@@ -277,6 +331,12 @@ export class ProviderAccountEnvironmentManager {
           .list()
           .find((candidate) => candidate.recordId === record.recordId);
         if (!current || current.retiredAt) return;
+        if (current.owner.kind !== "provider_account")
+          throw new EnvironmentBackendError(
+            "invalid_environment_ref",
+            "ProviderAccount reconciliation found a non-account owner.",
+          );
+        this.assertRecordNotOwnedByActiveSetup(current);
         await this.removeRecord(current);
       }).catch(() => undefined);
     }
@@ -325,15 +385,19 @@ export class ProviderAccountEnvironmentManager {
   }
 
   /**
-   * Reinspects under the account lock, commits durable intent through the
-   * caller, and only then crosses the physical login spawn boundary.
+   * Holds the account environment-operation lock only through the exact launch
+   * transition. The caller must durably acknowledge and register supervision
+   * in `acknowledgeSpawn` before this method releases the lock. Control-plane
+   * reporting and the supervised process lifetime happen after release.
    */
   async beginSetupProcess(
     identity: ProviderAccountSetupRuntimeIdentity,
     beforeSpawn: (
       inspection: ProviderAuthenticationInspection,
       eligible: boolean,
+      launchAuthority: ProviderAccountSetupLaunchAuthority | null,
     ) => Promise<void>,
+    acknowledgeSpawn: (process: StreamedProcess) => Promise<void>,
   ): Promise<{
     inspection: ProviderAuthenticationInspection;
     process: StreamedProcess | null;
@@ -341,6 +405,7 @@ export class ProviderAccountEnvironmentManager {
     const release = await this.acquireAccountOperation(
       identity.providerAccountId,
     );
+    let process: StreamedProcess | null = null;
     try {
       const record = this.setupRecord(identity);
       const inspection = await this.inspectAuthenticationForRecord(
@@ -357,68 +422,164 @@ export class ProviderAccountEnvironmentManager {
         inspection.configuration.environmentPolicy ===
           expected.environmentPolicy &&
         inspection.evidenceIdentity === expected.evidenceIdentity;
-      await beforeSpawn(inspection, eligible);
-      if (!eligible) {
-        release();
-        return { inspection, process: null };
+      const prepared = eligible
+        ? await this.prepareSetupLaunch(identity, record)
+        : null;
+      await beforeSpawn(inspection, eligible, prepared?.authority ?? null);
+      if (!eligible || !prepared) return { inspection, process: null };
+      if (prepared.kind === "fake") {
+        const paths = fakePaths(prepared.ref);
+        process = await this.fakeSetupProcesses.spawn(
+          prepared.ref,
+          paths,
+          prepared.spec.command,
+          prepared.spec.options,
+          async (context) =>
+            new DeterministicFakeLoginTransport(
+              context.processGeneration,
+              identity.setupAttemptId,
+              () =>
+                this.fakeAuthenticatedEnvironments.add(
+                  fakeAuthenticationIdentity(identity),
+                ),
+            ),
+        );
+      } else {
+        await prepared.launcher.prepare(prepared.lease, prepared.spec);
+        process = await prepared.lease.spawnStreamed(
+          prepared.spec.command,
+          prepared.spec.options,
+        );
       }
-      const process = await this.spawnSetupProcessUnlocked(identity, record);
-      void process.exit.then(release, release);
+      this.assertSetupProcessIdentity(
+        prepared.kind === "fake" ? prepared.ref : prepared.lease.ref,
+        process.handle,
+        prepared.authority,
+      );
+      await acknowledgeSpawn(process);
       return { inspection, process };
     } catch (error) {
+      // Never hold the account operation while fail-closed transport cleanup
+      // waits for a process. A process not registered by the callback is not
+      // allowed to continue detached.
       release();
+      await process?.disconnect().catch(() => undefined);
       throw error;
+    } finally {
+      release();
     }
   }
 
-  private async spawnSetupProcessUnlocked(
+  private async prepareSetupLaunch(
     identity: ProviderAccountSetupRuntimeIdentity,
     record: DurableEnvironmentRecord,
-  ): Promise<StreamedProcess> {
+  ): Promise<
+    | {
+        kind: "fake";
+        ref: EnvironmentRef;
+        spec: ProviderAccountSetupLaunchSpec;
+        authority: ProviderAccountSetupLaunchAuthority;
+      }
+    | {
+        kind: "physical";
+        lease: EnvironmentLease;
+        launcher: ProviderAccountSetupLauncher;
+        spec: ProviderAccountSetupLaunchSpec;
+        authority: ProviderAccountSetupLaunchAuthority;
+      }
+  > {
     const ref = recordRef(record);
     if (this.fake) {
+      const launcher = inMemoryFakeSetupLauncher(identity.providerKey);
       const paths = fakePaths(ref);
-      return this.fakeSetupProcesses.spawn(
-        ref,
+      const spec = launcher.specification({
+        providerKey: identity.providerKey,
         paths,
-        {
-          executable: "/usr/bin/qe-fake-provider-login",
-          args: [],
-          cwd: paths.state,
-          environment: {},
-        },
-        {},
-        async (context) =>
-          new DeterministicFakeLoginTransport(
-            context.processGeneration,
-            identity.setupAttemptId,
-            () =>
-              this.fakeAuthenticatedEnvironments.add(
-                fakeAuthenticationIdentity(identity),
-              ),
-          ),
-      );
+      });
+      return {
+        kind: "fake",
+        ref,
+        spec,
+        authority: setupLaunchAuthority(launcher, spec, paths),
+      };
     }
-    if (identity.providerKey !== "anthropic")
-      throw new EnvironmentBackendError(
-        "backend_incompatible",
-        "The immutable ProviderAccount runtime supports Anthropic accounts only.",
-      );
+    const launcher = this.requiredSetupLauncher();
     const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
       ref,
       this.setupSpec(identity),
     );
-    const configRoot = `${lease.paths.state}/claude/config`;
-    await this.prepareClaudeDirectories(lease, configRoot);
-    return lease.spawnStreamed(
-      {
-        executable: SBX_CLAUDE_EXECUTABLE,
-        args: ["auth", "login"],
-        cwd: `${lease.paths.state}/claude/empty-cwd`,
-        environment: claudeAccountEnvironment(configRoot),
-      },
-      { bufferBytes: 64 * 1024, acknowledgementTimeoutMs: 30_000 },
+    const spec = launcher.specification({
+      providerKey: identity.providerKey,
+      paths: lease.paths,
+    });
+    return {
+      kind: "physical",
+      lease,
+      launcher,
+      spec,
+      authority: setupLaunchAuthority(launcher, spec, lease.paths),
+    };
+  }
+
+  private async requireTrustedSetupLaunch(
+    identity: ProviderAccountSetupRuntimeIdentity,
+    record: DurableEnvironmentRecord,
+  ): Promise<{
+    authority: ProviderAccountSetupLaunchAuthority;
+    lease: EnvironmentLease | null;
+  }> {
+    const ref = recordRef(record);
+    if (this.fake) {
+      const launcher = inMemoryFakeSetupLauncher(identity.providerKey);
+      const paths = fakePaths(ref);
+      const spec = launcher.specification({
+        providerKey: identity.providerKey,
+        paths,
+      });
+      const authority = setupLaunchAuthority(launcher, spec, paths);
+      assertTrustedSetupLaunchAuthority(
+        identity.setupLaunchAuthority,
+        authority,
+      );
+      return { authority, lease: null };
+    }
+    const launcher = this.requiredSetupLauncher();
+    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+      ref,
+      this.setupSpec(identity),
     );
+    const spec = launcher.specification({
+      providerKey: identity.providerKey,
+      paths: lease.paths,
+    });
+    const authority = setupLaunchAuthority(launcher, spec, lease.paths);
+    assertTrustedSetupLaunchAuthority(identity.setupLaunchAuthority, authority);
+    return { authority, lease };
+  }
+
+  private requiredSetupLauncher(): ProviderAccountSetupLauncher {
+    if (!this.setupLauncher)
+      throw new EnvironmentBackendError(
+        "backend_incompatible",
+        "The physical ProviderAccount setup launcher is unavailable.",
+      );
+    return this.setupLauncher;
+  }
+
+  private assertSetupProcessIdentity(
+    ref: EnvironmentRef,
+    handle: StreamedProcessHandle,
+    authority: ProviderAccountSetupLaunchAuthority,
+  ): void {
+    if (
+      !sameRefIdentity(handle.environment, ref) ||
+      handle.executable !== authority.expectedExecutable ||
+      handle.observedExecutable !== authority.expectedExecutable
+    )
+      throw new EnvironmentBackendError(
+        "streamed_process_identity_mismatch",
+        "ProviderAccount setup process does not match its environment and trusted launcher authority.",
+      );
   }
 
   async workspaceToolBrokerAuthority(input: {
@@ -508,13 +669,23 @@ export class ProviderAccountEnvironmentManager {
     handle: StreamedProcessHandle,
   ): Promise<StreamedProcessReconciliation> {
     const record = this.setupRecord(identity);
-    const ref = recordRef(record);
-    if (this.fake) return this.fakeSetupProcesses.reconcile(handle);
-    const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
-      ref,
-      this.setupSpec(identity),
+    const trusted = await this.requireTrustedSetupLaunch(identity, record);
+    this.assertSetupProcessIdentity(
+      recordRef(record),
+      handle,
+      trusted.authority,
     );
-    return lease.reconcileStreamedProcess(handle);
+    const inspection = this.fake
+      ? await this.fakeSetupProcesses.reconcile(handle)
+      : await (trusted.lease as EnvironmentLease).reconcileStreamedProcess(
+          handle,
+        );
+    this.assertSetupProcessIdentity(
+      recordRef(record),
+      inspection.handle,
+      trusted.authority,
+    );
+    return inspection;
   }
 
   async cancelSetupProcess(
@@ -523,18 +694,12 @@ export class ProviderAccountEnvironmentManager {
     cancellationId: string,
   ): Promise<StreamedProcessCancellationReceipt> {
     const record = this.setupRecord(identity);
-    const ref = recordRef(record);
-    if (
-      !sameRefIdentity(handle.environment, ref) ||
-      (!this.fake &&
-        (handle.executable !== SBX_CLAUDE_EXECUTABLE ||
-          handle.observedExecutable !== SBX_CLAUDE_EXECUTABLE))
-    )
-      throw new EnvironmentBackendError(
-        "streamed_process_identity_mismatch",
-        "ProviderAccount cancellation handle does not match the exact login executable and environment incarnation.",
-        "cancel_streamed",
-      );
+    const trusted = await this.requireTrustedSetupLaunch(identity, record);
+    this.assertSetupProcessIdentity(
+      recordRef(record),
+      handle,
+      trusted.authority,
+    );
     if (this.fake) {
       const receipt = await this.fakeSetupProcesses.cancelAttached(
         handle,
@@ -562,6 +727,7 @@ export class ProviderAccountEnvironmentManager {
   ): Promise<ProviderAuthenticationInspection> {
     return this.withAccount(identity.providerAccountId, async () => {
       const record = this.setupRecord(identity);
+      await this.requireTrustedSetupLaunch(identity, record);
       return this.inspectAuthenticationForRecord(
         record,
         identity.providerKey,
@@ -577,24 +743,31 @@ export class ProviderAccountEnvironmentManager {
   ): Promise<ProviderAuthenticationInspection> {
     const context = this.authenticationContext(record, providerKey);
     const inspectedAt = this.clock().toISOString();
+    const overridden = this.fakeAuthentication?.(identity);
+    if (overridden) {
+      return authenticationInspection(
+        overridden.state,
+        overridden.method,
+        context,
+        inspectedAt,
+        "Injected deterministic ProviderAccount authentication was inspected.",
+      );
+    }
     if (this.fake) {
-      const overridden = this.fakeAuthentication?.(identity);
       const authenticated = identity
         ? this.fakeAuthenticatedEnvironments.has(
             fakeAuthenticationIdentity(identity),
           )
         : false;
-      const observed =
-        overridden ??
-        (authenticated
-          ? {
-              state: "authenticated" as const,
-              method: "provider_account" as const,
-            }
-          : {
-              state: "authentication_required" as const,
-              method: "none" as const,
-            });
+      const observed = authenticated
+        ? {
+            state: "authenticated" as const,
+            method: "provider_account" as const,
+          }
+        : {
+            state: "authentication_required" as const,
+            method: "none" as const,
+          };
       return authenticationInspection(
         observed.state,
         observed.method,
@@ -620,7 +793,7 @@ export class ProviderAccountEnvironmentManager {
         ),
       );
       const configRoot = `${lease.paths.state}/claude/config`;
-      await this.prepareClaudeDirectories(lease, configRoot);
+      await prepareClaudeAccountDirectories(lease);
       const environment = claudeAccountEnvironment(configRoot);
       const result = await lease.exec({
         executable: "/usr/bin/env",
@@ -705,7 +878,7 @@ export class ProviderAccountEnvironmentManager {
         );
     const configRoot = `${lease.paths.state}/claude/config`;
     const cwd = `${lease.paths.state}/claude/empty-cwd`;
-    await this.prepareClaudeDirectories(lease, configRoot);
+    await prepareClaudeAccountDirectories(lease);
     const assertCurrent = () => {
       const current = this.store.byRef(ref);
       if (
@@ -732,8 +905,9 @@ export class ProviderAccountEnvironmentManager {
   async retireSetupProcesses(
     identity: ProviderAccountSetupRuntimeIdentity,
   ): Promise<void> {
-    if (this.fake) return;
     const record = this.setupRecord(identity);
+    await this.requireTrustedSetupLaunch(identity, record);
+    if (this.fake) return;
     const ref = recordRef(record);
     await this.withAccount(identity.providerAccountId, async () => {
       await (
@@ -749,36 +923,6 @@ export class ProviderAccountEnvironmentManager {
         "Claude account process retirement requires a physical ProviderAccount cell.",
       );
     await this.backend.retireStreamedProcesses(ref);
-  }
-
-  private async prepareClaudeDirectories(
-    lease: EnvironmentLease,
-    configRoot: string,
-  ): Promise<void> {
-    const cwd = `${lease.paths.state}/claude/empty-cwd`;
-    await lease.workerExec({
-      executable: "/usr/bin/install",
-      args: [
-        "-d",
-        "-m",
-        "0700",
-        "-o",
-        "1000",
-        "-g",
-        "1000",
-        configRoot,
-        `${configRoot}/tmp`,
-        cwd,
-      ],
-    });
-    await lease.workerExec({
-      executable: "/usr/bin/python3",
-      args: [
-        "-c",
-        "import json,os,pathlib; p=pathlib.Path(os.environ['P']); value={}\ntry:\n value=json.loads(p.read_text())\nexcept Exception: pass\nvalue['hasCompletedOnboarding']=True; t=p.with_suffix('.tmp'); t.write_text(json.dumps(value,separators=(',',':'))); os.chmod(t,0o600); os.chown(t,1000,1000); os.replace(t,p)",
-      ],
-      environment: { P: `${configRoot}/.claude.json` },
-    });
   }
 
   async close(): Promise<void> {
@@ -846,6 +990,10 @@ export class ProviderAccountEnvironmentManager {
   ): Promise<ProviderAccountEnvironmentReport> {
     try {
       this.assertExpectedPhysicalIdentity(command);
+      const active =
+        this.activeSetupLookup?.(command.providerAccountId) ?? null;
+      if (active)
+        return await this.reconcileActiveSetupEnvironment(command, active);
       if (command.desiredState === "available")
         await this.retireOtherGenerations(command);
       switch (command.desiredState) {
@@ -859,6 +1007,107 @@ export class ProviderAccountEnvironmentManager {
     } catch (error) {
       return this.failureReport(command, error);
     }
+  }
+
+  private async reconcileActiveSetupEnvironment(
+    command: ProviderAccountEnvironmentCommand,
+    active: ActiveProviderAccountSetupFence,
+  ): Promise<ProviderAccountEnvironmentReport> {
+    const expected = command.expectedPhysicalIdentity;
+    if (
+      command.desiredState !== "available" ||
+      command.credentialGeneration !== active.credentialGeneration
+    )
+      throw new EnvironmentBackendError(
+        "environment_operation_failed",
+        "ProviderAccount environment mutation is fenced by an active setup invocation.",
+      );
+    if (
+      !expected ||
+      expected.backendKind !== active.backendKind ||
+      expected.environmentId !== active.environmentId ||
+      expected.incarnation !== active.environmentIncarnation
+    )
+      throw new EnvironmentBackendError(
+        "environment_identity_mismatch",
+        "Active ProviderAccount setup environment authority cannot transfer.",
+      );
+    const record = this.currentRecord(command);
+    if (
+      !record ||
+      record.retiredAt ||
+      record.state !== "running" ||
+      record.backendKind !== active.backendKind ||
+      record.environmentId !== active.environmentId ||
+      record.incarnation !== active.environmentIncarnation
+    )
+      throw new EnvironmentBackendError(
+        "environment_identity_mismatch",
+        "The environment owned by the active ProviderAccount setup is missing or replaced.",
+      );
+
+    const expectedCanary = canaryValue(record.owner);
+    if (this.fake) {
+      if (
+        this.store.readDeterministicCanary(record.recordId) !== expectedCanary
+      )
+        throw new EnvironmentBackendError(
+          "environment_unhealthy",
+          "The active ProviderAccount setup environment canary is invalid.",
+        );
+    } else {
+      const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
+        recordRef(record),
+        this.spec(command),
+      );
+      if (!sameRefIdentity(lease.ref, recordRef(record)))
+        throw new EnvironmentBackendError(
+          "environment_identity_mismatch",
+          "The active ProviderAccount setup environment incarnation changed.",
+        );
+      let observedCanary: string;
+      try {
+        observedCanary = new TextDecoder().decode(
+          await lease.readFile({
+            path: `${lease.paths.state}/${CANARY_FILENAME}`,
+            maxBytes: 512,
+          }),
+        );
+      } catch {
+        throw new EnvironmentBackendError(
+          "environment_unhealthy",
+          "The active ProviderAccount setup environment canary is unavailable.",
+        );
+      }
+      if (observedCanary !== expectedCanary)
+        throw new EnvironmentBackendError(
+          "environment_unhealthy",
+          "The active ProviderAccount setup environment canary is invalid.",
+        );
+    }
+    return this.recordReport(command, record, "environment_reconciled", true);
+  }
+
+  private assertRecordNotOwnedByActiveSetup(
+    record: DurableEnvironmentRecord,
+  ): void {
+    if (record.owner.kind !== "provider_account")
+      throw new EnvironmentBackendError(
+        "invalid_environment_ref",
+        "ProviderAccount setup fence received a non-account owner.",
+      );
+    const active = this.activeSetupLookup?.(record.owner.providerAccountId);
+    if (
+      active &&
+      record.owner.credentialGeneration === active.credentialGeneration &&
+      record.backendKind === active.backendKind &&
+      record.environmentId === active.environmentId &&
+      record.incarnation === active.environmentIncarnation
+    )
+      throw new EnvironmentBackendError(
+        "environment_operation_failed",
+        "ProviderAccount environment retirement is fenced by an active setup invocation.",
+      );
   }
 
   private async ensure(
@@ -1481,6 +1730,35 @@ function fakePaths(ref: EnvironmentRef) {
     home: `${root}/home`,
     cache: `${root}/cache`,
     temp: `${root}/tmp`,
+  };
+}
+
+function inMemoryFakeSetupLauncher(
+  providerKey: string,
+): ProviderAccountSetupLauncher {
+  return {
+    identity: "qe-in-memory-fake-provider-login-v1",
+    providerKey,
+    executable: "/usr/bin/qe-fake-provider-login",
+    interactionRecognizerIdentity: "qe-fake-provider-login-json-v1",
+    specification: (context) =>
+      immutableSetupLaunchSpec({
+        contractVersion: 1,
+        launcherIdentity: "qe-in-memory-fake-provider-login-v1",
+        providerKey: context.providerKey,
+        interactionRecognizerIdentity: "qe-fake-provider-login-json-v1",
+        command: {
+          executable: "/usr/bin/qe-fake-provider-login",
+          args: [],
+          cwd: context.paths.state,
+          environment: {},
+        },
+        options: {
+          bufferBytes: 64 * 1024,
+          acknowledgementTimeoutMs: 30_000,
+        },
+      }),
+    prepare: async () => undefined,
   };
 }
 

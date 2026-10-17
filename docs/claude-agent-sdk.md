@@ -87,9 +87,9 @@ Login and the already-working headless wrapper share the same physical primitive
 | buffer | 256 KiB | 2 MiB |
 | inference authority | none | still none until separate Product prompt authorization |
 
-The QE transport requirement is conclusively non-PTY: `spawnStreamed()` uses `sbx exec --interactive` without `--tty`, and the real-SBX fake-target proof observes `isatty(0/1/2) == false`. Whether pinned Claude Code 2.1.292's **real** `auth login` independently requires a TTY remains unknown: official browser/code-paste documentation does not state such a requirement, and this fix was forbidden from invoking real login to test it. QE therefore makes no unsupported TTY compatibility claim and does not weaken the accepted headless transport. A future fresh, explicitly authorized acceptance is the boundary that can establish provider behavior.
+The QE transport and pinned login contract are non-PTY. `spawnStreamed()` uses `sbx exec --interactive` without `--tty`, and the real-SBX fake-target proof observes `isatty(0/1/2) == false`. Static inspection of the exact Claude Code 2.1.292 native executable shows that `claude auth login` reads newline-delimited stdin, writes the browser/manual-URL lines and a non-newline paste prompt directly to stdout, and does not gate that flow on TTY identity. Its URL formatter emits a plain URL when stdout is non-TTY. The existing streamed-process transport is therefore compatible without a PTY or executable modification. This conclusion required no login invocation, authentication, provider request, or credentials.
 
-Worker Protocol v18 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
+Worker Protocol v19 makes this a first-class **operational setup**, not an `ExecutionAttempt`:
 
 1. Global disposable discovery verifies only immutable artifacts and publishes a `harness_setups` capability with `authentication: context_required`; it never publishes a globally ready Claude executor.
 2. The normal Run workspace lifecycle first selects one setup-capable Worker and provisions the durable Run worktree. Work Yard then offers a separate “Set up subscription” action for the pending occurrence.

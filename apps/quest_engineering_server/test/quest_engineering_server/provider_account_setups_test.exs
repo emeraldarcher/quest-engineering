@@ -337,6 +337,108 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
     assert uncertain.process_executable == process.executable
   end
 
+  test "current routing generation settles an exact older-generation invocation idempotently" do
+    {worker, account, _environment} = available_account("generation-settlement-worker")
+
+    assert {:ok, {attempt, _authorization, false}} =
+             ProviderAccountSetups.authorize(account.id, Ecto.UUID.generate())
+
+    owner_generation = worker.connection_generation
+    owner_operation_id = attempt.environment_operation_id
+    process = %{process_identity() | executable: "/opt/qe/claude/claude"}
+
+    # The original invocation reports are intentionally absent: Product still
+    # has not_requested while the current Worker reconciles durable old-owner
+    # evidence after reconnect.
+    {:ok, reconnected} =
+      WorkerStore.register(worker.id, capabilities(), Ecto.UUID.generate())
+
+    {:ok, reconnected} =
+      WorkerStore.mark_ready(reconnected.id, reconnected.connection_generation)
+
+    assert reconnected.connection_generation > owner_generation
+
+    assert {:ok, [_desired_environment]} =
+             ProviderAccounts.prepare_worker_reconciliation(
+               worker.id,
+               reconnected.connection_generation
+             )
+
+    assert {:ok, [_desired_setup]} =
+             ProviderAccountSetups.prepare_worker_reconciliation(
+               worker.id,
+               reconnected.connection_generation
+             )
+
+    routed = ProviderAccountSetups.fetch(attempt.id)
+    assert routed.worker_generation == reconnected.connection_generation
+    assert routed.environment_operation_id != owner_operation_id
+    assert routed.invocation_worker_generation == nil
+    assert routed.invocation_environment_operation_id == nil
+
+    reconciled_acknowledgement =
+      routed
+      |> setup_report("invocation_acknowledged", "acknowledged", process: process)
+      |> Map.put(:invocation_worker_generation, owner_generation)
+      |> Map.put(:invocation_environment_operation_id, owner_operation_id)
+
+    assert {:error, %{code: :stale_provider_account_setup_report}} =
+             ProviderAccountSetups.record(
+               worker.id,
+               reconnected.connection_generation,
+               %{
+                 reconciled_acknowledgement
+                 | invocation_environment_operation_id: "forged-operation"
+               }
+             )
+
+    assert {:ok, acknowledged} =
+             ProviderAccountSetups.record(
+               worker.id,
+               reconnected.connection_generation,
+               reconciled_acknowledgement
+             )
+
+    assert acknowledged.invocation_worker_generation == owner_generation
+    assert acknowledged.invocation_environment_operation_id == owner_operation_id
+
+    terminal =
+      setup_report(acknowledged, "failed", "settled",
+        process: process,
+        failure_code: "setup_process_failed"
+      )
+
+    assert {:ok, settled} =
+             ProviderAccountSetups.record(
+               worker.id,
+               reconnected.connection_generation,
+               terminal
+             )
+
+    assert settled.state == "failed"
+    assert settled.worker_generation == reconnected.connection_generation
+    assert settled.invocation_worker_generation == owner_generation
+
+    assert {:ok, idempotent} =
+             ProviderAccountSetups.record(
+               worker.id,
+               reconnected.connection_generation,
+               terminal
+             )
+
+    assert idempotent.id == settled.id
+
+    assert {:error, %{code: :stale_provider_account_setup_report}} =
+             ProviderAccountSetups.record(
+               worker.id,
+               reconnected.connection_generation,
+               %{terminal | invocation_worker_generation: reconnected.connection_generation}
+             )
+
+    assert {:error, %{code: :stale_provider_account_setup_report}} =
+             ProviderAccountSetups.record(worker.id, owner_generation, terminal)
+  end
+
   test "Product restart reconstruction re-fences an active setup without replaying authorization" do
     {worker, account, environment} = available_account("restart-setup-worker")
 
@@ -353,6 +455,8 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
     assert desired.authorization_id == authorization.id
     assert desired.environment_id == environment.environment_id
     assert desired.worker_generation == worker.connection_generation + 1
+    assert desired.invocation_worker_generation == nil
+    assert desired.invocation_environment_operation_id == nil
 
     command =
       WorkerProtocol.provider_account_setup(
@@ -361,10 +465,12 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
         desired
       )
 
-    assert command["protocol_version"] == 18
+    assert command["protocol_version"] == 19
     assert command["setup"]["authorization_kind"] == "provider_account_setup"
     assert command["setup"]["credential_generation"] == 1
     assert command["setup"]["environment_generation"] == 1
+    assert command["setup"]["invocation_worker_generation"] == nil
+    assert command["setup"]["invocation_environment_operation_id"] == nil
     refute Map.has_key?(command["setup"], "credential")
   end
 
@@ -449,6 +555,16 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
       environment_generation: attempt.environment_generation,
       worker_generation: attempt.worker_generation,
       environment_operation_id: attempt.environment_operation_id,
+      invocation_worker_generation:
+        if(invocation_state == "not_requested",
+          do: nil,
+          else: attempt.invocation_worker_generation || attempt.worker_generation
+        ),
+      invocation_environment_operation_id:
+        if(invocation_state == "not_requested",
+          do: nil,
+          else: attempt.invocation_environment_operation_id || attempt.environment_operation_id
+        ),
       backend_kind: attempt.backend_kind,
       environment_id: attempt.environment_id,
       environment_incarnation: attempt.environment_incarnation,

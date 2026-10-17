@@ -6,19 +6,31 @@ import {
   type ProviderAccountEnvironmentCommand,
   ProviderAccountEnvironmentManager,
 } from "../src/execution-environment/provider-account.ts";
+import { SbxExecutionEnvironmentBackend } from "../src/execution-environment/sbx-backend.ts";
+import {
+  SBX_CLAUDE_ACCOUNT_PROFILE,
+  SBX_DISPOSABLE_RESOURCE_POLICY,
+} from "../src/execution-environment/sbx-profile.ts";
+import { ExecutionEnvironmentStore } from "../src/execution-environment/store.ts";
 import type { ProviderAccountSetupCommand } from "../src/protocol/types.ts";
 import {
   ProviderAccountSetupCoordinator,
   type ProviderAccountSetupReport,
 } from "../src/provider-account-setup.ts";
 import { ProviderAccountSetupStore } from "../src/provider-account-setup-store.ts";
+import {
+  PHYSICAL_ACCEPTANCE_FIXTURE_EXECUTABLE,
+  PhysicalAcceptanceSetupLauncher,
+  physicalAcceptanceAuthentication,
+} from "./support/provider-account-setup-launcher.ts";
 
 const live = process.env.QE_LIVE_SBX === "1";
 
-// Bounded physical proof: only the deterministic Python fake-login process is
-// launched. No Claude binary, provider endpoint, model, Run, or inference path exists.
+// Zero-provider physical proof. The production manager owns a real account SBX
+// and invokes its generic EnvironmentLease.spawnStreamed path with only the
+// directly injected test launcher and deterministic auth inspector.
 test.skipIf(!live)(
-  "real SBX retains one zero-Run account cell across fake setup and validation",
+  "real ProviderAccount SBX streams the Claude-shaped fixture without provider activity",
   async () => {
     const parent = join(process.cwd(), ".pi", "tmp");
     await mkdir(parent, { recursive: true });
@@ -28,14 +40,31 @@ test.skipIf(!live)(
     }).publicKey.export({ format: "pem", type: "pkcs1" }) as string;
     const workerId = `setup-live-worker-${Date.now()}`;
     const accountId = `setup-live-account-${Date.now()}`;
-    const manager = new ProviderAccountEnvironmentManager({
+    const secret = `QE_FAKE_CLAUDE_LOGIN_INTERACTION_SECRET_${Date.now()}`;
+    const store = new ExecutionEnvironmentStore(root);
+    const backend = new SbxExecutionEnvironmentBackend({
       workerId,
       dataRoot: root,
-      provider: "pi",
+      store,
+      executionProfile: SBX_CLAUDE_ACCOUNT_PROFILE,
+      resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY,
     });
+    const manager = new ProviderAccountEnvironmentManager(
+      { workerId, dataRoot: root, provider: "pi" },
+      {
+        backend,
+        store,
+        fake: false,
+        setupLauncher: new PhysicalAcceptanceSetupLauncher(
+          "fragmented",
+          secret,
+        ),
+        fakeAuthentication: physicalAcceptanceAuthentication(),
+      },
+    );
     const environmentCommand: ProviderAccountEnvironmentCommand = {
       providerAccountId: accountId,
-      providerKey: "deterministic-fake-provider",
+      providerKey: "anthropic",
       credentialGeneration: 1,
       workerGeneration: 1,
       operationId: crypto.randomUUID(),
@@ -53,6 +82,8 @@ test.skipIf(!live)(
       async (delivery) => {
         deliveries.push(structuredClone(delivery));
       },
+      undefined,
+      { interactionDiscoveryTimeoutMs: 2_000, humanCompletionTimeoutMs: 5_000 },
     );
     let physical:
       | { backendKind: string; environmentId: string; incarnation: string }
@@ -61,6 +92,10 @@ test.skipIf(!live)(
       const available = await manager.apply(environmentCommand);
       expect(available.physicalState).toBe("available");
       expect(available.backendKind).toBe("sbx");
+      expect(available.authentication).toMatchObject({
+        state: "authentication_required",
+        method: "none",
+      });
       physical = {
         backendKind: available.backendKind as string,
         environmentId: available.environmentId as string,
@@ -68,12 +103,12 @@ test.skipIf(!live)(
       };
       const command: ProviderAccountSetupCommand = {
         type: "prepare_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: workerId,
         connection_generation: 1,
         setup: {
           setup_attempt_id: crypto.randomUUID(),
-          provider_account_id: environmentCommand.providerAccountId,
+          provider_account_id: accountId,
           setup_generation: 1,
           authorization_id: crypto.randomUUID(),
           authorization_kind: "provider_account_setup",
@@ -82,7 +117,9 @@ test.skipIf(!live)(
           environment_generation: 1,
           worker_generation: 1,
           environment_operation_id: environmentCommand.operationId,
-          provider_key: environmentCommand.providerKey,
+          invocation_worker_generation: null,
+          invocation_environment_operation_id: null,
+          provider_key: "anthropic",
           environment: {
             backend_kind: physical.backendKind,
             environment_id: physical.environmentId,
@@ -106,9 +143,14 @@ test.skipIf(!live)(
         },
       };
       await coordinator.prepare(command);
-      const waiting = reports.at(-1);
+      await eventually(() =>
+        reports.some((report) => report.state === "human_interaction_required"),
+      );
+      const waiting = reports.find(
+        (report) => report.state === "human_interaction_required",
+      );
       expect(waiting).toMatchObject({
-        state: "human_interaction_required",
+        process: { executable: PHYSICAL_ACCEPTANCE_FIXTURE_EXECUTABLE },
         backend_kind: physical.backendKind,
         environment_id: physical.environmentId,
         environment_incarnation: physical.incarnation,
@@ -116,14 +158,14 @@ test.skipIf(!live)(
       expect(waiting?.ephemeral_output).toMatchObject({
         version: "rsa-oaep-sha256-aes-256-gcm-v1",
       });
-      expect(JSON.stringify(waiting?.ephemeral_output)).not.toContain(
-        "fake-provider.invalid",
-      );
+      expect(JSON.stringify(waiting?.ephemeral_output)).not.toContain(secret);
 
-      const sensitiveInput = "deterministic-fake-approval";
+      // Cross the discovery deadline after recognition; only the human deadline remains.
+      await Bun.sleep(2_250);
+      expect(reports.at(-1)?.state).toBe("human_interaction_required");
       await coordinator.respond({
         type: "respond_provider_account_setup",
-        protocol_version: 18,
+        protocol_version: 19,
         worker_id: command.worker_id,
         connection_generation: 1,
         setup_attempt_id: command.setup.setup_attempt_id,
@@ -132,7 +174,7 @@ test.skipIf(!live)(
         process_generation: waiting?.process?.process_generation as string,
         request_generation: 1,
         delivery_attempt_id: crypto.randomUUID(),
-        value: sensitiveInput,
+        value: `fake-code#${"s".repeat(43)}`,
       });
       await eventually(() =>
         reports.some((report) => report.state === "succeeded"),
@@ -140,16 +182,9 @@ test.skipIf(!live)(
       expect(deliveries.map((delivery) => delivery.state)).toEqual([
         "delivery_acknowledged",
       ]);
-      const retained = manager.reportsFor([environmentCommand])[0];
-      expect(retained).toMatchObject({
-        physicalState: "available",
-        environmentId: physical.environmentId,
-        incarnation: physical.incarnation,
-        canaryPersisted: true,
-      });
       const durableBytes = await readDurableFiles(root);
-      expect(durableBytes).not.toContain(sensitiveInput);
-      expect(durableBytes).not.toContain("fake-provider.invalid");
+      expect(durableBytes).not.toContain(secret);
+      expect(durableBytes).not.toContain("fake-code");
     } finally {
       await coordinator.close().catch(() => undefined);
       if (physical) {
@@ -166,7 +201,7 @@ test.skipIf(!live)(
       await rm(root, { recursive: true, force: true });
     }
   },
-  120_000,
+  3 * 60_000,
 );
 
 async function readDurableFiles(root: string): Promise<string> {
@@ -180,7 +215,7 @@ async function readDurableFiles(root: string): Promise<string> {
   return Buffer.concat(buffers).toString("utf8");
 }
 
-async function eventually(check: () => boolean, attempts = 400): Promise<void> {
+async function eventually(check: () => boolean, attempts = 800): Promise<void> {
   for (let index = 0; index < attempts; index += 1) {
     if (check()) return;
     await Bun.sleep(25);

@@ -19,7 +19,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   alias QuestEngineering.Core.ResolvedExecution.Work
   alias QuestEngineering.Core.Runtime.ArtifactInstance
 
-  @version 18
+  @version 19
   @worker_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
   @states ~w(accepted running completed failed uncertain)
   @access ~w(none read_only read_write)
@@ -131,7 +131,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     defstruct [:code, :field, :details]
   end
 
-  @spec version() :: 18
+  @spec version() :: 19
   def version, do: @version
 
   @spec encode_tool_policy(Exact.t() | NativePermissions.t()) :: map()
@@ -222,6 +222,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
         environment_generation: attempt.environment_generation,
         worker_generation: attempt.worker_generation,
         environment_operation_id: attempt.environment_operation_id,
+        invocation_worker_generation: attempt.invocation_worker_generation,
+        invocation_environment_operation_id: attempt.invocation_environment_operation_id,
         provider_key: attempt.provider_key,
         backend_kind: attempt.backend_kind,
         environment_id: attempt.environment_id,
@@ -575,10 +577,18 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     error_message(protocol_error.code, protocol_error.field, protocol_error.details)
   end
 
-  def application_error(%{type: type} = application_error) do
+  def application_error(%{type: type} = application_error) when is_atom(type) do
     details = Map.get(application_error, :details) || %{}
     error_message(type, nil, details)
   end
+
+  def application_error(%{code: code} = application_error) when is_atom(code) do
+    details = Map.get(application_error, :details) || %{}
+    error_message(code, nil, details)
+  end
+
+  def application_error(_application_error),
+    do: error_message(:application_error, nil, %{})
 
   defp error_message(code, field, details) do
     %{
@@ -1089,7 +1099,7 @@ defmodule QuestEngineering.Server.WorkerProtocol do
     with :ok <-
            exact_map_keys(
              report,
-             ~w(setup_attempt_id provider_account_id setup_generation credential_generation environment_generation worker_generation environment_operation_id backend_kind environment_id environment_incarnation state invocation_state process attention preflight validation failure_code observed_at ephemeral_output),
+             ~w(setup_attempt_id provider_account_id setup_generation credential_generation environment_generation worker_generation environment_operation_id invocation_worker_generation invocation_environment_operation_id backend_kind environment_id environment_incarnation state invocation_state process attention preflight validation failure_code observed_at ephemeral_output),
              "provider_account_setup_state"
            ),
          {:ok, setup_attempt_id} <- required_string(report, "setup_attempt_id"),
@@ -1105,6 +1115,16 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          worker_generation when is_integer(worker_generation) and worker_generation > 0 <-
            report["worker_generation"],
          {:ok, environment_operation_id} <- required_string(report, "environment_operation_id"),
+         {:ok, invocation_worker_generation} <-
+           optional_positive_integer(report["invocation_worker_generation"]),
+         {:ok, invocation_environment_operation_id} <-
+           optional_string(report["invocation_environment_operation_id"]),
+         true <-
+           is_nil(invocation_worker_generation) ==
+             is_nil(invocation_environment_operation_id),
+         true <-
+           is_nil(invocation_worker_generation) or
+             invocation_worker_generation <= worker_generation,
          {:ok, backend_kind} <- required_string(report, "backend_kind"),
          {:ok, environment_id} <- required_string(report, "environment_id"),
          {:ok, environment_incarnation} <-
@@ -1124,7 +1144,10 @@ defmodule QuestEngineering.Server.WorkerProtocol do
            invocation in ["not_requested", "uncertain"] or
              match?(%{state: "authentication_required", method: "none"}, preflight),
          true <- is_nil(attention) or state == "human_interaction_required",
-         true <- is_nil(report["ephemeral_output"]) or not is_nil(attention) do
+         true <- is_nil(report["ephemeral_output"]) or not is_nil(attention),
+         true <-
+           (invocation == "not_requested" and is_nil(invocation_worker_generation)) or
+             (invocation != "not_requested" and not is_nil(invocation_worker_generation)) do
       {:ok,
        %{
          setup_attempt_id: setup_attempt_id,
@@ -1134,6 +1157,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
          environment_generation: environment_generation,
          worker_generation: worker_generation,
          environment_operation_id: environment_operation_id,
+         invocation_worker_generation: invocation_worker_generation,
+         invocation_environment_operation_id: invocation_environment_operation_id,
          backend_kind: backend_kind,
          environment_id: environment_id,
          environment_incarnation: environment_incarnation,
@@ -1700,6 +1725,13 @@ defmodule QuestEngineering.Server.WorkerProtocol do
   defp optional_string(nil), do: {:ok, nil}
   defp optional_string(value) when is_binary(value) and value != "", do: {:ok, value}
   defp optional_string(_), do: error(:invalid_field, "session.native_session_id")
+
+  defp optional_positive_integer(nil), do: {:ok, nil}
+
+  defp optional_positive_integer(value) when is_integer(value) and value > 0,
+    do: {:ok, value}
+
+  defp optional_positive_integer(_), do: error(:invalid_field, "positive_integer")
 
   defp optional_broker_operation(nil), do: {:ok, nil}
 
@@ -2662,6 +2694,8 @@ defmodule QuestEngineering.Server.WorkerProtocol do
       "environment_generation" => value.environment_generation,
       "worker_generation" => value.worker_generation,
       "environment_operation_id" => value.environment_operation_id,
+      "invocation_worker_generation" => value.invocation_worker_generation,
+      "invocation_environment_operation_id" => value.invocation_environment_operation_id,
       "provider_key" => value.provider_key,
       "environment" => %{
         "backend_kind" => value.backend_kind,
