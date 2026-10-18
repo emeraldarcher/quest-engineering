@@ -59,10 +59,9 @@ const worker = new QuestEngineeringWorker(config, {
   providerAccountEnvironments: environments,
   providerAccountSetupOptions: {
     // Scenario B leaves enough time for two full physical reconnect
-    // reconciliations before its deterministic timeout. Production uses the
-    // same thirty-second discovery bound.
+    // reconciliations before its deterministic discovery timeout. Once an
+    // interaction is recognized, the human wait has no QE wall-clock limit.
     interactionDiscoveryTimeoutMs: mode === "silent" ? 30_000 : 5_000,
-    humanCompletionTimeoutMs: 15_000,
     cancellationSettlementTimeoutMs: 10_000,
   },
 });

@@ -180,6 +180,11 @@ defmodule QuestEngineering.ServerWeb.Api do
          {409, to_string(code), "The ProviderAccount setup request conflicts with current state.",
           [], safe(details)}
 
+  defp error_view(:setup_interaction_refreshing),
+    do:
+      {409, "setup_interaction_refreshing",
+       "The active provider setup interaction is refreshing; fetch it again.", [], %{}}
+
   defp error_view(:setup_interaction_unavailable),
     do:
       {409, "setup_interaction_unavailable",

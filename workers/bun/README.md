@@ -168,15 +168,21 @@ serialized through exact authorization, durable pre-spawn intent, acknowledged
 streamed-process identity, account-scoped HumanAttention, input-delivery
 certainty, exact cancellation, and local status validation. Sensitive login
 output/input remains only in process memory and the Product's expiring encrypted
-relay; it is never accepted by a SQLite API or emitted to logs. Worker restart
+relay; it is never accepted by a SQLite API or emitted to logs. Relay/key expiry
+or Product restart does not expire HumanAttention: a later client fetch rotates
+the Product-memory capability and asks the same live supervisor to reseal the
+same recognized interaction, with no new intent, interaction, or process. Input
+write rejection proven before submission remains distinct from ambiguous input;
+ambiguous input is terminal and never replayed. Worker restart
 never replays a requested/ambiguous spawn, input, or cancellation. The
 per-account environment-operation lock ends only after exact process identity is
 durably acknowledged and local supervision is installed, but before the
 fallible Product acknowledgement report. The separate setup coordinator tail
 ends at that same local acknowledgement boundary. One tracked active supervisor
-then owns output, interaction timers, cancellation, and settlement; later
-ledger transitions briefly reacquire the coordinator tail, while physical waits
-and Product reports remain outside it. The durable active-setup predicate permits
+then owns output, the bounded interaction-discovery timer, cancellation, and
+settlement; there is no human-completion timer. Human response waiting is
+durable and indefinite, and later ledger transitions briefly reacquire the
+coordinator tail while physical waits and Product reports remain outside it. The durable active-setup predicate permits
 read-only reconciliation of only that same environment while fencing stop,
 removal, credential rollover, replacement, and a second login. A running process
 with a non-recoverable stream is revalidated and physically

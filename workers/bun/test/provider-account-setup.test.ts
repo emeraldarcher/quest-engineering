@@ -505,6 +505,55 @@ describe("ProviderAccount setup", () => {
     }
   });
 
+  test("definitely rejected input stays distinct from ambiguous delivery", async () => {
+    const fixture = await setupFixture();
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
+      let writes = 0;
+      activeProcess(fixture).write = async () => {
+        writes += 1;
+        throw new EnvironmentBackendError(
+          "streamed_process_write_rejected",
+          "input was rejected before submission",
+          "write_streamed",
+          "not_submitted",
+        );
+      };
+
+      await fixture.coordinator.respond(
+        responseCommand(
+          fixture.setupCommand,
+          waiting,
+          "never-persist-this-input",
+        ),
+      );
+
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "failed",
+      );
+      expect(
+        fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
+      ).toMatchObject({
+        state: "failed",
+        invocationState: "settled",
+        cancellationInvocationState: "settled",
+        failureCode: "input_delivery_not_submitted",
+        inputDelivery: { state: "delivery_requested" },
+      });
+      expect(writes).toBe(1);
+      expect(fixture.deliveries).toHaveLength(0);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
   test("ambiguous spawn/input are terminal and ambiguous cancellation is observed without replay", async () => {
     const spawn = await setupFixture();
     try {
@@ -1101,13 +1150,125 @@ describe("ProviderAccount setup", () => {
     }
   });
 
-  test("human-completion expiry physically terminates before reporting failure", async () => {
-    const fixture = await setupFixture(
-      {},
-      { coordinator: { humanCompletionTimeoutMs: 5 } },
-    );
+  test("responses immediately before and after the former five-minute boundary deliver once", async () => {
+    for (const elapsedMs of [5 * 60_000 - 1, 5 * 60_000 + 1]) {
+      let now = Date.parse("2026-10-15T00:00:00.000Z");
+      const fixture = await setupFixture({}, { clock: () => new Date(now) });
+      try {
+        await fixture.coordinator.prepare(fixture.setupCommand);
+        const waiting = await reportedSetupState(
+          fixture,
+          "human_interaction_required",
+        );
+        now += elapsedMs;
+
+        expect(
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
+        ).toMatchObject({
+          state: "human_interaction_required",
+          cancellationInvocationState: "not_requested",
+          inputDelivery: null,
+        });
+        await fixture.coordinator.respond(
+          responseCommand(
+            fixture.setupCommand,
+            waiting,
+            `delayed-input-${elapsedMs}`,
+          ),
+        );
+        await eventually(() =>
+          fixture.reports.some((report) => report.state === "succeeded"),
+        );
+        expect(fixture.deliveries.map((delivery) => delivery.state)).toEqual([
+          "delivery_acknowledged",
+        ]);
+        expect(
+          fixture.store
+            .events(fixture.setupCommand.setup.setup_attempt_id)
+            .filter((event) => event.eventType === "input_delivery_requested"),
+        ).toHaveLength(1);
+        expect(
+          fixture.store
+            .events(fixture.setupCommand.setup.setup_attempt_id)
+            .some((event) => event.eventType.includes("human_completion")),
+        ).toBe(false);
+      } finally {
+        await fixture.coordinator.close();
+        await fixture.manager.close();
+      }
+    }
+  });
+
+  test("a multi-day human wait remains active until explicit cancellation", async () => {
+    let now = Date.parse("2026-10-15T00:00:00.000Z");
+    const fixture = await setupFixture({}, { clock: () => new Date(now) });
     try {
       await fixture.coordinator.prepare(fixture.setupCommand);
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
+      now += 7 * 24 * 60 * 60_000;
+      await fixture.coordinator.reconcile([
+        {
+          ...fixture.setupCommand,
+          setup: {
+            ...fixture.setupCommand.setup,
+            invocation_worker_generation: 7,
+            invocation_environment_operation_id: "environment-operation",
+            state: "human_interaction_required",
+            invocation_state: "acknowledged",
+          },
+        },
+      ]);
+      expect(fixture.reports.at(-1)).toMatchObject({
+        state: "human_interaction_required",
+        process: waiting.process,
+      });
+      expect(
+        fixture.store.get(fixture.setupCommand.setup.setup_attempt_id),
+      ).toMatchObject({
+        state: "human_interaction_required",
+        cancellationInvocationState: "not_requested",
+      });
+
+      await fixture.coordinator.cancel({
+        type: "cancel_provider_account_setup",
+        protocol_version: 19,
+        worker_id: fixture.setupCommand.worker_id,
+        connection_generation: fixture.setupCommand.connection_generation,
+        setup_attempt_id: fixture.setupCommand.setup.setup_attempt_id,
+        setup_generation: fixture.setupCommand.setup.setup_generation,
+        process_generation: waiting.process?.process_generation as string,
+        request_id: "cancel-after-seven-days",
+      });
+      await eventually(
+        () =>
+          fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
+            ?.state === "cancelled",
+      );
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .filter(
+            (event) => event.eventType === "cancellation_invocation_requested",
+          ),
+      ).toHaveLength(1);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
+  test("exact provider-process exit obsoletes a waiting interaction without a human timer", async () => {
+    const fixture = await setupFixture();
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
+      await activeProcess(fixture).cancel("fixture-native-exit");
       await eventually(
         () =>
           fixture.store.get(fixture.setupCommand.setup.setup_attempt_id)
@@ -1118,10 +1279,19 @@ describe("ProviderAccount setup", () => {
       ).toMatchObject({
         state: "failed",
         invocationState: "settled",
-        cancellationInvocationState: "settled",
-        cancellationObservation: "exited",
-        failureCode: "setup_human_completion_timed_out",
+        failureCode: "setup_process_failed",
+        inputDelivery: null,
       });
+      await expect(
+        fixture.coordinator.respond(
+          responseCommand(fixture.setupCommand, waiting, "stale-input"),
+        ),
+      ).rejects.toThrow("stale");
+      expect(
+        fixture.store
+          .events(fixture.setupCommand.setup.setup_attempt_id)
+          .some((event) => event.eventType === "input_delivery_requested"),
+      ).toBe(false);
     } finally {
       await fixture.coordinator.close();
       await fixture.manager.close();
@@ -1161,6 +1331,13 @@ describe("ProviderAccount setup", () => {
       else expect(recognized).toBeNull();
     }
     expect(recognizeClaudeLoginInteraction(interaction)).toBe(interaction);
+    for (const expiryField of [
+      "expires_at",
+      "expires_in",
+      "expiration",
+      "device_code_expires_at",
+    ])
+      expect(url.searchParams.has(expiryField)).toBe(false);
     expect(() =>
       recognizeClaudeLoginInteraction(
         interaction.replace("https://claude.com", "https://example.invalid"),
@@ -1785,6 +1962,55 @@ describe("ProviderAccount setup", () => {
     }
   });
 
+  test("a later response uses current routing while immutable invocation ownership stays fixed", async () => {
+    const fixture = await setupFixture();
+    try {
+      await fixture.coordinator.prepare(fixture.setupCommand);
+      const waiting = await reportedSetupState(
+        fixture,
+        "human_interaction_required",
+      );
+      const currentCommand = routedSetupCommand(
+        fixture,
+        8,
+        "response-route-generation-8",
+      );
+      await fixture.coordinator.reconcile([currentCommand]);
+      const reconciled = fixture.reports.at(-1) as ProviderAccountSetupReport;
+      expect(reconciled).toMatchObject({
+        worker_generation: 8,
+        invocation_worker_generation: 7,
+        invocation_environment_operation_id: "environment-operation",
+        process: waiting.process,
+        state: "human_interaction_required",
+      });
+
+      await expect(
+        fixture.coordinator.respond(
+          responseCommand(fixture.setupCommand, reconciled, "stale-route"),
+        ),
+      ).rejects.toThrow("stale");
+      await fixture.coordinator.respond(
+        responseCommand(currentCommand, reconciled, "current-route"),
+      );
+      await eventually(() =>
+        fixture.reports.some((report) => report.state === "succeeded"),
+      );
+      expect(fixture.deliveries).toHaveLength(1);
+      expect(fixture.deliveries[0]).toMatchObject({
+        state: "delivery_acknowledged",
+      });
+      expect(
+        fixture.store
+          .events(currentCommand.setup.setup_attempt_id)
+          .filter((event) => event.eventType === "login_invocation_requested"),
+      ).toHaveLength(1);
+    } finally {
+      await fixture.coordinator.close();
+      await fixture.manager.close();
+    }
+  });
+
   test("serializes one active attempt per account while allowing distinct accounts", async () => {
     const fixture = await setupFixture();
     try {
@@ -1862,6 +2088,7 @@ async function setupFixture(
   fixtureOptions: {
     rejectReportState?: ProviderAccountSetupReport["state"];
     coordinator?: ProviderAccountSetupCoordinatorOptions;
+    clock?: () => Date;
   } = {},
 ) {
   const parent = join(process.cwd(), ".pi", "tmp");
@@ -1926,7 +2153,11 @@ async function setupFixture(
   };
   const reports: ProviderAccountSetupReport[] = [];
   const deliveries: Array<{ state: string }> = [];
-  const store = new ProviderAccountSetupStore(root);
+  const store = new ProviderAccountSetupStore(
+    root,
+    undefined,
+    fixtureOptions.clock,
+  );
   let reportRejected = false;
   const coordinator = new ProviderAccountSetupCoordinator(
     store,
@@ -1944,7 +2175,7 @@ async function setupFixture(
     async (delivery) => {
       deliveries.push(structuredClone(delivery));
     },
-    undefined,
+    fixtureOptions.clock,
     fixtureOptions.coordinator,
   );
   return {
