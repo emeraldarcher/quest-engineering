@@ -38,6 +38,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     "setup_cancelled" => "ProviderAccount setup was cancelled by the operator.",
     "environment_identity_mismatch" => "The ProviderAccount environment identity changed.",
     "stale_setup_command" => "The setup command is stale.",
+    "input_delivery_not_submitted" => "Sensitive setup input was definitely not submitted.",
     "input_delivery_uncertain" => "Sensitive setup input delivery is uncertain.",
     "setup_cancellation_uncertain" =>
       "Physical setup-process cancellation could not be observed safely.",
@@ -45,8 +46,6 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
       "The provider login did not expose its expected interaction in time.",
     "setup_interaction_incompatible" =>
       "The provider login interaction did not match the pinned contract.",
-    "setup_human_completion_timed_out" =>
-      "The provider login was not completed within its human-interaction lifetime.",
     "setup_worker_shutdown" => "The provider login was terminated during Worker shutdown.",
     "setup_authentication_already_authenticated" =>
       "Provider authentication is already present; login was not invoked.",
@@ -176,8 +175,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
             )
 
         cond do
-          attention.response_request_id == request_id and
-              attention.delivery_state in ["delivery_requested", "delivery_acknowledged"] ->
+          attention.response_request_id == request_id and attention.response_state == "responded" ->
             {attempt, attention, false}
 
           attention.response_state != "pending" or
@@ -232,7 +230,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
             {:ok, attempt, attention}
 
           {:error, reason} ->
-            mark_input_delivery_uncertain(attention.id)
+            mark_input_delivery_not_submitted(attempt.id, attention.id)
+            ProviderAccountSetupInteractions.clear(attempt.id)
             {:error, reason}
         end
 
@@ -266,6 +265,13 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
               error(:provider_account_setup_not_found, %{setup_attempt_id: attempt_id})
             )
 
+        attention =
+          Repo.one(
+            from request in Attention,
+              where: request.setup_attempt_id == ^attempt.id,
+              lock: "FOR UPDATE"
+          )
+
         cond do
           attempt.state in ["cancellation_requested", "cancelled"] and
               attempt.cancellation_request_id == request_id ->
@@ -276,6 +282,9 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
 
           attempt.state in @terminal_states ->
             Repo.rollback(error(:provider_account_setup_not_cancellable, %{state: attempt.state}))
+
+          attention && attention.response_state == "responded" ->
+            Repo.rollback(error(:setup_cancellation_conflict, %{setup_attempt_id: attempt.id}))
 
           true ->
             now = now()
@@ -337,12 +346,21 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
          true <- attempt.state == "human_interaction_required",
          true <- attempt.attention_id == attention_id,
          process_generation when is_binary(process_generation) <- attempt.process_generation do
-      ProviderAccountSetupInteractions.fetch(
-        attempt.id,
-        setup_generation,
-        attention_id,
-        process_generation
-      )
+      case ProviderAccountSetupInteractions.fetch(
+             attempt.id,
+             setup_generation,
+             attention_id,
+             process_generation
+           ) do
+        {:ok, interaction} ->
+          {:ok, interaction}
+
+        {:error, :setup_interaction_unavailable} ->
+          case deliver(attempt) do
+            :ok -> {:error, :setup_interaction_refreshing}
+            {:error, _reason} -> {:error, :setup_interaction_unavailable}
+          end
+      end
     else
       _ -> {:error, :setup_interaction_unavailable}
     end
@@ -515,6 +533,7 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
                environment.credential_generation == attempt.environment_generation ->
           updated =
             attempt
+            |> fence_inflight_delivery_for_reconnect(generation)
             |> Changeset.change(
               worker_generation: generation,
               environment_operation_id: environment.operation_id
@@ -545,6 +564,52 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
       end
     end)
     |> Enum.reject(&is_nil/1)
+  end
+
+  defp fence_inflight_delivery_for_reconnect(
+         %{worker_generation: generation} = attempt,
+         generation
+       ),
+       do: attempt
+
+  defp fence_inflight_delivery_for_reconnect(attempt, _new_generation) do
+    request =
+      Repo.one(
+        from request in Attention,
+          where: request.setup_attempt_id == ^attempt.id,
+          lock: "FOR UPDATE"
+      )
+
+    if request && request.response_state == "responded" &&
+         request.delivery_state == "delivery_requested" do
+      now = now()
+
+      request
+      |> Attention.changeset(%{
+        delivery_state: "delivery_uncertain",
+        delivery_uncertain_at: now
+      })
+      |> Repo.update!()
+
+      updated =
+        attempt
+        |> Attempt.changeset(%{
+          state: "cancellation_requested",
+          cancellation_request_id: request.delivery_attempt_id,
+          failure_code: "input_delivery_uncertain",
+          failure_message: @failure_messages["input_delivery_uncertain"]
+        })
+        |> Repo.update!()
+
+      insert_event!(updated, "delivery_uncertain", %{
+        delivery_attempt_id: request.delivery_attempt_id,
+        reason: "worker_generation_changed_before_delivery_acknowledgement"
+      })
+
+      updated
+    else
+      attempt
+    end
   end
 
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
@@ -1010,14 +1075,48 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         if request = Repo.get_by(Attention, setup_attempt_id: attempt.id) do
           terminal_state = if attempt.state == "cancelled", do: "cancelled", else: "obsolete"
 
-          if request.response_state == "pending" do
-            request
-            |> Attention.changeset(%{
-              response_state: terminal_state,
-              cancelled_at: if(terminal_state == "cancelled", do: now),
-              cancellation_reason: if(terminal_state == "cancelled", do: "setup_cancelled")
-            })
-            |> Repo.update!()
+          cond do
+            request.response_state == "pending" ->
+              request
+              |> Attention.changeset(%{
+                response_state: terminal_state,
+                cancelled_at: if(terminal_state == "cancelled", do: now),
+                cancellation_reason: if(terminal_state == "cancelled", do: "setup_cancelled")
+              })
+              |> Repo.update!()
+
+            request.response_state == "responded" and
+              request.delivery_state == "delivery_requested" and
+                attempt.failure_code == "input_delivery_not_submitted" ->
+              request
+              |> Attention.changeset(%{
+                delivery_state: "response_not_delivered",
+                delivery_acknowledged_at: nil,
+                delivery_uncertain_at: nil
+              })
+              |> Repo.update!()
+
+              insert_event!(attempt, "input_delivery_not_submitted", %{
+                delivery_attempt_id: request.delivery_attempt_id,
+                reason: "worker_rejected_input_before_submission"
+              })
+
+            request.response_state == "responded" and
+                request.delivery_state == "delivery_requested" ->
+              request
+              |> Attention.changeset(%{
+                delivery_state: "delivery_uncertain",
+                delivery_uncertain_at: now
+              })
+              |> Repo.update!()
+
+              insert_event!(attempt, "delivery_uncertain", %{
+                delivery_attempt_id: request.delivery_attempt_id,
+                reason: "setup_terminal_before_delivery_acknowledgement"
+              })
+
+            true ->
+              request
           end
         end
 
@@ -1064,32 +1163,84 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     attributes =
       case state do
         "delivery_acknowledged" ->
-          %{delivery_state: state, delivery_acknowledged_at: now}
+          %{
+            delivery_state: state,
+            delivery_acknowledged_at: now,
+            delivery_uncertain_at: nil
+          }
 
         "delivery_uncertain" ->
-          %{delivery_state: state, delivery_uncertain_at: now}
+          %{
+            delivery_state: state,
+            delivery_acknowledged_at: nil,
+            delivery_uncertain_at: now
+          }
 
         _ ->
           Repo.rollback(error(:invalid_provider_account_setup_delivery, %{state: state}))
       end
 
-    updated = request |> Attention.changeset(attributes) |> Repo.update!()
-    insert_event!(attempt, state, %{delivery_attempt_id: updated.delivery_attempt_id})
-    updated
+    inferred_terminal_uncertainty =
+      request.delivery_state == "delivery_uncertain" and state == "delivery_acknowledged" and
+        not is_nil(request.delivery_uncertain_at) and
+        DateTime.compare(now, request.delivery_uncertain_at) in [:lt, :eq] and
+        Repo.exists?(
+          from event in Event,
+            where:
+              event.setup_attempt_id == ^attempt.id and event.event_type == "delivery_uncertain" and
+                fragment("?->>'reason'", event.details) ==
+                  "setup_terminal_before_delivery_acknowledgement"
+        )
+
+    cond do
+      request.delivery_state == state ->
+        request
+
+      request.delivery_state == "delivery_requested" or inferred_terminal_uncertainty ->
+        updated = request |> Attention.changeset(attributes) |> Repo.update!()
+        insert_event!(attempt, state, %{delivery_attempt_id: updated.delivery_attempt_id})
+        updated
+
+      true ->
+        Repo.rollback(
+          error(:stale_provider_account_setup_delivery, %{setup_attempt_id: attempt.id})
+        )
+    end
   end
 
-  defp mark_input_delivery_uncertain(attention_id) do
+  defp mark_input_delivery_not_submitted(attempt_id, attention_id) do
     Repo.transaction(fn ->
+      attempt = locked_attempt(attempt_id)
+
       case Repo.one(
              from request in Attention, where: request.id == ^attention_id, lock: "FOR UPDATE"
            ) do
         %Attention{delivery_state: "delivery_requested"} = request ->
-          request
-          |> Attention.changeset(%{
-            delivery_state: "delivery_uncertain",
-            delivery_uncertain_at: now()
+          updated =
+            request
+            |> Attention.changeset(%{
+              delivery_state: "response_not_delivered",
+              delivery_acknowledged_at: nil,
+              delivery_uncertain_at: nil
+            })
+            |> Repo.update!()
+
+          attempt =
+            attempt
+            |> Attempt.changeset(%{
+              state: "cancellation_requested",
+              cancellation_request_id: request.delivery_attempt_id,
+              failure_code: "input_delivery_not_submitted",
+              failure_message: @failure_messages["input_delivery_not_submitted"]
+            })
+            |> Repo.update!()
+
+          insert_event!(attempt, "input_delivery_not_submitted", %{
+            delivery_attempt_id: request.delivery_attempt_id,
+            reason: "product_route_rejected_before_worker_submission"
           })
-          |> Repo.update!()
+
+          updated
 
         request ->
           request
@@ -1099,13 +1250,17 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
 
   defp cancel_attention!(attempt, now) do
     if request = Repo.get_by(Attention, setup_attempt_id: attempt.id) do
-      request
-      |> Attention.changeset(%{
-        response_state: "cancelled",
-        cancelled_at: now,
-        cancellation_reason: "setup_cancelled"
-      })
-      |> Repo.update!()
+      if request.response_state == "pending" do
+        request
+        |> Attention.changeset(%{
+          response_state: "cancelled",
+          cancelled_at: now,
+          cancellation_reason: "setup_cancelled"
+        })
+        |> Repo.update!()
+      else
+        request
+      end
     end
   end
 

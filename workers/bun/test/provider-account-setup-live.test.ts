@@ -83,7 +83,7 @@ test.skipIf(!live)(
         deliveries.push(structuredClone(delivery));
       },
       undefined,
-      { interactionDiscoveryTimeoutMs: 2_000, humanCompletionTimeoutMs: 5_000 },
+      { interactionDiscoveryTimeoutMs: 2_000 },
     );
     let physical:
       | { backendKind: string; environmentId: string; incarnation: string }

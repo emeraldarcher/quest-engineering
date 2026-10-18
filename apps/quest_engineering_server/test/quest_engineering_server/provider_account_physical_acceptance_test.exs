@@ -8,6 +8,7 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
   alias QuestEngineering.Server.Persistence.ProviderAccountEnvironment
   alias QuestEngineering.Server.Product.ProviderAccountSetups
   alias QuestEngineering.Server.ProviderAccountApi.Service, as: ProviderAccountService
+  alias QuestEngineering.Server.ProviderAccountSetupInteractions
   alias QuestEngineering.Server.Repo
   alias QuestEngineering.Server.WorkerConnections
   alias QuestEngineering.Server.WorkerStore
@@ -183,10 +184,44 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
     refute inspect(telemetry, limit: :infinity) =~ secret
     refute_receive {:physical_endpoint_telemetry, _duplicate}, 50
 
-    # The test-only discovery deadline is five seconds. Recognition has already
-    # cancelled it; the separate fifteen-second human deadline remains active.
-    Process.sleep(5_250)
+    # A client returning after Product-memory capability loss can trigger a
+    # fresh ephemeral key/output relay from the same supervised invocation.
+    :ok = ProviderAccountSetupInteractions.clear(attempt.id)
+    {refetch_public_key, refetch_private_key} = interaction_encryption_key()
+
+    assert %{"error" => %{"code" => "setup_interaction_refreshing"}} =
+             local_conn()
+             |> put_req_header("x-qe-interaction-public-key", refetch_public_key)
+             |> get(interaction_path)
+             |> json_response(409)
+
+    assert_eventually(fn ->
+      match?(
+        {:ok, _interaction},
+        ProviderAccountSetupInteractions.fetch(
+          attempt.id,
+          attempt.setup_generation,
+          attention.id,
+          terminal_process_generation(waiting)
+        )
+      )
+    end)
+
+    assert %{"interaction" => %{"output" => refetched_output}} =
+             local_conn()
+             |> put_req_header("x-qe-interaction-public-key", refetch_public_key)
+             |> get(interaction_path)
+             |> json_response(200)
+
+    assert decrypt_interaction(refetched_output, refetch_private_key) == output
+    assert event_count(physical_events(worker_root), "streamed_process_spawned") == 1
+
+    # Recognition cancels the bounded five-second discovery deadline. Waiting
+    # meaningfully beyond the former fifteen-second test completion interval
+    # proves there is no separate QE human-response timer.
+    Process.sleep(16_250)
     assert ProviderAccountSetups.fetch(attempt.id).state == "human_interaction_required"
+    assert ProviderAccountSetups.attention_for_attempt(attempt.id).response_state == "pending"
 
     response_conn =
       local_conn()
@@ -213,12 +248,18 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
     )
 
     terminal = ProviderAccountSetups.fetch(attempt.id)
+    delivered_attention = ProviderAccountSetups.attention_for_attempt(attempt.id)
     assert terminal.invocation_state == "settled"
+    assert delivered_attention.response_state == "responded"
+    assert delivered_attention.delivery_state == "delivery_acknowledged"
     assert terminal.invocation_worker_generation == 1
     assert terminal.worker_generation == 1
     assert WorkerStore.fetch(worker_id) |> then(&match?({:ok, %{connection_generation: 1}}, &1))
     assert authority_counts() == baseline_counts
-    assert setup_state_observation_count(attempt.id, "human_interaction_required") == 1
+    assert setup_state_observation_count(attempt.id, "human_interaction_required") == 2
+
+    assert worker_setup_event_count(worker_root, attempt.id, "human_interaction_required") == 1
+
     refute_durable_setup_value(secret)
     refute_durable_setup_value(input)
     refute_worker_state_value(worker_root, secret)
@@ -251,10 +292,15 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
       fixture_mode: "fragmented",
       interaction_bytes: byte_size(output),
       interaction_discovery_timeout_ms: 5_000,
-      human_wait_after_delivery_ms: 5_250,
-      ephemeral_delivery_count: 1,
+      delayed_response_wait_ms: 16_250,
+      former_test_human_completion_interval_ms: 15_000,
+      ephemeral_interaction_retrieval_count: 2,
+      product_interaction_observation_count: 2,
       human_interaction_event_count: 1,
       physical_spawn_count: 1,
+      physical_stdin_delivery_count: 1,
+      delivery_acknowledgement_count: 1,
+      duplicate_delivery_count: 0,
       physical_cancel_count: 0,
       durable_secret_occurrences: 0,
       terminal_state: terminal.state,
@@ -617,6 +663,10 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
       end,
       4_800
     )
+  end
+
+  defp terminal_process_generation(attempt) do
+    attempt.process_generation || raise "expected setup process generation"
   end
 
   defp physical_identity(environment) do

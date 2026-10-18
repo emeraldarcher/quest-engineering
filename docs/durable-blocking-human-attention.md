@@ -93,6 +93,15 @@ native-session, delivery-attempt, or payload combinations fail closed.
 
 ## Waiting, restart, and resource bounds
 
+Human response lifetime is not a machine-operation timeout. Once a valid
+interaction is durably active, QE does not expire it after five minutes, thirty
+minutes, or any other invented wall-clock interval. It remains pending until a
+valid response, explicit cancellation, authoritative target/process/environment
+loss, unrecoverable supervision, accepted administrative shutdown, or an
+explicit provider-native expiry that QE can identify authoritatively. Bounded
+interaction discovery may precede this state, but discovery and human completion
+are separate lifetimes.
+
 Ordinary local bridge calls retain their bounded timeout. Only
 `wait_for_human_assistance_response` disables the socket/mailbox deadline.
 Disconnecting a socket removes the in-memory waiter but does not cancel the
@@ -112,6 +121,15 @@ Worker reconciliation publishes non-pending request and delivery facts. The
 server retains responses committed while a Worker is offline and returns them
 on the next exact Worker generation. A prior-generation `delivery_requested`
 record becomes uncertain rather than being replayed.
+
+ProviderAccount setup uses the same invariant with its existing provider-neutral
+response/delivery states. Sensitive provider output and response plaintext stay
+in short-lived encrypted memory capabilities; their expiry does not expire the
+durable request. A returning client can obtain a fresh capability from the same
+live supervisor without regenerating the provider interaction or spawning a
+second process. Product commits response identity and `delivery_requested`
+before physical stdin submission. Acknowledgement, proven non-submission, and
+uncertainty remain separate, and ambiguous delivery is never replayed.
 
 ## Cancellation and terminalization
 

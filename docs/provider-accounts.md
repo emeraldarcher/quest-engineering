@@ -197,31 +197,41 @@ The ordering is strict:
    register one explicit local supervisor, then release both the account
    environment-operation lock and setup coordinator transition tail before
    crossing the fallible acknowledgement-report boundary;
-7. while the tracked supervisor owns the process/output/timer lifetime without
-   either lock, permit reconnect reconciliation
-   to inspect only the same exact available environment and refresh current
-   routing; explicitly fence stop, removal, generation rollover, missing or
-   replacement environments, and a second setup;
-8. discover only the pinned, bounded interaction contract within its own
+7. while the tracked supervisor owns the process/output lifetime without either
+   lock, permit reconnect reconciliation to inspect only the same exact available
+   environment and refresh current routing; explicitly fence stop, removal,
+   generation rollover, missing or replacement environments, and a second setup;
+8. discover only the pinned interaction contract within its bounded machine
    deadline, then expose a safe account-scoped HumanAttention message;
-9. relay bounded process output/input through an in-memory, five-minute,
-   setup-generation + attention + process-generation-bound channel;
-10. persist input-delivery metadata before the streamed write and classify it as
-    acknowledged or uncertain without storing the input;
-11. on cancellation, persist intent, revalidate exact identity, submit at most
+9. keep that HumanAttention pending indefinitely, without a QE wall-clock human
+   deadline, until response, cancellation, exact process/environment loss,
+   unrecoverable supervision, administrative shutdown, or an authoritative
+   provider-native expiry;
+10. relay bounded output/input through short-lived, setup-generation + attention
+    + process-generation-bound memory capabilities. Expired/lost Product-memory
+    output is refreshed from the same active Worker supervisor under a fresh key;
+    it does not regenerate the interaction or spawn login again;
+11. commit the safe response identity and delivery request in Product before
+    physical submission, then persist Worker input-delivery metadata before the
+    streamed write and classify it as acknowledged or uncertain without storing
+    the input;
+12. on cancellation, persist intent, revalidate exact identity, submit at most
     one cancellation operation, and observe physical exit/absence;
-12. observe ordinary process settlement;
-13. run deterministic local status validation with the same configuration and
+13. observe ordinary process settlement;
+14. run deterministic local status validation with the same configuration and
     physical identity; and
-14. only for exact `authenticated / provider_account` evidence mark
+15. only for exact `authenticated / provider_account` evidence mark
     authentication ready and advance credential generation.
 
 A rejected preflight retains `invocation_state=not_requested` and crosses zero
 login boundaries. A crash after invocation intent but before an acknowledged
 process handle is `uncertain` and is never replayed. An acknowledged process
-with lost stream attachment is inspected by exact handle. Restart never restores
-ephemeral I/O: a still-running process whose stream cannot be recovered is
-terminated through the exact detached-process path before failure is reported.
+with lost stream attachment is inspected by exact handle. Product restart loses
+only Product-memory sealing material; the same live Worker supervisor can
+republish the recognized interaction after reconnect. Worker process restart
+never fabricates ephemeral I/O: a still-running process whose stream cannot be
+recovered is terminated through the exact detached-process path before failure
+is reported.
 An ambiguous input triggers exact process termination and becomes terminally
 uncertain only after physical settlement. An ambiguous cancellation is never
 repeated and advances only through read-only physical reconciliation. One partial
@@ -229,9 +239,10 @@ unique index plus the durable active-setup predicate admits one active setup per
 account; physical lifecycle mutations are explicitly rejected while setup is
 active. The environment-operation lock and coordinator transition tail cover
 only exact preflight, intent, spawn, local acknowledgement, and supervisor
-registration. The explicit supervisor registry owns output, interaction,
-timeout, cancellation, and process settlement without either lock. Every later
-ledger mutation briefly reacquires only the coordinator tail and releases it
+registration. The explicit supervisor registry owns output, bounded interaction
+discovery, cancellation, and process settlement without either lock; human
+response waiting has no timer. Every later ledger mutation briefly reacquires
+only the coordinator tail and releases it
 before physical operations or Product reporting. Different accounts remain
 independent.
 
@@ -247,9 +258,15 @@ ciphertext, and the in-memory relay alone holds the private key and plaintext.
 Interaction responses use `no-store` cache controls. The only durable
 interaction facts are safe IDs, byte length, timestamps, delivery certainty,
 and the non-secret public key; any transport-observed ciphertext cannot reveal
-interaction plaintext without the memory-only private key.
-Expiration, process replacement, cancellation, terminal state, or Product
-restart makes the ephemeral channel unavailable.
+interaction plaintext without the memory-only private key. The output/key
+capability may expire or disappear on Product restart without expiring the
+durable HumanAttention. A later exact client fetch requests a fresh Product key
+and asks the same supervised invocation, through current routing, to republish
+its already-recognized interaction. The first fetch can return
+`setup_interaction_refreshing`; retrying fetch obtains newly sealed output. No
+new setup authorization, login intent, interaction generation, or process is
+created. Process replacement, explicit cancellation, terminal setup state, or
+unrecoverable supervision still makes every old response stale.
 
 ## HTTP API
 
@@ -281,8 +298,17 @@ Setup authorization requires `{request_id, confirmed: true}`. Setup
 interaction/respond/cancel routes require a direct loopback Tauri header. The
 interaction GET additionally requires an ephemeral client RSA public key and
 returns only hybrid-sealed expiring-memory output; the typed client decrypts it
-in memory. Respond accepts a bounded string but stores no value and never
-replays it after uncertain delivery.
+in memory. If Product-memory capability has expired or restarted while the
+durable request is still active, the first fetch returns
+`setup_interaction_refreshing` after asking the same Worker supervisor to reseal
+the same interaction; a later fetch resumes without provider respawn. Respond
+accepts a bounded string but stores no value. Delivery acknowledgement,
+definitely-not-submitted route/write rejection, and ambiguous delivery are
+separate durable outcomes. An ambiguous result is never replayed; reconnect
+before acknowledgement makes it uncertain and requests exact cancellation.
+Response commit and explicit cancellation serialize through the same locked
+authority: cancellation first makes the response stale, while a committed
+response prevents cancellation from erasing its delivery state.
 
 ## Proof boundaries
 
@@ -290,8 +316,11 @@ Deterministic tests cover no-Run creation/setup, idempotent exact authorization,
 canonical authentication observations, every forbidden/unavailable/incompatible
 preflight mode with physical zero-login proof, stale auth/configuration evidence,
 eligibility and generation/incarnation fencing, intent-before-spawn, known and
-ambiguous side-effect outcomes, stale input, acknowledged input, cancellation,
-restart non-replay, Product reconstruction, account serialization,
+ambiguous side-effect outcomes, legitimately stale input, acknowledged input,
+responses immediately before and after the former five-minute boundary,
+multi-day human waits, response/cancel and response/process-exit ordering,
+explicit cancellation, Product-memory relay restart/refetch, Worker reconnect,
+Worker-process restart non-replay, Product reconstruction, account serialization,
 multi-account isolation, post-login validation, generation advancement without
 environment replacement, zero durable sensitive payloads, stop/remove, stale
 schema rejection, and the hard Run-cleanup owner guard.

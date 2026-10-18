@@ -37,7 +37,6 @@ export { CLAUDE_LOGIN_INTERACTION_IDENTITY } from "./execution-environment/provi
 
 const INTERACTION_LIMIT_BYTES = 16_384;
 const DEFAULT_INTERACTION_DISCOVERY_TIMEOUT_MS = 30_000;
-const DEFAULT_HUMAN_COMPLETION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_CANCELLATION_SETTLEMENT_TIMEOUT_MS = 30_000;
 const CLAUDE_LOGIN_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_LOGIN_OAUTH_SCOPES = [
@@ -52,7 +51,6 @@ const CLAUDE_LOGIN_OAUTH_SCOPES = [
 
 export interface ProviderAccountSetupCoordinatorOptions {
   interactionDiscoveryTimeoutMs?: number;
-  humanCompletionTimeoutMs?: number;
   cancellationSettlementTimeoutMs?: number;
 }
 
@@ -108,7 +106,6 @@ interface ActiveProcess {
   interaction: string | null;
   activated: boolean;
   discoveryTimer: ReturnType<typeof setTimeout> | null;
-  humanTimer: ReturnType<typeof setTimeout> | null;
 }
 
 type PrepareOutcome =
@@ -203,7 +200,6 @@ export class ProviderAccountSetupCoordinator {
                 },
                 "human_interaction_reconciled",
               );
-              this.startHumanCompletionTimer(record, active);
             }
             return {
               kind: "report",
@@ -280,7 +276,6 @@ export class ProviderAccountSetupCoordinator {
                 interaction: null,
                 activated: false,
                 discoveryTimer: null,
-                humanTimer: null,
               };
               this.active.set(record.setupAttemptId, supervisor);
               registration.supervisor = supervisor;
@@ -409,7 +404,29 @@ export class ProviderAccountSetupCoordinator {
           ),
       );
       await this.publishInputDelivery(acknowledged);
-    } catch {
+    } catch (error) {
+      if (inputWasDefinitelyNotSubmitted(error)) {
+        const notSubmitted = await this.withAccount(
+          existing.command.setup.provider_account_id,
+          async () => {
+            const record = this.required(command.setup_attempt_id);
+            if (isTerminal(record.state)) return record;
+            return this.store.transition(
+              record.setupAttemptId,
+              {
+                failureCode: "input_delivery_not_submitted",
+                supervisionFailureCode: "input_delivery_not_submitted",
+                cancellationInvocationState: "intent_recorded",
+              },
+              "setup_input_not_submitted_termination_requested",
+            );
+          },
+        );
+        if (!isTerminal(notSubmitted.state))
+          await this.cancelRecord(notSubmitted);
+        return;
+      }
+
       const uncertain = await this.withAccount(
         existing.command.setup.provider_account_id,
         async () => {
@@ -720,7 +737,6 @@ export class ProviderAccountSetupCoordinator {
       },
     );
     if (!waiting) return;
-    this.startHumanCompletionTimer(waiting, active);
     this.queueReport(waiting, interaction);
   }
 
@@ -825,7 +841,6 @@ export class ProviderAccountSetupCoordinator {
               },
               "human_interaction_reconciled",
             );
-            this.startHumanCompletionTimer(current, active);
           }
           return { kind: "report" as const, record: current, active };
         }
@@ -1339,21 +1354,6 @@ export class ProviderAccountSetupCoordinator {
     if (record) await this.cancelRecord(record);
   }
 
-  private startHumanCompletionTimer(
-    record: ProviderAccountSetupRecord,
-    active: ActiveProcess,
-  ): void {
-    if (active.humanTimer) return;
-    active.humanTimer = this.deadline(this.humanCompletionTimeoutMs(), () => {
-      this.trackBackground(
-        this.requestSupervisionTermination(
-          record.setupAttemptId,
-          "setup_human_completion_timed_out",
-        ),
-      );
-    });
-  }
-
   private deadline(milliseconds: number, callback: () => void) {
     const timer = setTimeout(callback, milliseconds);
     timer.unref?.();
@@ -1380,21 +1380,12 @@ export class ProviderAccountSetupCoordinator {
 
   private clearTimers(active: ActiveProcess): void {
     this.clearDiscoveryTimer(active);
-    if (active.humanTimer) clearTimeout(active.humanTimer);
-    active.humanTimer = null;
   }
 
   private interactionDiscoveryTimeoutMs(): number {
     return positiveTimeout(
       this.options.interactionDiscoveryTimeoutMs,
       DEFAULT_INTERACTION_DISCOVERY_TIMEOUT_MS,
-    );
-  }
-
-  private humanCompletionTimeoutMs(): number {
-    return positiveTimeout(
-      this.options.humanCompletionTimeoutMs,
-      DEFAULT_HUMAN_COMPLETION_TIMEOUT_MS,
     );
   }
 
@@ -1798,6 +1789,14 @@ async function discard(
 
 function physicalExitObserved(exit: Awaited<StreamedProcess["exit"]>): boolean {
   return ["exited", "exited_nonzero", "signaled"].includes(exit.kind);
+}
+
+function inputWasDefinitelyNotSubmitted(error: unknown): boolean {
+  return (
+    error instanceof EnvironmentBackendError &&
+    (error.sideEffectCertainty === "not_submitted" ||
+      error.code === "streamed_process_write_rejected")
+  );
 }
 
 function positiveTimeout(value: number | undefined, fallback: number): number {

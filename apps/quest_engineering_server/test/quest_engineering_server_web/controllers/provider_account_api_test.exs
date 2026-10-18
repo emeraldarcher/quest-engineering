@@ -347,7 +347,82 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
     assert_receive {:provider_account_endpoint_telemetry, interaction_telemetry}
     refute inspect(interaction_telemetry, limit: :infinity) =~ ephemeral
 
+    # Volatile output/key loss does not expire the durable HumanAttention. A
+    # later client fetch asks the same Worker invocation to republish the same
+    # interaction under a fresh Product-memory key; it never authorizes setup
+    # or creates another login intent.
+    previous_relay = Process.whereis(ProviderAccountSetupInteractions)
+    assert is_pid(previous_relay)
+    :ok = GenServer.stop(previous_relay, :normal)
+
+    assert_eventually(fn ->
+      replacement = Process.whereis(ProviderAccountSetupInteractions)
+      is_pid(replacement) and replacement != previous_relay
+    end)
+
+    assert ProviderAccountSetups.attention_for_attempt(attempt_id).response_state == "pending"
+    {refresh_public_key, refresh_private_key} = interaction_encryption_key()
+
+    assert %{"error" => %{"code" => "setup_interaction_refreshing"}} =
+             local_conn()
+             |> put_req_header("x-qe-interaction-public-key", refresh_public_key)
+             |> get(
+               "/api/v1/provider-accounts/#{account.id}/setup-attempts/#{attempt_id}/interactions/#{attention_id}?generation=#{waiting.setup_generation}"
+             )
+             |> json_response(409)
+
+    assert_receive {:worker_protocol,
+                    %{
+                      "type" => "prepare_provider_account_setup",
+                      "setup" => %{
+                        "setup_attempt_id" => ^attempt_id,
+                        "state" => "human_interaction_required"
+                      }
+                    }}
+
+    :ok =
+      ProviderAccountSetupInteractions.put(
+        waiting.id,
+        waiting.setup_generation,
+        attention_id,
+        process_generation,
+        ephemeral
+      )
+
+    assert %{"interaction" => %{"output" => refreshed_output}} =
+             local_conn()
+             |> put_req_header("x-qe-interaction-public-key", refresh_public_key)
+             |> get(
+               "/api/v1/provider-accounts/#{account.id}/setup-attempts/#{attempt_id}/interactions/#{attention_id}?generation=#{waiting.setup_generation}"
+             )
+             |> json_response(200)
+
+    assert decrypt_interaction(refreshed_output, refresh_private_key) == ephemeral
+    assert ProviderAccountSetups.fetch(attempt_id).state == "human_interaction_required"
+
+    assert Repo.aggregate(
+             QuestEngineering.Server.Persistence.ProviderAccountSetupAuthorization,
+             :count
+           ) == 1
+
     sensitive_input = "fake-sensitive-input-never-durable"
+
+    assert %{"error" => %{"code" => "malformed_request"}} =
+             local_conn()
+             |> post(
+               "/api/v1/provider-accounts/#{account.id}/setup-attempts/#{attempt_id}/respond",
+               %{
+                 setup_generation: waiting.setup_generation,
+                 request_generation: 1,
+                 attention_id: attention_id,
+                 process_generation: process_generation,
+                 delivery_attempt_id: Ecto.UUID.generate(),
+                 value: sensitive_input
+               }
+             )
+             |> json_response(400)
+
+    assert ProviderAccountSetups.attention_for_attempt(attempt_id).response_state == "pending"
 
     response_conn =
       local_conn()
@@ -385,6 +460,20 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
                       "value" => ^sensitive_input
                     }}
 
+    assert %{"error" => %{"code" => "stale_provider_account_setup_response"}} =
+             local_conn()
+             |> post(
+               "/api/v1/provider-accounts/#{account.id}/setup-attempts/#{attempt_id}/respond",
+               %{
+                 setup_generation: waiting.setup_generation,
+                 attention_id: attention_id,
+                 request_id: Ecto.UUID.generate(),
+                 value: "legitimately-stale-input"
+               }
+             )
+             |> json_response(409)
+
+    refute_receive {:worker_protocol, %{"type" => "respond_provider_account_setup"}}, 25
     refute durable_setup_text_contains?(sensitive_input)
     refute durable_setup_text_contains?(ephemeral)
 
@@ -456,6 +545,18 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
       Base.decode64!(sealed["tag"]),
       false
     )
+  end
+
+  defp assert_eventually(fun, attempts \\ 100)
+  defp assert_eventually(fun, 0), do: assert(fun.())
+
+  defp assert_eventually(fun, attempts) do
+    if fun.() do
+      assert true
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
   end
 
   defp durable_setup_text_contains?(value) do
