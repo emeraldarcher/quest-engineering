@@ -1,6 +1,6 @@
 # Quest Engineering Bun Worker v0.13
 
-The Bun Worker is the sole filesystem authority for Worker Protocol v18. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
+The Bun Worker is the sole filesystem authority for Worker Protocol v19. Phoenix schedules logical Workspaces; Bun discovers authorized source repositories, persists bindings, provisions one managed Git worktree per Run, and executes every filesystem-enabled Action in that Run worktree.
 
 ## Required configuration
 
@@ -41,11 +41,11 @@ The historical repository-owned `qe-pi-execution-v2`, `qe-coding-execution-v1`, 
 
 Startup readiness calls `sbx version --json` with non-TTY stdin/stdout/stderr and keeps stdout and stderr separate. SBX v0.43.0 can append a once-per-update-cache, 84-column update box to JSON stdout even in that mode. QE recognizes only that exact suffix on the version command (plus the historical exact one-line update notice), then still requires one complete schema-valid JSON document. It does not search arbitrary output for JSON or strip generic ANSI bytes; unknown framing and the same diagnostics on every other command fail closed. When diagnosing a new framing failure, capture stdout and stderr separately without a PTY and record escaped/hex bytes before changing this boundary.
 
-Claude discovery reports the immutable runtime as installed and setup-capable but `auth_required`; it publishes a Worker Protocol v18 `harness_setups` capability, not a globally schedulable executor. A local human setup authority pre-binds one pending Run Action, Member, logical/physical lineage, workspace, profile, and resolved configuration. `harness-setups.sqlite` durably separates not-requested, requested, acknowledged, ready, failed, uncertain, and cancelled side-effect state. The only authentication plumbing is an explicit human-authorized launch of the pinned, unmodified `claude auth login` inside the exact retained Run SBX with lineage-private `CLAUDE_CONFIG_DIR`. Setup uses the canonical lease workspace cwd; it must not pass the private lineage worktree sibling to generic streamed-process containment. A restart inspects the same environment and never replays an acknowledged or ambiguous invocation. Ready evidence accompanies the later normal `execute_action`; the Worker accepts it only for the exact Action or compatible continuation before adopting that PhysicalLineage. QE never copies host Claude state, extracts or persists a token, accepts an API-key fallback, proxies subscription bearer traffic, or invokes login during discovery/tests. Once authenticated, the wrapper obtains the account-visible model catalog from the SDK, requires the exact scheduled model and effort at initialization and settlement, and fails instead of substituting. HumanAttention uses correlated native request and QE attention IDs; structured confirmation, text, choice, and multiline replies return to the same blocked callback. Product terminal attachment remains absent.
+Claude discovery reports the immutable runtime as installed and setup-capable but `auth_required`; it publishes a Worker Protocol v19 `harness_setups` capability, not a globally schedulable executor. A local human setup authority pre-binds one pending Run Action, Member, logical/physical lineage, workspace, profile, and resolved configuration. `harness-setups.sqlite` durably separates not-requested, requested, acknowledged, ready, failed, uncertain, and cancelled side-effect state. The only authentication plumbing is an explicit human-authorized launch of the pinned, unmodified `claude auth login` inside the exact retained Run SBX with lineage-private `CLAUDE_CONFIG_DIR`. Setup uses the canonical lease workspace cwd; it must not pass the private lineage worktree sibling to generic streamed-process containment. A restart inspects the same environment and never replays an acknowledged or ambiguous invocation. Ready evidence accompanies the later normal `execute_action`; the Worker accepts it only for the exact Action or compatible continuation before adopting that PhysicalLineage. QE never copies host Claude state, extracts or persists a token, accepts an API-key fallback, proxies subscription bearer traffic, or invokes login during discovery/tests. Once authenticated, the wrapper obtains the account-visible model catalog from the SDK, requires the exact scheduled model and effort at initialization and settlement, and fails instead of substituting. HumanAttention uses correlated native request and QE attention IDs; structured confirmation, text, choice, and multiline replies return to the same blocked callback. Product terminal attachment remains absent.
 
 ## ProviderAccount authentication preflight
 
-Protocol v18 advertises `provider_account_auth_preflight_v1`. An available
+Protocol v19 advertises `provider_account_auth_preflight_v1` and carries separate current-routing and immutable setup-invocation ownership. An available
 account cell is inspected with the pinned provider CLI under the same exact
 allowlisted environment used for login and execution. Reports use canonical
 states (`authentication_required`, `authenticated`, `forbidden_auth_method`,
@@ -68,7 +68,7 @@ contains no legacy-row conversion.
 
 ## Account-to-Run workspace tool broker
 
-Worker Protocol v18 advertises `workspace_tool_broker_v1`. Product prepares and
+Worker Protocol v19 advertises `workspace_tool_broker_v1`. Product prepares and
 admits one semantic ProviderAccount/Run/Action/Attempt/workspace/tool-profile
 binding; the Worker resolves the current physical account environment,
 PhysicalLineage, Run SBX, and process capabilities. Account requests are strict
@@ -169,9 +169,18 @@ streamed-process identity, account-scoped HumanAttention, input-delivery
 certainty, exact cancellation, and local status validation. Sensitive login
 output/input remains only in process memory and the Product's expiring encrypted
 relay; it is never accepted by a SQLite API or emitted to logs. Worker restart
-never replays a requested/ambiguous spawn, input, or cancellation. A running
-process with a non-recoverable stream is revalidated and physically terminated
-before failure is reported. See
+never replays a requested/ambiguous spawn, input, or cancellation. The
+per-account environment-operation lock ends only after exact process identity is
+durably acknowledged and local supervision is installed, but before the
+fallible Product acknowledgement report. The separate setup coordinator tail
+ends at that same local acknowledgement boundary. One tracked active supervisor
+then owns output, interaction timers, cancellation, and settlement; later
+ledger transitions briefly reacquire the coordinator tail, while physical waits
+and Product reports remain outside it. The durable active-setup predicate permits
+read-only reconciliation of only that same environment while fencing stop,
+removal, credential rollover, replacement, and a second login. A running process
+with a non-recoverable stream is revalidated and physically
+terminated before failure is reported. See
 [`../../docs/provider-account-login-supervision.md`](../../docs/provider-account-login-supervision.md).
 
 Phase B launches only `/usr/bin/python3` with QE's static deterministic fake

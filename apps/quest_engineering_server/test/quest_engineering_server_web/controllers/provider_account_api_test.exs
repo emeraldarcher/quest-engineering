@@ -228,7 +228,7 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
     assert_receive {:worker_protocol,
                     %{
                       "type" => "prepare_provider_account_setup",
-                      "protocol_version" => 18,
+                      "protocol_version" => 19,
                       "setup" => %{
                         "setup_attempt_id" => ^attempt_id,
                         "provider_account_id" => account_id,
@@ -271,6 +271,8 @@ defmodule QuestEngineering.ServerWeb.ProviderAccountApiTest do
                  environment_generation: attempt.environment_generation,
                  worker_generation: attempt.worker_generation,
                  environment_operation_id: attempt.environment_operation_id,
+                 invocation_worker_generation: attempt.worker_generation,
+                 invocation_environment_operation_id: attempt.environment_operation_id,
                  backend_kind: environment.backend_kind,
                  environment_id: environment.environment_id,
                  environment_incarnation: environment.incarnation,

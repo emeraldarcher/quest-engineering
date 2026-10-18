@@ -19,8 +19,12 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
     field :authorization_inspection_identity, :string
     field :authorization_inspected_at, :utc_datetime_usec
     field :worker_id, :string
+    # Mutable authority for the current Worker channel and environment operation.
     field :worker_generation, :integer
     field :environment_operation_id, :string
+    # Immutable physical invocation owner, set once invocation intent is observed.
+    field :invocation_worker_generation, :integer
+    field :invocation_environment_operation_id, :string
     field :backend_kind, :string
     field :environment_id, :string
     field :environment_incarnation, :string
@@ -74,6 +78,8 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
       :worker_id,
       :worker_generation,
       :environment_operation_id,
+      :invocation_worker_generation,
+      :invocation_environment_operation_id,
       :backend_kind,
       :environment_id,
       :environment_incarnation,
@@ -133,6 +139,7 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
     |> validate_number(:credential_generation_after, greater_than: 0)
     |> validate_number(:environment_generation, greater_than: 0)
     |> validate_number(:worker_generation, greater_than: 0)
+    |> validate_number(:invocation_worker_generation, greater_than: 0)
     |> validate_inclusion(
       :state,
       ~w(authorized preparing invocation_requested invocation_acknowledged human_interaction_required validating succeeded failed uncertain cancellation_requested cancelled invalidated)
@@ -172,6 +179,9 @@ defmodule QuestEngineering.Server.Persistence.ProviderAccountSetupAttempt do
       name: :provider_account_setup_credential_generation_valid
     )
     |> check_constraint(:worker_generation, name: :provider_account_setup_worker_generation_valid)
+    |> check_constraint(:invocation_worker_generation,
+      name: :provider_account_setup_invocation_owner_complete
+    )
     |> check_constraint(:state, name: :provider_account_setup_state_valid)
     |> check_constraint(:invocation_state, name: :provider_account_setup_invocation_state_valid)
     |> check_constraint(:validation_state, name: :provider_account_setup_validation_state_valid)

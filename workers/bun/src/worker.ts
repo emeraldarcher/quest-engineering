@@ -27,6 +27,7 @@ import {
   ProviderAccountEnvironmentManager,
   type ProviderAccountEnvironmentReport,
 } from "./execution-environment/provider-account.ts";
+import { ClaudeSubscriptionSetupLauncher } from "./execution-environment/provider-account-setup-launcher.ts";
 import { SbxRunExecutionManager } from "./execution-environment/sbx-run.ts";
 import { HarnessSetupCoordinator } from "./harness-setup.ts";
 import { HarnessSetupStore } from "./harness-setup-store.ts";
@@ -68,7 +69,10 @@ import type {
   WorkerCapabilities,
 } from "./protocol/types.ts";
 import { WORKER_PROTOCOL_VERSION } from "./protocol/types.ts";
-import { ProviderAccountSetupCoordinator } from "./provider-account-setup.ts";
+import {
+  ProviderAccountSetupCoordinator,
+  type ProviderAccountSetupCoordinatorOptions,
+} from "./provider-account-setup.ts";
 import { ProviderAccountSetupStore } from "./provider-account-setup-store.ts";
 import {
   RunCleanupCoordinator,
@@ -98,9 +102,13 @@ interface WorkerInfrastructure {
   ensureInfrastructure(): Promise<unknown>;
 }
 
-interface WorkerDependencies {
+export interface WorkerDependencies {
   infrastructure?: WorkerInfrastructure;
   harnesses?: AgentHarness[];
+  /** Trusted test composition seam; normal Worker startup never supplies this. */
+  providerAccountEnvironments?: ProviderAccountEnvironmentManager;
+  /** Bounded test timing only; normal Worker startup uses production defaults. */
+  providerAccountSetupOptions?: ProviderAccountSetupCoordinatorOptions;
 }
 
 function requiredHerdrConfig(value: string | undefined, label: string): string {
@@ -208,9 +216,14 @@ export class QuestEngineeringWorker {
       )
         ? new SbxRunExecutionManager(config, this.worktrees)
         : null;
-    this.providerAccountEnvironments = new ProviderAccountEnvironmentManager(
-      config,
-    );
+    this.providerAccountEnvironments =
+      dependencies.providerAccountEnvironments ??
+      new ProviderAccountEnvironmentManager(config, {
+        setupLauncher:
+          config.provider === "fake"
+            ? null
+            : new ClaudeSubscriptionSetupLauncher(),
+      });
     this.providerAccountSetups = new ProviderAccountSetupCoordinator(
       new ProviderAccountSetupStore(config.dataRoot),
       this.providerAccountEnvironments,
@@ -232,6 +245,8 @@ export class QuestEngineeringWorker {
             ...delivery,
           })
           .then(() => undefined),
+      undefined,
+      dependencies.providerAccountSetupOptions,
     );
     const harnesses: AgentHarness[] =
       dependencies.harnesses ??

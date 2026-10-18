@@ -24,7 +24,11 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
   @terminal_states ~w(succeeded failed uncertain cancelled invalidated)
   @states @active_states ++ @terminal_states
   @invocation_states ~w(not_requested requested acknowledged settled uncertain)
-  @setup_executables ["/usr/bin/python3", "/usr/bin/qe-fake-provider-login"]
+  @setup_executables [
+    "/opt/qe/claude/claude",
+    "/usr/bin/python3",
+    "/usr/bin/qe-fake-provider-login"
+  ]
   @failure_messages %{
     "setup_process_lost" => "The setup process could not be recovered safely.",
     "setup_spawn_failed" => "The setup process could not be started safely.",
@@ -453,7 +457,9 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
       authorization_id: authorization.id,
       auth_configuration_identity: attempt.auth_configuration_identity,
       auth_environment_policy: attempt.auth_environment_policy,
-      auth_inspection_identity: attempt.authorization_inspection_identity
+      auth_inspection_identity: attempt.authorization_inspection_identity,
+      routing_worker_generation: attempt.worker_generation,
+      environment_operation_id: attempt.environment_operation_id
     })
 
     {attempt, authorization, false}
@@ -515,7 +521,11 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
             )
             |> Repo.update!()
 
-          insert_event!(updated, "worker_generation_reconciled", %{})
+          insert_event!(updated, "worker_generation_reconciled", %{
+            routing_worker_generation: updated.worker_generation,
+            environment_operation_id: updated.environment_operation_id
+          })
+
           setup_payload(updated)
 
         _ ->
@@ -550,10 +560,26 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     preflight = fetch(report, :preflight)
     validation = fetch(report, :validation)
     failure_code = fetch(report, :failure_code)
+    invocation_worker_generation = fetch(report, :invocation_worker_generation)
+
+    invocation_environment_operation_id =
+      fetch(report, :invocation_environment_operation_id)
 
     attributes = %{
       state: incoming_state,
       invocation_state: incoming_invocation,
+      invocation_worker_generation:
+        if(incoming_invocation == "not_requested",
+          do: attempt.invocation_worker_generation,
+          else: attempt.invocation_worker_generation || invocation_worker_generation
+        ),
+      invocation_environment_operation_id:
+        if(incoming_invocation == "not_requested",
+          do: attempt.invocation_environment_operation_id,
+          else:
+            attempt.invocation_environment_operation_id ||
+              invocation_environment_operation_id
+        ),
       process_backend_id:
         if(is_map(process),
           do: fetch(process, :backend_process_id),
@@ -653,7 +679,13 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
 
     updated = apply_account_projection!(updated, validation, now)
     apply_attention_projection!(updated, report, now)
-    insert_event!(updated, "setup_state_observed", %{observed_state: incoming_state})
+
+    insert_event!(updated, "setup_state_observed", %{
+      observed_state: incoming_state,
+      routing_worker_generation: generation,
+      invocation_worker_generation: updated.invocation_worker_generation
+    })
+
     updated
   end
 
@@ -673,6 +705,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         attempt.environment_id == fetch(report, :environment_id) and
         attempt.environment_incarnation == fetch(report, :environment_incarnation) and
         current_environment.credential_generation == attempt.environment_generation and
+        current_environment.worker_generation == attempt.worker_generation and
+        current_environment.operation_id == attempt.environment_operation_id and
         current_environment.backend_kind == attempt.backend_kind and
         current_environment.environment_id == attempt.environment_id and
         current_environment.incarnation == attempt.environment_incarnation
@@ -683,6 +717,38 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
     validation = fetch(report, :validation)
     incoming_state = fetch(report, :state)
     incoming_invocation = fetch(report, :invocation_state)
+    invocation_worker_generation = fetch(report, :invocation_worker_generation)
+
+    invocation_environment_operation_id =
+      fetch(report, :invocation_environment_operation_id)
+
+    invocation_owner_complete =
+      is_integer(invocation_worker_generation) and invocation_worker_generation > 0 and
+        invocation_worker_generation <= generation and
+        is_binary(invocation_environment_operation_id) and
+        invocation_environment_operation_id != ""
+
+    invocation_owner_stable =
+      (is_nil(attempt.invocation_worker_generation) and
+         is_nil(attempt.invocation_environment_operation_id)) or
+        (attempt.invocation_worker_generation == invocation_worker_generation and
+           attempt.invocation_environment_operation_id ==
+             invocation_environment_operation_id)
+
+    invocation_owner_valid =
+      if incoming_invocation == "not_requested" do
+        is_nil(invocation_worker_generation) and
+          is_nil(invocation_environment_operation_id) and
+          is_nil(attempt.invocation_worker_generation) and
+          is_nil(attempt.invocation_environment_operation_id)
+      else
+        invocation_owner_complete and invocation_owner_stable and
+          known_routing_authority?(
+            attempt,
+            invocation_worker_generation,
+            invocation_environment_operation_id
+          )
+      end
 
     process_required =
       incoming_state in ~w(invocation_acknowledged human_interaction_required validating succeeded) or
@@ -737,8 +803,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
         )
 
     valid_shape =
-      (not process_required or is_map(process)) and process_allowed and process_stable and
-        evidence_stable and (not preflight_required or preflight_valid) and
+      invocation_owner_valid and (not process_required or is_map(process)) and process_allowed and
+        process_stable and evidence_stable and (not preflight_required or preflight_valid) and
         (incoming_state != "human_interaction_required" or is_map(attention)) and
         (incoming_state != "succeeded" or
            (incoming_invocation == "settled" and validation_valid))
@@ -1115,6 +1181,8 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
       environment_generation: attempt.environment_generation,
       worker_generation: attempt.worker_generation,
       environment_operation_id: attempt.environment_operation_id,
+      invocation_worker_generation: attempt.invocation_worker_generation,
+      invocation_environment_operation_id: attempt.invocation_environment_operation_id,
       provider_key: attempt.provider_key,
       authorized_authentication: %{
         state: attempt.authorization_auth_state,
@@ -1191,6 +1259,22 @@ defmodule QuestEngineering.Server.Product.ProviderAccountSetups do
       value when is_map(value) -> fetch(value, :attention_id)
       _ -> nil
     end
+  end
+
+  defp known_routing_authority?(attempt, worker_generation, environment_operation_id) do
+    current =
+      attempt.worker_generation == worker_generation and
+        attempt.environment_operation_id == environment_operation_id
+
+    current or
+      Event
+      |> where([event], event.setup_attempt_id == ^attempt.id)
+      |> select([event], event.details)
+      |> Repo.all()
+      |> Enum.any?(fn details ->
+        fetch(details, :routing_worker_generation) == worker_generation and
+          fetch(details, :environment_operation_id) == environment_operation_id
+      end)
   end
 
   defp safe_failure_message(nil), do: nil
