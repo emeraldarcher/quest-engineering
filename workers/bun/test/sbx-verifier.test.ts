@@ -1,7 +1,16 @@
 import { expect, test } from "bun:test";
 import type { SbxExecOptions } from "../src/execution-environment/sbx-client.ts";
 import {
+  SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256,
+  SBX_CLAUDE_ACCOUNT_PROFILE,
+  SBX_CLAUDE_CODE_VERSION,
+  SBX_CLAUDE_LINUX_ARM64_SHA256,
+  SBX_CLAUDE_LINUX_X64_SHA256,
+  SBX_CLAUDE_MANAGED_MOD_SHA256,
+  SBX_CLAUDE_MANAGED_SETTINGS_SHA256,
+  SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
   SBX_DISPOSABLE_RESOURCE_POLICY,
+  SBX_PI_INSTALL_NETWORK_TARGET,
   SBX_PI_PROFILE,
 } from "../src/execution-environment/sbx-profile.ts";
 import {
@@ -181,6 +190,41 @@ test("Pi verifier requires a host-Pi dynamic credential, narrow egress, and disa
       identity: piProfileIdentity,
     }).verify(piRecord(), piSandbox),
   ).rejects.toMatchObject({ code: "environment_requirements_unmet" });
+});
+
+test("Claude account v2 verifier accepts only the reviewed exact host contract", async () => {
+  const client = new ClaudeAccountProbeClient();
+  const verifier = new LiveSbxEnvironmentVerifier(
+    client,
+    SBX_DISPOSABLE_RESOURCE_POLICY,
+    SBX_CLAUDE_ACCOUNT_PROFILE,
+  );
+
+  const verified = await verifier.verify(accountRecord(), accountSandbox);
+  expect(verified.capabilities).toEqual(
+    expect.arrayContaining([
+      { kind: "credentials", mode: "account_private_claude_oauth" },
+      { kind: "network_policy", mode: "anthropic_account_only" },
+      { kind: "control_channel", mode: "worker_account_mailbox_v1" },
+    ]),
+  );
+
+  const rejected: string[][] = [
+    [...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS].filter(
+      (host) => host !== "platform.claude.com",
+    ),
+    ["*.claude.com"],
+    ["*.anthropic.com"],
+    ["unrelated.example"],
+    ["**"],
+    ["0.0.0.0/0"],
+  ];
+  for (const runtimeAllows of rejected) {
+    client.runtimeAllows = runtimeAllows;
+    await expect(
+      verifier.verify(accountRecord(), accountSandbox),
+    ).rejects.toMatchObject({ code: "environment_unhealthy" });
+  }
 });
 
 const piProfileIdentity = {
@@ -447,6 +491,175 @@ class PiProbeClient extends ProbeClient {
       return { exitCode: 6, stdout: "", stderr: "denied" };
     return super.exec(sandboxName, command, options);
   }
+}
+
+const accountSandbox = {
+  ...sandbox,
+  name: "qe-claude-account-v2-verifier-test",
+  agent: "qe-claude-account-v2",
+};
+
+class ClaudeAccountProbeClient extends ProbeClient {
+  runtimeAllows: string[] = [...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS];
+
+  constructor() {
+    super();
+    this.state.sandboxes.set(accountSandbox.name, { ...accountSandbox });
+  }
+
+  override async policies() {
+    return [
+      {
+        id: "allow-account-runtime",
+        scope: "global",
+        appliesTo: "all",
+        resourceType: "network" as const,
+        decision: "allow" as const,
+        resources: [...this.runtimeAllows, SBX_PI_INSTALL_NETWORK_TARGET],
+        status: "active" as const,
+      },
+      {
+        id: "deny-account-install",
+        scope: `sandbox:${accountSandbox.name}`,
+        appliesTo: `sandbox:${accountSandbox.name}`,
+        resourceType: "network" as const,
+        decision: "deny" as const,
+        resources: [SBX_PI_INSTALL_NETWORK_TARGET],
+        status: "active" as const,
+        sandboxId: accountSandbox.name,
+      },
+    ];
+  }
+
+  override async exec(
+    sandboxName: string,
+    command: EnvironmentCommand,
+    options: SbxExecOptions = {},
+  ): Promise<EnvironmentCommandResult> {
+    const ok = (stdout = ""): EnvironmentCommandResult => ({
+      exitCode: 0,
+      stdout,
+      stderr: "",
+    });
+    const source = command.args[1] ?? "";
+    if (
+      command.executable === "/usr/bin/python3" &&
+      command.environment?.QE_MARKER_PATH &&
+      source.includes("'exists'")
+    )
+      return ok(
+        `${JSON.stringify({ exists: true, marker: accountMarker() })}\n`,
+      );
+    if (
+      command.executable === "/usr/bin/python3" &&
+      command.environment?.QE_PATHS &&
+      command.environment.QE_MARKER_PATH
+    )
+      return ok(
+        `${JSON.stringify({
+          marker: accountMarker(),
+          directories: {
+            workspace: true,
+            home: true,
+            state: true,
+            control: true,
+            cache: true,
+            temp: true,
+          },
+          home: "/home/agent",
+          homeSentinel: "incarnation-verifier",
+          unexpectedVirtiofsMounts: [],
+          hostUsersMountVisible: false,
+          dockerSocketMounted: false,
+          sshAgentSocketUsable: false,
+          nonProxyCredentialValuePresent: false,
+        })}\n`,
+      );
+    if (
+      command.executable === "/usr/bin/python3" &&
+      command.environment?.QE_PROOF_PATH &&
+      source.includes("'exists'")
+    )
+      return ok(
+        `${JSON.stringify({
+          exists: true,
+          proof: {
+            schemaVersion: 1,
+            daemonId: "private-docker-id",
+            incarnation: "incarnation-verifier",
+          },
+        })}\n`,
+      );
+    if (
+      command.executable === "/usr/bin/python3" &&
+      command.environment?.QE_PATHS &&
+      !command.environment.QE_MARKER_PATH
+    ) {
+      const expectedRuntimeDigest =
+        process.arch === "arm64"
+          ? SBX_CLAUDE_LINUX_ARM64_SHA256
+          : SBX_CLAUDE_LINUX_X64_SHA256;
+      return ok(
+        `${JSON.stringify({
+          digests: {
+            claude: expectedRuntimeDigest,
+            bridge: SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256,
+            settings: SBX_CLAUDE_MANAGED_SETTINGS_SHA256,
+            mod: SBX_CLAUDE_MANAGED_MOD_SHA256,
+          },
+          modes: { claude: 0o555, bridge: 0o555, settings: 0o444, mod: 0o444 },
+          version: `${SBX_CLAUDE_CODE_VERSION} (Claude Code)`,
+          versionExit: 0,
+        })}\n`,
+      );
+    }
+    if (command.executable === "/usr/bin/docker" && command.args[0] === "info")
+      return ok(
+        `${JSON.stringify({
+          DockerRootDir: "/var/lib/docker",
+          NCPU: 1,
+          MemTotal: 1_073_741_824,
+          ID: "private-docker-id",
+          Name: accountSandbox.name,
+        })}\n`,
+      );
+    if (command.executable === "/bin/df") return ok("1B-blocks\n1073741824\n");
+    if (command.executable === "/usr/bin/curl")
+      return { exitCode: 6, stdout: "", stderr: "network denied" };
+    return super.exec(sandboxName, command, options);
+  }
+}
+
+function accountRecord(): DurableEnvironmentRecord {
+  return {
+    ...record(),
+    owner: {
+      kind: "provider_account",
+      providerAccountId: "account-verifier",
+      credentialGeneration: 1,
+    },
+    displayName: accountSandbox.name,
+    environmentId: accountSandbox.id,
+    profileId: SBX_CLAUDE_ACCOUNT_PROFILE.identity.id,
+    profileDigest: SBX_CLAUDE_ACCOUNT_PROFILE.identity.digest,
+    nativeAgent: accountSandbox.agent,
+    state: "running",
+  };
+}
+
+function accountMarker() {
+  return {
+    ...marker(),
+    environmentId: accountSandbox.id,
+    displayName: accountSandbox.name,
+    owner: {
+      kind: "provider_account",
+      providerAccountId: "account-verifier",
+      credentialGeneration: 1,
+    },
+    profileId: SBX_CLAUDE_ACCOUNT_PROFILE.identity.id,
+    profileDigest: SBX_CLAUDE_ACCOUNT_PROFILE.identity.digest,
+  };
 }
 
 function piRecord(): DurableEnvironmentRecord {

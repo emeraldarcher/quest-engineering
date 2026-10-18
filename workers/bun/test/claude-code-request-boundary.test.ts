@@ -138,7 +138,7 @@ async function capture(input: {
   const sessionId = input.sessionId ?? "11111111-1111-4111-8111-111111111111";
   const pluginSource = resolve(
     import.meta.dir,
-    "../profiles/qe-claude-account-v1/files/home/.qe-profile/claude-plugins/plugins/qe-account-cell",
+    "../profiles/qe-claude-account-v2/files/home/.qe-profile/claude-plugins/plugins/qe-account-cell",
   );
   const plugin = join(input.config, "qe-account-cell-plugin");
   await cp(pluginSource, plugin, { recursive: true });

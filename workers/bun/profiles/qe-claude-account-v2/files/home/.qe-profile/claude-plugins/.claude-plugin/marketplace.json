@@ -1,0 +1,11 @@
+{
+  "name": "qe-managed",
+  "owner": { "name": "Quest Engineering" },
+  "plugins": [
+    {
+      "name": "qe-account-cell",
+      "source": "./plugins/qe-account-cell",
+      "description": "Immutable Quest Engineering account-cell policy and broker tools"
+    }
+  ]
+}

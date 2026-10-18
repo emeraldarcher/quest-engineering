@@ -17,7 +17,7 @@ import { DETACHED_PROCESS_CANCELLATION_PROGRAM } from "./sbx-detached-process.ts
 import { SbxMixedCredentialProvisioner } from "./sbx-mixed-credential.ts";
 import { SbxPiCredentialProvisioner } from "./sbx-pi-credential.ts";
 import {
-  SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+  claudeRuntimeNetworkTargetsForProfile,
   SBX_DISABLED_CREDENTIAL_ENVIRONMENT,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   type SBX_EXECUTION_PROFILE_V1,
@@ -1459,7 +1459,11 @@ export class SbxExecutionEnvironmentBackend
       ]);
       const credential = spec.credentialGrants[0];
       const channel = spec.controlChannels[0];
-      const exactTargets = [...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS].sort();
+      const exactTargets = [
+        ...claudeRuntimeNetworkTargetsForProfile(
+          this.executionProfile.identity,
+        ),
+      ].sort();
       if (
         !accountLayout ||
         spec.networkRequirements.length !== 1 ||

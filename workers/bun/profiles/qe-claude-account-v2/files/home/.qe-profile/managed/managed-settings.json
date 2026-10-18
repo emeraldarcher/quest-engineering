@@ -1,0 +1,51 @@
+{
+  "extraKnownMarketplaces": {
+    "qe-managed": {
+      "source": {
+        "source": "directory",
+        "path": "/opt/qe/claude-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "qe-account-cell@qe-managed": true
+  },
+  "prependPlugins": [
+    "qe-account-cell@qe-managed",
+    "sec-default@builtin"
+  ],
+  "pluginConfigs": {
+    "cc-plugin-sec-default@builtin": {
+      "options": {
+        "allowManagedModsOnly": true
+      }
+    }
+  },
+  "allowManagedHooksOnly": true,
+  "disableSideloadFlags": true,
+  "disableClaudeAiConnectors": true,
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [],
+  "managedMcpServers": {},
+  "syncClaudeAiSkills": false,
+  "syncClaudeAiPlugins": false,
+  "enableArtifact": false,
+  "disableRemoteControl": true,
+  "disableAgentView": true,
+  "disableBundledSkills": true,
+  "includeGitInstructions": false,
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "disableBypassPermissionsMode": "disable"
+  },
+  "availableModels": ["claude-opus-4-6"],
+  "availableModelsMatch": "exact",
+  "enforceAvailableModels": true,
+  "fallbackModel": [],
+  "model": "claude-opus-4-6",
+  "effortLevel": "high",
+  "maxEffortLevel": "high",
+  "fastMode": false,
+  "fastModePerSessionOptIn": false,
+  "autoUpdatesChannel": "stable"
+}

@@ -10,6 +10,7 @@ import {
 } from "./sbx-pi-credential.ts";
 import type { SbxExecutionProfile, SbxResourcePolicy } from "./sbx-profile.ts";
 import {
+  claudeRuntimeNetworkTargetsForProfile,
   SBX_ANTIGRAVITY_EXECUTABLE,
   SBX_ANTIGRAVITY_LINUX_ARM64_BINARY_SHA256,
   SBX_ANTIGRAVITY_RUNTIME_PROBE,
@@ -25,7 +26,6 @@ import {
   SBX_CLAUDE_MANAGED_MOD_SHA256,
   SBX_CLAUDE_MANAGED_SETTINGS,
   SBX_CLAUDE_MANAGED_SETTINGS_SHA256,
-  SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
   SBX_CLAUDE_SDK_PACKAGE_JSON,
   SBX_CLAUDE_WRAPPER,
   SBX_CLAUDE_WRAPPER_VERSION,
@@ -591,15 +591,16 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     const allows = activeNetwork
       .filter((rule) => rule.decision === "allow")
       .flatMap((rule) => [...rule.resources]);
+    const runtimeTargets = claudeRuntimeNetworkTargetsForProfile(
+      this.profile.identity,
+    );
     const approvedAtCreation = new Set([
-      ...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+      ...runtimeTargets,
       SBX_PI_INSTALL_NETWORK_TARGET,
     ]);
     if (
       allows.some((resource) => !approvedAtCreation.has(resource)) ||
-      SBX_CLAUDE_RUNTIME_NETWORK_TARGETS.some(
-        (target) => !allows.includes(target),
-      )
+      runtimeTargets.some((target) => !allows.includes(target))
     )
       throw unhealthy(
         "Claude account-cell network grants are broader than the immutable runtime contract.",
