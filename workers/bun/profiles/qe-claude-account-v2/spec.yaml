@@ -1,0 +1,80 @@
+schemaVersion: "2"
+kind: sandbox
+name: qe-claude-account-v2
+version: "2.0.0"
+displayName: Quest Engineering Claude account cell
+sandbox:
+  image: "docker.io/docker/sandbox-templates:shell-docker@sha256:5fc81bc7a127e59d81b244a06831ae3212a0310b2e5a0349c54e29249e45e919"
+  entrypoint: ["/bin/bash"]
+  command:
+    default: ["-l"]
+    interactive: ["-l"]
+permissions:
+  network:
+    allow:
+      - api.anthropic.com
+      - claude.ai
+      - platform.claude.com
+      - registry.npmjs.org
+environment:
+  variables:
+    BROWSER: /bin/false
+    GIT_TERMINAL_PROMPT: "0"
+    DISABLE_AUTOUPDATER: "1"
+    DISABLE_TELEMETRY: "1"
+    DISABLE_ERROR_REPORTING: "1"
+    ENABLE_CLAUDEAI_MCP_SERVERS: "false"
+    ENABLE_TOOL_SEARCH: "false"
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1"
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1"
+    CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1"
+    CLAUDE_CODE_DISABLE_AGENT_VIEW: "1"
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
+    CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: "1"
+    CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS: "1"
+    CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: "1"
+    CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1"
+    CLAUDE_CODE_DISABLE_ARTIFACT: "1"
+    CLAUDE_CODE_DISABLE_FAST_MODE: "1"
+setup:
+  install:
+    - command: |
+        set -eu
+        install -d -m 0755 /opt/qe/claude /opt/qe/claude-plugins /etc/claude-code
+        cp -a /home/agent/.qe-profile/claude-plugins/. /opt/qe/claude-plugins/
+        install -m 0444 /home/agent/.qe-profile/managed/managed-settings.json /etc/claude-code/managed-settings.json
+        install -m 0644 /home/agent/.qe-profile/package.json /opt/qe/claude/package.json
+        install -m 0644 /home/agent/.qe-profile/package-lock.json /opt/qe/claude/package-lock.json
+        cd /opt/qe/claude
+        npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        test "$(node -p "require('/opt/qe/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').version")" = "0.3.292"
+        test "$(node -p "require('/opt/qe/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').claudeCodeVersion")" = "2.1.292"
+        case "$(uname -m)" in
+          aarch64|arm64)
+            runtime=/opt/qe/claude/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude
+            expected=24caa9e6ff13bf227049a2626f1c816fc895023050f0ec3b12dbf14d897367e0
+            ;;
+          x86_64|amd64)
+            runtime=/opt/qe/claude/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
+            expected=a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3
+            ;;
+          *) echo "Unsupported Claude runtime architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
+        test "$(sha256sum "$runtime" | cut -d ' ' -f 1)" = "$expected"
+        install -m 0555 "$runtime" /opt/qe/claude/claude
+        install -m 0555 /home/agent/.qe-profile/qe-account-cell-bridge.py /opt/qe/claude/qe-account-cell-bridge
+        chown -R root:root /opt/qe/claude /opt/qe/claude-plugins /etc/claude-code
+        chmod -R go-w /opt/qe/claude /opt/qe/claude-plugins /etc/claude-code
+        find /opt/qe/claude-plugins -type d -exec chmod 0555 {} +
+        find /opt/qe/claude-plugins -type f -exec chmod 0444 {} +
+        chmod 0444 /etc/claude-code/managed-settings.json
+      user: "0"
+      description: Install pinned Claude Code, fixed bridge, managed Mod, and managed policy
+agentInstructions:
+  filename: AGENTS.md
+  content: |
+    This is a credential-bearing Quest Engineering ProviderAccount cell. It has
+    no Run workspace. All workspace actions are available only through the
+    immutable QE managed Mod and its pre-bound broker capability.

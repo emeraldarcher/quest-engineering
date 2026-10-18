@@ -1,0 +1,4 @@
+{
+  "description": "Quest Engineering account-cell broker-only Mod",
+  "modules": ["./register.ts"]
+}

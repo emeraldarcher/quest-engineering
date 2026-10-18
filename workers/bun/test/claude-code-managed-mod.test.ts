@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL,
   SBX_CLAUDE_ACCOUNT_PROFILE,
+  SBX_CLAUDE_ACCOUNT_PROFILE_V1_EXECUTION,
   SBX_CLAUDE_BROKER_RUN_PROFILE,
   verifySbxProfileAssets,
 } from "../src/execution-environment/sbx-profile.ts";
@@ -19,7 +20,7 @@ import {
 
 const profileRoot = resolve(
   import.meta.dir,
-  "../profiles/qe-claude-account-v1",
+  "../profiles/qe-claude-account-v2",
 );
 
 describe("Claude Code managed-Mod architecture", () => {
@@ -182,7 +183,10 @@ describe("Claude Code managed-Mod architecture", () => {
     expect(source).toContain("serverToolUses");
   });
 
-  test("both repository-owned cell profiles pass immutable asset verification", async () => {
+  test("historical, current, and broker cell profiles pass immutable asset verification", async () => {
+    await expect(
+      verifySbxProfileAssets(SBX_CLAUDE_ACCOUNT_PROFILE_V1_EXECUTION),
+    ).resolves.toBeUndefined();
     await expect(
       verifySbxProfileAssets(SBX_CLAUDE_ACCOUNT_PROFILE),
     ).resolves.toBeUndefined();

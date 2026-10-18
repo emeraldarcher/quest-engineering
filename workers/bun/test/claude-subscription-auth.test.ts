@@ -20,7 +20,7 @@ const evidenceContext = {
   backendKind: "sbx",
   environmentId: "environment-1",
   environmentIncarnation: "incarnation-1",
-  profile: { id: "qe-claude-account-v1", digest: "sha256:test" },
+  profile: { id: "qe-claude-account-v2", digest: "sha256:test" },
   configuration: CLAUDE_SUBSCRIPTION_CONFIGURATION,
 };
 

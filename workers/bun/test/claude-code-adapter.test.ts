@@ -162,7 +162,7 @@ function accountEnvironment(): EnvironmentRef {
       providerAccountId: "account-1",
       credentialGeneration: 1,
     },
-    profile: { id: "qe-claude-account-v1", digest: `sha256:${"a".repeat(64)}` },
+    profile: { id: "qe-claude-account-v2", digest: `sha256:${"a".repeat(64)}` },
   };
 }
 

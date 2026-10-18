@@ -9,8 +9,16 @@ import {
 } from "../src/execution-environment/provider-account.ts";
 import { ClaudeSubscriptionSetupLauncher } from "../src/execution-environment/provider-account-setup-launcher.ts";
 import { cleanupExecutionEnvironment } from "../src/execution-environment/run-cleanup.ts";
+import {
+  SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+  SBX_CLAUDE_ACCOUNT_PROFILE_V2,
+  SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+} from "../src/execution-environment/sbx-profile.ts";
 import { ExecutionEnvironmentStore } from "../src/execution-environment/store.ts";
-import type { ProviderAccountEnvironmentSpec } from "../src/execution-environment/types.ts";
+import type {
+  EnvironmentSpec,
+  ProviderAccountEnvironmentSpec,
+} from "../src/execution-environment/types.ts";
 import { decodeProviderAccountReconciliation } from "../src/worker.ts";
 
 const roots: string[] = [];
@@ -483,6 +491,49 @@ test("Worker environment SQLite rejects the immediately stale owner schema", asy
   );
 });
 
+test("fresh production Claude ProviderAccount provisioning selects only account profile v2", async () => {
+  const root = await tempRoot();
+  const backend = new CapturingEnvironmentBackend();
+  const store = new ExecutionEnvironmentStore(root);
+  const manager = new ProviderAccountEnvironmentManager(
+    { workerId: "worker-account-v2", dataRoot: root, provider: "pi" },
+    {
+      backend,
+      store,
+      fake: false,
+      setupLauncher: new ClaudeSubscriptionSetupLauncher(),
+    },
+  );
+
+  const report = await manager.apply({
+    providerAccountId: "account-fresh-v2",
+    providerKey: "anthropic",
+    credentialGeneration: 1,
+    workerGeneration: 1,
+    operationId: "provision-fresh-v2",
+    desiredState: "available",
+    expectedPhysicalIdentity: null,
+  });
+
+  expect(report).toMatchObject({
+    physicalState: "available",
+    canaryPersisted: true,
+  });
+  expect(backend.specs).toHaveLength(1);
+  expect(backend.specs[0]).toMatchObject({
+    profile: SBX_CLAUDE_ACCOUNT_PROFILE_V2,
+    networkRequirements: [
+      {
+        capability: "anthropic_account",
+        targets: [...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS],
+      },
+    ],
+  });
+  expect(backend.specs[0]?.profile).not.toEqual(SBX_CLAUDE_ACCOUNT_PROFILE_V1);
+  await manager.close();
+  store.close();
+});
+
 test.skipIf(process.env.QE_LIVE_SBX !== "1")(
   "live ProviderAccount SBX lifecycle is bounded and preserves its canary across Worker restart",
   async () => {
@@ -543,6 +594,28 @@ test.skipIf(process.env.QE_LIVE_SBX !== "1")(
     await manager.close();
   },
 );
+
+class CapturingEnvironmentBackend extends FakeExecutionEnvironmentBackend {
+  readonly specs: EnvironmentSpec[] = [];
+
+  constructor() {
+    super({
+      capabilities: [
+        { kind: "environment_persistence", mode: "verified" },
+        { kind: "credentials", mode: "account_private_claude_oauth" },
+        { kind: "network_policy", mode: "anthropic_account_only" },
+        { kind: "harness_runtime", mode: "claude_code_managed_mod_v1" },
+        { kind: "control_channel", mode: "worker_account_mailbox_v1" },
+        { kind: "process.streamed", mode: "attached_only" },
+      ],
+    });
+  }
+
+  override async ensure(spec: EnvironmentSpec) {
+    this.specs.push(structuredClone(spec));
+    return super.ensure(spec);
+  }
+}
 
 function accountSpec(
   providerAccountId: string,

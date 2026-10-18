@@ -5,7 +5,7 @@ import { SbxExecutionEnvironmentBackend } from "../src/execution-environment/sbx
 import {
   SBX_CLAUDE_ACCOUNT_BRIDGE,
   SBX_CLAUDE_ACCOUNT_PROFILE,
-  SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+  SBX_CLAUDE_ACCOUNT_PROFILE_V2,
   SBX_CLAUDE_BROKER_RUN_PROFILE,
   SBX_CLAUDE_BROKER_RUN_PROFILE_V1,
   SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
@@ -65,7 +65,7 @@ test.skipIf(!live)(
         runBackend.ensure(runSpec()),
       ]);
       expect(account.ref.environmentId).not.toBe(run.ref.environmentId);
-      expect(account.ref.profile).toEqual(SBX_CLAUDE_ACCOUNT_PROFILE_V1);
+      expect(account.ref.profile).toEqual(SBX_CLAUDE_ACCOUNT_PROFILE_V2);
       expect(run.ref.profile).toEqual(SBX_CLAUDE_BROKER_RUN_PROFILE_V1);
 
       const accountCanary = `QE_ACCOUNT_CREDENTIAL_CANARY_${crypto.randomUUID()}`;
@@ -143,8 +143,9 @@ test.skipIf(!live)(
 
       const policies = await accountBackend.readiness();
       expect(policies.ready).toBe(true);
-      // No command in this proof addresses api.anthropic.com or claude.ai from
-      // the account cell. The only network probe runs in the deny-all Run cell.
+      // No command in this proof addresses api.anthropic.com, claude.ai, or
+      // platform.claude.com from the account cell. The only network probe runs
+      // in the deny-all Run cell.
     } finally {
       await relay?.stop().catch(() => undefined);
       await broker?.close().catch(() => undefined);
@@ -262,7 +263,7 @@ function accountSpec(): ProviderAccountEnvironmentSpec {
       credentialGeneration: 1,
     },
     layout: { kind: "provider_account", version: "provider-account-cell-v1" },
-    profile: SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+    profile: SBX_CLAUDE_ACCOUNT_PROFILE_V2,
     resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
     networkRequirements: [
       {

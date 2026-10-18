@@ -27,8 +27,9 @@ import {
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
 import {
   SBX_CLAUDE_ACCOUNT_PROFILE,
-  SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+  SBX_CLAUDE_ACCOUNT_PROFILE_V2,
   SBX_CLAUDE_EXECUTABLE,
+  SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
   SBX_DISPOSABLE_RESOURCE_POLICY,
   SBX_SHELL_PROFILE,
 } from "./sbx-profile.ts";
@@ -847,8 +848,8 @@ export class ProviderAccountEnvironmentManager {
       record.environmentId !== input.expected.environmentId ||
       record.incarnation !== input.expected.incarnation ||
       record.backendKind !== input.expected.backendKind ||
-      record.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.id ||
-      record.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest
+      record.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.id ||
+      record.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.digest
     )
       throw new EnvironmentBackendError(
         "stale_environment_ref",
@@ -1379,8 +1380,8 @@ export class ProviderAccountEnvironmentManager {
       record.environmentId !== identity.environmentId ||
       record.incarnation !== identity.environmentIncarnation ||
       (!this.fake &&
-        (record.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.id ||
-          record.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest))
+        (record.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.id ||
+          record.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.digest))
     )
       throw new EnvironmentBackendError(
         "environment_identity_mismatch",
@@ -1407,12 +1408,12 @@ export class ProviderAccountEnvironmentManager {
       workerId: this.config.workerId,
       owner,
       layout: { kind: "provider_account", version: "provider-account-cell-v1" },
-      profile: SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+      profile: SBX_CLAUDE_ACCOUNT_PROFILE_V2,
       resourcePolicy: SBX_DISPOSABLE_RESOURCE_POLICY.identity,
       networkRequirements: [
         {
           capability: "anthropic_account",
-          targets: ["api.anthropic.com", "claude.ai"],
+          targets: [...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS],
         },
       ],
       credentialGrants: [

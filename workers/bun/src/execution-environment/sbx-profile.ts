@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import {
+  CLAUDE_SUBSCRIPTION_ENDPOINT_CONTRACT,
+  CLAUDE_SUBSCRIPTION_REQUIRED_ACCOUNT_RUNTIME_HOSTS,
+} from "./claude-subscription-endpoints.ts";
 import type {
   EnvironmentPathMap,
   EnvironmentProfileIdentity,
@@ -65,10 +69,15 @@ export const SBX_ANTIGRAVITY_RUNTIME_NETWORK_TARGETS = Object.freeze([
   "www.googleapis.com",
   "lh3.googleusercontent.com",
 ]);
-export const SBX_CLAUDE_RUNTIME_NETWORK_TARGETS = Object.freeze([
+/** Historical qe-claude-account-v1 and mixed-profile network meaning. */
+export const SBX_CLAUDE_RUNTIME_NETWORK_TARGETS_V1 = Object.freeze([
   "api.anthropic.com",
   "claude.ai",
 ]);
+
+/** Current exact Claude ProviderAccount runtime contract. */
+export const SBX_CLAUDE_RUNTIME_NETWORK_TARGETS =
+  CLAUDE_SUBSCRIPTION_REQUIRED_ACCOUNT_RUNTIME_HOSTS;
 export const SBX_CLAUDE_EXECUTABLE = "/opt/qe/claude/claude";
 export const SBX_CLAUDE_ACCOUNT_BRIDGE =
   "/opt/qe/claude/qe-account-cell-bridge";
@@ -88,7 +97,7 @@ export const SBX_MIXED_RUNTIME_NETWORK_TARGETS_V1 = Object.freeze([
 ]);
 export const SBX_MIXED_RUNTIME_NETWORK_TARGETS = Object.freeze([
   ...SBX_MIXED_RUNTIME_NETWORK_TARGETS_V1,
-  ...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+  ...SBX_CLAUDE_RUNTIME_NETWORK_TARGETS_V1,
 ]);
 export const SBX_MIXED_INSTALL_NETWORK_TARGETS = Object.freeze([
   SBX_PI_INSTALL_NETWORK_TARGET,
@@ -103,7 +112,8 @@ export const SBX_CLAUDE_SDK_PACKAGE_JSON =
   "/opt/qe/pi/node_modules/@anthropic-ai/claude-agent-sdk/package.json";
 export const SBX_CLAUDE_ZOD_MODULE = "/opt/qe/pi/node_modules/zod/index.js";
 export const SBX_CLAUDE_AGENT_SDK_VERSION = "0.3.292";
-export const SBX_CLAUDE_CODE_VERSION = "2.1.292";
+export const SBX_CLAUDE_CODE_VERSION =
+  CLAUDE_SUBSCRIPTION_ENDPOINT_CONTRACT.claudeCodeVersion;
 const SBX_CLAUDE_WRAPPER_V2_VERSION = "1.0.0";
 export const SBX_CLAUDE_WRAPPER_VERSION = "1.1.0";
 export const SBX_CLAUDE_WRAPPER_SHA256 =
@@ -344,7 +354,7 @@ export const SBX_CLAUDE_MANAGED_MOD_SHA256 =
 export const SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256 =
   "de6ad713da03942580acad89a56ebc5386cd429e47976145a455301fd05e0f2d";
 
-const SBX_CLAUDE_ACCOUNT_PROFILE_ASSETS = Object.freeze({
+const SBX_CLAUDE_ACCOUNT_PROFILE_V1_ASSETS = Object.freeze({
   "spec.yaml":
     "04622d39b0687b8a7cccac7c31b874f6b293b67cb98e17734df339c86760796c",
   "files/home/.qe-profile/package.json":
@@ -367,6 +377,12 @@ const SBX_CLAUDE_ACCOUNT_PROFILE_ASSETS = Object.freeze({
     "4087cf0ba92fde503ed0e7c56f37bcb26ad0c085873f10219d0336c0f19b5a8f",
 });
 
+const SBX_CLAUDE_ACCOUNT_PROFILE_V2_ASSETS = Object.freeze({
+  ...SBX_CLAUDE_ACCOUNT_PROFILE_V1_ASSETS,
+  "spec.yaml":
+    "cb94093b1e9e8224aa329c050bfe20592f6dc90682a69bd36cc7c172b8b08a8f",
+});
+
 export const SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION = Object.freeze({
   schemaVersion: 1,
   id: "qe-claude-account-v1",
@@ -376,10 +392,10 @@ export const SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION = Object.freeze({
   claudeCodeVersion: SBX_CLAUDE_CODE_VERSION,
   claudeAgentSdkVersion: SBX_CLAUDE_AGENT_SDK_VERSION,
   modProtocol: SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL,
-  assets: SBX_CLAUDE_ACCOUNT_PROFILE_ASSETS,
+  assets: SBX_CLAUDE_ACCOUNT_PROFILE_V1_ASSETS,
   mounts: Object.freeze([]),
   network: Object.freeze({
-    runtimeAllow: SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+    runtimeAllow: SBX_CLAUDE_RUNTIME_NETWORK_TARGETS_V1,
     postInstallDeny: SBX_PI_INSTALL_NETWORK_TARGET,
   }),
   credential: "account_private_claude_oauth",
@@ -393,6 +409,40 @@ export const SBX_CLAUDE_ACCOUNT_PROFILE_V1: EnvironmentProfileIdentity =
     id: SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION.id,
     digest: digest(SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION),
   });
+
+export const SBX_CLAUDE_ACCOUNT_PROFILE_V2_DEFINITION = Object.freeze({
+  ...SBX_CLAUDE_ACCOUNT_PROFILE_V1_DEFINITION,
+  schemaVersion: 2,
+  id: "qe-claude-account-v2",
+  kitName: "qe-claude-account-v2",
+  assets: SBX_CLAUDE_ACCOUNT_PROFILE_V2_ASSETS,
+  network: Object.freeze({
+    runtimeAllow: SBX_CLAUDE_RUNTIME_NETWORK_TARGETS,
+    postInstallDeny: SBX_PI_INSTALL_NETWORK_TARGET,
+  }),
+});
+
+export const SBX_CLAUDE_ACCOUNT_PROFILE_V2: EnvironmentProfileIdentity =
+  Object.freeze({
+    id: SBX_CLAUDE_ACCOUNT_PROFILE_V2_DEFINITION.id,
+    digest: digest(SBX_CLAUDE_ACCOUNT_PROFILE_V2_DEFINITION),
+  });
+
+export function claudeRuntimeNetworkTargetsForProfile(
+  identity: EnvironmentProfileIdentity,
+): readonly string[] {
+  if (
+    identity.id === SBX_CLAUDE_ACCOUNT_PROFILE_V1.id &&
+    identity.digest === SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest
+  )
+    return SBX_CLAUDE_RUNTIME_NETWORK_TARGETS_V1;
+  if (
+    identity.id === SBX_CLAUDE_ACCOUNT_PROFILE_V2.id &&
+    identity.digest === SBX_CLAUDE_ACCOUNT_PROFILE_V2.digest
+  )
+    return SBX_CLAUDE_RUNTIME_NETWORK_TARGETS;
+  throw new Error("Unknown immutable Claude account profile identity.");
+}
 
 const SBX_CLAUDE_BROKER_RUN_PROFILE_ASSETS = Object.freeze({
   "spec.yaml":
@@ -482,14 +532,31 @@ export const SBX_CODING_PROFILE: SbxExecutionProfile = Object.freeze({
   postCreateNetworkDenies: SBX_MIXED_INSTALL_NETWORK_TARGETS,
 });
 
-export const SBX_CLAUDE_ACCOUNT_PROFILE_ROOT = resolve(
+export const SBX_CLAUDE_ACCOUNT_PROFILE_V1_ROOT = resolve(
   import.meta.dir,
   "../../profiles/qe-claude-account-v1",
 );
+export const SBX_CLAUDE_ACCOUNT_PROFILE_V2_ROOT = resolve(
+  import.meta.dir,
+  "../../profiles/qe-claude-account-v2",
+);
+export const SBX_CLAUDE_ACCOUNT_PROFILE_ROOT =
+  SBX_CLAUDE_ACCOUNT_PROFILE_V2_ROOT;
+
+export const SBX_CLAUDE_ACCOUNT_PROFILE_V1_EXECUTION: SbxExecutionProfile =
+  Object.freeze({
+    identity: SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+    agentReference: SBX_CLAUDE_ACCOUNT_PROFILE_V1_ROOT,
+    nativeAgent: "qe-claude-account-v1",
+    networkMode: "claude_account",
+    credentialMode: "account_private_claude_oauth",
+    postCreateNetworkDenies: Object.freeze([SBX_PI_INSTALL_NETWORK_TARGET]),
+  });
+
 export const SBX_CLAUDE_ACCOUNT_PROFILE: SbxExecutionProfile = Object.freeze({
-  identity: SBX_CLAUDE_ACCOUNT_PROFILE_V1,
+  identity: SBX_CLAUDE_ACCOUNT_PROFILE_V2,
   agentReference: SBX_CLAUDE_ACCOUNT_PROFILE_ROOT,
-  nativeAgent: "qe-claude-account-v1",
+  nativeAgent: "qe-claude-account-v2",
   networkMode: "claude_account",
   credentialMode: "account_private_claude_oauth",
   postCreateNetworkDenies: Object.freeze([SBX_PI_INSTALL_NETWORK_TARGET]),
@@ -528,40 +595,48 @@ export async function verifySbxProfileAssets(
             assets: SBX_CODING_V3_PROFILE_ASSETS,
             label: "mixed coding v3",
           }
-        : profile.identity.id === SBX_CLAUDE_ACCOUNT_PROFILE_V1.id &&
-            profile.identity.digest === SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest
+        : profile.identity.id === SBX_CLAUDE_ACCOUNT_PROFILE_V2.id &&
+            profile.identity.digest === SBX_CLAUDE_ACCOUNT_PROFILE_V2.digest
           ? {
-              root: SBX_CLAUDE_ACCOUNT_PROFILE_ROOT,
-              assets: SBX_CLAUDE_ACCOUNT_PROFILE_ASSETS,
-              label: "Claude account v1",
+              root: SBX_CLAUDE_ACCOUNT_PROFILE_V2_ROOT,
+              assets: SBX_CLAUDE_ACCOUNT_PROFILE_V2_ASSETS,
+              label: "Claude account v2",
               strictFiles: true,
             }
-          : profile.identity.id === SBX_CLAUDE_BROKER_RUN_PROFILE_V1.id &&
-              profile.identity.digest ===
-                SBX_CLAUDE_BROKER_RUN_PROFILE_V1.digest
+          : profile.identity.id === SBX_CLAUDE_ACCOUNT_PROFILE_V1.id &&
+              profile.identity.digest === SBX_CLAUDE_ACCOUNT_PROFILE_V1.digest
             ? {
-                root: SBX_CLAUDE_BROKER_RUN_PROFILE_ROOT,
-                assets: SBX_CLAUDE_BROKER_RUN_PROFILE_ASSETS,
-                label: "Claude credential-free broker Run v1",
+                root: SBX_CLAUDE_ACCOUNT_PROFILE_V1_ROOT,
+                assets: SBX_CLAUDE_ACCOUNT_PROFILE_V1_ASSETS,
+                label: "Claude account v1",
                 strictFiles: true,
               }
-            : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
+            : profile.identity.id === SBX_CLAUDE_BROKER_RUN_PROFILE_V1.id &&
                 profile.identity.digest ===
-                  SBX_CODING_EXECUTION_PROFILE_V2.digest
+                  SBX_CLAUDE_BROKER_RUN_PROFILE_V1.digest
               ? {
-                  root: SBX_CODING_PROFILE_V2_ROOT,
-                  assets: SBX_CODING_V2_PROFILE_ASSETS,
-                  label: "mixed coding v2",
+                  root: SBX_CLAUDE_BROKER_RUN_PROFILE_ROOT,
+                  assets: SBX_CLAUDE_BROKER_RUN_PROFILE_ASSETS,
+                  label: "Claude credential-free broker Run v1",
+                  strictFiles: true,
                 }
-              : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
+              : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V2.id &&
                   profile.identity.digest ===
-                    SBX_CODING_EXECUTION_PROFILE_V1.digest
+                    SBX_CODING_EXECUTION_PROFILE_V2.digest
                 ? {
-                    root: SBX_CODING_PROFILE_V1_ROOT,
-                    assets: SBX_CODING_PROFILE_ASSETS,
-                    label: "mixed coding v1",
+                    root: SBX_CODING_PROFILE_V2_ROOT,
+                    assets: SBX_CODING_V2_PROFILE_ASSETS,
+                    label: "mixed coding v2",
                   }
-                : null;
+                : profile.identity.id === SBX_CODING_EXECUTION_PROFILE_V1.id &&
+                    profile.identity.digest ===
+                      SBX_CODING_EXECUTION_PROFILE_V1.digest
+                  ? {
+                      root: SBX_CODING_PROFILE_V1_ROOT,
+                      assets: SBX_CODING_PROFILE_ASSETS,
+                      label: "mixed coding v1",
+                    }
+                  : null;
   if (!expected) return;
   if (resolve(profile.agentReference) !== expected.root)
     throw new Error(

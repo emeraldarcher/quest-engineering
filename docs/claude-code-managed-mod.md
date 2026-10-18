@@ -17,8 +17,11 @@ below.
 
 ### ProviderAccount cell
 
-`qe-claude-account-v1` is a persistent, ProviderAccount-owned SBX with narrowly
-scoped Anthropic runtime egress. It owns:
+`qe-claude-account-v2` is the current persistent, ProviderAccount-owned SBX
+with narrowly scoped Anthropic runtime egress. It differs from immutable
+historical v1 only by profile identity/version and the exact
+`platform.claude.com` login token-exchange grant; see
+[`claude-account-profile-v2.md`](claude-account-profile-v2.md). It owns:
 
 - the exact Claude Code Linux binary and native transcript/config directory;
 - ordinary Claude.ai subscription authentication created by `claude auth login`;
