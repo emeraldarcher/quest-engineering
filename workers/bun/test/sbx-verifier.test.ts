@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createOwnershipMarkerV2 } from "../src/execution-environment/ownership-marker.ts";
 import type { SbxExecOptions } from "../src/execution-environment/sbx-client.ts";
 import {
   SBX_CLAUDE_ACCOUNT_BRIDGE_SHA256,
@@ -135,6 +136,23 @@ test("live verifier proves isolated paths, private HOME, deny-all, and private D
   expect(client.removedChild).toBe(true);
 });
 
+test("recovery/adoption fails closed on legacy or conflicting ownership markers", async () => {
+  const canonical = marker();
+  const legacy = { ...canonical, runId: "run-verifier" };
+  const topLevelOnly = { ...legacy } as Record<string, unknown>;
+  delete topLevelOnly.owner;
+  for (const malformed of [legacy, topLevelOnly]) {
+    const client = new ProbeClient();
+    client.markerOverride = malformed;
+    await expect(
+      new LiveSbxEnvironmentVerifier(
+        client,
+        SBX_DISPOSABLE_RESOURCE_POLICY,
+      ).verify(record(), sandbox),
+    ).rejects.toMatchObject({ code: "environment_identity_mismatch" });
+  }
+});
+
 test("live verifier fails closed when scratch child cleanup cannot be proven", async () => {
   const client = new ProbeClient();
   client.failCleanup = true;
@@ -243,6 +261,7 @@ class ProbeClient extends FakeSbxClient {
   builtChild = false;
   removedChild = false;
   markerWritten = false;
+  markerOverride: unknown = undefined;
   proofWritten = false;
   failCleanup = false;
 
@@ -282,13 +301,15 @@ class ProbeClient extends FakeSbxClient {
         return ok(
           `${JSON.stringify({
             exists: this.markerWritten,
-            marker: this.markerWritten ? marker() : null,
+            marker: this.markerWritten
+              ? (this.markerOverride ?? marker())
+              : null,
           })}\n`,
         );
       if (command.environment?.QE_PATHS)
         return ok(
           `${JSON.stringify({
-            marker: marker(),
+            marker: this.markerOverride ?? marker(),
             directories: {
               workspace: true,
               home: true,
@@ -674,13 +695,7 @@ function piRecord(): DurableEnvironmentRecord {
 }
 
 function piMarker() {
-  return {
-    ...marker(),
-    environmentId: piSandbox.id,
-    displayName: piSandbox.name,
-    profileId: piProfileIdentity.id,
-    profileDigest: piProfileIdentity.digest,
-  };
+  return createOwnershipMarkerV2(piRecord(), piSandbox);
 }
 
 function record(): DurableEnvironmentRecord {
@@ -713,16 +728,5 @@ function record(): DurableEnvironmentRecord {
 }
 
 function marker() {
-  return {
-    schemaVersion: 2,
-    backendKind: "sbx",
-    environmentId: sandbox.id,
-    displayName: sandbox.name,
-    incarnation: "incarnation-verifier",
-    workerId: "worker-verifier",
-    owner: { kind: "run", runId: "run-verifier" },
-    profileId: "qe-execution-v1",
-    profileDigest: "sha256:profile",
-    specDigest: "spec-verifier",
-  };
+  return createOwnershipMarkerV2(record(), sandbox);
 }

@@ -75,6 +75,14 @@ The three outcomes are durable and independent: harness `retained | retiring | r
 
 The SBX implementation persists restart-safe ownership before physical creation and verifies durable ownership, native UUID/name/agent inventory, and a guest ownership marker before adoption. A missing or conflicting physical environment is never silently replaced.
 
+### Schema-v2 SBX ownership marker
+
+The canonical guest ownership marker has `schemaVersion: 2`, `backendKind: "sbx"`, and one typed nested `owner`. Run authority exists **only** at `owner: {kind: "run", runId: <id>}`. Provider-account authority exists only at `owner: {kind: "provider_account", providerAccountId: <id>, credentialGeneration: <positive integer>}`. There is no authoritative or compatibility `runId` at the marker's top level.
+
+One production constructor/encoder writes this shape, and one strict decoder is shared by verification, recovery/adoption, launch validation, and guest attestation. It requires the exact schema-v2 marker and owner fields and rejects missing fields, unknown fields, legacy versions, alternate ownership shapes, top-level `runId`, and duplicate or conflicting ownership representations. After decoding, consumers independently fence Worker, typed owner, environment UUID, incarnation, profile ID/digest, display identity where applicable, and canonical spec digest. Cleanup continues to target the exact durable `EnvironmentRef`; the decoder does not create migration, fallback, replacement, or cleanup authority.
+
+A 2026 launch-path defect independently parsed the marker as though Run identity were top-level `runId`. The production writer correctly emitted nested `owner.runId`, so valid schema-v2 environments failed closed during prepare with `environment_launch_mismatch` before broker admission or harness launch. The correction removes that handwritten interpretation and makes pre-launch validation compare the strict decoder's `owner.runId`. It does not add a top-level field, loosen any identity fence, migrate retained environments, retry retained Runs, or alter lifecycle semantics.
+
 ## EnvironmentSpec
 
 `EnvironmentSpec` contains physical requirements derived from authoritative Worker/QE state:

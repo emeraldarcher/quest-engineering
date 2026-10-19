@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { runIdFromRef } from "../src/execution-environment/ownership.ts";
+import {
+  createOwnershipMarkerV2,
+  ownershipMarkerV2Digest,
+} from "../src/execution-environment/ownership-marker.ts";
 import { SbxExecutionEnvironmentBackend } from "../src/execution-environment/sbx-backend.ts";
 import type {
   SbxClient,
@@ -702,9 +705,7 @@ class ZeroInferenceClaudeVerifier implements SbxEnvironmentVerifier {
     this.provenance = provenance;
     const marker = markerFor(record, sandbox);
     return {
-      markerDigest: createHash("sha256")
-        .update(JSON.stringify(marker))
-        .digest("hex"),
+      markerDigest: ownershipMarkerV2Digest(marker),
       dockerDaemonId: "zero-inference-validation",
       capabilities: capabilities(),
       diagnostics: [],
@@ -716,18 +717,7 @@ function markerFor(
   record: DurableEnvironmentRecord,
   sandbox: SbxSandboxSummary,
 ) {
-  return {
-    schemaVersion: 2,
-    backendKind: "sbx",
-    workerId: record.workerId,
-    owner: structuredClone(record.owner),
-    environmentId: sandbox.id,
-    displayName: sandbox.name,
-    incarnation: record.incarnation,
-    profileId: record.profileId,
-    profileDigest: record.profileDigest,
-    specDigest: record.specDigest,
-  };
+  return createOwnershipMarkerV2(record, sandbox);
 }
 
 function capabilities(): EnvironmentCapability[] {

@@ -1,6 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  createOwnershipMarkerV2,
+  encodeOwnershipMarkerV2,
+} from "../src/execution-environment/ownership-marker.ts";
 import { verifyEnvironmentAttestation } from "../src/harnesses/pi/sbx-herdr-state-extension.ts";
 
 const roots: string[] = [];
@@ -26,6 +30,17 @@ test("guest attestation binds exact environment, profile, lineage, workspace, an
   ).rejects.toThrow("launch binding mismatch for physicalLineageId");
 });
 
+test("guest attestation rejects top-level Run authority fields", async () => {
+  const fixture = await setup();
+  await writeFile(
+    fixture.marker,
+    `${JSON.stringify({ ...fixture.markerValue, runId: "run-forged" })}\n`,
+  );
+  await expect(
+    verifyEnvironmentAttestation(fixture.environment, fixture.workspace),
+  ).rejects.toThrow("unexpected or missing fields");
+});
+
 test("guest attestation rejects stale incarnation, wrong cwd, HOME, and missing paths", async () => {
   const fixture = await setup();
   await writeFile(
@@ -34,9 +49,12 @@ test("guest attestation rejects stale incarnation, wrong cwd, HOME, and missing 
   );
   await expect(
     verifyEnvironmentAttestation(fixture.environment, fixture.workspace),
-  ).rejects.toThrow("ownership marker mismatch for incarnation");
+  ).rejects.toThrow("incarnation");
 
-  await writeFile(fixture.marker, `${JSON.stringify(fixture.markerValue)}\n`);
+  await writeFile(
+    fixture.marker,
+    `${encodeOwnershipMarkerV2(fixture.markerValue)}\n`,
+  );
   await expect(
     verifyEnvironmentAttestation(fixture.environment, fixture.root),
   ).rejects.toThrow("Pi cwd does not match");
@@ -83,19 +101,20 @@ async function setup() {
     workspacePath: workspace,
     homePath: home,
   };
-  const markerValue = {
-    schemaVersion: 1,
-    backendKind: "sbx",
-    workerId: expected.workerId,
-    runId: expected.runId,
-    environmentId: expected.environmentId,
-    displayName: "sandbox-1",
-    incarnation: expected.incarnation,
-    profileId: expected.profileId,
-    profileDigest: expected.profileDigest,
-    specDigest: "sha256:spec",
-  };
-  await writeFile(marker, `${JSON.stringify(markerValue)}\n`);
+  const markerValue = createOwnershipMarkerV2(
+    {
+      workerId: expected.workerId,
+      owner: { kind: "run", runId: expected.runId },
+      environmentId: expected.environmentId,
+      state: "running",
+      incarnation: expected.incarnation,
+      profileId: expected.profileId,
+      profileDigest: expected.profileDigest,
+      specDigest: "sha256:spec",
+    },
+    { id: expected.environmentId, name: "sandbox-1" },
+  );
+  await writeFile(marker, `${encodeOwnershipMarkerV2(markerValue)}\n`);
   await writeFile(binding, `${JSON.stringify(expected)}\n`);
   const requiredPaths = [marker, binding, workspace, home, control];
   const environment: NodeJS.ProcessEnv = {
