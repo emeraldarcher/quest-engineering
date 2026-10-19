@@ -10,10 +10,11 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import {
   assertSourceWorktreeSeparation,
   provisionManagedWorktreePaths,
+  selectManagedWorktreePaths,
 } from "../src/managed-path-policy.ts";
 
 const fixtures: string[] = [];
@@ -54,6 +55,18 @@ describe("managed QE worktree path policy", () => {
       expect(lstatSync(first.qeHome).mode & 0o077).toBe(0);
       expect(lstatSync(first.worktreeRoot).mode & 0o077).toBe(0);
     }
+  });
+
+  test("selection from inside this checkout resolves the default outside the checkout", () => {
+    const checkout = realpathSync(resolve(import.meta.dir, "../../.."));
+    const externalUserHome = join(resolve(checkout, ".."), "qe-isolated-user");
+    const existedBefore = existsSync(join(externalUserHome, ".qe/worktrees"));
+    const selected = selectManagedWorktreePaths({ HOME: externalUserHome });
+
+    expect(relative(checkout, selected.worktreeRoot).startsWith("..")).toBe(
+      true,
+    );
+    expect(existsSync(selected.worktreeRoot)).toBe(existedBefore);
   });
 
   test("the built-in user-home fallback is portable when HOME is absent", () => {

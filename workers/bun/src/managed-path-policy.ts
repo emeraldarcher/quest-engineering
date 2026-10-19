@@ -36,17 +36,12 @@ export class ManagedPathPolicyError extends Error {
 export interface ManagedWorktreePaths {
   /** The selected QE managed-data home. An explicit worktree override need not create it. */
   qeHome: string;
-  /** Existing, canonical, privately managed directory used for Run repositories. */
   worktreeRoot: string;
   source: "QE_WORKTREE_ROOT" | "QE_HOME" | "user_home_default";
 }
 
-/**
- * Resolve and provision the host-side QE worktree location without consulting cwd.
- * Explicit path values retain the historical behavior of resolving relative values
- * against cwd; the built-in default is always derived from the OS/user home.
- */
-export function provisionManagedWorktreePaths(
+/** Select the effective path without touching the filesystem. */
+export function selectManagedWorktreePaths(
   env: NodeJS.ProcessEnv,
   fallbackUserHome = homedir(),
 ): ManagedWorktreePaths {
@@ -58,26 +53,47 @@ export function provisionManagedWorktreePaths(
         ".qe",
       );
   const explicitWorktreeRoot = env.QE_WORKTREE_ROOT?.trim();
+  return {
+    qeHome,
+    worktreeRoot: explicitWorktreeRoot
+      ? resolve(explicitWorktreeRoot)
+      : join(qeHome, "worktrees"),
+    source: explicitWorktreeRoot
+      ? "QE_WORKTREE_ROOT"
+      : configuredHome
+        ? "QE_HOME"
+        : "user_home_default",
+  };
+}
 
-  if (explicitWorktreeRoot) {
+/**
+ * Resolve and provision the host-side QE worktree location without consulting cwd.
+ * Explicit QE_WORKTREE_ROOT retains the historical behavior of resolving a relative
+ * value against cwd; the built-in default is always derived from the OS/user home.
+ */
+export function provisionManagedWorktreePaths(
+  env: NodeJS.ProcessEnv,
+  fallbackUserHome = homedir(),
+): ManagedWorktreePaths {
+  const selected = selectManagedWorktreePaths(env, fallbackUserHome);
+  if (selected.source === "QE_WORKTREE_ROOT") {
     return {
-      qeHome,
+      ...selected,
       worktreeRoot: ensureManagedDirectory(
-        resolve(explicitWorktreeRoot),
+        selected.worktreeRoot,
         "QE_WORKTREE_ROOT",
       ),
-      source: "QE_WORKTREE_ROOT",
     };
   }
 
-  const canonicalQeHome = ensureManagedDirectory(qeHome, "QE_HOME");
+  const canonicalQeHome = ensureManagedDirectory(selected.qeHome, "QE_HOME");
   return {
+    ...selected,
     qeHome: canonicalQeHome,
     worktreeRoot: ensureManagedDirectory(
       join(canonicalQeHome, "worktrees"),
       "managed worktree root",
     ),
-    source: configuredHome ? "QE_HOME" : "user_home_default",
   };
 }
 
