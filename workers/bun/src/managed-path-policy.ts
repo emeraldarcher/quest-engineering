@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 export type ManagedPathPolicyErrorCode =
+  | "managed_home_not_absolute"
   | "managed_directory_creation_failed"
   | "managed_directory_not_directory"
   | "managed_directory_canonicalization_failed"
@@ -50,8 +51,12 @@ export function provisionManagedWorktreePaths(
   fallbackUserHome = homedir(),
 ): ManagedWorktreePaths {
   const configuredHome = env.QE_HOME?.trim();
-  const userHome = env.HOME?.trim() || fallbackUserHome;
-  const qeHome = resolve(configuredHome || join(userHome, ".qe"));
+  const qeHome = configuredHome
+    ? absoluteManagedHome(configuredHome, "QE_HOME")
+    : join(
+        absoluteManagedHome(env.HOME?.trim() || fallbackUserHome, "user home"),
+        ".qe",
+      );
   const explicitWorktreeRoot = env.QE_WORKTREE_ROOT?.trim();
 
   if (explicitWorktreeRoot) {
@@ -101,6 +106,16 @@ export function assertSourceWorktreeSeparation(
   }
 
   return { sourceRepositoryRoot: source, worktreeRoot: managed };
+}
+
+function absoluteManagedHome(path: string, label: string): string {
+  if (!isAbsolute(path)) {
+    throw new ManagedPathPolicyError(
+      "managed_home_not_absolute",
+      `${label} "${path}" must be an absolute path so the managed worktree default never depends on process cwd.`,
+    );
+  }
+  return resolve(path);
 }
 
 function ensureManagedDirectory(requestedPath: string, label: string): string {

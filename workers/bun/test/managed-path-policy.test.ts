@@ -67,6 +67,21 @@ describe("managed QE worktree path policy", () => {
     );
   });
 
+  test("relative HOME and QE_HOME values cannot make the default cwd-dependent", () => {
+    for (const env of [
+      { HOME: "relative-home" },
+      { QE_HOME: "relative-qe-home" },
+    ]) {
+      expect(() =>
+        provisionManagedWorktreePaths(env, resolve(".pi/fallback-home")),
+      ).toThrow(
+        expect.objectContaining({
+          code: "managed_home_not_absolute",
+        }),
+      );
+    }
+  });
+
   test("QE_HOME relocates the automatic worktree child", () => {
     const root = fixture();
     const qeHome = join(root, "managed-data");
