@@ -106,6 +106,18 @@ test("isolates simultaneous Runs without linking or mutating source Git metadata
   restarted.close();
 });
 
+test("Run provisioning rechecks canonical source/worktree separation", async () => {
+  const fixture = await setup();
+  fixture.config.worktreeRoot = fixture.source;
+  const registry = new RunWorktreeRegistry(fixture.config);
+
+  await expect(
+    registry.provision(request("1", workspace(1), binding(1))),
+  ).rejects.toMatchObject({ code: "worktree_source_overlap" });
+
+  registry.close();
+});
+
 test("bounded whole-Run cleanup physically retires owned resources and preserves shared/history authorities", async () => {
   const fixture = await setup();
   const registry = new RunWorktreeRegistry(fixture.config);

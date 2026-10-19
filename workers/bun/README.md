@@ -19,6 +19,7 @@ Optional:
 
 ```text
 QE_WORKER_DATA_ROOT=.quest-engineering-worker
+QE_HOME=/durable/per-user/qe
 QE_WORKTREE_ROOT=/durable/managed/worktrees
 QE_WORKSPACE_BINDINGS_JSON=[{"binding_id":"...","workspace_id":"...","authorized_root_key":"code","source_repository_root":"/absolute/code/repo","max_access":"read_write","allow_unconfined_shell":false}]
 QE_EXECUTOR_MODELS=openai-codex/optional-pi-scope
@@ -28,6 +29,10 @@ QE_MAX_CONCURRENCY=1
 QE_WORKER_DISPATCH_AVAILABILITY=active
 QE_PROMPT_ACTIVITY_STALL_MS=30000
 ```
+
+Run worktrees need no path setup in the normal single-user case. The Worker creates `<effective QE_HOME>/worktrees` with private permissions, where effective `QE_HOME` is explicit `QE_HOME` or the portable per-user default `~/.qe`. Precedence is exact: `QE_WORKTREE_ROOT`, then `<QE_HOME>/worktrees`, then `~/.qe/worktrees`. `QE_WORKTREE_ROOT` is an advanced direct override; `QE_HOME` moves the global QE-managed data root while retaining the standard `worktrees` child. The historical `QE_WORKER_DATA_ROOT` remains a separate Worker state/database setting and is not silently relocated.
+
+The Worker resolves physical paths and rejects a managed root that contains a bound source repository or is contained by one, including equality and symlink aliases. This same check runs when loading configured or persisted bindings, admitting a runtime bind, and provisioning a Run. Automatically created directories are mode `0700`; existing overrides must be owned by the current user, traversable and writable, and not group/world-writable. Typed startup errors identify non-directory collisions, creation/access failures, ownership or permission defects, and source/worktree overlap. Fix the reported path or use `QE_HOME`/`QE_WORKTREE_ROOT`; no checkout-relative setup is required.
 
 `QE_HERDR_BIN`, `XDG_CONFIG_HOME`, and `HERDR_CONFIG_PATH` are required when Pi or Antigravity is enabled and must identify an existing executable, directory, and config file respectively. A Claude-only Worker has no Herdr dependency. Worker startup canonicalizes them, records the resolved local context, and applies that exact narrow context to every Herdr CLI/server subprocess. There is no `herdr` PATH fallback and Herdr session discovery does not depend on the Worker's general `HOME`. `HERDR_CONFIG_PATH` selects only Herdr's TOML file; `XDG_CONFIG_HOME` selects the named-session/socket namespace under `<XDG_CONFIG_HOME>/herdr/sessions`. The built desktop must receive the same three values for Open Session, although its `HOME` may differ. `QE_HERDR_SESSION` is an optional explicit override. Omit it to use the collision-resistant session name derived from `QE_WORKER_ID` and the explicit config root.
 
@@ -104,7 +109,7 @@ Before any Action, including `workspace_access: none`:
 
 1. Phoenix pins the Run to one Worker and one source binding.
 2. Bun locks the source Git common directory, resolves committed source `HEAD`, and records the full object ID and optional publication authority.
-3. Bun initializes a Worker-owned isolated repository under `QE_WORKTREE_ROOT`, fetches the exact local base OID without retaining the source as a remote, and creates `qe/run/<stable-id>` only inside that isolated repository.
+3. Bun initializes a Worker-owned isolated repository under the effective managed worktree root (normally `~/.qe/worktrees`; optionally selected by `QE_HOME` or `QE_WORKTREE_ROOT`), fetches the exact local base OID without retaining the source as a remote, and creates `qe/run/<stable-id>` only inside that isolated repository.
 4. Bun verifies canonical top-level, isolated Git common directory, branch, exact base, and absence of source linkage.
 5. Phoenix schedules only after the durable ready report.
 

@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+  assertSourceWorktreeSeparation,
+  provisionManagedWorktreePaths,
+} from "./managed-path-policy.ts";
 import type {
   JsonValue,
   Reasoning,
@@ -93,17 +97,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     "QE_WORKER_DATA_ROOT",
   );
   mkdirSync(dataRoot, { recursive: true });
-  const worktreeRoot = absolute(
-    env.QE_WORKTREE_ROOT?.trim() || join(dataRoot, "worktrees"),
-    "QE_WORKTREE_ROOT",
-  );
-  mkdirSync(worktreeRoot, { recursive: true });
+  const { worktreeRoot } = provisionManagedWorktreePaths(env);
   const allowedRoots = parseAllowedRoots(env.QE_ALLOWED_ROOTS_JSON);
   const workspaceBindingsPath = join(dataRoot, "workspace-bindings.json");
   const configuredBindings = parseBindings(
     env.QE_WORKSPACE_BINDINGS_JSON,
     allowedRoots,
-    realpathSync(worktreeRoot),
+    worktreeRoot,
   );
   const persistedState = existsSync(workspaceBindingsPath)
     ? persistedBindingState(
@@ -113,12 +113,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const persistedBindings = parseBindings(
     JSON.stringify(persistedState.active),
     allowedRoots,
-    realpathSync(worktreeRoot),
+    worktreeRoot,
   );
   const retiredWorkspaceBindings = parseBindings(
     JSON.stringify(persistedState.retired),
     allowedRoots,
-    realpathSync(worktreeRoot),
+    worktreeRoot,
   );
   const workspaceBindings = [...configuredBindings, ...persistedBindings];
   const maxConcurrency = positiveInteger(
@@ -459,10 +459,7 @@ function parseBindings(
     ).root;
     if (!contained(root.path, source))
       throw new Error(`Binding source is outside authorized root ${rootKey}.`);
-    if (contained(source, worktreeRoot))
-      throw new Error(
-        "QE_WORKTREE_ROOT cannot be inside a bound source repository.",
-      );
+    assertSourceWorktreeSeparation(source, worktreeRoot);
     return {
       binding_id: uuid(x.binding_id, "binding_id"),
       workspace_id: uuid(x.workspace_id, "workspace_id"),

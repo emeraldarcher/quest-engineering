@@ -157,6 +157,247 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
     end
   end
 
+  test "real Bun Worker defaults to a per-user worktree root across bind, restart, and Run provisioning" do
+    case System.find_executable("bun") do
+      nil ->
+        IO.puts("Managed worktree-root integration skipped: bun executable is unavailable")
+
+      bun ->
+        root = Path.expand("../../../..", __DIR__)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+        start_supervised!(QuestEngineering.Server.RunWorkspaceProvisioner)
+
+        proof_root =
+          Path.join(root, ".pi/tmp/managed-worktree-proof-#{System.unique_integer([:positive])}")
+
+        source_root = Path.join(proof_root, "source-checkout")
+        worker_home = Path.join(proof_root, "fresh-home")
+        worker_data = Path.join(proof_root, "worker-data")
+        File.mkdir_p!(source_root)
+        File.mkdir_p!(worker_home)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# managed worktree proof\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
+        {source_head, 0} = System.cmd("git", ["-C", source_root, "rev-parse", "HEAD"])
+        worker_id = "managed-worktree-#{System.unique_integer([:positive])}"
+        {quest, workspace} = product_fixture()
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: source_root,
+              max_access: "read_write",
+              discover_depth: 0,
+              allow_unconfined_shell: false
+            }
+          ])
+
+        start_worker = fn ->
+          open_worker_process(
+            bun,
+            [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+            root,
+            [
+              {~c"HOME", String.to_charlist(worker_home)},
+              {~c"XDG_CONFIG_HOME", String.to_charlist(Path.join(root, ".pi"))},
+              {~c"QE_HERDR_SESSION", ~c"q"},
+              {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+              {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+              {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_data)},
+              {~c"QE_WORKER_PROVIDER", ~c"fake"},
+              {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
+            ]
+          )
+        end
+
+        unless System.get_env("QE_KEEP_MANAGED_WORKTREE_PROOF") == "1" do
+          on_exit(fn -> File.rm_rf!(proof_root) end)
+        end
+
+        first_port = start_worker.()
+        first_pid = worker_process_pid(first_port)
+        on_exit(fn -> stop_worker_process(first_port, worker_id, first_pid) end)
+        assert_eventually(fn -> worker_ready?(worker_id, 1) end)
+
+        :ok = WorkspaceControl.request_discovery()
+        assert_eventually(fn -> worker_candidate(worker_id) != nil end)
+        candidate = worker_candidate(worker_id)
+
+        assert {:ok, %{status: "preparing", binding_id: binding_id}} =
+                 WorkspaceControl.bind(workspace.id, candidate.candidate_id)
+
+        assert_eventually(fn ->
+          match?(%{status: "available"}, Repo.get(WorkerWorkspaceBinding, binding_id))
+        end)
+
+        managed_root = Path.join(worker_home, ".qe/worktrees")
+        assert File.dir?(managed_root)
+        assert Bitwise.band(File.stat!(managed_root).mode, 0o077) == 0
+        refute String.starts_with?(Path.expand(managed_root), Path.expand(source_root) <> "/")
+
+        stop_worker_process(first_port, worker_id)
+
+        assert_eventually(fn ->
+          match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
+        end)
+
+        second_port = start_worker.()
+        second_pid = worker_process_pid(second_port)
+        on_exit(fn -> stop_worker_process(second_port, worker_id, second_pid) end)
+        assert_eventually(fn -> worker_ready?(worker_id, 2) end)
+
+        assert %{state: "available"} = WorkspaceControl.binding_state(workspace.id)
+        assert %{status: "available"} = Repo.get(WorkerWorkspaceBinding, binding_id)
+
+        assert {:ok, launched} = LaunchQuest.launch(quest.id)
+        assert [_action] = launched.actions
+
+        assert_eventually(fn ->
+          match?(%{state: "ready"}, Repo.get(RunWorkspaceAssignment, launched.run_id))
+        end)
+
+        assignment = Repo.get!(RunWorkspaceAssignment, launched.run_id)
+        assert String.starts_with?(assignment.canonical_worktree_root, managed_root <> "/")
+        assert File.dir?(assignment.canonical_worktree_root)
+        assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
+        assert {^source_head, 0} = System.cmd("git", ["-C", source_root, "rev-parse", "HEAD"])
+        assert {"", 0} = System.cmd("git", ["-C", source_root, "status", "--porcelain=v1"])
+
+        if System.get_env("QE_KEEP_MANAGED_WORKTREE_PROOF") == "1" do
+          IO.puts("Retained managed worktree proof: #{proof_root}")
+        end
+    end
+  end
+
+  test "real Bun Worker rejects a runtime bind whose explicit worktree root is inside the source" do
+    case System.find_executable("bun") do
+      nil ->
+        IO.puts("Managed worktree overlap integration skipped: bun executable is unavailable")
+
+      bun ->
+        root = Path.expand("../../../..", __DIR__)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+
+        fixture_root =
+          Path.join(
+            root,
+            ".pi/tmp/managed-worktree-overlap-#{System.unique_integer([:positive])}"
+          )
+
+        source_root = Path.join(fixture_root, "source-checkout")
+        nested_worktrees = Path.join(source_root, "managed-worktrees")
+        File.mkdir_p!(nested_worktrees)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# overlap fixture\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
+        {:ok, workspace} =
+          Products.create_workspace(%{
+            key: "overlap-#{System.unique_integer([:positive])}",
+            name: "Overlap rejection",
+            source_kind: :local_git,
+            source_fingerprint: nil
+          })
+
+        worker_id = "managed-overlap-#{System.unique_integer([:positive])}"
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: source_root,
+              max_access: "read_write",
+              discover_depth: 0,
+              allow_unconfined_shell: false
+            }
+          ])
+
+        port =
+          open_worker_process(
+            bun,
+            [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+            root,
+            [
+              {~c"HOME", String.to_charlist(Path.join(fixture_root, "home"))},
+              {~c"XDG_CONFIG_HOME", String.to_charlist(Path.join(root, ".pi"))},
+              {~c"QE_HERDR_SESSION", ~c"q"},
+              {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+              {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+              {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_WORKTREE_ROOT", String.to_charlist(nested_worktrees)},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(Path.join(fixture_root, "data"))},
+              {~c"QE_WORKER_PROVIDER", ~c"fake"},
+              {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
+            ]
+          )
+
+        worker_pid = worker_process_pid(port)
+
+        on_exit(fn ->
+          stop_worker_process(port, worker_id, worker_pid)
+          File.rm_rf!(fixture_root)
+        end)
+
+        assert_eventually(fn -> worker_ready?(worker_id, 1) end)
+        :ok = WorkspaceControl.request_discovery()
+        assert_eventually(fn -> worker_candidate(worker_id) != nil end)
+        candidate = worker_candidate(worker_id)
+
+        assert {:ok, %{status: "preparing", binding_id: binding_id}} =
+                 WorkspaceControl.bind(workspace.id, candidate.candidate_id)
+
+        assert_eventually(fn ->
+          case WorkspaceControl.binding_state(workspace.id) do
+            %{
+              state: "attention_required",
+              failure_code: "workspace_binding_failed",
+              failure_details: %{"message" => message}
+            } ->
+              String.contains?(message, "must not contain one another")
+
+            _other ->
+              false
+          end
+        end)
+
+        refute Repo.get(WorkerWorkspaceBinding, binding_id)
+        assert {"", 0} = System.cmd("git", ["-C", source_root, "status", "--porcelain=v1"])
+    end
+  end
+
   test "maintenance Worker teardown is exact, disconnects authoritatively, and cannot claim later work" do
     case System.find_executable("bun") do
       nil ->

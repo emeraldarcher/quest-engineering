@@ -22,6 +22,8 @@ Planning Classes, immutable Markdown execution artifacts, exact-subject verdicts
 
 Phase-A provider-neutral accounts and durable account-owned, Run-independent execution environments are documented in [`docs/provider-accounts.md`](docs/provider-accounts.md). Their physical availability is explicitly separate from authentication and inference readiness.
 
+On first Worker start, QE automatically creates the per-user managed Run-worktree root at `~/.qe/worktrees`; it never derives that default from the current checkout. Advanced installations may move the QE data home with `QE_HOME` or directly set `QE_WORKTREE_ROOT`. See [`workers/bun/README.md`](workers/bun/README.md) for precedence, permissions, and source-overlap fencing.
+
 ## Umbrella applications
 
 - `quest_engineering_core` — dependency-free Elixir boundary containing reusable Product Tactic authoring and pure expansion into semantic `Step`/`Sequence`/`Parallel`/`Until` tactics, deterministic compilation, and a pure runtime.
