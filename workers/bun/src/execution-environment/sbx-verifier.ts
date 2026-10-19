@@ -1,4 +1,12 @@
 import { createHash } from "node:crypto";
+import {
+  createOwnershipMarkerV2,
+  decodeOwnershipMarkerV2,
+  encodeOwnershipMarkerV2,
+  type OwnershipMarkerV2,
+  ownershipMarkerV2Digest,
+  sameOwnershipMarkerV2,
+} from "./ownership-marker.ts";
 import type {
   SbxClient,
   SbxPolicyRule,
@@ -41,7 +49,6 @@ import {
 import type { DurableEnvironmentRecord } from "./store.ts";
 import type {
   EnvironmentCapability,
-  EnvironmentOwner,
   EnvironmentReadinessDiagnostic,
 } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
@@ -225,21 +232,8 @@ export interface SbxEnvironmentVerifier {
   ): Promise<SbxVerifiedEnvironment>;
 }
 
-interface OwnershipMarker {
-  schemaVersion: 2;
-  backendKind: "sbx";
-  workerId: string;
-  owner: EnvironmentOwner;
-  environmentId: string;
-  displayName: string;
-  incarnation: string;
-  profileId: string;
-  profileDigest: string;
-  specDigest: string;
-}
-
 interface GuestProbe {
-  marker: OwnershipMarker | null;
+  marker: OwnershipMarkerV2 | null;
   directories: Record<string, boolean>;
   home: string;
   homeSentinel: string | null;
@@ -283,9 +277,9 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     sandbox: SbxSandboxSummary,
   ): Promise<SbxVerifiedEnvironment> {
     await this.verifyCreationIdentity(record, sandbox);
-    const marker = ownershipMarker(record, sandbox);
+    const marker = createOwnershipMarkerV2(record, sandbox);
     const existing = await this.readMarker(sandbox.name);
-    if (existing && !sameMarker(existing, marker))
+    if (existing && !sameOwnershipMarkerV2(existing, marker))
       throw identityMismatch(
         "Guest ownership marker conflicts with the durable Worker record.",
       );
@@ -320,7 +314,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
           "import json,os,pathlib; marker=json.loads(os.environ['QE_MARKER_JSON']); p=pathlib.Path(os.environ['QE_MARKER_PATH']); p.write_text(json.dumps(marker,separators=(',',':'))); os.chmod(p,0o600); os.chown(p,1000,1000); h=pathlib.Path(os.environ['QE_HOME_SENTINEL']); h.write_text(marker['incarnation']); os.chmod(h,0o600); os.chown(h,1000,1000)",
         ],
         environment: {
-          QE_MARKER_JSON: JSON.stringify(marker),
+          QE_MARKER_JSON: encodeOwnershipMarkerV2(marker),
           QE_MARKER_PATH: MARKER_PATH,
           QE_HOME_SENTINEL: HOME_SENTINEL_PATH,
         },
@@ -344,7 +338,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     record: DurableEnvironmentRecord,
     sandbox: SbxSandboxSummary,
   ): Promise<SbxVerifiedEnvironment> {
-    const expectedMarker = ownershipMarker(record, sandbox);
+    const expectedMarker = createOwnershipMarkerV2(record, sandbox);
     const [probe, docker, policies, proof, unrelatedNetworkDenied] =
       await Promise.all([
         this.guestProbe(sandbox.name),
@@ -353,7 +347,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
         this.readDockerProof(sandbox.name),
         this.networkDenied(sandbox.name, "https://example.com/"),
       ]);
-    if (!probe.marker || !sameMarker(probe.marker, expectedMarker))
+    if (!probe.marker || !sameOwnershipMarkerV2(probe.marker, expectedMarker))
       throw identityMismatch(
         "Guest ownership marker does not match durable Worker ownership.",
       );
@@ -440,7 +434,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
                 { kind: "credentials", mode: "none" },
               ];
     return {
-      markerDigest: digestMarker(expectedMarker),
+      markerDigest: ownershipMarkerV2Digest(expectedMarker),
       dockerDaemonId: docker.ID,
       capabilities: [
         { kind: "filesystem_namespace", mode: "isolated" },
@@ -515,7 +509,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
 
   private async readMarker(
     sandboxName: string,
-  ): Promise<OwnershipMarker | null> {
+  ): Promise<OwnershipMarkerV2 | null> {
     const result = await this.client.exec(sandboxName, {
       executable: "/usr/bin/python3",
       args: [
@@ -526,7 +520,7 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     });
     const value = parseObject(result.stdout, "ownership marker");
     if (value.exists === false) return null;
-    return decodeMarker(value.marker);
+    return decodeOwnershipMarkerV2(value.marker);
   }
 
   private async guestProbe(sandboxName: string): Promise<GuestProbe> {
@@ -546,7 +540,8 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
     });
     const value = parseObject(result.stdout, "guest probe");
     return {
-      marker: value.marker === null ? null : decodeMarker(value.marker),
+      marker:
+        value.marker === null ? null : decodeOwnershipMarkerV2(value.marker),
       directories: booleanRecord(value.directories, "directories"),
       home: text(value.home, "home"),
       homeSentinel:
@@ -1083,71 +1078,6 @@ export class LiveSbxEnvironmentVerifier implements SbxEnvironmentVerifier {
   }
 }
 
-function ownershipMarker(
-  record: DurableEnvironmentRecord,
-  sandbox: SbxSandboxSummary,
-): OwnershipMarker {
-  if (!record.environmentId && record.state !== "creating")
-    throw identityMismatch("Durable environment record has no physical ID.");
-  return {
-    schemaVersion: 2,
-    backendKind: "sbx",
-    workerId: record.workerId,
-    owner: structuredClone(record.owner),
-    environmentId: sandbox.id,
-    displayName: sandbox.name,
-    incarnation: record.incarnation,
-    profileId: record.profileId,
-    profileDigest: record.profileDigest,
-    specDigest: record.specDigest,
-  };
-}
-
-function decodeMarker(value: unknown): OwnershipMarker {
-  const marker = parseObject(value, "ownership marker value");
-  if (marker.schemaVersion !== 2 || marker.backendKind !== "sbx")
-    throw identityMismatch("Guest ownership marker schema is incompatible.");
-  const ownerValue = parseObject(marker.owner, "marker.owner");
-  const owner: EnvironmentOwner =
-    ownerValue.kind === "run"
-      ? { kind: "run", runId: text(ownerValue.runId, "marker.owner.runId") }
-      : ownerValue.kind === "provider_account"
-        ? {
-            kind: "provider_account",
-            providerAccountId: text(
-              ownerValue.providerAccountId,
-              "marker.owner.providerAccountId",
-            ),
-            credentialGeneration: positiveInteger(
-              ownerValue.credentialGeneration,
-              "marker.owner.credentialGeneration",
-            ),
-          }
-        : (() => {
-            throw identityMismatch("Guest ownership marker owner is invalid.");
-          })();
-  return {
-    schemaVersion: 2,
-    backendKind: "sbx",
-    workerId: text(marker.workerId, "marker.workerId"),
-    owner,
-    environmentId: text(marker.environmentId, "marker.environmentId"),
-    displayName: text(marker.displayName, "marker.displayName"),
-    incarnation: text(marker.incarnation, "marker.incarnation"),
-    profileId: text(marker.profileId, "marker.profileId"),
-    profileDigest: text(marker.profileDigest, "marker.profileDigest"),
-    specDigest: text(marker.specDigest, "marker.specDigest"),
-  };
-}
-
-function sameMarker(left: OwnershipMarker, right: OwnershipMarker): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function digestMarker(marker: OwnershipMarker): string {
-  return createHash("sha256").update(JSON.stringify(marker)).digest("hex");
-}
-
 function parseObject(value: unknown, label: string): Record<string, unknown> {
   const parsed =
     typeof value === "string"
@@ -1174,12 +1104,6 @@ function number(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isFinite(value))
     throw unhealthy(`${label} must be a finite number.`);
   return value;
-}
-
-function positiveInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1)
-    throw unhealthy(`${label} must be a positive integer.`);
-  return value as number;
 }
 
 function boolean(value: unknown, label: string): boolean {

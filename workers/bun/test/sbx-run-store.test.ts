@@ -4,6 +4,10 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import {
+  createOwnershipMarkerV2,
+  encodeOwnershipMarkerV2,
+} from "../src/execution-environment/ownership-marker.ts";
+import {
   SBX_CODING_EXECUTION_PROFILE_V2,
   SBX_CODING_EXECUTION_PROFILE_V3,
   SBX_GUEST_PATHS,
@@ -126,6 +130,31 @@ test("Run-bound setup keeps provider-auth cwd on the canonical lease workspace",
     runId: "run-setup-cwd",
     profile: SBX_CODING_EXECUTION_PROFILE_V3,
   };
+  const files = new Map<string, Uint8Array>([
+    [
+      `${SBX_GUEST_PATHS.state}/environment-ownership.json`,
+      new TextEncoder().encode(
+        encodeOwnershipMarkerV2(
+          createOwnershipMarkerV2(
+            {
+              workerId: environmentRef.workerId,
+              owner: { kind: "run", runId: environmentRef.runId },
+              environmentId: environmentRef.environmentId,
+              state: "running",
+              incarnation: environmentRef.incarnation,
+              profileId: environmentRef.profile.id,
+              profileDigest: environmentRef.profile.digest,
+              specDigest: "spec-setup-cwd",
+            },
+            {
+              id: environmentRef.environmentId,
+              name: "qe-run-setup-cwd",
+            },
+          ),
+        ),
+      ),
+    ],
+  ]);
   const lease = {
     ref: environmentRef,
     paths: { ...SBX_GUEST_PATHS },
@@ -134,12 +163,28 @@ test("Run-bound setup keeps provider-auth cwd on the canonical lease workspace",
       command.executable === "/usr/bin/uname"
         ? { exitCode: 0, stdout: "aarch64\n", stderr: "" }
         : { exitCode: 0, stdout: "", stderr: "" },
-    exec: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }),
-    writeFile: async (input: { path: string; data: Uint8Array }) => ({
-      path: input.path,
-      byteLength: input.data.byteLength,
-      sha256: createHash("sha256").update(input.data).digest("hex"),
+    exec: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        missing: [],
+        executable: true,
+        workspace: true,
+      }),
+      stderr: "",
     }),
+    readFile: async (input: { path: string }) => {
+      const value = files.get(input.path);
+      if (!value) throw new Error(`missing fixture file ${input.path}`);
+      return value;
+    },
+    writeFile: async (input: { path: string; data: Uint8Array }) => {
+      files.set(input.path, input.data);
+      return {
+        path: input.path,
+        byteLength: input.data.byteLength,
+        sha256: createHash("sha256").update(input.data).digest("hex"),
+      };
+    },
   };
   const privateWorkspace = {
     physicalId: "private-workspace-setup-cwd",

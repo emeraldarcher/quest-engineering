@@ -76,6 +76,7 @@ import {
   type RunEnvironmentCleanupOutcome,
 } from "./run-cleanup.ts";
 import { SbxExecutionEnvironmentBackend } from "./sbx-backend.ts";
+import { validateSbxGuestLaunchPaths } from "./sbx-launch-attestation.ts";
 import {
   SBX_ANTIGRAVITY_EXECUTABLE,
   SBX_CLAUDE_AGENT_SDK_VERSION,
@@ -725,12 +726,12 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       data: new TextEncoder().encode(`${JSON.stringify(attestation)}\n`),
       mode: 0o400,
     });
-    await this.validateGuestLaunchPaths(
+    await validateSbxGuestLaunchPaths({
       lease,
       attestation,
       ownershipMarkerPath,
       launchBindingPath,
-      [
+      requiredPaths: [
         ownershipMarkerPath,
         launchBindingPath,
         SBX_CLAUDE_WRAPPER,
@@ -743,9 +744,9 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         claude.sdkPackageJson,
         claude.zodModule,
       ],
-      workspace.paths.workspace,
-      SBX_CLAUDE_WRAPPER,
-    );
+      workspacePath: workspace.paths.workspace,
+      guestExecutable: SBX_CLAUDE_WRAPPER,
+    });
     this.store.ready({
       lineageId: context.physicalLineageId,
       actionId: context.actionId,
@@ -1175,15 +1176,15 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
         : []),
       ...extensionPaths,
     ];
-    await this.validateGuestLaunchPaths(
+    await validateSbxGuestLaunchPaths({
       lease,
       attestation,
       ownershipMarkerPath,
       launchBindingPath,
-      requiredGuestPaths,
-      workspace.paths.workspace,
+      requiredPaths: requiredGuestPaths,
+      workspacePath: workspace.paths.workspace,
       guestExecutable,
-    );
+    });
     const antigravityNativeSession =
       harnessKind === "antigravity" && lineage.nativeSession
         ? nativeSessionIdentity(lineage.nativeSession, "antigravity")
@@ -2107,38 +2108,6 @@ export class SbxRunExecutionManager implements StructuredCompletionBoundary {
       configDirectory,
       controlDescriptor,
     };
-  }
-
-  private async validateGuestLaunchPaths(
-    lease: EnvironmentLease,
-    attestation: Record<string, string | number>,
-    ownershipMarkerPath: string,
-    launchBindingPath: string,
-    requiredPaths: readonly string[],
-    workspacePath: string,
-    guestExecutable: string,
-  ): Promise<void> {
-    const result = await lease.exec({
-      executable: "/usr/bin/python3",
-      args: [
-        "-c",
-        "import json,os,pathlib,sys; expected=json.loads(os.environ['QE_EXPECTED']); marker=json.loads(pathlib.Path(os.environ['QE_MARKER']).read_text()); binding=json.loads(pathlib.Path(os.environ['QE_BINDING']).read_text()); keys=('workerId','runId','environmentId','incarnation','profileId','profileDigest'); bad=[k for k in keys if marker.get(k)!=expected.get(k)]; binding_bad=[k for k,v in expected.items() if binding.get(k)!=v]; paths=json.loads(os.environ['QE_PATHS']); missing=[p for p in paths if not pathlib.Path(p).exists()]; exe=os.environ['QE_EXECUTABLE']; ok=os.path.isfile(exe) and os.access(exe,os.X_OK) and pathlib.Path(os.environ['QE_WORKSPACE']).is_dir(); print(json.dumps({'bad':bad,'binding_bad':binding_bad,'missing':missing,'executable':ok},separators=(',',':'))); sys.exit(0 if not bad and not binding_bad and not missing and ok else 41)",
-      ],
-      environment: {
-        QE_EXPECTED: JSON.stringify(attestation),
-        QE_MARKER: ownershipMarkerPath,
-        QE_BINDING: launchBindingPath,
-        QE_PATHS: JSON.stringify(requiredPaths),
-        QE_EXECUTABLE: guestExecutable,
-        QE_WORKSPACE: workspacePath,
-      },
-      timeoutMs: 30_000,
-    });
-    if (result.exitCode !== 0)
-      throw environmentLaunchFailure(
-        "environment_launch_mismatch",
-        `SBX guest launch-path validation failed: ${result.stdout.trim() || result.stderr.trim() || `exit ${result.exitCode}`}`,
-      );
   }
 
   private async importVerifiedExport(

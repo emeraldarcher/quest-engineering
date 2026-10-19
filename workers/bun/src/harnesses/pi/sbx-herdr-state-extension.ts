@@ -9,6 +9,10 @@ import {
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  assertRunOwnershipMarkerV2,
+  decodeOwnershipMarkerV2,
+} from "../../execution-environment/ownership-marker.ts";
 
 const STATE_PATH_ENV = "QE_SBX_RUNTIME_STATE_PATH";
 const ATTESTATION_ENV = "QE_SBX_ATTESTATION_JSON";
@@ -254,24 +258,19 @@ export async function verifyEnvironmentAttestation(
     )
   )
     throw new Error("required guest paths are not absolute");
-  const marker = parseRecord(
-    await readFile(markerPath, "utf8"),
-    "ownership marker",
-  );
+  const marker = decodeOwnershipMarkerV2(await readFile(markerPath));
   const binding = parseRecord(
     await readFile(bindingPath, "utf8"),
     "launch binding",
   );
-  for (const key of [
-    "workerId",
-    "runId",
-    "environmentId",
-    "incarnation",
-    "profileId",
-    "profileDigest",
-  ])
-    if (marker[key] !== expected[key])
-      throw new Error(`ownership marker mismatch for ${key}`);
+  assertRunOwnershipMarkerV2(marker, {
+    workerId: expectedText(expected.workerId, "workerId"),
+    runId: expectedText(expected.runId, "runId"),
+    environmentId: expectedText(expected.environmentId, "environmentId"),
+    incarnation: expectedText(expected.incarnation, "incarnation"),
+    profileId: expectedText(expected.profileId, "profileId"),
+    profileDigest: expectedText(expected.profileDigest, "profileDigest"),
+  });
   for (const [key, value] of Object.entries(expected))
     if (binding[key] !== value)
       throw new Error(`launch binding mismatch for ${key}`);
@@ -289,6 +288,12 @@ export async function verifyEnvironmentAttestation(
     );
   for (const path of requiredPaths) await stat(path);
   return expected;
+}
+
+function expectedText(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0)
+    throw new Error(`expected attestation.${label} is not a non-empty string`);
+  return value;
 }
 
 function absoluteEnvironmentPath(
