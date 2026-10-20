@@ -138,7 +138,9 @@ async function setup(
   await mkdir(join(source, ".git"), { recursive: true });
   for (const item of [...persisted, ...configured])
     item.source_repository_root = source;
-  const workspaceBindingsPath = join(root, "workspace-bindings.json");
+  const dataRoot = join(root, "worker-state");
+  await mkdir(dataRoot, { recursive: true });
+  const workspaceBindingsPath = join(dataRoot, "workspace-bindings.json");
   await writeFile(workspaceBindingsPath, JSON.stringify(persisted));
   const config: WorkerConfig = {
     controlPlaneUrl: "ws://127.0.0.1/worker/websocket",
@@ -152,8 +154,9 @@ async function setup(
     retiredWorkspaceBindings: [],
     configuredWorkspaceBindingIds: configured.map((item) => item.binding_id),
     workspaceBindingsPath,
+    qeHome: join(root, "qe-home"),
     worktreeRoot: join(root, "worktrees"),
-    dataRoot: root,
+    dataRoot,
     piThinking: "medium",
     heartbeatMs: 10_000,
     reconnectMs: 1_000,
@@ -188,7 +191,8 @@ function environment(root: string): NodeJS.ProcessEnv {
         allow_unconfined_shell: false,
       },
     ]),
-    QE_WORKER_DATA_ROOT: root,
+    QE_HOME: join(root, "qe-home"),
+    QE_WORKER_DATA_ROOT: join(root, "worker-state"),
     QE_WORKTREE_ROOT: join(root, "worktrees"),
     QE_WORKER_PROVIDER: "fake",
     QE_ENABLE_TEST_PROVIDER: "1",

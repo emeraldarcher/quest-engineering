@@ -22,7 +22,7 @@ Planning Classes, immutable Markdown execution artifacts, exact-subject verdicts
 
 Phase-A provider-neutral accounts and durable account-owned, Run-independent execution environments are documented in [`docs/provider-accounts.md`](docs/provider-accounts.md). Their physical availability is explicitly separate from authentication and inference readiness.
 
-On first Worker start, QE automatically creates the per-user managed Run-worktree root at `~/.qe/worktrees`; it never derives that default from the current checkout. Advanced installations may move the QE data home with `QE_HOME` or directly set `QE_WORKTREE_ROOT`. See [`workers/bun/README.md`](workers/bun/README.md) for precedence, permissions, and source-overlap fencing.
+On first Worker start, QE creates one checkout-independent per-user host layout beneath `QE_HOME`, or `~/.qe` when `QE_HOME` is absent. Per-Worker durable state lives under `<QE_HOME>/state/workers/worker-<sha256(QE_WORKER_ID)>` and managed Run repositories live under `<QE_HOME>/worktrees`. `QE_WORKER_DATA_ROOT` and `QE_WORKTREE_ROOT` remain absolute, advanced component overrides only; neither changes the canonical home or enables legacy-path fallback. See [`workers/bun/README.md`](workers/bun/README.md) for the complete layout, permissions, and source-overlap fencing.
 
 ## Umbrella applications
 

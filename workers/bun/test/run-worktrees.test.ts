@@ -106,14 +106,25 @@ test("isolates simultaneous Runs without linking or mutating source Git metadata
   restarted.close();
 });
 
-test("Run provisioning rechecks canonical source/worktree separation", async () => {
+test("Run provisioning rechecks complete canonical source/host separation", async () => {
   const fixture = await setup();
-  fixture.config.worktreeRoot = fixture.source;
   const registry = new RunWorktreeRegistry(fixture.config);
+  const safePaths = {
+    qeHome: fixture.config.qeHome,
+    dataRoot: fixture.config.dataRoot,
+    worktreeRoot: fixture.config.worktreeRoot,
+  };
 
-  await expect(
-    registry.provision(request("1", workspace(1), binding(1))),
-  ).rejects.toMatchObject({ code: "worktree_source_overlap" });
+  for (const { component, code } of [
+    { component: "qeHome", code: "qe_home_source_overlap" },
+    { component: "dataRoot", code: "worker_state_source_overlap" },
+    { component: "worktreeRoot", code: "worktree_source_overlap" },
+  ] as const) {
+    Object.assign(fixture.config, safePaths, { [component]: fixture.source });
+    await expect(
+      registry.provision(request("1", workspace(1), binding(1))),
+    ).rejects.toMatchObject({ code });
+  }
 
   registry.close();
 });
@@ -396,6 +407,7 @@ async function setup() {
         allow_unconfined_shell: true,
       },
     ],
+    qeHome: join(root, "managed"),
     worktreeRoot: join(root, "managed"),
     executorModels: [{ provider: "fake", model: "test" }],
     reasoningLevels: ["low", "medium", "high"],

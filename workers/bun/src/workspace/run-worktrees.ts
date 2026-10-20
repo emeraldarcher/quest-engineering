@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { WorkerConfig, WorkspaceBindingConfig } from "../config.ts";
-import { assertSourceWorktreeSeparation } from "../managed-path-policy.ts";
+import { assertSourceHostSeparation } from "../managed-path-policy.ts";
 
 export interface ProvisionRunWorktree {
   worktree_id: string;
@@ -163,10 +163,7 @@ export class RunWorktreeRegistry {
       request.workspace_binding_id,
       request.workspace_id,
     );
-    assertSourceWorktreeSeparation(
-      binding.source_repository_root,
-      this.config.worktreeRoot,
-    );
+    assertSourceHostSeparation(binding.source_repository_root, this.config);
     const sourceCommonDir = await gitCommonDir(binding.source_repository_root);
     const target = this.targetPath(request.workspace_id, request.worktree_id);
     const isolatedCommonDir = resolve(target, ".git");

@@ -1432,6 +1432,7 @@ function config(root: string): WorkerConfig {
     herdrSession: "test-herdr",
     allowedRoots: [],
     workspaceBindings: [],
+    qeHome: join(root, "worktrees"),
     worktreeRoot: join(root, "worktrees"),
     dataRoot: root,
     piThinking: "minimal",

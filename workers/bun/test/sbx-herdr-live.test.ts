@@ -138,6 +138,7 @@ test.skipIf(!enabled)(
             allow_unconfined_shell: true,
           },
         ],
+        qeHome: worktreeRoot,
         worktreeRoot,
         dataRoot,
         piThinking: "medium",

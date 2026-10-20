@@ -704,6 +704,7 @@ test("Worker startup ensures infrastructure before any harness discovery", async
     herdrSession: defaultHerdrSessionName("startup-order-worker"),
     allowedRoots: [],
     workspaceBindings: [],
+    qeHome: join(root, "worktrees"),
     worktreeRoot: join(root, "worktrees"),
     dataRoot: root,
     piThinking: "medium",
@@ -734,7 +735,8 @@ test("configuration derives the default session and retains explicit overrides",
     QE_CONTROL_PLANE_URL: "ws://127.0.0.1/worker/websocket",
     QE_WORKER_ID: "configured-worker",
     QE_WORKER_TOKEN: "unused",
-    QE_WORKER_DATA_ROOT: root,
+    QE_HOME: join(root, "qe-home"),
+    QE_WORKER_DATA_ROOT: join(root, "worker-state"),
     QE_WORKTREE_ROOT: join(root, "worktrees"),
     QE_ALLOWED_ROOTS_JSON: "[]",
     QE_WORKER_PROVIDER: "fake",
@@ -812,8 +814,9 @@ test("derived names keep both native Herdr sockets below the Unix path contract"
   expect(() =>
     loadConfig({
       ...baseEnvironment,
-      QE_WORKER_DATA_ROOT: root,
-      QE_WORKTREE_ROOT: join(root, "worktrees"),
+      QE_HOME: join(root, "qe-home-failed"),
+      QE_WORKER_DATA_ROOT: join(root, "worker-state-failed"),
+      QE_WORKTREE_ROOT: join(root, "worktrees-failed"),
       QE_HERDR_SESSION: failedName,
     }),
   ).toThrow("Herdr client socket path is 107 bytes");
@@ -821,8 +824,9 @@ test("derived names keep both native Herdr sockets below the Unix path contract"
   const longDataRoot = join(root, ...Array.from({ length: 12 }, () => "long"));
   const configuration = loadConfig({
     ...baseEnvironment,
+    QE_HOME: join(root, "qe-home-long"),
     QE_WORKER_DATA_ROOT: longDataRoot,
-    QE_WORKTREE_ROOT: join(longDataRoot, "worktrees"),
+    QE_WORKTREE_ROOT: join(root, "worktrees-long"),
   });
   expect(configuration.herdrSession).toBe(derived);
   assertHerdrDefaultSocketPathSafe(configuration.herdrSession, configHome);

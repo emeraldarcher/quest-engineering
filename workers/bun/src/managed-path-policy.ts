@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import {
   accessSync,
@@ -12,12 +13,15 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 export type ManagedPathPolicyErrorCode =
-  | "managed_home_not_absolute"
+  | "managed_path_not_absolute"
   | "managed_directory_creation_failed"
   | "managed_directory_not_directory"
   | "managed_directory_canonicalization_failed"
   | "managed_directory_ownership_mismatch"
   | "managed_directory_unsafe_permissions"
+  | "managed_roots_overlap"
+  | "qe_home_source_overlap"
+  | "worker_state_source_overlap"
   | "worktree_source_overlap";
 
 /** A fail-closed local path-boundary error; its code does not extend Worker Protocol. */
@@ -33,102 +37,155 @@ export class ManagedPathPolicyError extends Error {
   }
 }
 
-export interface ManagedWorktreePaths {
-  /** The selected QE managed-data home. An explicit worktree override need not create it. */
+export interface ManagedHostPaths {
   qeHome: string;
+  dataRoot: string;
   worktreeRoot: string;
-  source: "QE_WORKTREE_ROOT" | "QE_HOME" | "user_home_default";
+  dataRootSource: "QE_WORKER_DATA_ROOT" | "QE_HOME";
+  worktreeRootSource: "QE_WORKTREE_ROOT" | "QE_HOME";
 }
 
-/** Select the effective path without touching the filesystem. */
-export function selectManagedWorktreePaths(
+/** Select the complete greenfield host layout without touching the filesystem. */
+export function selectManagedHostPaths(
   env: NodeJS.ProcessEnv,
+  workerId: string,
   fallbackUserHome = homedir(),
-): ManagedWorktreePaths {
+): ManagedHostPaths {
   const configuredHome = env.QE_HOME?.trim();
   const qeHome = configuredHome
-    ? absoluteManagedHome(configuredHome, "QE_HOME")
+    ? absolutePath(configuredHome, "QE_HOME")
     : join(
-        absoluteManagedHome(env.HOME?.trim() || fallbackUserHome, "user home"),
+        absolutePath(env.HOME?.trim() || fallbackUserHome, "user home"),
         ".qe",
       );
+  const explicitDataRoot = env.QE_WORKER_DATA_ROOT?.trim();
   const explicitWorktreeRoot = env.QE_WORKTREE_ROOT?.trim();
+
   return {
     qeHome,
+    dataRoot: explicitDataRoot
+      ? absolutePath(explicitDataRoot, "QE_WORKER_DATA_ROOT")
+      : join(qeHome, "state", "workers", workerStateDirectoryName(workerId)),
     worktreeRoot: explicitWorktreeRoot
-      ? resolve(explicitWorktreeRoot)
+      ? absolutePath(explicitWorktreeRoot, "QE_WORKTREE_ROOT")
       : join(qeHome, "worktrees"),
-    source: explicitWorktreeRoot
-      ? "QE_WORKTREE_ROOT"
-      : configuredHome
-        ? "QE_HOME"
-        : "user_home_default",
+    dataRootSource: explicitDataRoot ? "QE_WORKER_DATA_ROOT" : "QE_HOME",
+    worktreeRootSource: explicitWorktreeRoot ? "QE_WORKTREE_ROOT" : "QE_HOME",
   };
 }
 
-/**
- * Resolve and provision the host-side QE worktree location without consulting cwd.
- * Explicit QE_WORKTREE_ROOT retains the historical behavior of resolving a relative
- * value against cwd; the built-in default is always derived from the OS/user home.
- */
-export function provisionManagedWorktreePaths(
+/** Create and validate every directory required by the current host layout. */
+export function provisionManagedHostPaths(
   env: NodeJS.ProcessEnv,
+  workerId: string,
   fallbackUserHome = homedir(),
-): ManagedWorktreePaths {
-  const selected = selectManagedWorktreePaths(env, fallbackUserHome);
-  if (selected.source === "QE_WORKTREE_ROOT") {
-    return {
-      ...selected,
-      worktreeRoot: ensureManagedDirectory(
-        selected.worktreeRoot,
-        "QE_WORKTREE_ROOT",
-      ),
-    };
+): ManagedHostPaths {
+  const selected = selectManagedHostPaths(env, workerId, fallbackUserHome);
+  const qeHome = ensureManagedDirectory(selected.qeHome, "QE_HOME");
+
+  let dataRoot: string;
+  if (selected.dataRootSource === "QE_WORKER_DATA_ROOT") {
+    dataRoot = ensureManagedDirectory(selected.dataRoot, "QE_WORKER_DATA_ROOT");
+  } else {
+    const stateRoot = ensureManagedDirectory(
+      join(qeHome, "state"),
+      "QE state root",
+    );
+    const workersRoot = ensureManagedDirectory(
+      join(stateRoot, "workers"),
+      "QE Worker state root",
+    );
+    dataRoot = ensureManagedDirectory(
+      join(workersRoot, workerStateDirectoryName(workerId)),
+      "QE Worker durable state root",
+    );
   }
 
-  const canonicalQeHome = ensureManagedDirectory(selected.qeHome, "QE_HOME");
-  return {
-    ...selected,
-    qeHome: canonicalQeHome,
-    worktreeRoot: ensureManagedDirectory(
-      join(canonicalQeHome, "worktrees"),
-      "managed worktree root",
-    ),
-  };
+  const worktreeRoot = ensureManagedDirectory(
+    selected.worktreeRootSource === "QE_WORKTREE_ROOT"
+      ? selected.worktreeRoot
+      : join(qeHome, "worktrees"),
+    selected.worktreeRootSource === "QE_WORKTREE_ROOT"
+      ? "QE_WORKTREE_ROOT"
+      : "QE managed worktree root",
+  );
+  assertManagedComponentSeparation(dataRoot, worktreeRoot);
+
+  return { ...selected, qeHome, dataRoot, worktreeRoot };
+}
+
+/** Stable filesystem-safe identity for one Worker's private durable state. */
+export function workerStateDirectoryName(workerId: string): string {
+  return `worker-${createHash("sha256").update(workerId).digest("hex")}`;
 }
 
 /**
- * Enforce the symmetric physical-path boundary used by configuration loading,
- * runtime binding admission, and Run provisioning configuration.
+ * Enforce the physical source boundary for the complete QE-managed host layout.
+ * This is shared by startup, runtime binding admission, and Run provisioning.
  */
-export function assertSourceWorktreeSeparation(
+export function assertSourceHostSeparation(
   sourceRepositoryRoot: string,
-  worktreeRoot: string,
-): { sourceRepositoryRoot: string; worktreeRoot: string } {
+  paths: Pick<ManagedHostPaths, "qeHome" | "dataRoot" | "worktreeRoot">,
+): void {
   const source = canonicalExistingDirectory(
     sourceRepositoryRoot,
     "source repository root",
   );
-  const managed = canonicalExistingDirectory(
-    worktreeRoot,
-    "managed worktree root",
+  assertSeparatedFromSource(
+    source,
+    canonicalExistingDirectory(paths.qeHome, "QE_HOME"),
+    "QE home",
+    "QE_HOME",
+    "qe_home_source_overlap",
   );
-
-  if (contains(source, managed) || contains(managed, source)) {
-    throw new ManagedPathPolicyError(
-      "worktree_source_overlap",
-      `QE managed worktree root "${managed}" and source repository "${source}" must not contain one another. Configure QE_WORKTREE_ROOT outside every bound source repository, or remove the override to use the per-user default.`,
-    );
-  }
-
-  return { sourceRepositoryRoot: source, worktreeRoot: managed };
+  assertSeparatedFromSource(
+    source,
+    canonicalExistingDirectory(paths.dataRoot, "QE Worker durable state root"),
+    "QE Worker durable state root",
+    "QE_WORKER_DATA_ROOT",
+    "worker_state_source_overlap",
+  );
+  assertSeparatedFromSource(
+    source,
+    canonicalExistingDirectory(paths.worktreeRoot, "managed worktree root"),
+    "QE managed worktree root",
+    "QE_WORKTREE_ROOT",
+    "worktree_source_overlap",
+  );
 }
 
-function absoluteManagedHome(path: string, label: string): string {
+function assertManagedComponentSeparation(
+  dataRoot: string,
+  worktreeRoot: string,
+): void {
+  if (contains(dataRoot, worktreeRoot) || contains(worktreeRoot, dataRoot)) {
+    throw new ManagedPathPolicyError(
+      "managed_roots_overlap",
+      `QE Worker durable state root "${dataRoot}" and managed worktree root "${worktreeRoot}" must not contain one another. Configure specialized overrides as separate directories.`,
+    );
+  }
+}
+
+function assertSeparatedFromSource(
+  source: string,
+  managed: string,
+  label: string,
+  override: string,
+  code: ManagedPathPolicyErrorCode,
+): void {
+  if (contains(source, managed) || contains(managed, source)) {
+    throw new ManagedPathPolicyError(
+      code,
+      `${label} "${managed}" and source repository "${source}" must not contain one another. Configure ${override} outside every bound source repository, or remove the override to use the QE_HOME-derived default.`,
+    );
+  }
+}
+
+function absolutePath(path: string, label: string): string {
   if (!isAbsolute(path)) {
     throw new ManagedPathPolicyError(
-      "managed_home_not_absolute",
-      `${label} "${path}" must be an absolute path so the managed worktree default never depends on process cwd.`,
+      "managed_path_not_absolute",
+      `${label} "${path}" must be an absolute path so QE-managed host state never depends on process cwd.`,
     );
   }
   return resolve(path);
@@ -178,7 +235,6 @@ function ensureManagedDirectory(requestedPath: string, label: string): string {
   }
 
   try {
-    // Fail early for paths that exist but cannot actually be traversed/written.
     accessSync(canonical, constants.R_OK | constants.W_OK | constants.X_OK);
   } catch (error) {
     throw new ManagedPathPolicyError(
