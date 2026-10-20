@@ -3,13 +3,16 @@ import {
   accessSync,
   constants,
   existsSync,
-  mkdirSync,
   readFileSync,
   realpathSync,
   statSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+  assertSourceHostSeparation,
+  provisionManagedHostPaths,
+} from "./managed-path-policy.ts";
 import type {
   JsonValue,
   Reasoning,
@@ -59,6 +62,7 @@ export interface WorkerConfig {
   retiredWorkspaceBindings?: WorkspaceBindingConfig[];
   configuredWorkspaceBindingIds?: string[];
   workspaceBindingsPath?: string;
+  qeHome: string;
   worktreeRoot: string;
   executorModels?: Array<{ provider: string; model: string }>;
   reasoningLevels?: Reasoning[];
@@ -88,22 +92,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const workerToken = required(env, "QE_WORKER_TOKEN");
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workerId))
     throw new Error("QE_WORKER_ID is invalid.");
-  const dataRoot = absolute(
-    env.QE_WORKER_DATA_ROOT?.trim() || ".quest-engineering-worker",
-    "QE_WORKER_DATA_ROOT",
+  const { qeHome, dataRoot, worktreeRoot } = provisionManagedHostPaths(
+    env,
+    workerId,
   );
-  mkdirSync(dataRoot, { recursive: true });
-  const worktreeRoot = absolute(
-    env.QE_WORKTREE_ROOT?.trim() || join(dataRoot, "worktrees"),
-    "QE_WORKTREE_ROOT",
-  );
-  mkdirSync(worktreeRoot, { recursive: true });
   const allowedRoots = parseAllowedRoots(env.QE_ALLOWED_ROOTS_JSON);
   const workspaceBindingsPath = join(dataRoot, "workspace-bindings.json");
   const configuredBindings = parseBindings(
     env.QE_WORKSPACE_BINDINGS_JSON,
     allowedRoots,
-    realpathSync(worktreeRoot),
+    { qeHome, dataRoot, worktreeRoot },
   );
   const persistedState = existsSync(workspaceBindingsPath)
     ? persistedBindingState(
@@ -113,12 +111,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const persistedBindings = parseBindings(
     JSON.stringify(persistedState.active),
     allowedRoots,
-    realpathSync(worktreeRoot),
+    { qeHome, dataRoot, worktreeRoot },
   );
   const retiredWorkspaceBindings = parseBindings(
     JSON.stringify(persistedState.retired),
     allowedRoots,
-    realpathSync(worktreeRoot),
+    { qeHome, dataRoot, worktreeRoot },
   );
   const workspaceBindings = [...configuredBindings, ...persistedBindings];
   const maxConcurrency = positiveInteger(
@@ -227,6 +225,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       (binding) => binding.binding_id,
     ),
     workspaceBindingsPath,
+    qeHome,
     worktreeRoot,
     ...(executorModels === undefined ? {} : { executorModels }),
     reasoningLevels,
@@ -439,7 +438,7 @@ function persistedBindingState(value: unknown): {
 function parseBindings(
   encoded: string | undefined,
   roots: AuthorizedRoot[],
-  worktreeRoot: string,
+  managedPaths: { qeHome: string; dataRoot: string; worktreeRoot: string },
 ): WorkspaceBindingConfig[] {
   const value = encoded?.trim() ? JSON.parse(encoded) : [];
   if (!Array.isArray(value))
@@ -459,10 +458,7 @@ function parseBindings(
     ).root;
     if (!contained(root.path, source))
       throw new Error(`Binding source is outside authorized root ${rootKey}.`);
-    if (contained(source, worktreeRoot))
-      throw new Error(
-        "QE_WORKTREE_ROOT cannot be inside a bound source repository.",
-      );
+    assertSourceHostSeparation(source, managedPaths);
     return {
       binding_id: uuid(x.binding_id, "binding_id"),
       workspace_id: uuid(x.workspace_id, "workspace_id"),

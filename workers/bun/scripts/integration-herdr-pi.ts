@@ -83,6 +83,7 @@ const config: WorkerConfig = {
       allow_unconfined_shell: true,
     },
   ],
+  qeHome: join(root, "qe-home"),
   worktreeRoot: join(root, "worktrees"),
   executorModels: [model],
   reasoningLevels: ["low", "medium", "high"],
@@ -96,6 +97,7 @@ const config: WorkerConfig = {
   fakeOutputs: {},
   fakeDelayMs: 0,
 };
+await mkdir(config.qeHome, { recursive: true });
 await mkdir(config.worktreeRoot, { recursive: true });
 const runWorktrees = new RunWorktreeRegistry(config);
 const runWorktree = await runWorktrees.provision({

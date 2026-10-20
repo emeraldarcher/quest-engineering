@@ -55,6 +55,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         worker_root =
           Path.join(root, ".pi/tmp/bun-worker-integration-#{System.unique_integer([:positive])}")
 
+        worker_data = Path.join(worker_root, "state")
         File.mkdir_p!(worker_root)
         source_root = Path.join(worker_root, "source")
         File.mkdir_p!(source_root)
@@ -114,8 +115,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
               {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
               {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
               {~c"QE_WORKSPACE_BINDINGS_JSON", String.to_charlist(bindings)},
+              {~c"QE_HOME", String.to_charlist(Path.join(worker_root, "qe-home"))},
               {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
-              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_data)},
               {~c"QE_WORKER_PROVIDER", ~c"fake"},
               {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
             ]
@@ -145,7 +147,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
 
         assignment = Repo.get!(RunWorkspaceAssignment, launched.run_id)
         assert File.dir?(assignment.canonical_worktree_root)
-        assert File.exists?(Path.join(worker_root, "run-worktrees.sqlite"))
+        assert File.exists?(Path.join(worker_data, "run-worktrees.sqlite"))
         assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
         assert Repo.get_by!(QuestLaunch, run_id: launched.run_id)
 
@@ -154,6 +156,265 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         assert_eventually(fn ->
           match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
         end)
+    end
+  end
+
+  test "real Bun Worker defaults all host state to QE_HOME across bind, restart, and Run provisioning" do
+    case System.find_executable("bun") do
+      nil ->
+        IO.puts("Managed host-layout integration skipped: bun executable is unavailable")
+
+      bun ->
+        root = Path.expand("../../../..", __DIR__)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+        start_supervised!(QuestEngineering.Server.RunWorkspaceProvisioner)
+
+        proof_root =
+          Path.join(root, ".pi/tmp/managed-host-proof-#{System.unique_integer([:positive])}")
+
+        source_root = Path.join(proof_root, "source-checkout")
+        worker_home = Path.join(proof_root, "fresh-home")
+        File.mkdir_p!(source_root)
+        File.mkdir_p!(worker_home)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# managed host-layout proof\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
+        {source_head, 0} = System.cmd("git", ["-C", source_root, "rev-parse", "HEAD"])
+        worker_id = "managed-worktree-#{System.unique_integer([:positive])}"
+
+        worker_key =
+          "worker-" <> (:crypto.hash(:sha256, worker_id) |> Base.encode16(case: :lower))
+
+        worker_data = Path.join([worker_home, ".qe", "state", "workers", worker_key])
+        {quest, workspace} = product_fixture()
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: source_root,
+              max_access: "read_write",
+              discover_depth: 0,
+              allow_unconfined_shell: false
+            }
+          ])
+
+        start_worker = fn ->
+          open_worker_process(
+            bun,
+            [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+            root,
+            [
+              {~c"HOME", String.to_charlist(worker_home)},
+              {~c"XDG_CONFIG_HOME", String.to_charlist(Path.join(root, ".pi"))},
+              {~c"QE_HERDR_SESSION", ~c"q"},
+              {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+              {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+              {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_WORKER_PROVIDER", ~c"fake"},
+              {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
+            ]
+          )
+        end
+
+        unless System.get_env("QE_KEEP_MANAGED_HOST_PROOF") == "1" do
+          on_exit(fn -> File.rm_rf!(proof_root) end)
+        end
+
+        refute File.exists?(Path.join(worker_home, ".qe"))
+        first_port = start_worker.()
+        first_pid = worker_process_pid(first_port)
+        on_exit(fn -> stop_worker_process(first_port, worker_id, first_pid) end)
+        assert_eventually(fn -> worker_ready?(worker_id, 1) end)
+
+        :ok = WorkspaceControl.request_discovery()
+        assert_eventually(fn -> worker_candidate(worker_id) != nil end)
+        candidate = worker_candidate(worker_id)
+
+        assert {:ok, %{status: "preparing", binding_id: binding_id}} =
+                 WorkspaceControl.bind(workspace.id, candidate.candidate_id)
+
+        assert_eventually(fn ->
+          match?(%{status: "available"}, Repo.get(WorkerWorkspaceBinding, binding_id))
+        end)
+
+        qe_home = Path.join(worker_home, ".qe")
+        managed_root = Path.join(qe_home, "worktrees")
+        assert File.dir?(worker_data)
+        assert File.dir?(managed_root)
+
+        for path <- [
+              qe_home,
+              Path.join(qe_home, "state"),
+              Path.join([qe_home, "state", "workers"]),
+              worker_data,
+              managed_root
+            ] do
+          assert Bitwise.band(File.stat!(path).mode, 0o077) == 0
+        end
+
+        assert File.exists?(Path.join(worker_data, "workspace-bindings.json"))
+        refute String.starts_with?(Path.expand(managed_root), Path.expand(source_root) <> "/")
+
+        stop_worker_process(first_port, worker_id)
+
+        assert_eventually(fn ->
+          match?({:ok, %{status: "disconnected"}}, WorkerStore.fetch(worker_id))
+        end)
+
+        second_port = start_worker.()
+        second_pid = worker_process_pid(second_port)
+        on_exit(fn -> stop_worker_process(second_port, worker_id, second_pid) end)
+        assert_eventually(fn -> worker_ready?(worker_id, 2) end)
+
+        assert %{state: "available"} = WorkspaceControl.binding_state(workspace.id)
+        assert %{status: "available"} = Repo.get(WorkerWorkspaceBinding, binding_id)
+
+        assert {:ok, launched} = LaunchQuest.launch(quest.id)
+        assert [_action] = launched.actions
+
+        assert_eventually(fn ->
+          match?(%{state: "ready"}, Repo.get(RunWorkspaceAssignment, launched.run_id))
+        end)
+
+        assignment = Repo.get!(RunWorkspaceAssignment, launched.run_id)
+        assert String.starts_with?(assignment.canonical_worktree_root, managed_root <> "/")
+        assert File.dir?(assignment.canonical_worktree_root)
+        assert {:ok, %{revision: 0}} = RuntimeStore.fetch_run(launched.run_id)
+        assert {^source_head, 0} = System.cmd("git", ["-C", source_root, "rev-parse", "HEAD"])
+        assert {"", 0} = System.cmd("git", ["-C", source_root, "status", "--porcelain=v1"])
+
+        if System.get_env("QE_KEEP_MANAGED_HOST_PROOF") == "1" do
+          IO.puts("Retained managed host-layout proof: #{proof_root}")
+        end
+    end
+  end
+
+  test "real Bun Worker rejects a runtime bind whose explicit worktree root is inside the source" do
+    case System.find_executable("bun") do
+      nil ->
+        IO.puts("Managed worktree overlap integration skipped: bun executable is unavailable")
+
+      bun ->
+        root = Path.expand("../../../..", __DIR__)
+        start_supervised!(QuestEngineering.Server.WorkerConnections)
+
+        fixture_root =
+          Path.join(
+            root,
+            ".pi/tmp/managed-worktree-overlap-#{System.unique_integer([:positive])}"
+          )
+
+        source_root = Path.join(fixture_root, "source-checkout")
+        nested_worktrees = Path.join(source_root, "managed-worktrees")
+        File.mkdir_p!(nested_worktrees)
+        {_, 0} = System.cmd("git", ["init", "-q", source_root])
+        File.write!(Path.join(source_root, "README.md"), "# overlap fixture\n")
+        {_, 0} = System.cmd("git", ["-C", source_root, "add", "README.md"])
+
+        {_, 0} =
+          System.cmd("git", [
+            "-C",
+            source_root,
+            "-c",
+            "user.name=Quest Engineering",
+            "-c",
+            "user.email=quest@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture"
+          ])
+
+        {:ok, workspace} =
+          Products.create_workspace(%{
+            key: "overlap-#{System.unique_integer([:positive])}",
+            name: "Overlap rejection",
+            source_kind: :local_git,
+            source_fingerprint: nil
+          })
+
+        worker_id = "managed-overlap-#{System.unique_integer([:positive])}"
+
+        allowed_roots =
+          Jason.encode!([
+            %{
+              key: "repository",
+              path: source_root,
+              max_access: "read_write",
+              discover_depth: 0,
+              allow_unconfined_shell: false
+            }
+          ])
+
+        port =
+          open_worker_process(
+            bun,
+            [Path.join(root, "workers/bun/src/main.ts"), "--qe-test-worker=#{worker_id}"],
+            root,
+            [
+              {~c"HOME", String.to_charlist(Path.join(fixture_root, "home"))},
+              {~c"XDG_CONFIG_HOME", String.to_charlist(Path.join(root, ".pi"))},
+              {~c"QE_HERDR_SESSION", ~c"q"},
+              {~c"QE_CONTROL_PLANE_URL", ~c"ws://127.0.0.1:4002/worker/websocket"},
+              {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
+              {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
+              {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+              {~c"QE_HOME", String.to_charlist(Path.join(fixture_root, "qe-home"))},
+              {~c"QE_WORKTREE_ROOT", String.to_charlist(nested_worktrees)},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(Path.join(fixture_root, "data"))},
+              {~c"QE_WORKER_PROVIDER", ~c"fake"},
+              {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
+            ]
+          )
+
+        worker_pid = worker_process_pid(port)
+
+        on_exit(fn ->
+          stop_worker_process(port, worker_id, worker_pid)
+          File.rm_rf!(fixture_root)
+        end)
+
+        assert_eventually(fn -> worker_ready?(worker_id, 1) end)
+        :ok = WorkspaceControl.request_discovery()
+        assert_eventually(fn -> worker_candidate(worker_id) != nil end)
+        candidate = worker_candidate(worker_id)
+
+        assert {:ok, %{status: "preparing", binding_id: binding_id}} =
+                 WorkspaceControl.bind(workspace.id, candidate.candidate_id)
+
+        assert_eventually(fn ->
+          case WorkspaceControl.binding_state(workspace.id) do
+            %{
+              state: "attention_required",
+              failure_code: "workspace_binding_failed",
+              failure_details: %{"message" => message}
+            } ->
+              String.contains?(message, "must not contain one another")
+
+            _other ->
+              false
+          end
+        end)
+
+        refute Repo.get(WorkerWorkspaceBinding, binding_id)
+        assert {"", 0} = System.cmd("git", ["-C", source_root, "status", "--porcelain=v1"])
     end
   end
 
@@ -178,6 +439,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         worker_root =
           Path.join(root, ".pi/tmp/bun-worker-maintenance-#{System.unique_integer([:positive])}")
 
+        worker_data = Path.join(worker_root, "state")
         source_root = Path.join(worker_root, "source")
         File.mkdir_p!(source_root)
         {_, 0} = System.cmd("git", ["init", "-q", source_root])
@@ -236,8 +498,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
               {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
               {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
               {~c"QE_WORKSPACE_BINDINGS_JSON", String.to_charlist(bindings)},
+              {~c"QE_HOME", String.to_charlist(Path.join(worker_root, "qe-home"))},
               {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
-              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_data)},
               {~c"QE_WORKER_PROVIDER", ~c"fake"},
               {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"},
               {~c"QE_WORKER_DISPATCH_AVAILABILITY", ~c"maintenance"}
@@ -302,6 +565,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         worker_root =
           Path.join(root, ".pi/tmp/bun-worker-reconnect-#{System.unique_integer([:positive])}")
 
+        worker_data = Path.join(worker_root, "state")
         source_root = Path.join(worker_root, "source")
         File.mkdir_p!(source_root)
         {_, 0} = System.cmd("git", ["init", "-q", source_root])
@@ -363,8 +627,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
               {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
               {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
               {~c"QE_WORKSPACE_BINDINGS_JSON", String.to_charlist(bindings)},
+              {~c"QE_HOME", String.to_charlist(Path.join(worker_root, "qe-home"))},
               {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
-              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+              {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_data)},
               {~c"QE_WORKER_PROVIDER", ~c"fake"},
               {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"},
               {~c"QE_FAKE_DELAY_MS", ~c"1000"},
@@ -427,7 +692,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
 
         {dispatch_count, 0} =
           System.cmd("sqlite3", [
-            Path.join(worker_root, "dispatches.sqlite"),
+            Path.join(worker_data, "dispatches.sqlite"),
             "SELECT count(*) FROM dispatches WHERE action_id='#{action.id}'"
           ])
 
@@ -454,6 +719,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         worker_root =
           Path.join(root, ".pi/tmp/bun-worker-reset-#{System.unique_integer([:positive])}")
 
+        worker_data = Path.join(worker_root, "state")
         source_root = Path.join(worker_root, "source")
         File.mkdir_p!(source_root)
         {_, 0} = System.cmd("git", ["init", "-q", source_root])
@@ -484,8 +750,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
                 {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
                 {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
                 {~c"QE_ALLOWED_ROOTS_JSON", String.to_charlist(allowed_roots)},
+                {~c"QE_HOME", String.to_charlist(Path.join(worker_root, "qe-home"))},
                 {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
-                {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+                {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_data)},
                 {~c"QE_WORKER_PROVIDER", ~c"fake"},
                 {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"}
               ]
@@ -527,7 +794,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
         end)
 
         assert_eventually(fn ->
-          case Path.join(worker_root, "workspace-bindings.json")
+          case Path.join(worker_data, "workspace-bindings.json")
                |> File.read!()
                |> Jason.decode!() do
             %{"active" => [%{"workspace_id" => workspace_id}]} ->
@@ -557,11 +824,11 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
 
         refute Repo.get(WorkerWorkspaceBinding, stale_binding_id)
         assert File.read!(sentinel) == "preserve me"
-        assert File.exists?(Path.join(worker_root, "dispatches.sqlite"))
-        assert File.exists?(Path.join(worker_root, "run-worktrees.sqlite"))
+        assert File.exists?(Path.join(worker_data, "dispatches.sqlite"))
+        assert File.exists?(Path.join(worker_data, "run-worktrees.sqlite"))
 
         assert_eventually(fn ->
-          case Jason.decode!(File.read!(Path.join(worker_root, "workspace-bindings.json"))) do
+          case Jason.decode!(File.read!(Path.join(worker_data, "workspace-bindings.json"))) do
             %{"active" => [], "retired" => [%{"binding_id" => retired_id}]} ->
               retired_id == stale_binding_id
 
@@ -599,7 +866,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
 
         assert_eventually(fn ->
           persisted =
-            Path.join(worker_root, "workspace-bindings.json") |> File.read!() |> Jason.decode!()
+            Path.join(worker_data, "workspace-bindings.json") |> File.read!() |> Jason.decode!()
 
           Enum.any?(persisted["active"], &(&1["workspace_id"] == replacement.id)) and
             Enum.any?(
@@ -621,6 +888,7 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
     root = Path.expand("../../../..", __DIR__)
     worker_id = "bun-account-setup-#{System.unique_integer([:positive])}"
     worker_root = Path.join(root, ".pi/tmp/#{worker_id}")
+    worker_data = Path.join(worker_root, "state")
     started_at = System.monotonic_time(:millisecond)
     File.mkdir_p!(worker_root)
     start_supervised!(QuestEngineering.Server.WorkerConnections)
@@ -635,8 +903,9 @@ defmodule QuestEngineering.Server.BunWorkerProtocolIntegrationTest do
           {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
           {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
           {~c"QE_ALLOWED_ROOTS_JSON", ~c"[]"},
+          {~c"QE_HOME", String.to_charlist(Path.join(worker_root, "qe-home"))},
           {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
-          {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+          {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_data)},
           {~c"QE_WORKER_PROVIDER", ~c"fake"},
           {~c"QE_ENABLE_TEST_PROVIDER", ~c"1"},
           {~c"QE_RECONNECT_MS", ~c"25"}

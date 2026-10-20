@@ -46,6 +46,7 @@ import { PiHarness } from "./harnesses/pi/adapter.ts";
 import { HarnessRegistry } from "./harnesses/registry.ts";
 import { structuredResultExists } from "./harnesses/turn-lifecycle.ts";
 import type { AgentHarness } from "./harnesses/types.ts";
+import { assertSourceHostSeparation } from "./managed-path-policy.ts";
 import {
   decodeAdmitWorkspaceToolBroker,
   decodeCancelDispatch,
@@ -1576,6 +1577,7 @@ export class QuestEngineeringWorker {
       throw new Error(
         "Workspace source candidate is unknown or stale; discover again.",
       );
+    assertSourceHostSeparation(candidate.path, this.config);
     const expectedFingerprint =
       typeof input.source_fingerprint === "string"
         ? input.source_fingerprint

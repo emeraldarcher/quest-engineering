@@ -543,8 +543,9 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
         {~c"QE_WORKER_ID", String.to_charlist(worker_id)},
         {~c"QE_WORKER_TOKEN", ~c"development-worker-token"},
         {~c"QE_ALLOWED_ROOTS_JSON", ~c"[]"},
+        {~c"QE_HOME", String.to_charlist(Path.join(worker_root, "qe-home"))},
         {~c"QE_WORKTREE_ROOT", String.to_charlist(Path.join(worker_root, "worktrees"))},
-        {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_root)},
+        {~c"QE_WORKER_DATA_ROOT", String.to_charlist(worker_data_root(worker_root))},
         {~c"QE_WORKER_HARNESSES", ~c"claude_code"},
         {~c"QE_RECONNECT_MS", ~c"10"}
       ]
@@ -678,7 +679,7 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
   end
 
   defp physical_events(worker_root) do
-    path = Path.join(worker_root, "provider-account-physical-events.jsonl")
+    path = Path.join(worker_data_root(worker_root), "provider-account-physical-events.jsonl")
 
     assert_eventually(fn -> File.exists?(path) end)
 
@@ -755,7 +756,7 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
   end
 
   defp worker_setup_command_generation(worker_root, attempt_id) do
-    database = Path.join(worker_root, "provider-account-setups.sqlite")
+    database = Path.join(worker_data_root(worker_root), "provider-account-setups.sqlite")
 
     if File.exists?(database) do
       {value, status} =
@@ -796,7 +797,7 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
   end
 
   defp worker_setup_scalar!(worker_root, query) do
-    database = Path.join(worker_root, "provider-account-setups.sqlite")
+    database = Path.join(worker_data_root(worker_root), "provider-account-setups.sqlite")
     {value, 0} = System.cmd("sqlite3", [database, query], stderr_to_stdout: true)
     value = String.trim(value)
     assert value != ""
@@ -916,6 +917,8 @@ defmodule QuestEngineering.Server.ProviderAccountPhysicalAcceptanceTest do
     end)
     |> Enum.filter(&(&1.pgid == pgid))
   end
+
+  defp worker_data_root(worker_root), do: Path.join(worker_root, "state")
 
   defp assert_eventually(fun, attempts \\ 200)
   defp assert_eventually(fun, 0), do: assert(fun.())

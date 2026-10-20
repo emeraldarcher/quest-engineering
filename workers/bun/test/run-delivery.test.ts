@@ -473,6 +473,7 @@ async function setup(options: { identity: boolean }) {
         allow_unconfined_shell: true,
       },
     ],
+    qeHome: join(root, "managed"),
     worktreeRoot: join(root, "managed"),
     executorModels: [{ provider: "fake", model: "test" }],
     reasoningLevels: ["low"],
