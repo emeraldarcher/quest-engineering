@@ -90,6 +90,8 @@ describe("Claude Code managed-Mod architecture", () => {
     const traps: Array<(value: Record<string, unknown>) => void> = [
       (value) => (value.model = "claude-sonnet-4-6"),
       (value) => (value.effort = "medium"),
+      // Known separate defect remains rejected; this diagnostic PR is not its fix.
+      (value) => delete value.effort,
       (value) => (value.apiKeySource = "ANTHROPIC_API_KEY"),
       (value) => ((value.tools as string[])[0] = "Read"),
       (value) => {

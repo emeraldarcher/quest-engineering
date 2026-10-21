@@ -128,6 +128,18 @@ Completion must arrive through `qe_complete_step`; bounded correction may run
 at most twice. Durable HumanAttention blocks on the existing request/wait/
 acknowledge/resolve authority.
 
+## Owner-accurate preparation diagnostics
+
+[Managed-harness lifecycle evidence](managed-harness-lifecycle-diagnostics.md)
+records Worker-owned launch, stream registration, stdin delivery, candidate-init
+observation/validation, timeout and cleanup stages in the existing Worker session
+SQLite database. Missing breadcrumbs never prove nonexecution. The unchanged Mod
+has no entrypoint/ready signal, and native probe parsing/init construction/init
+submission remain unobservable at this layer. Diagnostics do not authorize work,
+change attestation, add raw-output persistence or advance immutable profiles.
+The independently identified native-init effort omission remains a separate
+follow-up; it is not fixed or diagnosed as the timeout cause here.
+
 ## Native sessions and recovery
 
 `claude-code-sessions-v1.sqlite` records native session, physical/logical

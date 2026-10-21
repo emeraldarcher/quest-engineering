@@ -19,10 +19,7 @@ import type {
   PreparedSbxHarnessExecution,
   SbxRunExecutionManager,
 } from "../../execution-environment/sbx-run.ts";
-import type {
-  StreamedProcess,
-  StreamedProcessStreamEvent,
-} from "../../execution-environment/types.ts";
+import type { StreamedProcess } from "../../execution-environment/types.ts";
 import type { JsonValue } from "../../protocol/types.ts";
 import {
   CLAUDE_SUBSCRIPTION_CONFIGURATION,
@@ -53,6 +50,15 @@ import type {
 } from "../types.ts";
 import { OperationalExecutionError } from "../types.ts";
 import { ClaudeAccountCellRelay, newBridgeToken } from "./account-relay.ts";
+import {
+  AsyncFrameQueue,
+  ClaudeProtocolTimeout,
+  cancelClaudePreparation,
+  observeClaudeProtocol,
+  rejectServerToolEvidence,
+  sendMessage,
+  waitForInit,
+} from "./protocol.ts";
 import {
   type ClaudeCodeSessionRecord,
   ClaudeCodeSessionStore,
@@ -520,9 +526,17 @@ export class ClaudeCodeHarness implements AgentHarness {
           },
         );
         await relay.start();
+        const diagnostics = this.sessions.lifecycle.begin({
+          lineageId: lineage.lineageId,
+          harnessKind: this.kind,
+          harnessProtocol: SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL,
+          reservedNativeSessionId: nativeSessionId,
+          environment: account.ref,
+        });
         let process: StreamedProcess;
         try {
           account.assertCurrent();
+          diagnostics?.record("process_launch_requested");
           process = await account.lease.spawnStreamed(
             claudeCodeCommand(
               account,
@@ -537,6 +551,7 @@ export class ClaudeCodeHarness implements AgentHarness {
           await relay.stop();
           throw error;
         }
+        diagnostics?.bindProcess(process.handle);
         const session =
           durable ??
           this.sessions.create({
@@ -573,29 +588,35 @@ export class ClaudeCodeHarness implements AgentHarness {
           disconnected: false,
         };
         this.active.set(lineage.lineageId, active);
-        void pump(process.stdout, frames).catch((error) => frames.fail(error));
-        void process.exit.then((exit) => {
-          if (!active.disconnected && !frames.closed)
-            frames.fail(
-              new Error(
-                `Claude Code exited before protocol settlement (${exit.kind}).`,
-              ),
-            );
-        });
+        observeClaudeProtocol(
+          process,
+          frames,
+          diagnostics,
+          () => active.disconnected,
+        );
         try {
           await sendMessage(
             process,
             nativeSessionId,
             "Quest Engineering fixed zero-inference initialization probe.",
             false,
+            diagnostics,
           );
-          const init = await waitForInit(frames, 30_000);
-          attestClaudeInit(init, {
-            sessionId: nativeSessionId,
-            cwd: account.cwd,
-            model: CLAUDE_CODE_MODEL,
-            effort: CLAUDE_CODE_EFFORT,
+          const init = await waitForInit(frames, 30_000, () => {
+            diagnostics?.record("attestation_timeout_fired", process.handle);
           });
+          try {
+            attestClaudeInit(init, {
+              sessionId: nativeSessionId,
+              cwd: account.cwd,
+              model: CLAUDE_CODE_MODEL,
+              effort: CLAUDE_CODE_EFFORT,
+            });
+          } catch (error) {
+            diagnostics?.record("protocol_frame_rejected", process.handle);
+            throw error;
+          }
+          diagnostics?.record("protocol_frame_validated", process.handle);
           active.initialized = true;
           if (
             active.session.state === "uncertain" &&
@@ -613,7 +634,7 @@ export class ClaudeCodeHarness implements AgentHarness {
         } catch (error) {
           active.disconnected = true;
           await Promise.allSettled([
-            process.cancel(),
+            cancelClaudePreparation(process, diagnostics),
             relay.stop(),
             admitted.client.close(),
           ]);
@@ -621,9 +642,9 @@ export class ClaudeCodeHarness implements AgentHarness {
           this.markUncertain(active);
           throw claudeError(
             "environment_attestation_failed",
-            error instanceof Error
-              ? error.message
-              : "Claude init attestation failed.",
+            error instanceof ClaudeProtocolTimeout
+              ? `Claude Code attestation timed out; last proven Worker stage: ${diagnostics?.snapshot().lastProvenStage ?? "unknown"}; native interval unknown. See Worker-local lifecycle evidence.`
+              : "Claude Code zero-inference init attestation failed.",
             "readiness",
             "not_submitted",
           );
@@ -1064,123 +1085,6 @@ function inspection(
   };
 }
 
-async function sendMessage(
-  process: StreamedProcess,
-  sessionId: string,
-  content: string,
-  shouldQuery: boolean,
-): Promise<void> {
-  const message = {
-    type: "user",
-    message: { role: "user", content },
-    parent_tool_use_id: null,
-    session_id: sessionId,
-    uuid: randomUUID(),
-    client_composed: true,
-    ...(shouldQuery ? {} : { shouldQuery: false, isSynthetic: true }),
-  };
-  await process.write(new TextEncoder().encode(`${JSON.stringify(message)}\n`));
-}
-
-class AsyncFrameQueue {
-  private readonly values: Record<string, unknown>[] = [];
-  private readonly waiters: Array<{
-    resolve: (value: Record<string, unknown>) => void;
-    reject: (error: Error) => void;
-    timer: ReturnType<typeof setTimeout> | null;
-  }> = [];
-  cursor = 0;
-  closed = false;
-  private error: Error | null = null;
-
-  push(value: Record<string, unknown>): void {
-    if (this.closed) return;
-    this.cursor += 1;
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      if (waiter.timer) clearTimeout(waiter.timer);
-      waiter.resolve(value);
-    } else this.values.push(value);
-  }
-
-  fail(error: Error): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.error = error;
-    for (const waiter of this.waiters.splice(0)) {
-      if (waiter.timer) clearTimeout(waiter.timer);
-      waiter.reject(error);
-    }
-  }
-
-  next(timeoutMs: number | null): Promise<Record<string, unknown>> {
-    const value = this.values.shift();
-    if (value) return Promise.resolve(value);
-    if (this.error) return Promise.reject(this.error);
-    return new Promise((resolve, reject) => {
-      const waiter = {
-        resolve,
-        reject,
-        timer: null as ReturnType<typeof setTimeout> | null,
-      };
-      if (timeoutMs !== null)
-        waiter.timer = setTimeout(() => {
-          const index = this.waiters.indexOf(waiter);
-          if (index >= 0) this.waiters.splice(index, 1);
-          reject(new Error("Claude Code protocol frame timed out."));
-        }, timeoutMs);
-      this.waiters.push(waiter);
-    });
-  }
-}
-
-async function pump(
-  stream: AsyncIterable<StreamedProcessStreamEvent>,
-  frames: AsyncFrameQueue,
-): Promise<void> {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let buffered = "";
-  for await (const event of stream) {
-    if (event.kind === "transport_error")
-      throw new Error("Claude Code stdout transport failed.");
-    if (event.kind !== "data") continue;
-    buffered += decoder.decode(event.data, { stream: true });
-    if (Buffer.byteLength(buffered, "utf8") > 2 * 1024 * 1024)
-      throw new Error("Claude Code stream frame exceeded its bound.");
-    while (buffered.includes("\n")) {
-      const index = buffered.indexOf("\n");
-      const line = buffered.slice(0, index);
-      buffered = buffered.slice(index + 1);
-      if (!line) continue;
-      const frame = JSON.parse(line) as unknown;
-      if (!frame || typeof frame !== "object" || Array.isArray(frame))
-        throw new Error("Claude Code emitted a malformed frame.");
-      frames.push(frame as Record<string, unknown>);
-    }
-  }
-  buffered += decoder.decode();
-  if (buffered.length > 0)
-    throw new Error("Claude Code stdout ended inside a frame.");
-  frames.fail(new Error("Claude Code stdout ended before settlement."));
-}
-
-async function waitForInit(
-  frames: AsyncFrameQueue,
-  timeoutMs: number,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
-  for (let count = 0; count < 64 && Date.now() < deadline; count += 1) {
-    const frame = await frames.next(Math.max(1, deadline - Date.now()));
-    if (frame.type === "system" && frame.subtype === "init") return frame;
-    rejectServerToolEvidence(frame);
-    if (frame.type === "result" && frame.is_error === true)
-      throw new Error(
-        "Claude Code failed before zero-inference init attestation.",
-      );
-  }
-  throw new Error("Claude Code did not emit bounded init attestation.");
-}
-
 function assertExactModelUsage(frame: Record<string, unknown>): void {
   if (!frame.modelUsage || typeof frame.modelUsage !== "object")
     throw new Error("Claude result omitted per-model usage provenance.");
@@ -1190,19 +1094,6 @@ function assertExactModelUsage(frame: Record<string, unknown>): void {
     models.some((model) => model !== CLAUDE_CODE_MODEL)
   )
     throw new Error("Claude result includes an unapproved model invocation.");
-}
-
-function rejectServerToolEvidence(frame: Record<string, unknown>): void {
-  const encoded = JSON.stringify(frame);
-  if (
-    encoded.includes("server_tool_use") ||
-    encoded.includes("web_search_20250305") ||
-    encoded.includes("advisor_20260301") ||
-    encoded.includes("agent_toolset_20260401")
-  )
-    throw new Error(
-      "Claude provider/server tool evidence violated exact policy.",
-    );
 }
 
 async function waitForResult(dispatch: DispatchRecord): Promise<void> {
