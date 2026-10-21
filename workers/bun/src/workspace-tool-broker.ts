@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { ProviderAccountRuntimeAuthority } from "./execution-environment/provider-account.ts";
 import type {
   EnvironmentRef,
   StreamedProcess,
@@ -28,7 +29,9 @@ export const MAX_ACTIVE_BROKER_REQUESTS = 8;
 export interface WorkspaceToolBrokerPreparation {
   authorizationId: string;
   providerAccountId: string;
+  /** Current semantic authentication epoch admitted by Product. */
   credentialGeneration: number;
+  /** Immutable physical owner/provisioning epoch, not credential freshness. */
   accountEnvironmentGeneration: number;
   accountEnvironment: {
     backendKind: string;
@@ -372,6 +375,7 @@ export class WorkspaceToolBroker {
   boundClientForAction(actionId: string): {
     binding: WorkspaceToolBrokerBinding;
     client: BoundWorkspaceToolClient;
+    accountAuthority: ProviderAccountRuntimeAuthority;
   } {
     const live = [...this.live.values()].find(
       (candidate) =>
@@ -383,9 +387,31 @@ export class WorkspaceToolBroker {
       throw new Error(
         "No admitted local WorkspaceToolBroker authority exists for the Action.",
       );
+    const assertCurrent = () => {
+      const current = this.store.session(live.record.sessionId);
+      if (
+        this.live.get(live.record.sessionId) !== live ||
+        live.closing ||
+        current?.state !== "admitted" ||
+        current.brokerGeneration !== live.record.brokerGeneration
+      )
+        throw brokerFailure(
+          "broker_session_not_admitted",
+          "ProviderAccount runtime admission is stale.",
+        );
+      live.account.assertCurrent();
+      live.run.assertCurrent();
+    };
+    assertCurrent();
     return {
       binding: structuredClone(live.record.binding),
       client: this.boundClient(live, live.capability),
+      accountAuthority: {
+        providerAccountId: live.record.binding.providerAccountId,
+        credentialGeneration: live.record.binding.credentialGeneration,
+        ref: structuredClone(live.account.ref),
+        assertCurrent,
+      },
     };
   }
 

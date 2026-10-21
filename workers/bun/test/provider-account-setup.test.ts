@@ -311,6 +311,12 @@ describe("ProviderAccount setup", () => {
       expect(fixture.coordinator.authenticated("account-setup", 2, 1)).toBe(
         true,
       );
+      expect(fixture.coordinator.authenticated("account-setup", 1, 1)).toBe(
+        false,
+      );
+      expect(fixture.coordinator.authenticated("account-setup", 2, 2)).toBe(
+        false,
+      );
       fixture.store.transition(
         fixture.setupCommand.setup.setup_attempt_id,
         { state: "uncertain", invocationState: "uncertain" },

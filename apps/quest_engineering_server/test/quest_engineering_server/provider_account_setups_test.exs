@@ -127,6 +127,19 @@ defmodule QuestEngineering.Server.ProviderAccountSetupsTest do
       )
 
     assert get_in(encoded, ["provider_accounts", Access.at(0), "credential_generation"]) == 1
+
+    # Product authority is reconstructed from PostgreSQL, not a process-local
+    # assumption that the semantic and physical owner epochs are equal.
+    assert {:ok, reconstructed, reconstructed_environment} =
+             Task.async(fn -> ProviderAccounts.get_with_environment(account.id) end)
+             |> Task.await()
+
+    assert reconstructed.credential_generation == 2
+    assert reconstructed.authentication_state == :authenticated
+    assert reconstructed.authentication_method == "provider_account"
+    assert reconstructed_environment.credential_generation == 1
+    assert reconstructed_environment.environment_id == environment.environment_id
+    assert reconstructed_environment.incarnation == environment.incarnation
     assert Repo.aggregate(ProviderAccountSetupEvent, :count) >= 6
 
     assert {:ok, {same_attempt, same_authorization, true}} =

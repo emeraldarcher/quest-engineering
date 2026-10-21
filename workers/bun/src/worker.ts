@@ -319,7 +319,7 @@ export class QuestEngineeringWorker {
             await this.providerAccountEnvironments.workspaceToolBrokerAuthority(
               {
                 providerAccountId: input.providerAccountId,
-                environmentGeneration: input.accountEnvironmentGeneration,
+                environmentOwnerGeneration: input.accountEnvironmentGeneration,
                 expected: input.accountEnvironment,
               },
             );

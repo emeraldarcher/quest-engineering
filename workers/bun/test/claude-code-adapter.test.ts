@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
+import type { ProviderAccountRuntimeAuthority } from "../src/execution-environment/provider-account.ts";
 import type {
   EnvironmentLease,
   EnvironmentRef,
@@ -29,7 +30,7 @@ afterEach(async () => {
   );
 });
 
-test("ClaudeCodeHarness reaches exact zero-inference readiness using only a synthetic non-query message", async () => {
+test("ClaudeCodeHarness prepares credential generation 2 in the retained generation-1 cell with only a non-query message", async () => {
   const root = await testRoot();
   const candidate = claudeAction();
   const registry = new DispatchRegistry(
@@ -46,6 +47,17 @@ test("ClaudeCodeHarness reaches exact zero-inference readiness using only a synt
   process.onWrite = (frame) => writes.push(frame);
   const lease = accountLease(environment, process);
   const binding = brokerBinding(accepted.action.action_id, environment);
+  let originalAdmissionCurrent = true;
+  let acquisitions = 0;
+  let accountAuthority: ProviderAccountRuntimeAuthority = {
+    providerAccountId: binding.providerAccountId,
+    credentialGeneration: binding.credentialGeneration,
+    ref: environment,
+    assertCurrent: () => {
+      if (!originalAdmissionCurrent)
+        throw new Error("Previous admission revoked");
+    },
+  };
   const client = {
     sessionId: "broker-session-1",
     request: async () => {
@@ -61,13 +73,28 @@ test("ClaudeCodeHarness reaches exact zero-inference readiness using only a synt
       prepare: async () => ({ materializedArtifacts: {} }),
     } as never,
     {
-      claudeCodeRuntime: async () => ({
-        lease,
-        ref: environment,
-        configRoot: "/qe/state/claude/config",
-        cwd: "/qe/state/claude/empty-cwd",
-        assertCurrent: () => undefined,
-      }),
+      claudeCodeRuntime: async (input: {
+        providerAccountId: string;
+        credentialGeneration: number;
+        authority: ProviderAccountRuntimeAuthority;
+      }) => {
+        acquisitions++;
+        expect(input).toEqual({
+          providerAccountId: "account-1",
+          credentialGeneration: 2,
+          authority: accountAuthority,
+        });
+        expect(input.authority.ref.owner).toMatchObject({
+          credentialGeneration: 1,
+        });
+        return {
+          lease,
+          ref: environment,
+          configRoot: "/qe/state/claude/config",
+          cwd: "/qe/state/claude/empty-cwd",
+          assertCurrent: input.authority.assertCurrent,
+        };
+      },
       withSerializedAccount: async (
         _account: string,
         operation: () => Promise<unknown>,
@@ -76,7 +103,7 @@ test("ClaudeCodeHarness reaches exact zero-inference readiness using only a synt
     } as never,
     () =>
       ({
-        boundClientForAction: () => ({ binding, client }),
+        boundClientForAction: () => ({ binding, client, accountAuthority }),
       }) as unknown as WorkspaceToolBroker,
   );
 
@@ -98,6 +125,18 @@ test("ClaudeCodeHarness reaches exact zero-inference readiness using only a synt
     health: "healthy",
     nativeSession: prepared.handle.nativeSession,
   });
+  expect(process.queryWrites).toBe(0);
+  const originalAuthority = accountAuthority;
+  originalAdmissionCurrent = false;
+  accountAuthority = { ...accountAuthority, assertCurrent: () => undefined };
+  expect(() => originalAuthority.assertCurrent()).toThrow(
+    "Previous admission revoked",
+  );
+  const continued = await harness.continue(accepted, lineage);
+  await harness.ready(accepted, continued);
+  expect(continued.handle.nativeSession).toEqual(prepared.handle.nativeSession);
+  expect(acquisitions).toBe(2);
+  expect(writes).toHaveLength(1);
   expect(process.queryWrites).toBe(0);
   await harness.close(lineage);
   registry.close();
@@ -234,7 +273,7 @@ function brokerBinding(actionId: string, environment: EnvironmentRef) {
     sessionId: "broker-session-1",
     brokerGeneration: 1,
     providerAccountId: "account-1",
-    credentialGeneration: 1,
+    credentialGeneration: 2,
     accountEnvironmentGeneration: 1,
     accountEnvironment: {
       backendKind: environment.backendKind,

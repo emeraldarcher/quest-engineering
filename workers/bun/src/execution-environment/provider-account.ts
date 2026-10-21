@@ -95,6 +95,18 @@ export interface ProviderAccountSetupRuntimeIdentity {
   };
 }
 
+/**
+ * Live, Product-admitted credential authority plus an independently resolved
+ * physical account cell. The ref's owner generation is immutable provisioning
+ * provenance, not the current semantic credential generation.
+ */
+export interface ProviderAccountRuntimeAuthority {
+  providerAccountId: string;
+  credentialGeneration: number;
+  ref: EnvironmentRef;
+  assertCurrent(): void;
+}
+
 export interface ClaudeCodeAccountRuntime {
   lease: EnvironmentLease;
   ref: EnvironmentRef;
@@ -585,7 +597,7 @@ export class ProviderAccountEnvironmentManager {
 
   async workspaceToolBrokerAuthority(input: {
     providerAccountId: string;
-    environmentGeneration: number;
+    environmentOwnerGeneration: number;
     expected: {
       backendKind: string;
       environmentId: string;
@@ -601,7 +613,7 @@ export class ProviderAccountEnvironmentManager {
   }> {
     const owner = providerAccountOwner(
       input.providerAccountId,
-      input.environmentGeneration,
+      input.environmentOwnerGeneration,
     );
     const record =
       this.store.current("sbx", this.config.workerId, owner) ??
@@ -825,41 +837,62 @@ export class ProviderAccountEnvironmentManager {
   async claudeCodeRuntime(input: {
     providerAccountId: string;
     credentialGeneration: number;
-    expected: {
-      backendKind: string;
-      environmentId: string;
-      incarnation: string;
-    };
+    authority: ProviderAccountRuntimeAuthority;
   }): Promise<ClaudeCodeAccountRuntime> {
     if (this.fake)
       throw new EnvironmentBackendError(
         "backend_incompatible",
         "The fake ProviderAccount boundary cannot run Claude Code.",
       );
-    const owner = providerAccountOwner(
-      input.providerAccountId,
-      input.credentialGeneration,
-    );
-    const record = this.store.current("sbx", this.config.workerId, owner);
+    const authority = input.authority;
     if (
-      !record ||
-      record.retiredAt ||
-      record.state !== "running" ||
-      record.environmentId !== input.expected.environmentId ||
-      record.incarnation !== input.expected.incarnation ||
-      record.backendKind !== input.expected.backendKind ||
-      record.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.id ||
-      record.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.digest
+      input.providerAccountId !== authority.providerAccountId ||
+      input.credentialGeneration !== authority.credentialGeneration
     )
       throw new EnvironmentBackendError(
         "stale_environment_ref",
-        "Claude ProviderAccount execution authority is stale.",
+        "Claude ProviderAccount credential authority is stale.",
       );
-    const ref = recordRef(record);
+    const ref = structuredClone(authority.ref);
+    const assertCurrent = () => {
+      // Rechecks admitted session, current credential authority, Worker routing,
+      // desired lifecycle, and the exact account/Run physical bindings.
+      authority.assertCurrent();
+      const current = this.store.byRef(ref);
+      if (
+        ref.backendKind !== "sbx" ||
+        ref.workerId !== this.config.workerId ||
+        ref.owner.kind !== "provider_account" ||
+        ref.owner.providerAccountId !== input.providerAccountId ||
+        !current ||
+        current.retiredAt ||
+        current.state !== "running" ||
+        current.profileId !== ref.profile.id ||
+        current.profileDigest !== ref.profile.digest ||
+        current.profileId !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.id ||
+        current.profileDigest !== SBX_CLAUDE_ACCOUNT_PROFILE_V2.digest
+      )
+        throw new EnvironmentBackendError(
+          "stale_environment_ref",
+          "Claude ProviderAccount execution authority is stale.",
+        );
+    };
+    assertCurrent();
+    if (ref.owner.kind !== "provider_account")
+      throw new EnvironmentBackendError(
+        "invalid_environment_ref",
+        "Claude runtime requires a ProviderAccount environment.",
+      );
     const lease = await (this.backend as ExecutionEnvironmentBackend).recover(
       ref,
-      this.specForOwner(owner),
+      this.specForOwner(ref.owner),
     );
+    if (!sameRefIdentity(lease.ref, ref))
+      throw new EnvironmentBackendError(
+        "stale_environment_ref",
+        "Claude ProviderAccount recovery returned another environment.",
+      );
+    assertCurrent();
     const capabilities = new Set(
       lease.capabilities.map(
         (capability) => `${capability.kind}:${capability.mode}`,
@@ -880,19 +913,7 @@ export class ProviderAccountEnvironmentManager {
     const configRoot = `${lease.paths.state}/claude/config`;
     const cwd = `${lease.paths.state}/claude/empty-cwd`;
     await prepareClaudeAccountDirectories(lease);
-    const assertCurrent = () => {
-      const current = this.store.byRef(ref);
-      if (
-        !current ||
-        current.retiredAt ||
-        current.state !== "running" ||
-        current.incarnation !== ref.incarnation
-      )
-        throw new EnvironmentBackendError(
-          "stale_environment_ref",
-          "Claude ProviderAccount execution environment was replaced.",
-        );
-    };
+    assertCurrent();
     return { lease, ref, configRoot, cwd, assertCurrent };
   }
 
