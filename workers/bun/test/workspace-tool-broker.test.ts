@@ -73,6 +73,46 @@ describe("WorkspaceToolBroker", () => {
     }
   });
 
+  test("runtime authority carries credential 2 independently of owner 1 and remains live-fenced", async () => {
+    const fixture = await brokerFixture();
+    try {
+      const input = { ...preparation(), credentialGeneration: 2 };
+      const prepared = await fixture.broker.prepare(input);
+      await fixture.broker.admitLocalAuthorization(
+        prepared.binding.authorizationId,
+      );
+      const { accountAuthority } = fixture.broker.boundClientForAction(
+        input.actionId,
+      );
+      expect(accountAuthority.credentialGeneration).toBe(2);
+      expect(accountAuthority.ref.owner).toMatchObject({
+        credentialGeneration: 1,
+      });
+      expect(() => accountAuthority.assertCurrent()).not.toThrow();
+      fixture.accountCurrent = false;
+      expect(() => accountAuthority.assertCurrent()).toThrow(
+        "stale account authority",
+      );
+      expect(() =>
+        fixture.broker.boundClientForAction(input.actionId),
+      ).toThrow();
+      fixture.accountCurrent = true;
+      fixture.runCurrent = false;
+      expect(() => accountAuthority.assertCurrent()).toThrow(
+        "stale run authority",
+      );
+      fixture.runCurrent = true;
+      await fixture.broker.closeSession(prepared.sessionId);
+      expect(() => accountAuthority.assertCurrent()).toThrow(
+        "admission is stale",
+      );
+      expect(fixture.runOperations).toEqual([]);
+      expect(fixture.accountOperations).toEqual([]);
+    } finally {
+      await fixture.broker.close();
+    }
+  });
+
   test("executes only through the Run-cell process and preserves account-cell state", async () => {
     const fixture = await brokerFixture();
     try {

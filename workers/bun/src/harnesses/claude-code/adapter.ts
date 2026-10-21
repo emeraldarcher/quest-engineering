@@ -443,6 +443,12 @@ export class ClaudeCodeHarness implements AgentHarness {
     );
     const binding = admitted.binding;
     assertBrokerBinding(dispatch, binding);
+    const acquireAccountRuntime = () =>
+      this.accounts.claudeCodeRuntime({
+        providerAccountId: binding.providerAccountId,
+        credentialGeneration: binding.credentialGeneration,
+        authority: admitted.accountAuthority,
+      });
     const existing = this.active.get(lineage.lineageId);
     if (existing) {
       if (!continuation)
@@ -450,8 +456,11 @@ export class ClaudeCodeHarness implements AgentHarness {
           "Fresh Claude execution cannot reuse an active session.",
         );
       assertSessionBinding(existing.session, lineage, binding);
-      existing.account.assertCurrent();
+      // Continuation may replace the admitted broker session. Reacquire its
+      // live authority instead of retaining the previous Action's revoked one.
+      const account = await acquireAccountRuntime();
       const priorBroker = existing.broker;
+      existing.account = account;
       existing.dispatch = dispatch;
       existing.runPrepared = runPrepared;
       existing.broker = admitted.client;
@@ -477,17 +486,15 @@ export class ClaudeCodeHarness implements AgentHarness {
     const nativeSessionId =
       continuation && durable ? durable.nativeSessionId : randomUUID();
     if (durable) assertSessionBinding(durable, lineage, binding);
-    const account = await this.accounts.claudeCodeRuntime({
-      providerAccountId: binding.providerAccountId,
-      credentialGeneration: binding.credentialGeneration,
-      expected: binding.accountEnvironment,
-    });
+    const account = await acquireAccountRuntime();
     return this.accounts.withSerializedAccount(
       binding.providerAccountId,
       async () => {
+        account.assertCurrent();
         if (recovering)
           await this.accounts.retireClaudeAccountProcesses(account.ref);
         await assertAuthenticated(account);
+        account.assertCurrent();
         const mailboxRoot = posix.join(
           account.lease.paths.control,
           "claude",
@@ -515,6 +522,7 @@ export class ClaudeCodeHarness implements AgentHarness {
         await relay.start();
         let process: StreamedProcess;
         try {
+          account.assertCurrent();
           process = await account.lease.spawnStreamed(
             claudeCodeCommand(
               account,

@@ -1396,6 +1396,7 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
 
     account_record
     |> ProviderAccountRecord.changeset(%{
+      credential_generation: 2,
       authentication_state: "authenticated",
       authentication_method: "provider_account",
       auth_configuration_identity: "claude-code-2.1.292-subscription-v1",
@@ -1415,6 +1416,17 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert prepared.attempt_id == dispatch.execution.identity.attempt_id
     assert prepared.worker_generation == worker.connection_generation
     assert prepared.account_environment.incarnation == environment.incarnation
+    assert prepared.credential_generation == 2
+    assert prepared.account_environment_generation == 1
+
+    assert {:error, %{type: :workspace_tool_broker_authority_stale}} =
+             WorkspaceToolBrokers.admit(%{prepared | credential_generation: 1})
+
+    assert {:error, %{type: :workspace_tool_broker_authority_stale}} =
+             WorkspaceToolBrokers.admit(%{
+               prepared
+               | account_environment: %{prepared.account_environment | incarnation: "old-cell"}
+             })
 
     assert prepared.resolved_tool_profile == %{
              "tools" => ["workspace.filesystem", "workspace.search", "terminal.shell"]
@@ -1444,8 +1456,8 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     persisted_authority = Repo.get_by!(WorkerDispatch, action_id: dispatch.action_id)
     assert persisted_authority.provider_account_id == account.id
 
-    assert persisted_authority.provider_account_credential_generation ==
-             account.credential_generation
+    assert persisted_authority.provider_account_credential_generation == 2
+    assert Repo.get!(ProviderAccountRecord, account.id).credential_generation == 2
 
     assert persisted_authority.workspace_tool_broker_authorization_id == authorization_id
     refute persisted_authority.prompt_authorized_at

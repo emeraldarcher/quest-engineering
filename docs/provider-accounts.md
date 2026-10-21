@@ -33,7 +33,10 @@ incarnation, account-cell disk, and environment-owner generation. This prevents
 the newly created fake authentication state from being destroyed by the success
 transition. Future environment commands use the environment row's owner
 generation rather than assuming it equals the account's current credential
-generation.
+generation. Runtime acquisition likewise uses the exact admitted physical
+EnvironmentRef, independently of current credential authority. The Phase-E
+lookup defect, corrected call chain, identity definitions, and focused audit are
+recorded in [`provider-account-runtime-authority.md`](provider-account-runtime-authority.md).
 
 Semantic lifecycle is not physical availability. In particular, an invalid
 account may still have an available environment, and a connected account with a
