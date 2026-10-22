@@ -51,6 +51,11 @@ import type {
 import { OperationalExecutionError } from "../types.ts";
 import { ClaudeAccountCellRelay, newBridgeToken } from "./account-relay.ts";
 import {
+  attestClaudeEffort,
+  CLAUDE_CODE_EFFORT,
+  supportsClaudeReasoning,
+} from "./effort-readiness.ts";
+import {
   AsyncFrameQueue,
   ClaudeProtocolTimeout,
   cancelClaudePreparation,
@@ -64,9 +69,10 @@ import {
   ClaudeCodeSessionStore,
 } from "./session-store.ts";
 
+export { CLAUDE_CODE_EFFORT } from "./effort-readiness.ts";
+
 export const CLAUDE_CODE_HARNESS_KIND = "claude_code" as const;
 export const CLAUDE_CODE_MODEL = "claude-opus-4-6" as const;
-export const CLAUDE_CODE_EFFORT = "high" as const;
 export const CLAUDE_CODE_PLUGIN_NAME = "qe-account-cell" as const;
 export const CLAUDE_CODE_PLUGIN_PATH =
   "/opt/qe/claude-plugins/plugins/qe-account-cell" as const;
@@ -473,6 +479,35 @@ export class ClaudeCodeHarness implements AgentHarness {
       existing.relay.rebind(admitted.client, existing.account.assertCurrent);
       if (priorBroker.sessionId !== admitted.client.sessionId)
         await priorBroker.close();
+      existing.initialized = false;
+      try {
+        await this.accounts.withSerializedAccount(
+          binding.providerAccountId,
+          async () => {
+            account.assertCurrent();
+            await attestClaudeEffort(
+              existing.process,
+              existing.frames,
+              {
+                sessionId: existing.session.nativeSessionId,
+                model: CLAUDE_CODE_MODEL,
+                effort: CLAUDE_CODE_EFFORT,
+              },
+              Date.now() + 30_000,
+            );
+            account.assertCurrent();
+          },
+        );
+        existing.initialized = true;
+      } catch {
+        await this.interrupt(lineage);
+        throw claudeError(
+          "environment_attestation_failed",
+          "Claude Code effective model/effort readiness was not proven.",
+          "readiness",
+          "not_submitted",
+        );
+      }
       existing.inspection = inspection(existing, "starting", "idle");
       return prepared(lineage, existing);
     }
@@ -602,6 +637,9 @@ export class ClaudeCodeHarness implements AgentHarness {
             false,
             diagnostics,
           );
+          // Native settings proof shares the existing 30s post-probe budget;
+          // it never extends the init timeout or introduces a second 30s wait.
+          const deadline = Date.now() + 30_000;
           const init = await waitForInit(frames, 30_000, () => {
             diagnostics?.record("attestation_timeout_fired", process.handle);
           });
@@ -610,8 +648,19 @@ export class ClaudeCodeHarness implements AgentHarness {
               sessionId: nativeSessionId,
               cwd: account.cwd,
               model: CLAUDE_CODE_MODEL,
-              effort: CLAUDE_CODE_EFFORT,
             });
+            account.assertCurrent();
+            await attestClaudeEffort(
+              process,
+              frames,
+              {
+                sessionId: nativeSessionId,
+                model: CLAUDE_CODE_MODEL,
+                effort: CLAUDE_CODE_EFFORT,
+              },
+              deadline,
+            );
+            account.assertCurrent();
           } catch (error) {
             diagnostics?.record("protocol_frame_rejected", process.handle);
             throw error;
@@ -666,7 +715,6 @@ export class ClaudeCodeHarness implements AgentHarness {
           sessionId: active.session.nativeSessionId,
           cwd: active.account.cwd,
           model: CLAUDE_CODE_MODEL,
-          effort: CLAUDE_CODE_EFFORT,
         });
         continue;
       }
@@ -828,7 +876,7 @@ export function claudeCodeCommand(
 
 export function attestClaudeInit(
   value: Record<string, unknown>,
-  expected: { sessionId: string; cwd: string; model: string; effort: string },
+  expected: { sessionId: string; cwd: string; model: string },
 ): void {
   const tools = Array.isArray(value.tools) ? [...value.tools].sort() : [];
   const expectedTools = [...CLAUDE_CODE_TOOLS].sort();
@@ -851,7 +899,8 @@ export function attestClaudeInit(
     value.apiKeySource !== "oauth" ||
     value.cwd !== expected.cwd ||
     value.model !== expected.model ||
-    value.effort !== expected.effort ||
+    // This optional init field is only a consistency check, never effort proof.
+    (value.effort !== undefined && value.effort !== CLAUDE_CODE_EFFORT) ||
     value.permissionMode !== "dontAsk" ||
     JSON.stringify(tools) !== JSON.stringify(expectedTools) ||
     !Array.isArray(value.mcp_servers) ||
@@ -866,7 +915,7 @@ export function attestClaudeInit(
     (Array.isArray(value.plugin_errors) && value.plugin_errors.length !== 0)
   )
     throw new Error(
-      "Claude Code init does not attest exact OAuth, managed Mod guard, model, effort, session, cwd, and tool inventory.",
+      "Claude Code init does not attest exact OAuth, managed Mod guard, model, optional effort consistency, session, cwd, and tool inventory.",
     );
 }
 
@@ -876,9 +925,10 @@ function assertExactConfiguration(dispatch: DispatchRecord): void {
     configuration.harness_kind !== CLAUDE_CODE_HARNESS_KIND ||
     configuration.model.provider !== "anthropic" ||
     configuration.model.model !== CLAUDE_CODE_MODEL ||
-    configuration.reasoning !== CLAUDE_CODE_EFFORT ||
-    configuration.reasoning_capability.kind !== "enumerated" ||
-    !configuration.reasoning_capability.values.includes(CLAUDE_CODE_EFFORT) ||
+    !supportsClaudeReasoning(
+      configuration.reasoning,
+      configuration.reasoning_capability,
+    ) ||
     configuration.tool_enforcement !== "exact"
   )
     throw claudeError(

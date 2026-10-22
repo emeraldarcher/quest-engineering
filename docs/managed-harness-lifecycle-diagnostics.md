@@ -5,12 +5,13 @@
 The Claude Code adapter records bounded, **Worker-local diagnostic evidence** for
 one zero-query preparation. It does not instrument Claude, introduce a second
 handshake, add a logging channel, or change the authority of native attestation.
-The native init validator (including its existing exact effort check), fixed
-probe bytes and production **30,000 ms** init deadline are unchanged.
+The diagnostic change left the native init validator, fixed probe bytes and
+production **30,000 ms** init deadline unchanged.
 
-The independent pinned-runtime **effort omission requires a follow-up**: native
-`system/init` construction omits `effort`, while QE requires `high`. This PR
-neither fixes that discrepancy nor calls it the cause of a frame timeout.
+The independent pinned-runtime effort omission is now handled by the separate
+[exact effort readiness check](claude-effort-readiness.md): native `get_settings`
+proves applied effort when init omits it. This does not extend lifecycle diagnostics,
+change its evidence semantics, or identify the historical frame-timeout cause.
 
 This is deliberately Worker-only. Immutable `qe-account-cell` 1.0.0,
 `qe_claude_account_cell_v1`, account profiles v1/v2, all their asset hashes and
