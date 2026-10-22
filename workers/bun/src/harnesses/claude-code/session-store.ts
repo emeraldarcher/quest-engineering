@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ManagedHarnessLifecycleStore } from "../lifecycle-diagnostics.ts";
 
 export interface ClaudeCodeSessionRecord {
   nativeSessionId: string;
@@ -34,6 +35,7 @@ interface Row {
 
 export class ClaudeCodeSessionStore {
   private readonly db: Database;
+  readonly lifecycle: ManagedHarnessLifecycleStore;
 
   constructor(
     dataRoot: string,
@@ -62,6 +64,7 @@ export class ClaudeCodeSessionStore {
       SET state='uncertain',updated_at=datetime('now')
       WHERE state IN ('prepared','active');
     `);
+    this.lifecycle = new ManagedHarnessLifecycleStore(this.db);
   }
 
   get(nativeSessionId: string): ClaudeCodeSessionRecord | null {

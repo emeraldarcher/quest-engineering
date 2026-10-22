@@ -14,7 +14,9 @@ import { herdrProcessEnvironment } from "../src/session-host/herdr/connection.ts
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    [...new Set(roots.splice(0))].map((root) =>
+      rm(root, { recursive: true, force: true }),
+    ),
   );
 });
 

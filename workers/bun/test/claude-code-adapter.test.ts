@@ -20,6 +20,7 @@ import {
   CLAUDE_CODE_TOOLS,
   ClaudeCodeHarness,
 } from "../src/harnesses/claude-code/adapter.ts";
+import { ClaudeCodeSessionStore } from "../src/harnesses/claude-code/session-store.ts";
 import type { WorkspaceToolBroker } from "../src/workspace-tool-broker.ts";
 import { action } from "./support.ts";
 
@@ -67,6 +68,7 @@ test("ClaudeCodeHarness prepares credential generation 2 in the retained generat
     },
     close: async () => undefined,
   };
+  const sessionStore = new ClaudeCodeSessionStore(root);
   const harness = new ClaudeCodeHarness(
     { workerId: "worker-test", dataRoot: root } as WorkerConfig,
     {
@@ -105,6 +107,7 @@ test("ClaudeCodeHarness prepares credential generation 2 in the retained generat
       ({
         boundClientForAction: () => ({ binding, client, accountAuthority }),
       }) as unknown as WorkspaceToolBroker,
+    sessionStore,
   );
 
   const prepared = await harness.start(accepted, lineage);
@@ -139,6 +142,24 @@ test("ClaudeCodeHarness prepares credential generation 2 in the retained generat
   expect(writes).toHaveLength(1);
   expect(process.queryWrites).toBe(0);
   await harness.close(lineage);
+  const db = new (await import("bun:sqlite")).Database(
+    join(root, "claude-code-sessions-v1.sqlite"),
+    { readonly: true },
+  );
+  const row = db
+    .query("SELECT evidence_json FROM managed_harness_lifecycle")
+    .get() as { evidence_json: string };
+  expect(JSON.parse(row.evidence_json)).toMatchObject({
+    lastProvenStage: "protocol_frame_validated",
+    context: { lineageId: lineage.lineageId },
+    observations: {
+      probe_write_acknowledged: "observed",
+      process_exit_observed: "observed",
+    },
+    modExecution: "unestablished",
+  });
+  db.close();
+  sessionStore.close();
   registry.close();
 });
 
