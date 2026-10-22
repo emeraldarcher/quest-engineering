@@ -113,10 +113,17 @@ message with `shouldQuery: false`. Before readiness, `system/init` must attest:
 - Claude Code `2.1.292`;
 - `apiKeySource: "oauth"` and separately validated `authMethod: "claude.ai"`;
 - exact native session UUID and account-cell cwd;
-- model `claude-opus-4-6`, effort `high`, and `dontAsk`;
+- model `claude-opus-4-6` and `dontAsk` (optional init effort must agree if present);
 - exactly the QE managed Mod plus built-in managed-Mod guard;
 - no plugin load errors, MCP servers, skills, or agents;
 - exactly the eight QE tools.
+
+The shipped native init producer omits effort. Before readiness QE additionally
+requires a fresh, correlated, read-only native `get_settings` response whose
+`applied.model` is exactly `claude-opus-4-6` and `applied.effort` exactly `high`.
+Neither the requested flag nor managed settings nor an optional init effort echo
+substitutes for this effective-state proof. The readback shares the original
+post-probe 30,000 ms budget. See [exact effort readiness](claude-effort-readiness.md).
 
 Only then can the generic staged-dispatch lifecycle publish
 `needs_confirmation`. Product additionally requires the exact admitted broker
@@ -137,8 +144,9 @@ SQLite database. Missing breadcrumbs never prove nonexecution. The unchanged Mod
 has no entrypoint/ready signal, and native probe parsing/init construction/init
 submission remain unobservable at this layer. Diagnostics do not authorize work,
 change attestation, add raw-output persistence or advance immutable profiles.
-The independently identified native-init effort omission remains a separate
-follow-up; it is not fixed or diagnosed as the timeout cause here.
+The independent native-init effort omission is handled by the separate native
+applied-state readiness check, not a diagnostic milestone. It is not the cause
+of the unresolved historical protocol-frame timeout.
 
 ## Native sessions and recovery
 

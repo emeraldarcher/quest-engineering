@@ -112,7 +112,10 @@ test("ClaudeCodeHarness prepares credential generation 2 in the retained generat
 
   const prepared = await harness.start(accepted, lineage);
   await harness.ready(accepted, prepared);
-  expect(writes).toHaveLength(1);
+  expect(writes.filter((frame) => frame.type === "user")).toHaveLength(1);
+  expect(
+    writes.filter((frame) => frame.type === "control_request"),
+  ).toHaveLength(1);
   expect(writes[0]).toMatchObject({
     type: "user",
     shouldQuery: false,
@@ -139,7 +142,10 @@ test("ClaudeCodeHarness prepares credential generation 2 in the retained generat
   await harness.ready(accepted, continued);
   expect(continued.handle.nativeSession).toEqual(prepared.handle.nativeSession);
   expect(acquisitions).toBe(2);
-  expect(writes).toHaveLength(1);
+  expect(writes.filter((frame) => frame.type === "user")).toHaveLength(1);
+  expect(
+    writes.filter((frame) => frame.type === "control_request"),
+  ).toHaveLength(2);
   expect(process.queryWrites).toBe(0);
   await harness.close(lineage);
   const db = new (await import("bun:sqlite")).Database(
@@ -170,7 +176,6 @@ test("Claude init requires OAuth provenance in addition to the exact Mod and too
       sessionId: frame.session_id as string,
       cwd: frame.cwd as string,
       model: CLAUDE_CODE_MODEL,
-      effort: CLAUDE_CODE_EFFORT,
     }),
   ).not.toThrow();
   frame.apiKeySource = "apiKeyHelper";
@@ -179,10 +184,167 @@ test("Claude init requires OAuth provenance in addition to the exact Mod and too
       sessionId: frame.session_id as string,
       cwd: frame.cwd as string,
       model: CLAUDE_CODE_MODEL,
-      effort: CLAUDE_CODE_EFFORT,
     }),
   ).toThrow();
 });
+
+for (const applied of [
+  { model: CLAUDE_CODE_MODEL, effort: "high" },
+  { model: CLAUDE_CODE_MODEL },
+  { model: CLAUDE_CODE_MODEL, effort: null },
+  { model: CLAUDE_CODE_MODEL, effort: "medium" },
+  { model: CLAUDE_CODE_MODEL, effort: "unsupported" },
+  { model: "claude-sonnet-4-6", effort: "high" },
+]) {
+  test(`real managed preparation requires independent native applied configuration: ${JSON.stringify(applied)}`, async () => {
+    const fixture = await effortHarness(applied);
+    const preparing = fixture.harness.start(fixture.dispatch, fixture.lineage);
+    if (applied.model === CLAUDE_CODE_MODEL && applied.effort === "high") {
+      const prepared = await preparing;
+      await fixture.harness.ready(fixture.dispatch, prepared);
+    } else {
+      await expect(preparing).rejects.toMatchObject({
+        code: "environment_attestation_failed",
+        phase: "readiness",
+      });
+    }
+    expect(fixture.process.queryWrites).toBe(0);
+    await fixture.harness.close(fixture.lineage);
+    fixture.registry.close();
+    fixture.store.close();
+  });
+}
+
+test("a previously ready continuation rejects an effective-effort override instead of reusing its ready flag", async () => {
+  const fixture = await effortHarness({
+    model: CLAUDE_CODE_MODEL,
+    effort: "high",
+  });
+  const prepared = await fixture.harness.start(
+    fixture.dispatch,
+    fixture.lineage,
+  );
+  await fixture.harness.ready(fixture.dispatch, prepared);
+  fixture.process.appliedSettings.effort = "low";
+  await expect(
+    fixture.harness.continue(fixture.dispatch, fixture.lineage),
+  ).rejects.toMatchObject({
+    code: "environment_attestation_failed",
+    phase: "readiness",
+  });
+  await expect(
+    fixture.harness.ready(fixture.dispatch, prepared),
+  ).rejects.toThrow("Claude Code execution is not active.");
+  expect(fixture.process.queryWrites).toBe(0);
+  await fixture.harness.close(fixture.lineage);
+  fixture.registry.close();
+  fixture.store.close();
+});
+
+test("full managed readiness with native applied proof succeeds with diagnostic evidence unavailable", async () => {
+  const fixture = await effortHarness({
+    model: CLAUDE_CODE_MODEL,
+    effort: "high",
+  });
+  fixture.store.lifecycle.begin = () => null;
+  const prepared = await fixture.harness.start(
+    fixture.dispatch,
+    fixture.lineage,
+  );
+  await fixture.harness.ready(fixture.dispatch, prepared);
+  expect(fixture.process.queryWrites).toBe(0);
+  await fixture.harness.close(fixture.lineage);
+  fixture.registry.close();
+  fixture.store.close();
+});
+
+for (const reasoning of [null, "low", "medium", "xhigh", "unsupported"]) {
+  test(`configured QE effort ${reasoning} fails before native launch, without fallback`, async () => {
+    const fixture = await effortHarness(
+      { model: CLAUDE_CODE_MODEL, effort: "high" },
+      reasoning,
+    );
+    await expect(
+      fixture.harness.start(fixture.dispatch, fixture.lineage),
+    ).rejects.toMatchObject({
+      code: "incompatible_continuation_configuration",
+    });
+    expect(fixture.nativeSpawns()).toBe(0);
+    expect(fixture.process.queryWrites).toBe(0);
+    fixture.registry.close();
+    fixture.store.close();
+  });
+}
+
+async function effortHarness(
+  applied: Record<string, unknown>,
+  reasoning: string | null = "high",
+) {
+  const root = await testRoot();
+  const candidate = claudeAction();
+  candidate.execution.configuration.reasoning = reasoning;
+  const registry = new DispatchRegistry(
+    join(root, "dispatches.sqlite"),
+    root,
+    "claude_code",
+  );
+  const dispatch = registry.accept(candidate).dispatch;
+  registry.occupy(dispatch.lineageId as string, dispatch.action.action_id);
+  const lineage = registry.getLineage(dispatch.lineageId as string);
+  const environment = accountEnvironment();
+  const process = syntheticInitProcess(environment);
+  process.appliedSettings = applied;
+  const lease = accountLease(environment, process);
+  let spawns = 0;
+  lease.spawnStreamed = async () => {
+    spawns++;
+    return process;
+  };
+  const binding = brokerBinding(dispatch.action.action_id, environment);
+  const store = new ClaudeCodeSessionStore(root);
+  const accountAuthority = {
+    providerAccountId: binding.providerAccountId,
+    credentialGeneration: binding.credentialGeneration,
+    ref: environment,
+    assertCurrent: () => undefined,
+  };
+  const harness = new ClaudeCodeHarness(
+    { workerId: "worker-test", dataRoot: root } as WorkerConfig,
+    { prepare: async () => ({ materializedArtifacts: {} }) } as never,
+    {
+      claudeCodeRuntime: async () => ({
+        lease,
+        ref: environment,
+        configRoot: "/qe/state/claude/config",
+        cwd: "/qe/state/claude/empty-cwd",
+        assertCurrent: accountAuthority.assertCurrent,
+      }),
+      withSerializedAccount: async (_id: string, run: () => Promise<unknown>) =>
+        run(),
+    } as never,
+    () =>
+      ({
+        boundClientForAction: () => ({
+          binding,
+          accountAuthority,
+          client: {
+            sessionId: "broker-session-1",
+            close: async () => undefined,
+          },
+        }),
+      }) as unknown as WorkspaceToolBroker,
+    store,
+  );
+  return {
+    harness,
+    dispatch,
+    lineage,
+    process,
+    registry,
+    store,
+    nativeSpawns: () => spawns,
+  };
+}
 
 function claudeAction() {
   const base = action();
@@ -328,6 +490,7 @@ function brokerBinding(actionId: string, environment: EnvironmentRef) {
 interface SyntheticInitProcess extends StreamedProcess {
   onWrite: (frame: Record<string, unknown>) => void;
   queryWrites: number;
+  appliedSettings: Record<string, unknown>;
 }
 
 function syntheticInitProcess(
@@ -363,13 +526,28 @@ function syntheticInitProcess(
     exit,
     onWrite: () => undefined,
     queryWrites: 0,
+    appliedSettings: { model: CLAUDE_CODE_MODEL, effort: CLAUDE_CODE_EFFORT },
     write: async (data) => {
       const frame = JSON.parse(new TextDecoder().decode(data)) as Record<
         string,
         unknown
       >;
       process.onWrite(frame);
-      if (frame.shouldQuery !== false) process.queryWrites += 1;
+      if (frame.type === "control_request") {
+        expect(frame.request).toEqual({ subtype: "get_settings" });
+        stdoutController.enqueue(
+          new TextEncoder().encode(
+            `${JSON.stringify({
+              type: "control_response",
+              response: {
+                subtype: "success",
+                request_id: frame.request_id,
+                response: { applied: process.appliedSettings },
+              },
+            })}\n`,
+          ),
+        );
+      } else if (frame.shouldQuery !== false) process.queryWrites += 1;
       else {
         const sessionId = frame.session_id as string;
         stdoutController.enqueue(
@@ -413,7 +591,6 @@ function initFrame(sessionId: string): Record<string, unknown> {
     apiKeySource: "oauth",
     cwd: "/qe/state/claude/empty-cwd",
     model: CLAUDE_CODE_MODEL,
-    effort: CLAUDE_CODE_EFFORT,
     permissionMode: "dontAsk",
     tools: [...CLAUDE_CODE_TOOLS],
     mcp_servers: [],

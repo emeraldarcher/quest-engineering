@@ -203,7 +203,6 @@ test.skipIf(!live)(
                   sessionId: session,
                   cwd: lease.paths.workspace,
                   model: CLAUDE_CODE_MODEL,
-                  effort: CLAUDE_CODE_EFFORT,
                 }),
               ).toThrow();
               diag.record("protocol_frame_rejected", target.handle);
@@ -215,7 +214,6 @@ test.skipIf(!live)(
                 sessionId: session,
                 cwd: lease.paths.workspace,
                 model: CLAUDE_CODE_MODEL,
-                effort: CLAUDE_CODE_EFFORT,
               });
               diag.record("protocol_frame_validated", target.handle);
               expect(diag.snapshot().lastProvenStage).toBe(

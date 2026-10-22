@@ -48,7 +48,6 @@ export function protocolInit(cwd = "/qe/state/claude/empty-cwd") {
     apiKeySource: "oauth",
     cwd,
     model: CLAUDE_CODE_MODEL,
-    effort: CLAUDE_CODE_EFFORT,
     permissionMode: "dontAsk",
     tools: [...CLAUDE_CODE_TOOLS],
     mcp_servers: [],
@@ -105,7 +104,6 @@ for (const dropDiagnostics of [false, true]) {
       sessionId: protocolSession,
       cwd: native.cwd,
       model: CLAUDE_CODE_MODEL,
-      effort: CLAUDE_CODE_EFFORT,
     });
     diagnostics?.record("protocol_frame_validated", fixture.process.handle);
     if (diagnostics) {

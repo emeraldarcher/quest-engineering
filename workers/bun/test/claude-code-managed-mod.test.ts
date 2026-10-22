@@ -62,6 +62,23 @@ describe("Claude Code managed-Mod architecture", () => {
     expect(command.args).not.toContain("--mcp-config");
     expect(command.args).not.toContain("--allowedTools");
     expect(command.args).not.toContain("--fallback-model");
+    for (const flag of [
+      "--settings",
+      "--managed-settings",
+      "--setting-sources",
+      "--sdk-url",
+      "--sdk-uds",
+    ])
+      expect(command.args).not.toContain(flag);
+    for (const name of [
+      "CLAUDE_CODE_EFFORT_LEVEL",
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "CLAUDE_CODE_ENVIRONMENT_KIND",
+      "CLAUDE_CODE_REMOTE_SESSION_ID",
+    ])
+      expect(command.environment).not.toHaveProperty(name);
+    expect(command.environment.QE_CLAUDE_EFFORT).toBe("high");
     expect(command.environment.QE_ACCOUNT_CELL_MOD_PROTOCOL).toBe(
       SBX_CLAUDE_ACCOUNT_MOD_PROTOCOL,
     );
@@ -84,14 +101,15 @@ describe("Claude Code managed-Mod architecture", () => {
       expect(command.args.join("\0")).not.toContain(forbidden);
   });
 
-  test("zero-inference init attestation rejects every model, effort, plugin, MCP, skill, agent, and tool drift", () => {
+  test("native init without effort attests model, OAuth, plugin, MCP, skill, agent and tool inventory", () => {
     const exact = initFrame();
+    expect(exact).not.toHaveProperty("effort");
     expect(() => attestClaudeInit(exact, expectedInit())).not.toThrow();
     const traps: Array<(value: Record<string, unknown>) => void> = [
       (value) => (value.model = "claude-sonnet-4-6"),
       (value) => (value.effort = "medium"),
-      // Known separate defect remains rejected; this diagnostic PR is not its fix.
-      (value) => delete value.effort,
+      (value) => (value.effort = null),
+      (value) => (value.effort = "unsupported"),
       (value) => (value.apiKeySource = "ANTHROPIC_API_KEY"),
       (value) => ((value.tools as string[])[0] = "Read"),
       (value) => {
@@ -203,7 +221,6 @@ function expectedInit() {
     sessionId: "11111111-1111-4111-8111-111111111111",
     cwd: "/qe/state/claude/empty-cwd",
     model: CLAUDE_CODE_MODEL,
-    effort: CLAUDE_CODE_EFFORT,
   };
 }
 
@@ -216,7 +233,6 @@ function initFrame(): Record<string, unknown> {
     apiKeySource: "oauth",
     cwd: "/qe/state/claude/empty-cwd",
     model: CLAUDE_CODE_MODEL,
-    effort: CLAUDE_CODE_EFFORT,
     permissionMode: "dontAsk",
     tools: [...CLAUDE_CODE_TOOLS],
     mcp_servers: [],
