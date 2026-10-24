@@ -259,7 +259,7 @@ test("full managed readiness with native applied proof succeeds with diagnostic 
 });
 
 for (const io of ["hung", "throwing"] as const) {
-  test(`full managed readiness and close do not await ${io} I/O diagnostics`, async () => {
+  test(`full managed readiness and close survive ${io} I/O diagnostics with only the bounded pre-probe wait`, async () => {
     const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
     f.process.observeIo =
       io === "hung"

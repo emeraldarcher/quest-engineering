@@ -4,6 +4,7 @@ import type {
   StreamedProcessStreamEvent,
 } from "../../execution-environment/types.ts";
 import type { ManagedHarnessLifecycle } from "../lifecycle-diagnostics.ts";
+import type { ClaudeOutputUnit } from "./output-census.ts";
 
 export class ClaudeProtocolTimeout extends Error {
   constructor() {
@@ -69,8 +70,11 @@ export function observeClaudeProtocol(
   diagnostics: ManagedHarnessLifecycle | null,
   disconnected: () => boolean,
 ): void {
-  void pump(process.stdout, frames, (frame) =>
-    diagnostics?.observeInit(frame, process.handle),
+  void pump(
+    process.stdout,
+    frames,
+    (frame) => diagnostics?.observeInit(frame, process.handle),
+    (unit) => diagnostics?.observeClaudeOutput(unit, process.handle),
   ).catch(() => {
     diagnostics?.record("protocol_observation_failed", process.handle);
     // JSON/UTF-8 parser exceptions can contain native input excerpts.
@@ -95,27 +99,52 @@ export async function pump(
   stream: AsyncIterable<StreamedProcessStreamEvent>,
   frames: AsyncFrameQueue,
   onFrame: (frame: Record<string, unknown>) => void = () => undefined,
+  onUnit: (unit: ClaudeOutputUnit) => void = () => undefined,
 ): Promise<void> {
+  const observe = (unit: ClaudeOutputUnit) => {
+    try {
+      onUnit(unit);
+    } catch {
+      /* Diagnostic loss must never change parser behavior. */
+    }
+  };
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffered = "";
   for await (const event of stream) {
     if (event.kind === "transport_error")
       throw new Error("Claude Code stdout transport failed.");
     if (event.kind !== "data") continue;
-    buffered += decoder.decode(event.data, { stream: true });
-    if (Buffer.byteLength(buffered, "utf8") > 2 * 1024 * 1024)
+    try {
+      buffered += decoder.decode(event.data, { stream: true });
+    } catch (error) {
+      observe({ kind: "invalid_utf8" });
+      throw error;
+    }
+    if (Buffer.byteLength(buffered, "utf8") > 2 * 1024 * 1024) {
+      observe({ kind: "buffer_limit" });
       throw new Error("Claude Code stream frame exceeded its bound.");
+    }
     while (buffered.includes("\n")) {
       const index = buffered.indexOf("\n");
       const line = buffered.slice(0, index);
       buffered = buffered.slice(index + 1);
-      if (!line) continue;
+      if (!line) {
+        observe({ kind: "empty" });
+        continue;
+      }
       let frame: unknown;
       try {
         frame = JSON.parse(line);
       } catch {
+        // Decoded UTF-8 unit size includes LF. Raw relay byte counts stay separate
+        // (the decoder can strip a BOM); no text leaves this parser boundary.
+        observe({
+          kind: "non_json",
+          decodedUtf8Bytes: Buffer.byteLength(line, "utf8") + 1,
+        });
         throw new Error("Claude Code emitted invalid JSON.");
       }
+      observe({ kind: "json", value: frame });
       if (!frame || typeof frame !== "object" || Array.isArray(frame))
         throw new Error("Claude Code emitted a malformed frame.");
       const object = frame as Record<string, unknown>;
@@ -128,9 +157,19 @@ export async function pump(
       frames.push(object);
     }
   }
-  buffered += decoder.decode();
-  if (buffered.length > 0)
+  try {
+    buffered += decoder.decode();
+  } catch (error) {
+    observe({ kind: "invalid_utf8" });
+    throw error;
+  }
+  if (buffered.length > 0) {
+    observe({
+      kind: "incomplete_eof",
+      decodedUtf8Bytes: Buffer.byteLength(buffered, "utf8"),
+    });
     throw new Error("Claude Code stdout ended inside a frame.");
+  }
   frames.fail(new Error("Claude Code stdout ended before settlement."));
 }
 
@@ -141,6 +180,13 @@ export async function sendMessage(
   shouldQuery: boolean,
   diagnostics: ManagedHarnessLifecycle | null = null,
 ): Promise<void> {
+  if (!shouldQuery && diagnostics) {
+    try {
+      await diagnostics.capturePreProbeIo(process);
+    } catch {
+      /* Unavailable baseline is not a prerequisite for probe submission. */
+    }
+  }
   const message = {
     type: "user",
     message: { role: "user", content },
