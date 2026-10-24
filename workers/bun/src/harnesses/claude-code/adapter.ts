@@ -642,6 +642,7 @@ export class ClaudeCodeHarness implements AgentHarness {
           const deadline = Date.now() + 30_000;
           const init = await waitForInit(frames, 30_000, () => {
             diagnostics?.record("attestation_timeout_fired", process.handle);
+            diagnostics?.captureIo("attestation_timeout_fired", process);
           });
           try {
             attestClaudeInit(init, {

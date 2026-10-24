@@ -727,6 +727,10 @@ class FakeProcess implements StreamedProcess {
     };
   }
 
+  async observeIo() {
+    return { status: "unavailable" as const, reason: "unsupported" as const };
+  }
+
   async disconnect(): Promise<void> {
     this.settle({ kind: "signaled", signal: "DISCONNECT" });
   }

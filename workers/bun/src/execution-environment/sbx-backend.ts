@@ -948,6 +948,7 @@ export class SbxExecutionEnvironmentBackend
               return SbxStreamedProcessTransport.open({
                 client: this.client,
                 sandboxName: exact.displayName,
+                processGeneration: context.processGeneration,
                 command: context.command,
                 relaySource: relaySource as string,
                 markerPath: `${SBX_GUEST_PATHS.state}/environment-ownership.json`,
@@ -1164,6 +1165,30 @@ export class SbxExecutionEnvironmentBackend
   ): Promise<void> {
     const current = this.requireCurrentRef(ref, operation);
     if (operation === "retire_streamed") return;
+    if (operation === "observe_streamed_io") {
+      // Diagnostics must not use reconciliation helpers that mark missing/stopped
+      // records. Both namespace checks are read-only, even on failed observations.
+      const stop = this.store.latestStopAttempt(current.recordId);
+      if (current.state !== "running" || (stop && !stop.reopened))
+        throw new EnvironmentBackendError(
+          "environment_not_usable",
+          "Diagnostic environment is unavailable.",
+          operation,
+        );
+      const identity = locateSandbox(
+        current,
+        await this.client.list(),
+        this.executionProfile.nativeAgent,
+      );
+      if (identity.kind !== "exact" || identity.sandbox.status !== "running")
+        throw new EnvironmentBackendError(
+          "environment_identity_mismatch",
+          "Diagnostic environment identity is unavailable.",
+          operation,
+        );
+      this.requireCurrentRef(ref, operation);
+      return;
+    }
     await this.requireUsableLease(
       current,
       operation as Extract<

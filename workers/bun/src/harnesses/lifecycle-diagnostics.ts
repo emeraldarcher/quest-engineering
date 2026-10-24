@@ -1,10 +1,38 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import {
+  ioUnavailable,
+  STREAMED_PROCESS_IO_UNAVAILABLE,
+  type StreamedProcessIoSample,
+  type StreamedProcessIoUnavailable,
+  safeIoSample,
+} from "../execution-environment/streamed-process-io.ts";
 import type {
   EnvironmentRef,
+  StreamedProcess,
   StreamedProcessExit,
   StreamedProcessHandle,
 } from "../execution-environment/types.ts";
+
+export const LIFECYCLE_IO_CHECKPOINTS = [
+  "probe_write_acknowledged",
+  "attestation_timeout_fired",
+  "process_exit_observed",
+] as const;
+export type LifecycleIoCheckpoint = (typeof LIFECYCLE_IO_CHECKPOINTS)[number];
+type LifecycleIoResult =
+  | { status: "not_observed" }
+  | StreamedProcessIoUnavailable
+  | {
+      status: "available";
+      sample: StreamedProcessIoSample;
+      beforeCancellation: StreamedProcessIoSample | null;
+    };
+export type LifecycleIoEvidence = {
+  checkpoint: LifecycleIoCheckpoint;
+  requestedAt: string;
+  requestedElapsedMs: number;
+} & LifecycleIoResult;
 
 export const MANAGED_HARNESS_LIFECYCLE_PROTOCOL =
   "managed_harness_lifecycle_v1" as const;
@@ -57,6 +85,7 @@ export interface LifecycleEvidence {
     processGeneration: string;
     backendProcessId: string;
     processStartIdentity: string;
+    observedExecutableIdentity?: string;
   } | null;
   lastProvenStage: (typeof LIFECYCLE_PROGRESS)[number] | null;
   observations: Record<LifecycleStage, Observation>;
@@ -70,6 +99,7 @@ export interface LifecycleEvidence {
   processStateAtTimeout: "unknown" | "terminal_observed";
   persistence: "available" | "unknown";
   events: LifecycleEvent[];
+  ioObservations: LifecycleIoEvidence[];
 }
 
 /** Worker-local, non-authoritative evidence. Never accepts native text/payloads. */
@@ -130,6 +160,7 @@ export class ManagedHarnessLifecycle {
   private readonly context: LifecycleContext;
   private handle: StreamedProcessHandle | null = null;
   private readonly events = new Map<LifecycleStage, LifecycleEvent>();
+  private readonly io = new Map<LifecycleIoCheckpoint, LifecycleIoEvidence>();
   private readonly started = performance.now();
   private persistence: "available" | "unknown" = "unknown";
 
@@ -164,8 +195,15 @@ export class ManagedHarnessLifecycle {
         processGeneration: id(handle.processGeneration),
         backendProcessId: id(handle.backendProcessId),
         processStartIdentity: id(handle.processStartIdentity),
-        // Executable paths and all unknown input fields are deliberately excluded.
-        executable: "",
+        // Paths are retained privately for fencing, never projected into evidence.
+        executable: handle.executable,
+        ...(handle.observedExecutable
+          ? { observedExecutable: handle.observedExecutable }
+          : {}),
+        ...(handle.observedExecutableIdentity &&
+        /^[0-9]{1,20}:[0-9]{1,20}$/.test(handle.observedExecutableIdentity)
+          ? { observedExecutableIdentity: handle.observedExecutableIdentity }
+          : {}),
       };
       this.record("process_spawned", handle);
     } catch {
@@ -198,12 +236,98 @@ export class ManagedHarnessLifecycle {
       if (stage === "process_exit_observed" && details.exit)
         event.exit = safeExit(details.exit);
       this.events.set(stage, event);
-      const evidence = this.snapshot();
-      evidence.persistence = "available";
-      this.persistence = this.persist(evidence) ? "available" : "unknown";
+      this.save();
     } catch {
       this.persistence = "unknown";
     }
+  }
+
+  /** Fire-and-forget, at most one observation per existing checkpoint. Never awaited by readiness. */
+  captureIo(checkpoint: LifecycleIoCheckpoint, process: StreamedProcess): void {
+    try {
+      if (
+        !LIFECYCLE_IO_CHECKPOINTS.includes(checkpoint) ||
+        this.io.has(checkpoint) ||
+        !this.matches(process.handle)
+      )
+        return;
+      const request = {
+        checkpoint,
+        requestedAt: new Date().toISOString(),
+        requestedElapsedMs: Math.max(
+          0,
+          Math.round(performance.now() - this.started),
+        ),
+      };
+      this.io.set(checkpoint, { ...request, status: "not_observed" });
+      // Do not add synchronous persistence or backend work before the caller
+      // establishes its existing deadline or begins normal cancellation.
+      setImmediate(() => this.collectIo(checkpoint, process, request));
+    } catch {
+      /* Missing diagnostic work is not an execution failure. */
+    }
+  }
+
+  private collectIo(
+    checkpoint: LifecycleIoCheckpoint,
+    process: StreamedProcess,
+    request: Pick<
+      LifecycleIoEvidence,
+      "checkpoint" | "requestedAt" | "requestedElapsedMs"
+    >,
+  ): void {
+    try {
+      this.save();
+      const settle = (result: LifecycleIoResult) => {
+        try {
+          this.io.set(checkpoint, {
+            ...request,
+            ...result,
+          } as LifecycleIoEvidence);
+          this.save();
+        } catch {
+          this.persistence = "unknown";
+        }
+      };
+      void Promise.resolve()
+        .then(() => process.observeIo())
+        .then((value) => {
+          if (value.status === "unavailable") {
+            settle(
+              STREAMED_PROCESS_IO_UNAVAILABLE.includes(value.reason)
+                ? ioUnavailable(value.reason)
+                : ioUnavailable("malformed_observation"),
+            );
+            return;
+          }
+          if (!this.matches(value.handle)) {
+            settle(ioUnavailable("identity_mismatch"));
+            return;
+          }
+          const sample = safeIoSample(value.sample);
+          const beforeCancellation =
+            value.beforeCancellation === null
+              ? null
+              : safeIoSample(value.beforeCancellation);
+          if (
+            !sample ||
+            (value.beforeCancellation !== null && !beforeCancellation)
+          ) {
+            settle(ioUnavailable("malformed_observation"));
+            return;
+          }
+          settle({ status: "available", sample, beforeCancellation });
+        })
+        .catch(() => settle(ioUnavailable("observation_failed")));
+    } catch {
+      /* Diagnostic failure cannot fail a probe, timeout, or cancellation. */
+    }
+  }
+
+  private save(): void {
+    const evidence = this.snapshot();
+    evidence.persistence = "available";
+    this.persistence = this.persist(evidence) ? "available" : "unknown";
   }
 
   observeInit(
@@ -236,6 +360,12 @@ export class ManagedHarnessLifecycle {
             processGeneration: this.handle.processGeneration,
             backendProcessId: this.handle.backendProcessId,
             processStartIdentity: this.handle.processStartIdentity,
+            ...(this.handle.observedExecutableIdentity
+              ? {
+                  observedExecutableIdentity:
+                    this.handle.observedExecutableIdentity,
+                }
+              : {}),
           }
         : null,
       lastProvenStage: progress ?? null,
@@ -266,6 +396,7 @@ export class ManagedHarnessLifecycle {
           : "unknown",
       persistence: this.persistence,
       events: structuredClone([...this.events.values()]),
+      ioObservations: structuredClone([...this.io.values()]),
     };
   }
 
@@ -277,6 +408,10 @@ export class ManagedHarnessLifecycle {
       source.processGeneration === this.handle.processGeneration &&
       source.backendProcessId === this.handle.backendProcessId &&
       source.processStartIdentity === this.handle.processStartIdentity &&
+      source.executable === this.handle.executable &&
+      source.observedExecutable === this.handle.observedExecutable &&
+      source.observedExecutableIdentity ===
+        this.handle.observedExecutableIdentity &&
       JSON.stringify(safeEnvironment(source.environment)) ===
         JSON.stringify(this.context.environment)
     );

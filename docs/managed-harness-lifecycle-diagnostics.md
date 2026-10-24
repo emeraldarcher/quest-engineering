@@ -158,6 +158,17 @@ A native-specific startup stall can still require separately reviewed native
 instrumentation. Such instrumentation is **not** included or automatically
 recommended here.
 
+## Content-free pipe and output observations
+
+The additive [streamed-process I/O diagnostics](streamed-process-io-diagnostics.md)
+record bounded snapshots at probe ACK, timeout, and exit without awaiting them in
+readiness or cancellation. The generic guest relay owns FIONREAD on its retained
+stdin writer and stdout/stderr counters before framing/parsing. These samples do
+not advance lifecycle stages or establish native parsing, Mod execution, init
+construction, or exact timeout-time liveness. Their actual observation timestamps
+and typed unavailability remain distinct from the checkpoint that requested them.
+No new SQLite table/schema or Product field is added.
+
 ## Provider-free validation
 
 - Lifecycle tests cover every progress stage, first-observation bounds, exact

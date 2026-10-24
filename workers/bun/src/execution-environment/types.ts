@@ -1,3 +1,7 @@
+import type { StreamedProcessIoSnapshot } from "./streamed-process-io.ts";
+
+export type { StreamedProcessIoSnapshot } from "./streamed-process-io.ts";
+
 export type EnvironmentBackendOperation =
   | "readiness"
   | "ensure"
@@ -11,6 +15,7 @@ export type EnvironmentBackendOperation =
   | "transfer"
   | "spawn_streamed"
   | "inspect_streamed"
+  | "observe_streamed_io"
   | "write_streamed"
   | "cancel_streamed"
   | "retire_streamed";
@@ -185,6 +190,8 @@ export interface StreamedProcessHandle {
   executable: string;
   /** Strongest observed executable identity exposed by the backend, when available. */
   observedExecutable?: string;
+  /** Optional observed executable device:inode, never a content hash. */
+  observedExecutableIdentity?: string;
 }
 
 export type StreamedProcessStreamEvent =
@@ -246,6 +253,8 @@ export interface StreamedProcess {
   /** Requests one physical termination action without signal escalation. */
   cancel(cancellationId?: string): Promise<StreamedProcessCancellationReceipt>;
   inspect(): Promise<StreamedProcessReconciliation>;
+  /** Bounded, read-only, content-free diagnostics; unavailable is never an execution failure. */
+  observeIo(): Promise<StreamedProcessIoSnapshot>;
   /** Abandons transport and fail-closed terminates the attached process. */
   disconnect(): Promise<void>;
 }

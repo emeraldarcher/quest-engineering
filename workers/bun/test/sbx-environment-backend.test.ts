@@ -186,6 +186,55 @@ test("SBX streamed process is non-PTY, fenced, Run-owned, and restart-classified
   });
 });
 
+test("I/O namespace observation is read-only even when native identity is stopped, missing, or replaced", async () => {
+  const root = await tempRoot();
+  const state = fakeSbxState();
+  const store = new ExecutionEnvironmentStore(root);
+  const instance = new SbxExecutionEnvironmentBackend({
+    workerId: "worker-sbx-test",
+    dataRoot: root,
+    store,
+    client: new FakeSbxClient(state),
+    verifier: new FakeSbxVerifier(state),
+    onStreamedProcessEvent: () => undefined,
+    openStreamedProcess: async () =>
+      new FakeStreamedProcessTransport({
+        backendProcessId: "123",
+        processStartIdentity: "456",
+      }),
+  });
+  backends.push(instance);
+  const lease = await instance.ensure(sbxSpec("io-read-only"));
+  const process = await lease.spawnStreamed({
+    executable: "/usr/bin/python3",
+    args: [],
+    cwd: lease.paths.workspace,
+    environment: {},
+  });
+  const before = store.byRef(lease.ref);
+  const native = [...state.sandboxes.values()][0];
+  if (!native) throw new Error("fixture");
+  for (const candidate of [
+    { ...native, status: "stopped" as const },
+    null,
+    { ...native, id: "replacement" },
+  ]) {
+    state.sandboxes.clear();
+    if (candidate) state.sandboxes.set(candidate.name, candidate);
+    expect(await process.observeIo()).toEqual({
+      status: "unavailable",
+      reason: "environment_unavailable",
+    });
+    expect(store.byRef(lease.ref)).toEqual(before);
+  }
+  state.sandboxes.set(native.name, native);
+  expect(await process.observeIo()).toEqual({
+    status: "unavailable",
+    reason: "unsupported",
+  });
+  expect(store.byRef(lease.ref)).toEqual(before);
+});
+
 test("restart-safe detached cancellation revalidates and signals one exact SBX process", async () => {
   const root = await tempRoot();
   const state = fakeSbxState();

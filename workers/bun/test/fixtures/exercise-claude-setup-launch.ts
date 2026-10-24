@@ -273,6 +273,7 @@ function createFakeGuestProcess(
       streamAttachment: "attached" as const,
       streamRecovery: "current_worker_only" as const,
     }),
+    observeIo: async () => ({ status: "unavailable", reason: "unsupported" }),
     disconnect: async () => undefined,
   };
   return {
