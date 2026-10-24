@@ -68,15 +68,18 @@ provider output and arbitrary errors do not enter new diagnostic records.
 ## Existing checkpoints, no authority
 
 The [owner-accurate lifecycle diagnostics](managed-harness-lifecycle-diagnostics.md)
-record at most three I/O observations in their existing SQLite JSON row:
+record at most four I/O observations in their existing SQLite JSON row:
 
+- one bounded pre-probe baseline, after stream registration and before write request;
 - after the fixed probe write ACK;
 - when the existing attestation timeout fires, before ordinary cleanup is invoked;
 - on existing process-exit observation (best-effort final counters and the guest's
   pre-cancellation sample).
 
-Collection is **fire-and-forget**. Neither probe/readiness nor cancellation waits
-for it. A request made at timeout can race cancellation or be unavailable; its
+The [pre-probe baseline](claude-output-structure-diagnostics.md) awaits one best-effort
+collection, bounded at 3,000 ms before submission; failure never gates submission.
+Later checkpoints remain **fire-and-forget**. Readiness after ACK and cancellation
+do not await them. A request made at timeout can race cancellation or be unavailable; its
 actual guest timestamp is not relabeled the exact timeout instant. Guest wall
 clock/relay elapsed time and Worker checkpoint/receipt clocks are separate domains;
 clock synchronization is not assumed. The guest's

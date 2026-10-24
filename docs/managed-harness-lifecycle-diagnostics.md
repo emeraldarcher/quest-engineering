@@ -22,8 +22,10 @@ Protocol or Product/Core schema/domain interface changes.
 ## Observation is not authority
 
 `ManagedHarnessLifecycle` in `workers/bun/src/harnesses/lifecycle-diagnostics.ts`
-projects only a closed stage vocabulary and Worker-owned metadata. It cannot
-accept an arbitrary native payload, diagnostic string or error message.
+projects only a closed stage vocabulary and allowlisted metadata. Its stdout
+[census](claude-output-structure-diagnostics.md) inspects parser units transiently
+and projects only reviewed fixed tags, counts, booleans and observer timestamps;
+it never retains arbitrary native payloads, strings or error messages.
 
 Evidence distinguishes:
 
@@ -111,7 +113,9 @@ The pre-launch observation has no invented process generation. Once spawn
 returns, its exact PID, start identity and process generation are bound once to
 that preparation. All subsequent observations must match that attachment and
 EnvironmentRef. A foreign-session init is not recorded as this preparation's
-candidate init; it still follows normal protocol validation/rejection.
+candidate init; it still follows normal protocol validation/rejection. The separate
+output census can count its init shape and failed session comparison without
+retaining or hashing its native session identity.
 
 A bounded snapshot is stored in **`managed_harness_lifecycle` in the existing
 `claude-code-sessions-v1.sqlite`**, keyed by `preparation_id`. No new database is
@@ -161,8 +165,10 @@ recommended here.
 ## Content-free pipe and output observations
 
 The additive [streamed-process I/O diagnostics](streamed-process-io-diagnostics.md)
-record bounded snapshots at probe ACK, timeout, and exit without awaiting them in
-readiness or cancellation. The generic guest relay owns FIONREAD on its retained
+record one bounded pre-probe snapshot after stream registration and before the
+write request, then snapshots at probe ACK, timeout, and exit without awaiting
+these later checkpoints in readiness or cancellation. The pre-probe wait is bounded
+at the existing 3,000 ms, fail-open, and outside the unchanged post-ACK budget. The generic guest relay owns FIONREAD on its retained
 stdin writer and stdout/stderr counters before framing/parsing. These samples do
 not advance lifecycle stages or establish native parsing, Mod execution, init
 construction, or exact timeout-time liveness. Their actual observation timestamps

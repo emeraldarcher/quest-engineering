@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   ioUnavailable,
+  STREAMED_PROCESS_IO_TIMEOUT_MS,
   STREAMED_PROCESS_IO_UNAVAILABLE,
   type StreamedProcessIoSample,
   type StreamedProcessIoUnavailable,
@@ -14,7 +15,14 @@ import type {
   StreamedProcessHandle,
 } from "../execution-environment/types.ts";
 
+import {
+  ClaudeOutputCensus,
+  type ClaudeOutputCensusSnapshot,
+  type ClaudeOutputUnit,
+} from "./claude-code/output-census.ts";
+
 export const LIFECYCLE_IO_CHECKPOINTS = [
+  "before_probe_write",
   "probe_write_acknowledged",
   "attestation_timeout_fired",
   "process_exit_observed",
@@ -100,6 +108,16 @@ export interface LifecycleEvidence {
   persistence: "available" | "unknown";
   events: LifecycleEvent[];
   ioObservations: LifecycleIoEvidence[];
+  probeIoDelta:
+    | { status: "available"; stdoutBytes: number; stderrBytes: number }
+    | {
+        status: "unavailable";
+        reason:
+          | "baseline_unavailable"
+          | "post_ack_unavailable"
+          | "counter_regression";
+      };
+  outputCensus: ClaudeOutputCensusSnapshot & { frameValidated: boolean };
 }
 
 /** Worker-local, non-authoritative evidence. Never accepts native text/payloads. */
@@ -161,6 +179,8 @@ export class ManagedHarnessLifecycle {
   private handle: StreamedProcessHandle | null = null;
   private readonly events = new Map<LifecycleStage, LifecycleEvent>();
   private readonly io = new Map<LifecycleIoCheckpoint, LifecycleIoEvidence>();
+  private readonly census = new ClaudeOutputCensus();
+  private censusSavePending = false;
   private readonly started = performance.now();
   private persistence: "available" | "unknown" = "unknown";
 
@@ -242,10 +262,94 @@ export class ManagedHarnessLifecycle {
     }
   }
 
+  /** The one authorized bounded pre-probe wait. Failure is never an admission gate. */
+  async capturePreProbeIo(process: StreamedProcess): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let accepting = true;
+    try {
+      if (
+        !this.matches(process.handle) ||
+        !this.events.has("stream_observation_registered") ||
+        this.events.has("probe_write_requested") ||
+        this.io.has("before_probe_write")
+      )
+        return;
+      const request = {
+        checkpoint: "before_probe_write" as const,
+        requestedAt: new Date().toISOString(),
+        requestedElapsedMs: Math.max(
+          0,
+          Math.round(performance.now() - this.started),
+        ),
+      };
+      this.io.set(request.checkpoint, { ...request, status: "not_observed" });
+      await Promise.race([
+        // Register the outer bound before dispatching potentially broken observers.
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            accepting = false;
+            this.io.set(request.checkpoint, {
+              ...request,
+              ...ioUnavailable("timed_out"),
+            });
+            this.scheduleCensusSave();
+            resolve();
+          }, STREAMED_PROCESS_IO_TIMEOUT_MS);
+          timer.unref();
+        }),
+        this.collectIo(request.checkpoint, process, request, () => accepting),
+      ]);
+      if (this.io.get(request.checkpoint)?.status === "not_observed") {
+        this.io.set(request.checkpoint, {
+          ...request,
+          ...ioUnavailable("observation_failed"),
+        });
+        this.scheduleCensusSave();
+      }
+    } catch {
+      /* A diagnostic failure cannot reject or suppress the probe. */
+    } finally {
+      accepting = false;
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** Closed metadata only is projected; native objects are transient at the parser boundary. */
+  observeClaudeOutput(
+    unit: ClaudeOutputUnit,
+    source: StreamedProcessHandle,
+  ): void {
+    try {
+      if (
+        !this.matches(source) ||
+        !this.events.has("stream_observation_registered")
+      )
+        return;
+      this.census.observe(unit, this.context.reservedNativeSessionId);
+      this.scheduleCensusSave();
+    } catch {
+      /* Never consume/drop a real protocol frame for diagnostics. */
+    }
+  }
+
+  private scheduleCensusSave(): void {
+    if (this.censusSavePending) return;
+    this.censusSavePending = true;
+    setImmediate(() => {
+      this.censusSavePending = false;
+      try {
+        this.save();
+      } catch {
+        this.persistence = "unknown";
+      }
+    });
+  }
+
   /** Fire-and-forget, at most one observation per existing checkpoint. Never awaited by readiness. */
   captureIo(checkpoint: LifecycleIoCheckpoint, process: StreamedProcess): void {
     try {
       if (
+        checkpoint === "before_probe_write" || // Only the awaited, bounded method can own this label.
         !LIFECYCLE_IO_CHECKPOINTS.includes(checkpoint) ||
         this.io.has(checkpoint) ||
         !this.matches(process.handle)
@@ -275,10 +379,12 @@ export class ManagedHarnessLifecycle {
       LifecycleIoEvidence,
       "checkpoint" | "requestedAt" | "requestedElapsedMs"
     >,
-  ): void {
+    accepting: () => boolean = () => true,
+  ): Promise<void> {
     try {
       this.save();
       const settle = (result: LifecycleIoResult) => {
+        if (!accepting()) return; // A late result must never be relabeled pre-probe.
         try {
           this.io.set(checkpoint, {
             ...request,
@@ -289,7 +395,7 @@ export class ManagedHarnessLifecycle {
           this.persistence = "unknown";
         }
       };
-      void Promise.resolve()
+      return Promise.resolve()
         .then(() => process.observeIo())
         .then((value) => {
           if (value.status === "unavailable") {
@@ -321,6 +427,7 @@ export class ManagedHarnessLifecycle {
         .catch(() => settle(ioUnavailable("observation_failed")));
     } catch {
       /* Diagnostic failure cannot fail a probe, timeout, or cancellation. */
+      return Promise.resolve();
     }
   }
 
@@ -340,6 +447,26 @@ export class ManagedHarnessLifecycle {
       frame.session_id === this.context.reservedNativeSessionId
     )
       this.record("protocol_frame_observed", source);
+  }
+
+  private probeIoDelta(): LifecycleEvidence["probeIoDelta"] {
+    const pre = this.io.get("before_probe_write");
+    const post = this.io.get("probe_write_acknowledged");
+    if (pre?.status !== "available")
+      return { status: "unavailable", reason: "baseline_unavailable" };
+    if (post?.status !== "available")
+      return { status: "unavailable", reason: "post_ack_unavailable" };
+    if (
+      post.sample.elapsedMs < pre.sample.elapsedMs ||
+      post.sample.stdoutBytes < pre.sample.stdoutBytes ||
+      post.sample.stderrBytes < pre.sample.stderrBytes
+    )
+      return { status: "unavailable", reason: "counter_regression" };
+    return {
+      status: "available",
+      stdoutBytes: post.sample.stdoutBytes - pre.sample.stdoutBytes,
+      stderrBytes: post.sample.stderrBytes - pre.sample.stderrBytes,
+    };
   }
 
   snapshot(): LifecycleEvidence {
@@ -397,6 +524,13 @@ export class ManagedHarnessLifecycle {
       persistence: this.persistence,
       events: structuredClone([...this.events.values()]),
       ioObservations: structuredClone([...this.io.values()]),
+      probeIoDelta: this.probeIoDelta(),
+      outputCensus: {
+        ...this.census.snapshot(
+          this.events.has("stream_observation_registered"),
+        ),
+        frameValidated: this.events.has("protocol_frame_validated"),
+      },
     };
   }
 

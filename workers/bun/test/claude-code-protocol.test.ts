@@ -90,10 +90,10 @@ for (const dropDiagnostics of [false, true]) {
       false,
       diagnostics,
     );
+    await sending; // The authorized baseline precedes submission, bounded independently.
     const written = JSON.parse(new TextDecoder().decode(fixture.writes[0]));
     expect(written).toMatchObject({ shouldQuery: false, isSynthetic: true });
     expect(fixture.writes[0]).toHaveLength(301);
-    await sending;
     const native = { ...protocolInit(), ignoredNativeContext: "λ" };
     const serialized = `${JSON.stringify({ type: "system", subtype: "status" })}\n${JSON.stringify(native)}\n`;
     // Fragment every byte, including a split UTF-8 character in ignored content.
@@ -356,7 +356,7 @@ for (const io of ["hung", "throwing"] as const) {
       processStateAtTimeout: "unknown",
       modExecution: "unestablished",
     });
-    expect(diag.snapshot().ioObservations).toHaveLength(3);
+    expect(diag.snapshot().ioObservations).toHaveLength(4);
     db.close();
   });
 }
