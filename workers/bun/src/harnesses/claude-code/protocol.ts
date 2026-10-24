@@ -78,6 +78,7 @@ export function observeClaudeProtocol(
   });
   void process.exit.then((exit) => {
     diagnostics?.record("process_exit_observed", process.handle, { exit });
+    diagnostics?.captureIo("process_exit_observed", process);
     if (!disconnected() && !frames.closed)
       frames.fail(
         new Error(
@@ -159,10 +160,12 @@ export async function sendMessage(
     !shouldQuery &&
     receipt.certainty === "acknowledged" &&
     receipt.byteLength === bytes.byteLength
-  )
+  ) {
     diagnostics?.record("probe_write_acknowledged", process.handle, {
       operationId: receipt.writeId,
     });
+    diagnostics?.captureIo("probe_write_acknowledged", process);
+  }
 }
 
 export async function waitForInit(

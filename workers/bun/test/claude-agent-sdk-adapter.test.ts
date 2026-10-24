@@ -1204,6 +1204,7 @@ function localWrapperProcess(
       streamAttachment: "attached",
       streamRecovery: "current_worker_only",
     }),
+    observeIo: async () => ({ status: "unavailable", reason: "unsupported" }),
     disconnect: async () => {
       if (!child.killed) child.kill();
     },

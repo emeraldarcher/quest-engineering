@@ -319,6 +319,48 @@ test("real unchanged Mod registers tools without a lifecycle emitter; Worker doe
   expect(source).toContain("waitForInit(frames, 30_000,");
 });
 
+for (const io of ["hung", "throwing"] as const) {
+  test(`protocol timeout and normal cancellation are independent of ${io} I/O collection`, async () => {
+    const fixture = processFixture();
+    fixture.process.observeIo =
+      io === "hung"
+        ? () => new Promise(() => {})
+        : async () => {
+            throw new Error("PRIVATE_DIAGNOSTIC_ERROR");
+          };
+    const db = new Database(":memory:");
+    const diag = new ManagedHarnessLifecycleStore(db).begin({
+      harnessKind: "claude_code",
+      harnessProtocol: "qe_claude_account_cell_v1",
+      reservedNativeSessionId: protocolSession,
+      environment: protocolEnvironment,
+    });
+    if (!diag) throw new Error("fixture");
+    diag.bindProcess(fixture.process.handle);
+    const frames = new AsyncFrameQueue();
+    observeClaudeProtocol(fixture.process, frames, diag, () => true);
+    await sendMessage(fixture.process, protocolSession, probe, false, diag);
+    await expect(
+      waitForInit(frames, 20, () => {
+        diag.record("attestation_timeout_fired", fixture.process.handle);
+        diag.captureIo("attestation_timeout_fired", fixture.process);
+      }),
+    ).rejects.toBeInstanceOf(ClaudeProtocolTimeout);
+    await cancelClaudePreparation(fixture.process, diag);
+    expect(await fixture.process.exit).toEqual({
+      kind: "signaled",
+      signal: "SIGTERM",
+    });
+    expect(diag.snapshot()).toMatchObject({
+      lastProvenStage: "probe_write_acknowledged",
+      processStateAtTimeout: "unknown",
+      modExecution: "unestablished",
+    });
+    expect(diag.snapshot().ioObservations).toHaveLength(3);
+    db.close();
+  });
+}
+
 function processFixture() {
   let output!: ReadableStreamDefaultController<Uint8Array>;
   let settleExit!: (value: StreamedProcessExit) => void;
@@ -364,6 +406,7 @@ function processFixture() {
       writeId: crypto.randomUUID(),
       byteLength: 0,
     }),
+    observeIo: async () => ({ status: "unavailable", reason: "unsupported" }),
     disconnect: async () => undefined,
     inspect: async () => ({
       handle: process.handle,

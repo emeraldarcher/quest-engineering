@@ -1,10 +1,18 @@
+import { randomUUID } from "node:crypto";
 import type { SbxClient } from "./sbx-client.ts";
 import type {
   StreamedProcessTransport,
   StreamedProcessTransportEvent,
   StreamedProcessTransportIdentity,
+  StreamedProcessTransportIoSnapshot,
   StreamedProcessTransportSideEffect,
 } from "./streamed-process.ts";
+import {
+  ioUnavailable,
+  STREAMED_PROCESS_IO_TIMEOUT_MS,
+  STREAMED_PROCESS_IO_UNAVAILABLE,
+  safeIoSample,
+} from "./streamed-process-io.ts";
 import type { StreamedProcessCommand, StreamedProcessExit } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
 
@@ -21,9 +29,13 @@ const CANCEL_REJECTED = 10;
 const EXIT = 11;
 const RELAY_ERROR = 12;
 const CLOSE_ACK = 13;
+const IO_SNAPSHOT = 14;
+export const SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION = 2;
 const WRITE = 20;
 const CLOSE_STDIN = 21;
 const CANCEL = 22;
+const OBSERVE_IO = 23;
+const MAX_IO_SNAPSHOT_BYTES = 8_192;
 const MAX_RELAY_FRAME_BYTES = 1024 * 1024 + 64;
 
 interface RelayFrame {
@@ -59,12 +71,21 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   private targetExited = false;
   private disconnected = false;
   private runStarted = false;
+  private ioWaiter: {
+    id: string;
+    resolve(value: StreamedProcessTransportIoSnapshot): void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  private terminalIo: StreamedProcessTransportIoSnapshot | null = null;
 
   private constructor(
     private readonly child: RelayChild,
     private readonly frames: RelayFrameReader,
     identity: StreamedProcessTransportIdentity,
     private readonly acknowledgementTimeoutMs: number,
+    private readonly processGeneration: string,
+    private readonly expectedMarkerSha256: string,
+    private readonly ioProtocolSupported: boolean,
   ) {
     this.identity = identity;
     this.stderrReader = child.stderr.getReader();
@@ -77,6 +98,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   static async open(input: {
     client: SbxClient;
     sandboxName: string;
+    processGeneration: string;
     command: StreamedProcessCommand;
     relaySource: string;
     markerPath: string;
@@ -95,6 +117,8 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         input.markerPath,
         "--environment-names-base64",
         environmentNames,
+        "--process-generation",
+        input.processGeneration,
         "--",
         input.command.executable,
         ...input.command.args,
@@ -154,6 +178,11 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
       const backendProcessId = requiredText(ready.pid);
       const processStartIdentity = requiredText(ready.startIdentity);
       const observedExecutable = requiredText(ready.observedExecutable);
+      const observedExecutableIdentity =
+        typeof ready.observedExecutableIdentity === "string" &&
+        /^[0-9]{1,20}:[0-9]{1,20}$/.test(ready.observedExecutableIdentity)
+          ? ready.observedExecutableIdentity
+          : undefined;
       if (
         requiredText(ready.environmentMarkerSha256) !==
         input.expectedMarkerSha256
@@ -171,8 +200,12 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           backendProcessId,
           processStartIdentity,
           observedExecutable,
+          ...(observedExecutableIdentity ? { observedExecutableIdentity } : {}),
         },
         input.acknowledgementTimeoutMs,
+        input.processGeneration,
+        input.expectedMarkerSha256,
+        ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION,
       );
     } catch (error) {
       await frames.cancel().catch(() => undefined);
@@ -240,6 +273,10 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           );
           continue;
         }
+        if (frame.type === IO_SNAPSHOT) {
+          this.receiveIo(frame.payload);
+          continue; // Malformed/unavailable diagnostics never poison real process events.
+        }
         if (frame.type === EXIT) {
           this.targetExited = true;
           await onEvent({ kind: "exit", exit: parseExit(frame.payload) });
@@ -288,6 +325,114 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
 
   cancel(cancellationId: string): Promise<StreamedProcessTransportSideEffect> {
     return this.request(this.pendingCancellations, CANCEL, cancellationId);
+  }
+
+  observeIo(): Promise<StreamedProcessTransportIoSnapshot> {
+    if (!this.ioProtocolSupported || !this.identity.observedExecutableIdentity)
+      return Promise.resolve(ioUnavailable("unsupported"));
+    if (this.disconnected)
+      return Promise.resolve(ioUnavailable("attachment_unavailable"));
+    if (this.terminalIo)
+      return Promise.resolve(structuredClone(this.terminalIo));
+    if (this.hostExited || this.targetExited || !this.runStarted)
+      return Promise.resolve(ioUnavailable("attachment_unavailable"));
+    if (this.ioWaiter) return Promise.resolve(ioUnavailable("busy"));
+    const id = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(
+        () => this.resolveIo(ioUnavailable("timed_out")),
+        STREAMED_PROCESS_IO_TIMEOUT_MS,
+      );
+      timer.unref();
+      this.ioWaiter = { id, resolve, timer };
+      const payload = new TextEncoder().encode(
+        JSON.stringify({
+          protocolVersion: SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION,
+          requestId: id,
+          identity: this.ioIdentity(),
+        }),
+      );
+      try {
+        this.child.stdin.write(encodeFrame(OBSERVE_IO, payload));
+        void Promise.resolve(this.child.stdin.flush()).catch(() =>
+          this.resolveIo(ioUnavailable("observation_failed")),
+        );
+      } catch {
+        this.resolveIo(ioUnavailable("observation_failed"));
+      }
+    });
+  }
+
+  private ioIdentity() {
+    return {
+      pid: this.identity.backendProcessId,
+      startIdentity: this.identity.processStartIdentity,
+      observedExecutable: this.identity.observedExecutable,
+      observedExecutableIdentity: this.identity.observedExecutableIdentity,
+      processGeneration: this.processGeneration,
+      environmentMarkerSha256: this.expectedMarkerSha256,
+    };
+  }
+
+  private receiveIo(payload: Uint8Array): void {
+    try {
+      if (payload.byteLength > MAX_IO_SNAPSHOT_BYTES) throw new Error();
+      const frame = parseObject(payload);
+      if (frame.protocolVersion !== SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION)
+        throw new Error();
+      if (frame.requestId !== null && frame.requestId !== this.ioWaiter?.id)
+        return;
+      const value = frame.observation as Record<string, unknown>;
+      let result: StreamedProcessTransportIoSnapshot;
+      if (value.status === "unavailable") {
+        result = STREAMED_PROCESS_IO_UNAVAILABLE.includes(value.reason as never)
+          ? ioUnavailable(value.reason as never)
+          : ioUnavailable("malformed_observation");
+      } else if (value.status === "available") {
+        const identity = value.identity as Record<string, unknown>;
+        if (
+          Object.entries(this.ioIdentity()).some(
+            ([key, expected]) => identity[key] !== expected,
+          )
+        ) {
+          result = ioUnavailable("identity_mismatch");
+        } else {
+          const sample = relayIoSample(value.sample);
+          const beforeCancellation =
+            value.beforeCancellation === null
+              ? null
+              : relayIoSample(value.beforeCancellation);
+          if (
+            !sample ||
+            (value.beforeCancellation !== null && !beforeCancellation) ||
+            (beforeCancellation &&
+              (beforeCancellation.terminal !== "not_observed" ||
+                beforeCancellation.elapsedMs > sample.elapsedMs)) ||
+            (frame.requestId === null && sample.terminal !== "observed")
+          )
+            throw new Error();
+          result = {
+            status: "available",
+            identity: { ...this.identity },
+            processGeneration: this.processGeneration,
+            sample,
+            beforeCancellation,
+          };
+        }
+      } else throw new Error();
+      if (frame.requestId === null) this.terminalIo = result;
+      this.resolveIo(result);
+    } catch {
+      this.resolveIo(ioUnavailable("malformed_observation"));
+    }
+  }
+
+  private resolveIo(result: StreamedProcessTransportIoSnapshot): void {
+    const waiter = this.ioWaiter;
+    if (!waiter) return;
+    this.ioWaiter = null;
+    clearTimeout(waiter.timer);
+    waiter.resolve(result);
   }
 
   async disconnect(): Promise<void> {
@@ -353,6 +498,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   private resolveAllPending(
     certainty: StreamedProcessTransportSideEffect["certainty"],
   ): void {
+    this.resolveIo(ioUnavailable("attachment_unavailable"));
     for (const id of [...this.pendingWrites.keys()])
       this.resolveWaiter(this.pendingWrites, id, certainty);
     for (const id of [...this.pendingCancellations.keys()])
@@ -424,6 +570,21 @@ class RelayFrameReader {
     this.buffered = this.buffered.slice(length);
     return value;
   }
+}
+
+function relayIoSample(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const sample = value as Record<string, unknown>;
+  if (
+    typeof sample.observedAt !== "number" ||
+    !Number.isSafeInteger(sample.observedAt) ||
+    sample.observedAt < 0
+  )
+    return null;
+  return safeIoSample({
+    ...sample,
+    observedAt: new Date(sample.observedAt).toISOString(),
+  });
 }
 
 function encodeFrame(type: number, payload: Uint8Array): Uint8Array {

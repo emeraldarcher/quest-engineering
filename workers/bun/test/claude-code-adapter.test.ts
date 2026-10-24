@@ -258,6 +258,24 @@ test("full managed readiness with native applied proof succeeds with diagnostic 
   fixture.store.close();
 });
 
+for (const io of ["hung", "throwing"] as const) {
+  test(`full managed readiness and close do not await ${io} I/O diagnostics`, async () => {
+    const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+    f.process.observeIo =
+      io === "hung"
+        ? () => new Promise(() => {})
+        : async () => {
+            throw new Error("PRIVATE_DIAGNOSTIC_ERROR");
+          };
+    const prepared = await f.harness.start(f.dispatch, f.lineage);
+    await f.harness.ready(f.dispatch, prepared);
+    expect(f.process.queryWrites).toBe(0);
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  });
+}
+
 for (const reasoning of [null, "low", "medium", "xhigh", "unsupported"]) {
   test(`configured QE effort ${reasoning} fails before native launch, without fallback`, async () => {
     const fixture = await effortHarness(
@@ -577,6 +595,7 @@ function syntheticInitProcess(
       streamAttachment: "attached",
       streamRecovery: "current_worker_only",
     }),
+    observeIo: async () => ({ status: "unavailable", reason: "unsupported" }),
     disconnect: async () => undefined,
   };
   return process;

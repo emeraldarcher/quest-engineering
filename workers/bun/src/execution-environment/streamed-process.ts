@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { sameEnvironmentOwner } from "./ownership.ts";
+import {
+  ioUnavailable,
+  STREAMED_PROCESS_IO_TIMEOUT_MS,
+  STREAMED_PROCESS_IO_UNAVAILABLE,
+  type StreamedProcessIoSample,
+  type StreamedProcessIoSnapshot,
+  type StreamedProcessIoUnavailable,
+  safeIoSample,
+} from "./streamed-process-io.ts";
 import type {
   EnvironmentBackendErrorCode,
   EnvironmentBackendOperation,
@@ -31,7 +40,18 @@ export interface StreamedProcessTransportIdentity {
   backendProcessId: string;
   processStartIdentity: string;
   observedExecutable?: string;
+  observedExecutableIdentity?: string;
 }
+
+export type StreamedProcessTransportIoSnapshot =
+  | StreamedProcessIoUnavailable
+  | {
+      status: "available";
+      processGeneration: string;
+      identity: StreamedProcessTransportIdentity;
+      sample: StreamedProcessIoSample;
+      beforeCancellation: StreamedProcessIoSample | null;
+    };
 
 export type StreamedProcessTransportSideEffect =
   | { certainty: "acknowledged" }
@@ -50,6 +70,8 @@ export type StreamedProcessTransportEvent =
 /** Backend attachment normalized by the generic bounded stream owner. */
 export interface StreamedProcessTransport {
   readonly identity: StreamedProcessTransportIdentity;
+  /** Unsupported backends need not provide a diagnostic facility. */
+  observeIo?(): Promise<StreamedProcessTransportIoSnapshot>;
   run(
     onEvent: (event: StreamedProcessTransportEvent) => Promise<void>,
   ): Promise<void>;
@@ -98,6 +120,7 @@ interface ManagedProcessState {
   cancellationId: string | null;
   writeTail: Promise<void>;
   runTask: Promise<void>;
+  ioCollecting: boolean;
 }
 
 /**
@@ -175,6 +198,12 @@ export class StreamedProcessManager {
       ...(transport.identity.observedExecutable
         ? { observedExecutable: transport.identity.observedExecutable }
         : {}),
+      ...(transport.identity.observedExecutableIdentity
+        ? {
+            observedExecutableIdentity:
+              transport.identity.observedExecutableIdentity,
+          }
+        : {}),
     };
     const exit = deferred<StreamedProcessExit>();
     const state = {} as ManagedProcessState;
@@ -192,6 +221,7 @@ export class StreamedProcessManager {
       cancellationId: null,
       writeTail: Promise.resolve(),
       runTask: Promise.resolve(),
+      ioCollecting: false,
     } satisfies ManagedProcessState);
     this.processes.set(processGeneration, state);
     state.runTask = this.run(state);
@@ -215,6 +245,8 @@ export class StreamedProcessManager {
       cancel: (cancellationId) =>
         this.cancelState(state, cancellationId ?? randomUUID()),
       inspect: () => this.reconcileState(state),
+      observeIo: () =>
+        this.observeIoState(structuredClone(state.handle), state),
       disconnect,
     };
   }
@@ -237,6 +269,105 @@ export class StreamedProcessManager {
         streamRecovery: "not_recoverable",
       };
     return this.options.inspectDetached(structuredClone(handle));
+  }
+
+  /** Never looks up a guest by PID or reattaches a detached generation. */
+  observeIo(handle: StreamedProcessHandle): Promise<StreamedProcessIoSnapshot> {
+    try {
+      const expected = structuredClone(handle);
+      return this.observeIoState(
+        expected,
+        this.processes.get(expected.processGeneration),
+      );
+    } catch {
+      return Promise.resolve(ioUnavailable("identity_mismatch"));
+    }
+  }
+
+  private async observeIoState(
+    handle: StreamedProcessHandle,
+    state: ManagedProcessState | undefined,
+  ): Promise<StreamedProcessIoSnapshot> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let collecting = false;
+    const deadline = performance.now() + STREAMED_PROCESS_IO_TIMEOUT_MS;
+    const collect = async (): Promise<StreamedProcessIoSnapshot> => {
+      try {
+        validateHandle(this.options.backendKind, handle);
+        if (!state) return ioUnavailable("attachment_unavailable");
+        assertSameHandle(state.handle, handle, "observe_streamed_io");
+        if (
+          state.handle.observedExecutableIdentity !==
+          handle.observedExecutableIdentity
+        )
+          return ioUnavailable("identity_mismatch");
+        if (state.ioCollecting) return ioUnavailable("busy");
+        state.ioCollecting = collecting = true;
+        // The initial and final checks fence environment replacement during collection.
+        await this.options.validate(handle.environment, "observe_streamed_io");
+        if (performance.now() >= deadline) return ioUnavailable("timed_out");
+        if (state.disconnected) return ioUnavailable("attachment_unavailable");
+        if (!state.transport.observeIo) return ioUnavailable("unsupported");
+        const value = await state.transport.observeIo();
+        await this.options.validate(handle.environment, "observe_streamed_io");
+        if (value.status === "unavailable")
+          return STREAMED_PROCESS_IO_UNAVAILABLE.includes(value.reason)
+            ? ioUnavailable(value.reason)
+            : ioUnavailable("malformed_observation");
+        const identity = value.identity;
+        if (
+          value.processGeneration !== handle.processGeneration ||
+          identity.backendProcessId !== handle.backendProcessId ||
+          identity.processStartIdentity !== handle.processStartIdentity ||
+          identity.observedExecutable !== handle.observedExecutable ||
+          !handle.observedExecutableIdentity ||
+          identity.observedExecutableIdentity !==
+            handle.observedExecutableIdentity
+        )
+          return ioUnavailable("identity_mismatch");
+        const sample = safeIoSample(value.sample);
+        const beforeCancellation =
+          value.beforeCancellation === null
+            ? null
+            : safeIoSample(value.beforeCancellation);
+        if (
+          !sample ||
+          (value.beforeCancellation !== null && !beforeCancellation)
+        )
+          return ioUnavailable("malformed_observation");
+        return {
+          status: "available",
+          handle: structuredClone(handle),
+          receivedAt: this.now().toISOString(),
+          sample,
+          beforeCancellation,
+        };
+      } catch (error) {
+        return ioUnavailable(
+          error instanceof EnvironmentBackendError
+            ? error.code === "streamed_process_identity_mismatch"
+              ? "identity_mismatch"
+              : "environment_unavailable"
+            : "observation_failed",
+        );
+      } finally {
+        if (collecting && state) state.ioCollecting = false;
+      }
+    };
+    try {
+      return await Promise.race([
+        collect(),
+        new Promise<StreamedProcessIoSnapshot>((resolve) => {
+          timer = setTimeout(
+            () => resolve(ioUnavailable("timed_out")),
+            STREAMED_PROCESS_IO_TIMEOUT_MS,
+          );
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async cancelAttached(
