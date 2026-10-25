@@ -56,6 +56,12 @@ import {
   supportsClaudeReasoning,
 } from "./effort-readiness.ts";
 import {
+  decodeClaudeOutputTag,
+  hasClaudeRoot,
+  isClaudeInit,
+  isClaudeResultSuccess,
+} from "./output-tags.ts";
+import {
   AsyncFrameQueue,
   ClaudeProtocolTimeout,
   cancelClaudePreparation,
@@ -711,7 +717,8 @@ export class ClaudeCodeHarness implements AgentHarness {
     for (;;) {
       if (active.fatal) throw active.fatal;
       const frame = await active.frames.next(null);
-      if (frame.type === "system" && frame.subtype === "init") {
+      const tag = decodeClaudeOutputTag(frame);
+      if (isClaudeInit(tag)) {
         attestClaudeInit(frame, {
           sessionId: active.session.nativeSessionId,
           cwd: active.account.cwd,
@@ -725,7 +732,7 @@ export class ClaudeCodeHarness implements AgentHarness {
         frame.session_id !== active.session.nativeSessionId
       )
         throw new Error("Claude stream crossed native-session ownership.");
-      if (frame.type === "assistant") {
+      if (hasClaudeRoot(tag, "assistant")) {
         const message =
           frame.message && typeof frame.message === "object"
             ? (frame.message as Record<string, unknown>)
@@ -748,7 +755,7 @@ export class ClaudeCodeHarness implements AgentHarness {
         });
         continue;
       }
-      if (frame.type !== "result") continue;
+      if (!hasClaudeRoot(tag, "result")) continue;
       assertExactModelUsage(frame);
       onEvent({
         type: "provider_turn_settled",
@@ -760,7 +767,7 @@ export class ClaudeCodeHarness implements AgentHarness {
         observedAt: new Date().toISOString(),
         inspection: inspection(active, "running", "completed"),
       });
-      if (frame.is_error === true || frame.subtype !== "success") {
+      if (frame.is_error === true || !isClaudeResultSuccess(tag)) {
         this.markUncertain(active);
         throw claudeError(
           "claude_turn_failed",
@@ -893,8 +900,7 @@ export function attestClaudeInit(
     (plugin) => plugin.name === "cc-plugin-sec-default",
   );
   if (
-    value.type !== "system" ||
-    value.subtype !== "init" ||
+    !isClaudeInit(decodeClaudeOutputTag(value)) ||
     value.session_id !== expected.sessionId ||
     value.claude_code_version !== SBX_CLAUDE_CODE_VERSION ||
     value.apiKeySource !== "oauth" ||

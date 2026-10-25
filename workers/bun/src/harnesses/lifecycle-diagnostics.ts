@@ -19,7 +19,12 @@ import {
   ClaudeOutputCensus,
   type ClaudeOutputCensusSnapshot,
   type ClaudeOutputUnit,
+  isClaudeProbeUuid,
 } from "./claude-code/output-census.ts";
+import {
+  decodeClaudeOutputTag,
+  isClaudeInit,
+} from "./claude-code/output-tags.ts";
 
 export const LIFECYCLE_IO_CHECKPOINTS = [
   "before_probe_write",
@@ -180,6 +185,8 @@ export class ManagedHarnessLifecycle {
   private readonly events = new Map<LifecycleStage, LifecycleEvent>();
   private readonly io = new Map<LifecycleIoCheckpoint, LifecycleIoEvidence>();
   private readonly census = new ClaudeOutputCensus();
+  // Worker-owned, immutable, comparison-only; never included in snapshot/save.
+  #probeCommandId: string | null = null;
   private censusSavePending = false;
   private readonly started = performance.now();
   private persistence: "available" | "unknown" = "unknown";
@@ -252,7 +259,8 @@ export class ManagedHarnessLifecycle {
         observedAt: new Date().toISOString(),
         elapsedMs: Math.max(0, Math.round(performance.now() - this.started)),
       };
-      if (details.operationId) event.operationId = id(details.operationId);
+      if (details.operationId && stage !== "probe_write_requested")
+        event.operationId = id(details.operationId);
       if (stage === "process_exit_observed" && details.exit)
         event.exit = safeExit(details.exit);
       this.events.set(stage, event);
@@ -314,6 +322,31 @@ export class ManagedHarnessLifecycle {
     }
   }
 
+  /** Bind the one owned probe before writing, on this exact observed attachment.
+   * Diagnostic only: failure cannot suppress a write or establish any readiness. */
+  bindProbeCommand(
+    commandId: string,
+    sessionId: string,
+    source: StreamedProcessHandle,
+  ): void {
+    try {
+      if (
+        this.#probeCommandId !== null ||
+        !this.matches(source) ||
+        !this.events.has("stream_observation_registered") ||
+        this.events.has("probe_write_requested") ||
+        this.events.has("attestation_timeout_fired") ||
+        this.events.has("process_exit_observed") ||
+        sessionId !== this.context.reservedNativeSessionId ||
+        !isClaudeProbeUuid(commandId)
+      )
+        return;
+      this.#probeCommandId = commandId;
+    } catch {
+      /* Missing correlation remains unavailable, never authority. */
+    }
+  }
+
   /** Closed metadata only is projected; native objects are transient at the parser boundary. */
   observeClaudeOutput(
     unit: ClaudeOutputUnit,
@@ -325,7 +358,11 @@ export class ManagedHarnessLifecycle {
         !this.events.has("stream_observation_registered")
       )
         return;
-      this.census.observe(unit, this.context.reservedNativeSessionId);
+      this.census.observe(
+        unit,
+        this.context.reservedNativeSessionId,
+        this.#probeCommandId,
+      );
       this.scheduleCensusSave();
     } catch {
       /* Never consume/drop a real protocol frame for diagnostics. */
@@ -442,8 +479,7 @@ export class ManagedHarnessLifecycle {
     source: StreamedProcessHandle,
   ): void {
     if (
-      frame.type === "system" &&
-      frame.subtype === "init" &&
+      isClaudeInit(decodeClaudeOutputTag(frame)) &&
       frame.session_id === this.context.reservedNativeSessionId
     )
       this.record("protocol_frame_observed", source);

@@ -150,6 +150,13 @@ identity/event evidence remains Worker-local.
 No stdout, stderr, frames, prompts, auth fields, provider text, URLs, codes,
 credentials or arbitrary errors enter diagnostic persistence/logging/telemetry.
 Only known fields are constructed from Worker-owned identities and receipts.
+The fixed probe command UUID is now held only in an attachment-fenced private
+runtime field for aggregate comparison; new `probe_write_requested` events omit
+its operationId. Native command/event/session IDs are never copied from
+command_lifecycle. Existing independent write/cancellation receipt IDs and the
+Worker-owned reserved-session context remain unchanged. Historical evidence is
+not rewritten. Root/system/result tags use the shared structural decoder;
+recognition and probe comparison remain diagnostics, never validator authority.
 Native JSON/UTF-8 parser failures are converted to constant error categories
 before they can reach failure reporting. Unknown native fields are discarded,
 not serialized as diagnostic details. The existing stdout frame buffering is

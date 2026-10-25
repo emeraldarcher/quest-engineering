@@ -1,74 +1,38 @@
-// Reviewed against SDK 0.3.292 / Claude Code 2.1.292 sdk.d.ts:
-// StdoutMessage → SDKMessage and its control/keep-alive members. This is a
-// CLOSED diagnostic allowlist, not a protocol validator or dynamic schema.
-export const CLAUDE_OUTPUT_SIMPLE_TYPES = [
-  "active_goal",
-  "assistant",
-  "user",
-  "stream_event",
-  "auth_status",
-  "prompt_suggestion",
-  "rate_limit_event",
-  "tool_progress",
-  "tool_use_summary",
-  "conversation_reset",
-  "control_request",
-  "control_response",
-  "control_cancel_request",
-  "keep_alive",
-] as const;
-export const CLAUDE_OUTPUT_SYSTEM_SUBTYPES = [
-  "api_retry",
-  "background_tasks_changed",
-  "commands_changed",
-  "compact_boundary",
-  "control_request_progress",
-  "elicitation_complete",
-  "files_persisted",
-  "hook_progress",
-  "hook_response",
-  "hook_started",
-  "informational",
-  "local_command_output",
-  "memory_recall",
-  "mirror_error",
-  "model_refusal_fallback",
-  "model_refusal_no_fallback",
-  "notification",
-  "permission_denied",
-  "plugin_install",
-  "session_state_changed",
-  "status",
-  "init",
-  "task_notification",
-  "task_progress",
-  "task_started",
-  "task_updated",
-  "thinking_tokens",
-  "worker_shutting_down",
-] as const;
-export const CLAUDE_OUTPUT_RESULT_SUBTYPES = [
-  "success",
-  "error_during_execution",
-  "error_max_turns",
-  "error_max_budget_usd",
-  "error_max_structured_output_retries",
-] as const;
+import {
+  CLAUDE_COMMAND_LIFECYCLE_STATES,
+  CLAUDE_JSON_KINDS,
+  CLAUDE_NATIVE_PRIVATE_RESULT_SUBTYPES,
+  CLAUDE_NATIVE_PRIVATE_ROOT_TYPES,
+  CLAUDE_NATIVE_PRIVATE_SYSTEM_SUBTYPES,
+  CLAUDE_OUTPUT_RESULT_SUBTYPES,
+  CLAUDE_OUTPUT_SIMPLE_TYPES,
+  CLAUDE_OUTPUT_SYSTEM_SUBTYPES,
+  CLAUDE_ROOT_KINDS,
+  CLAUDE_SUBTYPE_KINDS,
+  type ClaudeJsonKind,
+  type ClaudeOutputCategory,
+  claudeOutputCategory,
+  decodeClaudeOutputTag,
+  hasClaudeRoot,
+  isClaudeInit,
+} from "./output-tags.ts";
+
+// Compatibility exports; the catalog and all tag interpretation live in output-tags.
+export {
+  CLAUDE_OUTPUT_RESULT_SUBTYPES,
+  CLAUDE_OUTPUT_SIMPLE_TYPES,
+  CLAUDE_OUTPUT_SYSTEM_SUBTYPES,
+} from "./output-tags.ts";
 export const MAX_CLAUDE_CENSUS_COUNT = 2_147_483_647;
 export const MAX_CLAUDE_CENSUS_BUCKETS =
   CLAUDE_OUTPUT_SIMPLE_TYPES.length +
   CLAUDE_OUTPUT_SYSTEM_SUBTYPES.length +
   CLAUDE_OUTPUT_RESULT_SUBTYPES.length +
+  CLAUDE_NATIVE_PRIVATE_ROOT_TYPES.length +
+  CLAUDE_NATIVE_PRIVATE_SYSTEM_SUBTYPES.length +
+  CLAUDE_NATIVE_PRIVATE_RESULT_SUBTYPES.length +
   6;
 
-type Category =
-  | (typeof CLAUDE_OUTPUT_SIMPLE_TYPES)[number]
-  | `system/${(typeof CLAUDE_OUTPUT_SYSTEM_SUBTYPES)[number] | "unknown"}`
-  | `result/${(typeof CLAUDE_OUTPUT_RESULT_SUBTYPES)[number] | "unknown"}`
-  | "unknown"
-  | "non_object_json"
-  | "non_json"
-  | "empty";
 /** Native values exist only in this transient parser callback, never in a snapshot. */
 export type ClaudeOutputUnit =
   | { kind: "json"; value: unknown }
@@ -103,6 +67,19 @@ const COUNTERS = [
   "incompleteEofDecodedUtf8Bytes",
 ] as const;
 type Counter = (typeof COUNTERS)[number];
+function zeros<K extends string>(keys: readonly K[]): Record<K, number> {
+  return Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;
+}
+const STATES = [
+  ...CLAUDE_COMMAND_LIFECYCLE_STATES,
+  "unknown_or_malformed",
+] as const;
+const CORRELATIONS = [
+  "match",
+  "mismatch",
+  "missing_or_invalid",
+  "unavailable",
+] as const;
 export interface ClaudeOutputCensusSnapshot {
   schemaVersion: 1;
   protocol: "claude_output_census_v1";
@@ -111,21 +88,57 @@ export interface ClaudeOutputCensusSnapshot {
   firstObservedAt: string | null;
   lastObservedAt: string | null;
   counters: Record<Counter, number>;
-  /** Keys are only static categories; recognized tags do not mean valid frames. */
-  categories: Partial<Record<Category, Bucket>>;
+  structure: {
+    roots: Record<(typeof CLAUDE_ROOT_KINDS)[number], number>;
+    nonObjectKinds: Record<ClaudeJsonKind, number>;
+    nonStringTypeKinds: Record<ClaudeJsonKind, number>;
+    systemSubtypes: Record<(typeof CLAUDE_SUBTYPE_KINDS)[number], number>;
+    resultSubtypes: Record<(typeof CLAUDE_SUBTYPE_KINDS)[number], number>;
+  };
+  commandLifecycle: {
+    total: number;
+    states: Record<(typeof STATES)[number], number>;
+    probeCorrelation: Record<(typeof CORRELATIONS)[number], number>;
+  };
+  /** Static categories only. Recognition is not frame validity or enabled mode. */
+  categories: Partial<Record<ClaudeOutputCategory, Bucket>>;
+}
+// Worker generates canonical v4 probe UUIDs. This checks shape only, never authority.
+export function isClaudeProbeUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      value,
+    )
+  );
 }
 
-/** One preparation/attachment. No payload references, strings, IDs or hashes retained. */
+/** One preparation/attachment. No input references, native strings, IDs or hashes retained. */
 export class ClaudeOutputCensus {
-  private readonly counts = Object.fromEntries(
-    COUNTERS.map((k) => [k, 0]),
-  ) as Record<Counter, number>;
-  private readonly buckets = new Map<Category, Bucket>();
+  private readonly counts = zeros(COUNTERS);
+  private readonly structure: ClaudeOutputCensusSnapshot["structure"] = {
+    roots: zeros(CLAUDE_ROOT_KINDS),
+    nonObjectKinds: zeros(CLAUDE_JSON_KINDS),
+    nonStringTypeKinds: zeros(CLAUDE_JSON_KINDS),
+    systemSubtypes: zeros(CLAUDE_SUBTYPE_KINDS),
+    resultSubtypes: zeros(CLAUDE_SUBTYPE_KINDS),
+  };
+  private readonly commandLifecycle: ClaudeOutputCensusSnapshot["commandLifecycle"] =
+    {
+      total: 0,
+      states: zeros(STATES),
+      probeCorrelation: zeros(CORRELATIONS),
+    };
+  private readonly buckets = new Map<ClaudeOutputCategory, Bucket>();
   private first: string | null = null;
   private last: string | null = null;
   private unavailable: ClaudeOutputCensusSnapshot["unavailableReason"] = null;
 
-  observe(unit: ClaudeOutputUnit, reservedSessionId: string): void {
+  observe(
+    unit: ClaudeOutputUnit,
+    reservedSessionId: string,
+    probeCommandId: string | null = null,
+  ): void {
     if (this.unavailable) return;
     try {
       const now = new Date().toISOString();
@@ -145,7 +158,7 @@ export class ClaudeOutputCensus {
         return; // A partial EOF is not an invalid complete JSON unit.
       }
       this.add("totalOutputUnits");
-      let category: Category;
+      let category: ClaudeOutputCategory;
       if (unit.kind === "empty") {
         this.add("emptyUnits");
         category = "empty";
@@ -155,18 +168,52 @@ export class ClaudeOutputCensus {
         category = "non_json";
       } else {
         this.add("validJsonUnits");
-        const value = unit.value;
-        if (!value || typeof value !== "object" || Array.isArray(value)) {
+        const tag = decodeClaudeOutputTag(unit.value);
+        increment(this.structure.roots, tag.kind);
+        category = claudeOutputCategory(tag);
+        if (tag.kind === "non_object") {
           this.add("nonObjectJsonUnits");
-          category = "non_object_json";
+          increment(this.structure.nonObjectKinds, tag.valueKind);
         } else {
           this.add("jsonObjectUnits");
-          const frame = value as Record<string, unknown>;
-          category = classify(frame);
+          if (tag.kind === "non_string_type")
+            increment(this.structure.nonStringTypeKinds, tag.valueKind);
+          if (
+            tag.kind === "known_public_root" &&
+            (tag.type === "system" || tag.type === "result")
+          )
+            increment(
+              tag.type === "system"
+                ? this.structure.systemSubtypes
+                : this.structure.resultSubtypes,
+              tag.subtype.kind,
+            );
           if (category === "unknown" || category.endsWith("/unknown"))
             this.add("unknownDiscriminatorUnits");
           else this.add("recognizedDiscriminatorUnits");
-          if (frame.type === "system" && frame.subtype === "init") {
+          const frame = unit.value as Record<string, unknown>;
+          if (hasClaudeRoot(tag, "command_lifecycle")) {
+            increment(this.commandLifecycle, "total");
+            const state = CLAUDE_COMMAND_LIFECYCLE_STATES.find(
+              (x) => x === frame.state,
+            );
+            increment(
+              this.commandLifecycle.states,
+              state ?? "unknown_or_malformed",
+            );
+            // Neither side escapes this comparison. No field value, ID hash,
+            // per-command row or native session is retained by this census.
+            const commandId = frame.command_uuid;
+            const correlation = !isClaudeProbeUuid(commandId)
+              ? "missing_or_invalid"
+              : probeCommandId === null
+                ? "unavailable"
+                : commandId === probeCommandId
+                  ? "match"
+                  : "mismatch";
+            increment(this.commandLifecycle.probeCorrelation, correlation);
+          }
+          if (isClaudeInit(tag)) {
             this.add("systemInitCandidateCount");
             if (Object.hasOwn(frame, "session_id")) {
               this.add("sessionIdPresentCount");
@@ -182,8 +229,7 @@ export class ClaudeOutputCensus {
       }
       const prior = this.buckets.get(category);
       if (prior) {
-        if (prior.count >= MAX_CLAUDE_CENSUS_COUNT) throw new RangeError();
-        prior.count++;
+        increment(prior, "count");
         prior.lastObservedAt = now;
       } else {
         if (this.buckets.size >= MAX_CLAUDE_CENSUS_BUCKETS)
@@ -213,35 +259,27 @@ export class ClaudeOutputCensus {
       firstObservedAt: this.first,
       lastObservedAt: this.last,
       counters: { ...this.counts },
+      structure: structuredClone(this.structure),
+      commandLifecycle: structuredClone(this.commandLifecycle),
       categories: Object.fromEntries(
         [...this.buckets].map(([key, value]) => [key, { ...value }]),
       ),
     };
   }
-
   private add(key: Counter, amount = 1): void {
-    if (
-      !Number.isSafeInteger(amount) ||
-      amount < 0 ||
-      this.counts[key] + amount > MAX_CLAUDE_CENSUS_COUNT
-    )
-      throw new RangeError();
-    this.counts[key] += amount;
+    increment(this.counts, key, amount);
   }
 }
-
-function classify(frame: Record<string, unknown>): Category {
-  if (frame.type === "system") {
-    const subtype = CLAUDE_OUTPUT_SYSTEM_SUBTYPES.find(
-      (x) => x === frame.subtype,
-    );
-    return subtype ? `system/${subtype}` : "system/unknown";
-  }
-  if (frame.type === "result") {
-    const subtype = CLAUDE_OUTPUT_RESULT_SUBTYPES.find(
-      (x) => x === frame.subtype,
-    );
-    return subtype ? `result/${subtype}` : "result/unknown";
-  }
-  return CLAUDE_OUTPUT_SIMPLE_TYPES.find((x) => x === frame.type) ?? "unknown";
+function increment<K extends string>(
+  record: Record<K, number>,
+  key: K,
+  amount = 1,
+): void {
+  if (
+    !Number.isSafeInteger(amount) ||
+    amount < 0 ||
+    record[key] + amount > MAX_CLAUDE_CENSUS_COUNT
+  )
+    throw new RangeError();
+  record[key] += amount;
 }

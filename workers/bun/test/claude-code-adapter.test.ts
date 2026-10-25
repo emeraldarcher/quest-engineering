@@ -20,6 +20,10 @@ import {
   CLAUDE_CODE_TOOLS,
   ClaudeCodeHarness,
 } from "../src/harnesses/claude-code/adapter.ts";
+import {
+  CLAUDE_NATIVE_PRIVATE_ROOT_TYPES,
+  CLAUDE_NATIVE_PRIVATE_SYSTEM_SUBTYPES,
+} from "../src/harnesses/claude-code/output-tags.ts";
 import { ClaudeCodeSessionStore } from "../src/harnesses/claude-code/session-store.ts";
 import type { WorkspaceToolBroker } from "../src/workspace-tool-broker.ts";
 import { action } from "./support.ts";
@@ -294,6 +298,78 @@ for (const reasoning of [null, "low", "medium", "xhigh", "unsupported"]) {
   });
 }
 
+// Full production prepare/ready path under in-memory streams and fake leases.
+// No native executable, SDK, Product entity or infrastructure operation.
+for (const family of [
+  ...CLAUDE_NATIVE_PRIVATE_ROOT_TYPES.map((type) => ({ type })),
+  ...CLAUDE_NATIVE_PRIVATE_SYSTEM_SUBTYPES.map((subtype) => ({
+    type: "system",
+    subtype,
+  })),
+])
+  for (const withInit of [false, true]) {
+    test(`native-private family cannot grant readiness: ${JSON.stringify(family)}, separate init=${withInit}`, async () => {
+      const f = await effortHarness({
+        model: CLAUDE_CODE_MODEL,
+        effort: "high",
+      });
+      const writes: Record<string, unknown>[] = [];
+      f.process.onWrite = (frame) => writes.push(frame);
+      f.process.probeFrames = (sessionId) => [
+        {
+          ...initFrame(sessionId),
+          ...family,
+          state: "queued",
+          command_uuid: writes[0]?.uuid,
+        },
+        ...(withInit ? [initFrame(sessionId)] : []),
+      ];
+      f.process.endProbeOutput = !withInit;
+      if (withInit) {
+        const prepared = await f.harness.start(f.dispatch, f.lineage);
+        await f.harness.ready(f.dispatch, prepared);
+        expect(prepared.handle.nativeSession).toBeDefined();
+      } else {
+        await expect(
+          f.harness.start(f.dispatch, f.lineage),
+        ).rejects.toMatchObject({
+          code: "environment_attestation_failed",
+          phase: "readiness",
+        });
+        await expect(
+          f.harness.ready(f.dispatch, { lineage: f.lineage } as never),
+        ).rejects.toThrow("not active");
+        expect(f.store.get(writes[0]?.session_id as string)?.state).toBe(
+          "uncertain",
+        );
+      }
+      expect(writes.filter((x) => x.type === "control_request")).toHaveLength(
+        withInit ? 1 : 0,
+      );
+      expect(f.process.queryWrites).toBe(0);
+      const db = new (await import("bun:sqlite")).Database(
+        join(f.storeRoot, "claude-code-sessions-v1.sqlite"),
+        { readonly: true },
+      );
+      const row = db
+        .query("SELECT evidence_json FROM managed_harness_lifecycle")
+        .get() as { evidence_json: string };
+      const evidence = JSON.parse(row.evidence_json);
+      expect(evidence.outputCensus.frameValidated).toBe(withInit);
+      expect(evidence.outputCensus.counters.systemInitCandidateCount).toBe(
+        withInit ? 1 : 0,
+      );
+      expect(evidence.observations.protocol_frame_observed).toBe(
+        withInit ? "observed" : "not_observed",
+      );
+      expect(row.evidence_json.includes(writes[0]?.uuid as string)).toBe(false);
+      db.close();
+      await f.harness.close(f.lineage);
+      f.registry.close();
+      f.store.close();
+    });
+  }
+
 async function effortHarness(
   applied: Record<string, unknown>,
   reasoning: string | null = "high",
@@ -361,6 +437,7 @@ async function effortHarness(
     registry,
     store,
     nativeSpawns: () => spawns,
+    storeRoot: root,
   };
 }
 
@@ -509,6 +586,8 @@ interface SyntheticInitProcess extends StreamedProcess {
   onWrite: (frame: Record<string, unknown>) => void;
   queryWrites: number;
   appliedSettings: Record<string, unknown>;
+  probeFrames: ((sessionId: string) => Record<string, unknown>[]) | null;
+  endProbeOutput: boolean;
 }
 
 function syntheticInitProcess(
@@ -526,7 +605,9 @@ function syntheticInitProcess(
   const exit = new Promise<StreamedProcessExit>(
     (resolve) => (settleExit = resolve),
   );
-  let sequence = 0;
+  let sequence = 0,
+    stdoutClosed = false,
+    cancelled = false;
   const handle = {
     contractVersion: 1 as const,
     backendKind: environment.backendKind,
@@ -545,6 +626,8 @@ function syntheticInitProcess(
     onWrite: () => undefined,
     queryWrites: 0,
     appliedSettings: { model: CLAUDE_CODE_MODEL, effort: CLAUDE_CODE_EFFORT },
+    probeFrames: null,
+    endProbeOutput: false,
     write: async (data) => {
       const frame = JSON.parse(new TextDecoder().decode(data)) as Record<
         string,
@@ -568,9 +651,16 @@ function syntheticInitProcess(
       } else if (frame.shouldQuery !== false) process.queryWrites += 1;
       else {
         const sessionId = frame.session_id as string;
-        stdoutController.enqueue(
-          new TextEncoder().encode(`${JSON.stringify(initFrame(sessionId))}\n`),
-        );
+        for (const output of process.probeFrames?.(sessionId) ?? [
+          initFrame(sessionId),
+        ])
+          stdoutController.enqueue(
+            new TextEncoder().encode(`${JSON.stringify(output)}\n`),
+          );
+        if (process.endProbeOutput) {
+          stdoutClosed = true;
+          stdoutController.close();
+        }
       }
       return {
         certainty: "acknowledged",
@@ -584,9 +674,15 @@ function syntheticInitProcess(
       byteLength: 0,
     }),
     cancel: async () => {
-      stdoutController.close();
-      stderrController.close();
-      settleExit({ kind: "signaled", signal: "SIGTERM" });
+      if (!cancelled) {
+        cancelled = true;
+        if (!stdoutClosed) {
+          stdoutClosed = true;
+          stdoutController.close();
+        }
+        stderrController.close();
+        settleExit({ kind: "signaled", signal: "SIGTERM" });
+      }
       return { certainty: "acknowledged", cancellationId: crypto.randomUUID() };
     },
     inspect: async () => ({
