@@ -128,13 +128,17 @@ let scale = [1, 2, 3].includes(requestedScale)
 
 export function focusProject(projectId: string): boolean {
   const focused = world?.focusProject(projectId) ?? false;
-  if (focused) cameraProjectId = projectId;
+  if (focused) {
+    cameraProjectId = projectId;
+    scale = world?.getZoom() ?? scale;
+  }
   return focused;
 }
 
 export function focusHome(): void {
   cameraProjectId = "";
   world?.focusHome();
+  scale = world?.getZoom() ?? scale;
 }
 
 function updatePanelBounds() {
@@ -228,11 +232,35 @@ function setScale(value: number) {
 {:else}
   <div class="town-canvas" bind:this={host} role="img" aria-label="Quest Engineering authored archipelago. Use camera controls or arrow keys to navigate."></div>
   <div class="camera-controls" aria-label="World camera controls">
-    {#each [1, 2, 3] as value}<button class:active={scale === value} aria-pressed={scale === value} on:click={() => setScale(value)}>{value}×</button>{/each}
-    <button title="Focus Home Island" on:click={focusHome}>Home</button>
+    <span class="camera-label" aria-hidden="true">Map view</span>
+    <div class="zoom-levels" role="group" aria-label="Zoom level">
+      {#each [1, 2, 3] as value}
+        <button
+          type="button"
+          class:active={scale === value}
+          aria-label={`Zoom to ${value}×`}
+          aria-pressed={scale === value}
+          title={`Zoom to ${value}×`}
+          on:click={() => setScale(value)}
+        >{value}×</button>
+      {/each}
+    </div>
+    <button
+      type="button"
+      class="home-control"
+      aria-label="Focus Home Island"
+      title="Focus Home Island (0)"
+      on:click={focusHome}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M2 7.2 8 2l6 5.2v6.3H9.8V9.6H6.2v3.9H2z" />
+      </svg>
+      <span>Home</span>
+    </button>
     {#if projectIdentities.length}
       <select
         aria-label="Focus Project island"
+        title="Focus a Project island"
         bind:value={cameraProjectId}
         on:change={(event) => {
           const projectId = event.currentTarget.value;
@@ -262,10 +290,98 @@ function setScale(value: number) {
 
 <style>
   .town-canvas { position: absolute; inset: 0; overflow: hidden; outline: none; }
-  .camera-controls { position: absolute; z-index: 5; right: .75rem; bottom: .75rem; display: flex; gap: .25rem; padding: .25rem; background: #314b46dd; border: 1px solid #d6ad6a; }
-  .camera-controls button { min-width: 2.2rem; padding: .28rem .4rem; border: 1px solid #91aa8d; background: #405c57; color: #fff2d1; font: 700 .72rem system-ui, sans-serif; }
-  .camera-controls button.active { color: #29373a; background: #f3dfb5; }
-  .camera-controls select { max-width: min(16rem, 40vw); padding: .28rem .4rem; border: 1px solid #91aa8d; background: #405c57; color: #fff2d1; font: 700 .72rem system-ui, sans-serif; }
+  .camera-controls {
+    --camera-cream: #fff4d8;
+    --camera-wood-dark: #4b352e;
+    --camera-gold: #d9a75f;
+    position: absolute;
+    z-index: 5;
+    right: .85rem;
+    bottom: .85rem;
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    min-height: 3rem;
+    padding: .42rem .5rem .42rem .7rem;
+    color: var(--camera-cream);
+    background: linear-gradient(180deg, #604436f5, var(--camera-wood-dark));
+    border: 1px solid #9e7754;
+    border-bottom: 3px double var(--camera-gold);
+    border-radius: 11px;
+    box-shadow: 0 8px 22px #24171370, inset 0 1px #f2d39a38;
+  }
+  .camera-label {
+    padding-right: .1rem;
+    color: #ead8b6;
+    font: 800 .64rem system-ui, sans-serif;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .zoom-levels {
+    display: flex;
+    overflow: hidden;
+    border: 1px solid #d7b67c;
+    border-radius: 7px;
+    box-shadow: 0 1px 3px #24171366;
+  }
+  .camera-controls button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.35rem;
+    min-height: 2rem;
+    padding: .34rem .48rem;
+    color: #5b4b3e;
+    background: #fff8e8;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    font: 800 .74rem system-ui, sans-serif;
+  }
+  .zoom-levels button + button { border-left: 1px solid #c9ab7b; }
+  .camera-controls button:hover { color: #3d332b; background: #f3dfbb; }
+  .camera-controls button:focus-visible,
+  .camera-controls select:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 3px solid #e2a84e;
+    outline-offset: 2px;
+  }
+  .camera-controls button.active {
+    color: #fff9e9;
+    background: linear-gradient(#5d9670, #477c5a);
+    box-shadow: inset 0 0 0 1px #356447;
+  }
+  .camera-controls .home-control {
+    gap: .32rem;
+    min-width: auto;
+    padding-inline: .65rem;
+    color: #fff8e8;
+    background: #5b4035;
+    border: 1px solid #d7b67c;
+    border-radius: 7px;
+  }
+  .camera-controls .home-control:hover { color: #fff8e8; background: #35645f; }
+  .home-control svg { width: .9rem; height: .9rem; fill: currentColor; }
+  .camera-controls select {
+    min-height: 2.05rem;
+    max-width: min(16rem, 38vw);
+    padding: .34rem 1.8rem .34rem .55rem;
+    color: #4b4037;
+    background: #fff8e8;
+    border: 1px solid #d7b67c;
+    border-radius: 7px;
+    box-shadow: 0 1px 3px #24171366;
+    font: 750 .74rem system-ui, sans-serif;
+  }
+  @media (max-width: 700px) {
+    .camera-controls { right: .5rem; bottom: .5rem; gap: .35rem; padding-left: .45rem; }
+    .camera-label { display: none; }
+    .camera-controls .home-control span { display: none; }
+    .camera-controls .home-control { min-width: 2.15rem; padding-inline: .5rem; }
+    .camera-controls select { max-width: 34vw; }
+  }
   .map-diagnostics { position: absolute; z-index: 7; left: .75rem; top: 4rem; padding: .35rem .5rem; color: #fff3d4; background: #29373ae8; border: 1px solid #d6ad6a; font: 700 .7rem ui-monospace, monospace; }
   .map-fatal { position: absolute; z-index: 20; inset: 5rem 1rem auto; padding: 1rem; color: #fff3d4; background: #5b3435; border: 2px solid #d6ad6a; }
   .map-fatal pre { white-space: pre-wrap; }
