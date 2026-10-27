@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { StreamedProcess } from "../../execution-environment/types.ts";
 import type { ReasoningCapability } from "../../protocol/types.ts";
+import {
+  decodeClaudeOutputTag,
+  hasClaudeRoot,
+  isClaudeInit,
+  isClaudeResultSuccess,
+} from "./output-tags.ts";
 import { type AsyncFrameQueue, rejectServerToolEvidence } from "./protocol.ts";
 
 export const CLAUDE_CODE_EFFORT = "high" as const;
@@ -47,7 +53,7 @@ export function attestClaudeEffortResponse(
     !expected.sessionId ||
     (frame.session_id !== undefined &&
       frame.session_id !== expected.sessionId) ||
-    frame.type !== "control_response" ||
+    !hasClaudeRoot(decodeClaudeOutputTag(frame), "control_response") ||
     response?.subtype !== "success" ||
     response.request_id !== requestId ||
     applied?.model !== expected.model ||
@@ -97,8 +103,9 @@ export async function attestClaudeEffort(
       if (frame.session_id && frame.session_id !== expected.sessionId)
         throw new ClaudeEffortReadinessError();
       const response = object(frame.response);
+      const tag = decodeClaudeOutputTag(frame);
       if (
-        frame.type === "control_response" &&
+        hasClaudeRoot(tag, "control_response") &&
         response?.request_id === requestId
       ) {
         if (frames.closed) throw new ClaudeEffortReadinessError();
@@ -108,11 +115,11 @@ export async function attestClaudeEffort(
       // Do not consume contradictory/model-turn evidence while awaiting the
       // getter. Only the original probe's zero-turn result is expected here.
       if (
-        frame.type === "assistant" ||
-        (frame.type === "system" && frame.subtype === "init") ||
-        (frame.type === "result" &&
+        hasClaudeRoot(tag, "assistant") ||
+        isClaudeInit(tag) ||
+        (hasClaudeRoot(tag, "result") &&
           (frame.is_error !== false ||
-            frame.subtype !== "success" ||
+            !isClaudeResultSuccess(tag) ||
             frame.num_turns !== 0 ||
             (frame.modelUsage !== undefined &&
               (!object(frame.modelUsage) ||

@@ -5,6 +5,11 @@ import type {
 } from "../../execution-environment/types.ts";
 import type { ManagedHarnessLifecycle } from "../lifecycle-diagnostics.ts";
 import type { ClaudeOutputUnit } from "./output-census.ts";
+import {
+  decodeClaudeOutputTag,
+  hasClaudeRoot,
+  isClaudeInit,
+} from "./output-tags.ts";
 
 export class ClaudeProtocolTimeout extends Error {
   constructor() {
@@ -145,7 +150,7 @@ export async function pump(
         throw new Error("Claude Code emitted invalid JSON.");
       }
       observe({ kind: "json", value: frame });
-      if (!frame || typeof frame !== "object" || Array.isArray(frame))
+      if (decodeClaudeOutputTag(frame).kind === "non_object")
         throw new Error("Claude Code emitted a malformed frame.");
       const object = frame as Record<string, unknown>;
       // Observation is not authority and must never alter protocol settlement.
@@ -196,10 +201,15 @@ export async function sendMessage(
     client_composed: true,
     ...(shouldQuery ? {} : { shouldQuery: false, isSynthetic: true }),
   };
-  if (!shouldQuery)
-    diagnostics?.record("probe_write_requested", process.handle, {
-      operationId: message.uuid,
-    });
+  if (!shouldQuery) {
+    try {
+      diagnostics?.bindProbeCommand(message.uuid, sessionId, process.handle);
+    } catch {
+      /* Correlation loss cannot reject or suppress the probe. */
+    }
+    // The owned command UUID is comparison-only, never diagnostic output.
+    diagnostics?.record("probe_write_requested", process.handle);
+  }
   const bytes = new TextEncoder().encode(`${JSON.stringify(message)}\n`);
   const receipt = await process.write(bytes);
   if (
@@ -223,9 +233,10 @@ export async function waitForInit(
   try {
     for (let count = 0; count < 64 && Date.now() < deadline; count += 1) {
       const frame = await frames.next(Math.max(1, deadline - Date.now()));
-      if (frame.type === "system" && frame.subtype === "init") return frame;
+      const tag = decodeClaudeOutputTag(frame);
+      if (isClaudeInit(tag)) return frame;
       rejectServerToolEvidence(frame);
-      if (frame.type === "result" && frame.is_error === true)
+      if (hasClaudeRoot(tag, "result") && frame.is_error === true)
         throw new Error(
           "Claude Code failed before zero-inference init attestation.",
         );

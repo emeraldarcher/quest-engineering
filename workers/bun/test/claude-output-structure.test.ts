@@ -578,3 +578,124 @@ test("census rejects every foreign attachment identity and timeout progress rema
   expect(diag.snapshot().lastProvenStage).toBe("probe_write_acknowledged");
   expect(diag.snapshot().nativeAttestationInterval).toBe("unknown");
 });
+
+test("owned probe correlation stays private through real serializer, parser, lifecycle and SQLite", async () => {
+  const db = new Database(":memory:"),
+    store = new ManagedHarnessLifecycleStore(db);
+  const diag = store.begin(context);
+  if (!diag) throw new Error("fixture");
+  const f = fixture(),
+    frames = observe(f, diag),
+    secret = `native-${crypto.randomUUID()}`;
+  await sendMessage(f.process, reserved, probe, false, diag);
+  const command = JSON.parse(new TextDecoder().decode(f.writes[0]));
+  const foreignId = crypto.randomUUID();
+  for (const command_uuid of [command.uuid, foreignId, undefined, secret])
+    f.output(
+      `${JSON.stringify({ type: "command_lifecycle", state: "queued", command_uuid, uuid: secret, session_id: secret, extra: secret })}\n`,
+    );
+  await tick();
+  const evidence = diag.snapshot();
+  expect(evidence.outputCensus.commandLifecycle.probeCorrelation).toEqual({
+    match: 1,
+    mismatch: 1,
+    missing_or_invalid: 2,
+    unavailable: 0,
+  });
+  expect(evidence.outputCensus.frameValidated).toBe(false);
+  expect(evidence.observations.protocol_frame_observed).toBe("not_observed");
+  expect(evidence.lastProvenStage).toBe("probe_write_acknowledged");
+  expect(evidence.nativeAttestationInterval).toBe("unknown");
+  expect(
+    evidence.events.find((e) => e.stage === "probe_write_requested")
+      ?.operationId,
+  ).toBeUndefined();
+  const serialized = JSON.stringify(
+    db.query("SELECT * FROM managed_harness_lifecycle").all(),
+  );
+  for (const id of [command.uuid, foreignId, secret]) {
+    expect(serialized.includes(id)).toBe(false);
+    expect(JSON.stringify(diag).includes(id)).toBe(false);
+  }
+  await expect(waitForInit(frames, 10)).rejects.toThrow();
+  await f.process.cancel();
+  db.close();
+});
+
+test("probe binding requires exact observed attachment/session, is immutable, and cannot bind late", async () => {
+  const f = fixture(),
+    diag = new ManagedHarnessLifecycle(context),
+    h = f.process.handle;
+  const owned = crypto.randomUUID(),
+    foreign = crypto.randomUUID();
+  diag.bindProcess(h);
+  diag.bindProbeCommand(foreign, reserved, h); // observer not registered
+  observe(f, diag);
+  for (const wrong of [
+    { ...h, processGeneration: "wrong" },
+    { ...h, environment: { ...ref, incarnation: "wrong" } },
+  ])
+    diag.bindProbeCommand(foreign, reserved, wrong);
+  diag.bindProbeCommand(foreign, "wrong-session", h);
+  diag.bindProbeCommand("invalid", reserved, h);
+  diag.bindProbeCommand(owned, reserved, h);
+  diag.bindProbeCommand(foreign, reserved, h); // cannot rebind
+  diag.observeClaudeOutput(
+    { kind: "json", value: { type: "command_lifecycle", command_uuid: owned } },
+    h,
+  );
+  expect(
+    diag.snapshot().outputCensus.commandLifecycle.probeCorrelation,
+  ).toEqual({ match: 1, mismatch: 0, missing_or_invalid: 0, unavailable: 0 });
+  const late = new ManagedHarnessLifecycle(context);
+  late.bindProcess(h);
+  late.record("stream_observation_registered", h);
+  late.record("probe_write_requested", h, { operationId: foreign });
+  late.bindProbeCommand(foreign, reserved, h);
+  late.observeClaudeOutput(
+    {
+      kind: "json",
+      value: { type: "command_lifecycle", command_uuid: foreign },
+    },
+    h,
+  );
+  expect(
+    late.snapshot().outputCensus.commandLifecycle.probeCorrelation.unavailable,
+  ).toBe(1);
+  expect(JSON.stringify(late.snapshot()).includes(foreign)).toBe(false);
+  const timedOut = new ManagedHarnessLifecycle(context);
+  timedOut.bindProcess(h);
+  timedOut.record("stream_observation_registered", h);
+  timedOut.record("attestation_timeout_fired", h);
+  timedOut.bindProbeCommand(foreign, reserved, h);
+  timedOut.observeClaudeOutput(
+    {
+      kind: "json",
+      value: { type: "command_lifecycle", command_uuid: foreign },
+    },
+    h,
+  );
+  expect(
+    timedOut.snapshot().outputCensus.commandLifecycle.probeCorrelation
+      .unavailable,
+  ).toBe(1);
+  await f.process.cancel();
+});
+
+test("throwing probe-correlation observer cannot suppress or alter fixed probe submission", async () => {
+  const f = fixture(),
+    diag = new ManagedHarnessLifecycle(context),
+    secret = `observer-${crypto.randomUUID()}`;
+  observe(f, diag);
+  diag.bindProbeCommand = () => {
+    throw new Error(secret);
+  };
+  await sendMessage(f.process, reserved, probe, false, diag);
+  expect(f.writes).toHaveLength(1);
+  expect(f.writes[0]?.byteLength).toBe(301);
+  expect(diag.snapshot().observations.probe_write_acknowledged).toBe(
+    "observed",
+  );
+  expect(JSON.stringify(diag.snapshot()).includes(secret)).toBe(false);
+  await f.process.cancel();
+});

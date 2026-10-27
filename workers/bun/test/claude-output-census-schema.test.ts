@@ -6,9 +6,9 @@ import {
   CLAUDE_OUTPUT_RESULT_SUBTYPES,
   CLAUDE_OUTPUT_SIMPLE_TYPES,
   CLAUDE_OUTPUT_SYSTEM_SUBTYPES,
-} from "../src/harnesses/claude-code/output-census.ts";
+} from "../src/harnesses/claude-code/output-tags.ts";
 
-test("closed diagnostic discriminators exactly match the statically reviewed pinned StdoutMessage union", async () => {
+test("public catalog exactly matches pinned SDK declarations, not the larger raw-native catalog", async () => {
   const root = resolve(
     import.meta.dir,
     "../node_modules/@anthropic-ai/claude-agent-sdk",
