@@ -7,6 +7,7 @@ import type {
   StreamedProcessTransportIoSnapshot,
   StreamedProcessTransportSideEffect,
 } from "./streamed-process.ts";
+import { diagnosticWriteAccepted } from "./streamed-process.ts";
 import {
   ioUnavailable,
   STREAMED_PROCESS_IO_TIMEOUT_MS,
@@ -35,6 +36,7 @@ const WRITE = 20;
 const CLOSE_STDIN = 21;
 const CANCEL = 22;
 const OBSERVE_IO = 23;
+const TRY_WRITE_DIAGNOSTIC = 24;
 const MAX_IO_SNAPSHOT_BYTES = 8_192;
 const MAX_RELAY_FRAME_BYTES = 1024 * 1024 + 64;
 
@@ -50,7 +52,7 @@ interface SideEffectWaiter {
 
 interface RelayChild {
   stdin: {
-    write(data: Uint8Array): number;
+    write(data: Uint8Array): number | Promise<number>;
     flush(): number | Promise<number>;
     end(): number | Promise<number>;
   };
@@ -71,6 +73,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   private targetExited = false;
   private disconnected = false;
   private runStarted = false;
+  private diagnosticWriteAttempted = false;
   private ioWaiter: {
     id: string;
     resolve(value: StreamedProcessTransportIoSnapshot): void;
@@ -86,6 +89,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     private readonly processGeneration: string,
     private readonly expectedMarkerSha256: string,
     private readonly ioProtocolSupported: boolean,
+    private readonly diagnosticWriteSupported: boolean,
   ) {
     this.identity = identity;
     this.stderrReader = child.stderr.getReader();
@@ -206,6 +210,8 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         input.processGeneration,
         input.expectedMarkerSha256,
         ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION,
+        ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION &&
+          ready.nonblockingDiagnosticWrite === true,
       );
     } catch (error) {
       await frames.cancel().catch(() => undefined);
@@ -327,6 +333,38 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     return this.request(this.pendingCancellations, CANCEL, cancellationId);
   }
 
+  tryWriteDiagnostic(data: Uint8Array): boolean {
+    if (this.diagnosticWriteAttempted) return false;
+    this.diagnosticWriteAttempted = true;
+    if (
+      !this.diagnosticWriteSupported ||
+      !this.identity.observedExecutableIdentity ||
+      !this.runStarted ||
+      this.disconnected ||
+      this.hostExited ||
+      this.targetExited ||
+      this.pendingWrites.size ||
+      this.pendingCancellations.size ||
+      data.byteLength === 0 ||
+      data.byteLength > 512
+    )
+      return false;
+    try {
+      // No ACK waiter/timer and no ordinary WRITE: the guest uses one atomic
+      // nonblocking pipe write, so it cannot wait ahead of physical CANCEL.
+      const frame = encodeFrame(TRY_WRITE_DIAGNOSTIC, data);
+      // FileSink owns the whole ordered chunk, but may return an async or
+      // partial count under backpressure. Such outcomes remain unavailable;
+      // contain rejection and initiate flushing without awaiting either.
+      const written = this.child.stdin.write(frame);
+      if (typeof written !== "number") diagnosticWriteAccepted(written);
+      void Promise.resolve(this.child.stdin.flush()).catch(() => undefined);
+      return written === frame.byteLength;
+    } catch {
+      return false;
+    }
+  }
+
   observeIo(): Promise<StreamedProcessTransportIoSnapshot> {
     if (!this.ioProtocolSupported || !this.identity.observedExecutableIdentity)
       return Promise.resolve(ioUnavailable("unsupported"));
@@ -353,7 +391,9 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         }),
       );
       try {
-        this.child.stdin.write(encodeFrame(OBSERVE_IO, payload));
+        void Promise.resolve(
+          this.child.stdin.write(encodeFrame(OBSERVE_IO, payload)),
+        ).catch(() => this.resolveIo(ioUnavailable("observation_failed")));
         void Promise.resolve(this.child.stdin.flush()).catch(() =>
           this.resolveIo(ioUnavailable("observation_failed")),
         );
@@ -473,7 +513,9 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
       timer.unref();
       waiters.set(requestId, { resolve, timer });
       try {
-        this.child.stdin.write(frame);
+        void Promise.resolve(this.child.stdin.write(frame)).catch(() =>
+          this.resolveWaiter(waiters, requestId, "ambiguous"),
+        );
         void Promise.resolve(this.child.stdin.flush()).catch(() =>
           this.resolveWaiter(waiters, requestId, "ambiguous"),
         );

@@ -10,6 +10,10 @@ import {
   hasClaudeRoot,
   isClaudeInit,
 } from "./output-tags.ts";
+import type {
+  QueuedProbeCancellation,
+  QueuedProbeCancellationEvidence,
+} from "./queued-probe-cancellation.ts";
 
 export class ClaudeProtocolTimeout extends Error {
   constructor() {
@@ -74,18 +78,23 @@ export function observeClaudeProtocol(
   frames: AsyncFrameQueue,
   diagnostics: ManagedHarnessLifecycle | null,
   disconnected: () => boolean,
+  queuedCancellation?: QueuedProbeCancellation,
 ): void {
   void pump(
     process.stdout,
     frames,
     (frame) => diagnostics?.observeInit(frame, process.handle),
     (unit) => diagnostics?.observeClaudeOutput(unit, process.handle),
-  ).catch(() => {
-    diagnostics?.record("protocol_observation_failed", process.handle);
-    // JSON/UTF-8 parser exceptions can contain native input excerpts.
-    frames.fail(new Error("Claude Code stdout protocol observation failed."));
-  });
+    (frame) => queuedCancellation?.observe(frame, process) ?? false,
+  )
+    .catch(() => {
+      diagnostics?.record("protocol_observation_failed", process.handle);
+      // JSON/UTF-8 parser exceptions can contain native input excerpts.
+      frames.fail(new Error("Claude Code stdout protocol observation failed."));
+    })
+    .finally(() => queuedCancellation?.invalidate());
   void process.exit.then((exit) => {
+    queuedCancellation?.invalidate();
     diagnostics?.record("process_exit_observed", process.handle, { exit });
     diagnostics?.captureIo("process_exit_observed", process);
     if (!disconnected() && !frames.closed)
@@ -105,6 +114,7 @@ export async function pump(
   frames: AsyncFrameQueue,
   onFrame: (frame: Record<string, unknown>) => void = () => undefined,
   onUnit: (unit: ClaudeOutputUnit) => void = () => undefined,
+  consumeDiagnostic: (frame: Record<string, unknown>) => boolean = () => false,
 ): Promise<void> {
   const observe = (unit: ClaudeOutputUnit) => {
     try {
@@ -159,6 +169,11 @@ export async function pump(
       } catch {
         // Drop only the diagnostic breadcrumb, never the real frame.
       }
+      try {
+        if (consumeDiagnostic(object)) continue;
+      } catch {
+        /* Observer failure cannot reject a real protocol frame. */
+      }
       frames.push(object);
     }
   }
@@ -184,6 +199,7 @@ export async function sendMessage(
   content: string,
   shouldQuery: boolean,
   diagnostics: ManagedHarnessLifecycle | null = null,
+  queuedCancellation?: QueuedProbeCancellation,
 ): Promise<void> {
   if (!shouldQuery && diagnostics) {
     try {
@@ -202,6 +218,9 @@ export async function sendMessage(
     ...(shouldQuery ? {} : { shouldQuery: false, isSynthetic: true }),
   };
   if (!shouldQuery) {
+    // Distinct operation authority creates its own Worker UUID on this outbound
+    // object. The recorder still gets only its independent comparison binding.
+    queuedCancellation?.prepareProbe(message, process, sessionId);
     try {
       diagnostics?.bindProbeCommand(message.uuid, sessionId, process.handle);
     } catch {
@@ -217,11 +236,12 @@ export async function sendMessage(
     receipt.certainty === "acknowledged" &&
     receipt.byteLength === bytes.byteLength
   ) {
+    queuedCancellation?.acknowledgeProbe(process, sessionId);
     diagnostics?.record("probe_write_acknowledged", process.handle, {
       operationId: receipt.writeId,
     });
     diagnostics?.captureIo("probe_write_acknowledged", process);
-  }
+  } else if (!shouldQuery) queuedCancellation?.invalidate();
 }
 
 export async function waitForInit(
@@ -257,14 +277,38 @@ export async function waitForInit(
 export async function cancelClaudePreparation(
   process: StreamedProcess,
   diagnostics: ManagedHarnessLifecycle | null,
+  queuedCancellation?: QueuedProbeCancellation | null,
 ): Promise<void> {
+  // Called with this capability ONLY for the existing init readiness timeout.
+  // Synchronous best-effort dispatch, never an ordinary/queued async write.
+  if (queuedCancellation !== undefined) {
+    let evidence: QueuedProbeCancellationEvidence = {
+      request: "queued_cancel_request_unavailable",
+      response: "response_unavailable",
+    };
+    try {
+      queuedCancellation?.atTimeout(process);
+      if (queuedCancellation) evidence = queuedCancellation.snapshot();
+    } catch {
+      /* Still cancel physically; never retain an exception. */
+    }
+    diagnostics?.recordQueuedProbeCancellation(evidence, process.handle);
+  }
   diagnostics?.record("cancellation_requested", process.handle);
-  const receipt = await process.cancel();
-  // ACK proves submission, not the precise native signal submission timestamp.
-  if (receipt.certainty === "acknowledged")
-    diagnostics?.record("cancellation_acknowledged", process.handle, {
-      operationId: receipt.cancellationId,
-    });
+  try {
+    const receipt = await process.cancel();
+    // ACK proves submission, not the precise native signal submission timestamp.
+    if (receipt.certainty === "acknowledged")
+      diagnostics?.record("cancellation_acknowledged", process.handle, {
+        operationId: receipt.cancellationId,
+      });
+  } finally {
+    try {
+      queuedCancellation?.invalidate();
+    } catch {
+      /* Diagnostic revocation cannot replace cancellation outcome. */
+    }
+  }
 }
 
 export function rejectServerToolEvidence(frame: Record<string, unknown>): void {

@@ -26,6 +26,17 @@ import type {
 } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
 
+/** Strict synchronous acceptance only. Contain a broken/async optional adapter's
+ * rejection without awaiting it or granting submission authority. */
+export function diagnosticWriteAccepted(value: unknown): boolean {
+  if (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function")
+  )
+    void Promise.resolve(value).catch(() => undefined);
+  return value === true;
+}
+
 export const DEFAULT_STREAM_BUFFER_BYTES = 64 * 1024;
 export const MAX_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
 export const MAX_STREAMED_STDIN_WRITE_BYTES = 1024 * 1024;
@@ -80,6 +91,8 @@ export interface StreamedProcessTransport {
     data: Uint8Array,
   ): Promise<StreamedProcessTransportSideEffect>;
   closeStdin(writeId: string): Promise<StreamedProcessTransportSideEffect>;
+  /** Optional nonblocking, bounded, current-channel-only submission. */
+  tryWriteDiagnostic?(data: Uint8Array): boolean;
   cancel(cancellationId: string): Promise<StreamedProcessTransportSideEffect>;
   disconnect(): Promise<void>;
 }
@@ -119,6 +132,7 @@ interface ManagedProcessState {
   }> | null;
   cancellationId: string | null;
   writeTail: Promise<void>;
+  pendingWrites: number;
   runTask: Promise<void>;
   ioCollecting: boolean;
 }
@@ -220,6 +234,7 @@ export class StreamedProcessManager {
       cancelPromise: null,
       cancellationId: null,
       writeTail: Promise.resolve(),
+      pendingWrites: 0,
       runTask: Promise.resolve(),
       ioCollecting: false,
     } satisfies ManagedProcessState);
@@ -235,13 +250,38 @@ export class StreamedProcessManager {
       backendProcessId: handle.backendProcessId,
     });
 
+    const publicHandle = structuredClone(handle);
     return {
-      handle: structuredClone(handle),
+      handle: publicHandle,
       stdout: state.stdout,
       stderr: state.stderr,
       exit: exit.promise,
       write: (data) => this.write(state, data, false),
       closeStdin: () => this.write(state, new Uint8Array(), true),
+      tryWriteDiagnostic: (data) => {
+        try {
+          assertSameHandle(state.handle, publicHandle, "write_streamed");
+          if (
+            this.processes.get(handle.processGeneration) !== state ||
+            state.terminal ||
+            state.disconnected ||
+            state.writeClosed ||
+            state.cancelPromise ||
+            state.pendingWrites !== 0 ||
+            !(data instanceof Uint8Array) ||
+            data.byteLength === 0 ||
+            data.byteLength > 512
+          )
+            return false;
+          // No new lease/inventory, write-tail wait, ACK timer, or deferred write.
+          // The operation owner must independently prove its current authority.
+          return diagnosticWriteAccepted(
+            state.transport.tryWriteDiagnostic?.(new Uint8Array(data)),
+          );
+        } catch {
+          return false;
+        }
+      },
       cancel: (cancellationId) =>
         this.cancelState(state, cancellationId ?? randomUUID()),
       inspect: () => this.reconcileState(state),
@@ -497,6 +537,7 @@ export class StreamedProcessManager {
         ),
       );
 
+    state.pendingWrites++;
     const operation = state.writeTail.then(async () => {
       await this.validateState(state, "write_streamed");
       if (state.writeClosed)
@@ -552,8 +593,12 @@ export class StreamedProcessManager {
       );
     });
     state.writeTail = operation.then(
-      () => undefined,
-      () => undefined,
+      () => {
+        state.pendingWrites--;
+      },
+      () => {
+        state.pendingWrites--;
+      },
     );
     return operation;
   }

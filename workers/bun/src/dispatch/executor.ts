@@ -444,6 +444,7 @@ export class DispatchExecutor {
   private async cancelOnce(command: CancelDispatch): Promise<void> {
     let current = this.registry.get(command.action_id);
     assertCancellationIdentity(current, command);
+    this.revokeDiagnosticCapabilities(command.action_id);
     await this.stopPromptGateMonitor(command.action_id);
     current = this.registry.get(command.action_id);
     assertCancellationIdentity(current, command);
@@ -485,6 +486,7 @@ export class DispatchExecutor {
       cancellation_worker_generation: command.connection_generation,
       cancelled_at: cancelledAt,
     });
+    this.revokeDiagnosticCapabilities(command.action_id);
     await this.control?.cancelPendingHumanAttention(
       lineage.lineageId,
       "Product execution cancellation made the HumanAttention request obsolete.",
@@ -511,6 +513,13 @@ export class DispatchExecutor {
     if (monitor) monitor.cancelled = true;
     const newlyAcknowledged = current.serverAcknowledgedAt === null;
     this.registry.acknowledgeServerTerminal(actionId);
+    for (const harness of this.harnesses.list()) {
+      try {
+        harness.revokeDiagnosticCapabilities?.(actionId);
+      } catch {
+        // Diagnostic hooks cannot change the authoritative terminal ACK path.
+      }
+    }
 
     try {
       if (
@@ -995,6 +1004,16 @@ export class DispatchExecutor {
     await this.reportSession(dispatch, updated);
   }
 
+  private revokeDiagnosticCapabilities(actionId: string): void {
+    for (const harness of this.harnesses.list()) {
+      try {
+        harness.revokeDiagnosticCapabilities?.(actionId);
+      } catch {
+        /* Diagnostic revocation cannot replace the authoritative path. */
+      }
+    }
+  }
+
   private async failAndReport(
     actionId: string,
     error: unknown,
@@ -1014,6 +1033,7 @@ export class DispatchExecutor {
       failureValue(error),
       isUncertain(current, error),
     );
+    this.revokeDiagnosticCapabilities(actionId);
     if (failed.lineageId && failed.state !== "uncertain")
       await this.control?.cancelPendingHumanAttention(
         failed.lineageId,

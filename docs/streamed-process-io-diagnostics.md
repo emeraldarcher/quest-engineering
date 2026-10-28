@@ -43,7 +43,7 @@ including both namespace validations. This is not the attestation deadline and
 never adds time to its unchanged 30,000 ms budget. A hung diagnostic remains single-flight. The
 relay has at most one diagnostic response thread. Responses are bounded to 8 KiB
 by the Worker and to one atomic `PIPE_BUF` write by the guest. The diagnostic
-sender never waits for the normal output lock or pipe space: it makes one
+I/O snapshot sender never waits for the normal output lock or pipe space: it makes one
 zero-time writable-readiness check under that lock and drops the snapshot if the
 Linux pipe/channel/size/readiness contract is unavailable. It never changes FD
 flags. This is a single checkpoint check, not a monitoring/polling loop.
@@ -121,6 +121,14 @@ profile asset, base-image digest, capability grant, settings, Mod, bridge, Claud
 binary, SDK pin, auth/environment policy, Worker Protocol v19, Product/Core
 contract or immutable historical identity changes. No retained process/profile
 is upgraded or rewritten by this change.
+
+The separate [timeout queue diagnostic](claude-timeout-queue-diagnostic.md)
+adds optional `READY.nonblockingDiagnosticWrite:true` / opcode 24 on relay v2.
+It is a cancellation-only bounded input submission, not an I/O observation or
+an ordinary WRITE. Its nonblocking owned-writer flag change is restored in
+`finally`; the read-only snapshot facility above still changes no FD flags.
+Normal CANCEL/WRITE blocks are unchanged, and unsupported old attachments do
+not fall back or upgrade. No new native Claude protocol is invented.
 
 ## Provider-free proof
 

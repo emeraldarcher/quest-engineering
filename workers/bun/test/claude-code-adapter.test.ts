@@ -1,7 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { WorkerConfig } from "../src/config.ts";
+import { DispatchExecutor } from "../src/dispatch/executor.ts";
 import { DispatchRegistry } from "../src/dispatch/registry.ts";
 import type { ProviderAccountRuntimeAuthority } from "../src/execution-environment/provider-account.ts";
 import type {
@@ -24,6 +25,10 @@ import {
   CLAUDE_NATIVE_PRIVATE_ROOT_TYPES,
   CLAUDE_NATIVE_PRIVATE_SYSTEM_SUBTYPES,
 } from "../src/harnesses/claude-code/output-tags.ts";
+import {
+  AsyncFrameQueue,
+  ClaudeProtocolTimeout,
+} from "../src/harnesses/claude-code/protocol.ts";
 import { ClaudeCodeSessionStore } from "../src/harnesses/claude-code/session-store.ts";
 import type { WorkspaceToolBroker } from "../src/workspace-tool-broker.ts";
 import { action } from "./support.ts";
@@ -370,9 +375,345 @@ for (const family of [
     });
   }
 
+for (const cancelled of [true, false])
+  for (const lateInit of [false, true])
+    test(`timeout diagnostic ${cancelled}, late independent init=${lateInit}: failure and authority remain unchanged`, async () => {
+      const f = await effortHarness({
+        model: CLAUDE_CODE_MODEL,
+        effort: "high",
+      });
+      f.process.probeFrames = () => [];
+      const priorNativeRef = f.registry.getLineage(
+        f.lineage.lineageId,
+      ).nativeSession;
+      const events: string[] = [];
+      let now = 0;
+      const clock = spyOn(Date, "now").mockImplementation(() => now);
+      const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+        async () => {
+          now = 30_000;
+          throw new ClaudeProtocolTimeout();
+        },
+      );
+      let release!: () => void;
+      const physical = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const originalCancel = f.process.cancel;
+      f.process.cancel = async () => {
+        events.push("physical");
+        await physical;
+        return originalCancel();
+      };
+      f.process.tryWriteDiagnostic = (bytes) => {
+        events.push("diagnostic");
+        const request = JSON.parse(new TextDecoder().decode(bytes));
+        f.process.emitFrame({
+          type: "control_response",
+          response: {
+            subtype: "success",
+            request_id: request.request_id,
+            response: {
+              cancelled,
+              applied: { model: CLAUDE_CODE_MODEL, effort: "high" },
+            },
+          },
+        });
+        if (lateInit) {
+          const reservation = f.store.forLineage(f.lineage.lineageId);
+          f.process.emitFrame(
+            initFrame(reservation?.nativeSessionId ?? "missing"),
+          );
+        }
+        return true;
+      };
+      try {
+        const outcome = f.harness.start(f.dispatch, f.lineage).then(
+          (value) => value,
+          (error) => error,
+        );
+        for (let i = 0; i < 120; i++) await Promise.resolve();
+        expect(events).toEqual(["diagnostic", "physical"]);
+        expect(now).toBe(30_000);
+        expect(f.ownershipReads()).toBe(1);
+        // Native response can arrive while physical cancellation is pending.
+        const before = (
+          f.harness as unknown as {
+            active: Map<string, { initialized: boolean }>;
+          }
+        ).active.get(f.lineage.lineageId);
+        expect(before?.initialized).toBe(false);
+        release();
+        expect(await outcome).toMatchObject({
+          code: "environment_attestation_failed",
+          phase: "readiness",
+        });
+        await expect(
+          f.harness.ready(f.dispatch, { lineage: f.lineage } as never),
+        ).rejects.toThrow("not active");
+        const db = new (await import("bun:sqlite")).Database(
+          join(f.storeRoot, "claude-code-sessions-v1.sqlite"),
+          { readonly: true },
+        );
+        const row = db
+          .query("SELECT evidence_json FROM managed_harness_lifecycle")
+          .get() as { evidence_json: string };
+        const evidence = JSON.parse(row.evidence_json);
+        expect(evidence.queuedProbeCancellation).toEqual({
+          request: "queued_cancel_request_sent",
+          response: cancelled ? "cancelled_true" : "cancelled_false",
+        });
+        expect(evidence.outputCensus.frameValidated).toBe(false);
+        expect(
+          f.registry.getLineage(f.lineage.lineageId).nativeSession,
+        ).toEqual(priorNativeRef);
+        expect(
+          f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+        ).toBeNull();
+        expect(
+          f.registry.get(f.dispatch.action.action_id).promptIntentAt,
+        ).toBeNull();
+        expect(f.store.forLineage(f.lineage.lineageId)?.state).toBe(
+          "uncertain",
+        );
+        expect(f.process.queryWrites).toBe(0);
+        db.close();
+      } finally {
+        release();
+        clock.mockRestore();
+        next.mockRestore();
+        await f.harness.close(f.lineage);
+        f.registry.close();
+        f.store.close();
+      }
+    });
+
+test("actual terminal ACK path revokes probe capability before subsequent timeout", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  const executor = new DispatchExecutor(
+    f.registry,
+    f.harness,
+    async () => false,
+  );
+  f.process.probeFrames = () => [];
+  let now = 0,
+    diagnosticWrites = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+    async () => {
+      now = 30_000;
+      throw new ClaudeProtocolTimeout();
+    },
+  );
+  f.process.tryWriteDiagnostic = () => {
+    diagnosticWrites++;
+    return true;
+  };
+  f.process.onWrite = (frame) => {
+    if (frame.shouldQuery === false) {
+      f.registry.fail(f.dispatch.action.action_id, {
+        code: "fixture_terminal",
+      });
+      void executor.acknowledgeTerminal(f.dispatch.action.action_id);
+    }
+  };
+  try {
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
+      code: "environment_attestation_failed",
+    });
+    expect(
+      f.registry.get(f.dispatch.action.action_id).serverAcknowledgedAt,
+    ).not.toBeNull();
+    expect(diagnosticWrites).toBe(0);
+    expect(f.process.queryWrites).toBe(0);
+  } finally {
+    clock.mockRestore();
+    next.mockRestore();
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+test("terminal ACK before capability creation cannot resurrect diagnostic authority", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  const executor = new DispatchExecutor(
+    f.registry,
+    f.harness,
+    async () => false,
+  );
+  f.registry.fail(f.dispatch.action.action_id, { code: "fixture_terminal" });
+  await executor.acknowledgeTerminal(f.dispatch.action.action_id);
+  f.process.probeFrames = () => [];
+  let now = 0,
+    diagnosticWrites = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+    async () => {
+      now = 30_000;
+      throw new ClaudeProtocolTimeout();
+    },
+  );
+  f.process.tryWriteDiagnostic = () => {
+    diagnosticWrites++;
+    return true;
+  };
+  try {
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
+      code: "environment_attestation_failed",
+    });
+    expect(diagnosticWrites).toBe(0);
+    expect(f.ownershipReads()).toBe(1);
+  } finally {
+    clock.mockRestore();
+    next.mockRestore();
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+for (const handoff of [
+  "disconnected",
+  "new_generation",
+  "before_creation",
+] as const)
+  test(`review: generation handoff ${handoff} cannot retain or reconstruct probe authority`, async () => {
+    let generation: number | null = 1;
+    const f = await effortHarness(
+      { model: CLAUDE_CODE_MODEL, effort: "high" },
+      "high",
+      () => generation,
+    );
+    f.process.probeFrames = () => [];
+    let now = 0,
+      writes = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+      async () => {
+        now = 30_000;
+        throw new ClaudeProtocolTimeout();
+      },
+    );
+    f.process.tryWriteDiagnostic = () => {
+      writes++;
+      return true;
+    };
+    if (handoff === "before_creation")
+      f.lease.spawnStreamed = async () => {
+        generation = 2;
+        return f.process;
+      };
+    else
+      f.process.onWrite = (frame) => {
+        if (frame.shouldQuery === false)
+          generation = handoff === "disconnected" ? null : 2;
+      };
+    try {
+      await expect(
+        f.harness.start(f.dispatch, f.lineage),
+      ).rejects.toMatchObject({ code: "environment_attestation_failed" });
+      expect(writes).toBe(0);
+      expect(f.process.queryWrites).toBe(0);
+    } finally {
+      clock.mockRestore();
+      next.mockRestore();
+      await f.harness.close(f.lineage);
+      f.registry.close();
+      f.store.close();
+    }
+  });
+
+test("review: canonical cancellation revokes before a pending HumanAttention cleanup await", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  f.process.probeFrames = () => [];
+  let now = 0,
+    writes = 0,
+    releaseAttention!: () => void,
+    enteredAttention!: () => void,
+    rejectFrame!: (error: Error) => void,
+    enteredRead!: () => void;
+  const attention = new Promise<void>((resolve) => {
+    releaseAttention = resolve;
+  });
+  const attentionEntered = new Promise<void>((resolve) => {
+    enteredAttention = resolve;
+  });
+  const reading = new Promise<void>((resolve) => {
+    enteredRead = resolve;
+  });
+  const control = {
+    cancelPendingHumanAttention: () => {
+      enteredAttention();
+      return attention;
+    },
+  };
+  const executor = new DispatchExecutor(
+    f.registry,
+    f.harness,
+    async () => false,
+    async () => false,
+    control as never,
+  );
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+    () => {
+      enteredRead();
+      return new Promise((_resolve, reject) => {
+        rejectFrame = reject;
+      });
+    },
+  );
+  f.process.tryWriteDiagnostic = () => {
+    writes++;
+    return true;
+  };
+  const outcome = f.harness.start(f.dispatch, f.lineage).then(
+    (value) => value,
+    (error) => error,
+  );
+  let cancel: Promise<void> | undefined;
+  try {
+    await reading;
+    cancel = executor.cancel({
+      type: "cancel_dispatch",
+      protocol_version: f.dispatch.action.protocol_version,
+      worker_id: f.dispatch.action.worker_id,
+      connection_generation: 1,
+      action_id: f.dispatch.action.action_id,
+      run_id: f.dispatch.action.run_id,
+      occurrence_id: f.dispatch.action.occurrence_id,
+      attempt_id: f.dispatch.action.attempt_id,
+      cancellation: {
+        request_id: "review-cancel",
+        origin: "product_operator",
+        reason: null,
+        requested_at: new Date().toISOString(),
+      },
+    });
+    await attentionEntered;
+    expect(f.registry.get(f.dispatch.action.action_id).state).toBe("failed");
+    now = 30_000;
+    rejectFrame(new ClaudeProtocolTimeout());
+    expect(await outcome).toMatchObject({
+      code: "environment_attestation_failed",
+    });
+    expect(writes).toBe(0);
+  } finally {
+    releaseAttention();
+    await cancel;
+    clock.mockRestore();
+    next.mockRestore();
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
 async function effortHarness(
   applied: Record<string, unknown>,
   reasoning: string | null = "high",
+  diagnosticGeneration: () => number | null = () => 1,
 ) {
   const root = await testRoot();
   const candidate = claudeAction();
@@ -402,6 +743,7 @@ async function effortHarness(
     ref: environment,
     assertCurrent: () => undefined,
   };
+  let ownershipReads = 0;
   const harness = new ClaudeCodeHarness(
     { workerId: "worker-test", dataRoot: root } as WorkerConfig,
     { prepare: async () => ({ materializedArtifacts: {} }) } as never,
@@ -428,6 +770,14 @@ async function effortHarness(
         }),
       }) as unknown as WorkspaceToolBroker,
     store,
+    (actionId) => {
+      ownershipReads++;
+      return registry.get(actionId);
+    },
+    () => {
+      const generation = diagnosticGeneration();
+      return generation === null ? null : `1:${generation}`;
+    },
   );
   return {
     harness,
@@ -437,6 +787,8 @@ async function effortHarness(
     registry,
     store,
     nativeSpawns: () => spawns,
+    ownershipReads: () => ownershipReads,
+    lease,
     storeRoot: root,
   };
 }
@@ -588,6 +940,7 @@ interface SyntheticInitProcess extends StreamedProcess {
   appliedSettings: Record<string, unknown>;
   probeFrames: ((sessionId: string) => Record<string, unknown>[]) | null;
   endProbeOutput: boolean;
+  emitFrame(frame: Record<string, unknown>): void;
 }
 
 function syntheticInitProcess(
@@ -628,6 +981,10 @@ function syntheticInitProcess(
     appliedSettings: { model: CLAUDE_CODE_MODEL, effort: CLAUDE_CODE_EFFORT },
     probeFrames: null,
     endProbeOutput: false,
+    emitFrame: (frame) =>
+      stdoutController.enqueue(
+        new TextEncoder().encode(`${JSON.stringify(frame)}\n`),
+      ),
     write: async (data) => {
       const frame = JSON.parse(new TextDecoder().decode(data)) as Record<
         string,

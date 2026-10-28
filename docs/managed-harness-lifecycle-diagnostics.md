@@ -68,8 +68,11 @@ Additional observations are `protocol_frame_rejected`,
 
 A cancellation call is only a request until acknowledged. An acknowledgment
 positively proves submission; it does not timestamp the guest signal syscall.
-No extra cancellation, escalation, liveness probe or inspection command is added.
-Exit and cancellation acknowledgment can arrive in either order.
+No extra **physical** cancellation, escalation, liveness probe or inspection
+command is added. The separate [timeout queue diagnostic](claude-timeout-queue-diagnostic.md)
+can attempt one nonblocking native `cancel_async_message` immediately before
+normal physical cancellation; neither its dispatch nor its response gates that
+cancellation. Exit and cancellation acknowledgment can arrive in either order.
 
 Timestamps are UTC first-observation instants and monotonic elapsed milliseconds,
 not invented guest-side execution times. Each stage records at most once.
@@ -181,6 +184,20 @@ not advance lifecycle stages or establish native parsing, Mod execution, init
 construction, or exact timeout-time liveness. Their actual observation timestamps
 and typed unavailability remain distinct from the checkpoint that requested them.
 No new SQLite table/schema or Product field is added.
+
+## Timeout queue-membership partition
+
+`queued` is not proof that a probe remained physically queued: native dequeue
+precedes some pre-start joins. The optional prospective `queuedProbeCancellation`
+object contains only closed request/result enums, as specified in the
+[timeout diagnostic](claude-timeout-queue-diagnostic.md). `cancelled_true` proves
+removability at handler time; `cancelled_false` proves no removal then, **not
+started**; unavailable/malformed permit no membership conclusion. It cannot
+identify the particular join, advance progress, or grant readiness/recovery.
+Native cancellation state is mutated, but Product failure and normal physical
+termination remain unchanged. Reply/termination races and partial/missing frames
+are valid. No terminal totals are required. Historical rows get no new defaults.
+The recorder's comparison-only binding is never cancellation authority.
 
 ## Provider-free validation
 

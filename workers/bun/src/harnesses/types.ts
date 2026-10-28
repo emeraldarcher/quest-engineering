@@ -757,6 +757,10 @@ export interface AgentHarness {
     execution: HarnessPreparedExecution,
     onEvent: (event: HarnessEvent) => void,
   ): Promise<Record<string, JsonValue>>;
+  /** Synchronous revocation of transient diagnostic authority only. No I/O,
+   * readiness/session mutation, or recovery action. Omit Action to revoke all
+   * on Worker-generation loss; terminal paths pass only their matching Action. */
+  revokeDiagnosticCapabilities?(actionId?: string): void;
   /** Execution retirement used only by an authorized recovery transition. */
   retire?(lineage: HarnessLineage): Promise<void>;
   interrupt?(lineage: HarnessLineage): Promise<void>;
