@@ -169,7 +169,9 @@ export function preprobeRelay(
     cancellationOrder: [] as number[],
   };
   let baseline: () => void = () => undefined;
-  let writer: () => void = () => undefined;
+  let writer: () => void | Promise<void> = () => undefined;
+  let errorPublication: (() => Promise<void>) | null = null;
+  let onCancellation: () => void = () => undefined;
   const finish = () => {
     if (finished) return;
     finished = true;
@@ -233,6 +235,7 @@ export function preprobeRelay(
         } else if (opcode === 22) {
           counts.cancels++;
           counts.cancellationOrder.push(22);
+          onCancellation();
           controller.enqueue(frame(rejectCancel ? 10 : 9, payload));
           if (!rejectCancel) finish();
         } else if (opcode === 24) {
@@ -280,7 +283,7 @@ export function preprobeRelay(
   const manager = new StreamedProcessManager({
     backendKind: lease.ref.backendKind,
     validate: (_ref, operation) => {
-      if (operation === "write_streamed") writer();
+      if (operation === "write_streamed") return writer();
     },
   });
   let process: StreamedProcess | undefined;
@@ -290,8 +293,8 @@ export function preprobeRelay(
       lease.paths,
       command,
       options ?? {},
-      (context) =>
-        SbxStreamedProcessTransport.open({
+      async (context) => {
+        const transport = await SbxStreamedProcessTransport.open({
           client: {
             executable: "/never-executed",
             streamLauncherArgs: () => [],
@@ -303,7 +306,19 @@ export function preprobeRelay(
           markerPath: "/fixture/marker",
           expectedMarkerSha256: "marker",
           acknowledgementTimeoutMs: 100,
-        }),
+        });
+        if (errorPublication) {
+          // Scheduling hook only: retain the production frame reader/state and
+          // delay delivery to the real manager, never replace capability reads.
+          const run = transport.run.bind(transport);
+          transport.run = (onEvent) =>
+            run(async (event) => {
+              if (event.kind === "transport_error") await errorPublication?.();
+              await onEvent(event);
+            });
+        }
+        return transport;
+      },
     );
     return process;
   };
@@ -313,8 +328,22 @@ export function preprobeRelay(
     onBaseline: (fn: () => void) => {
       baseline = fn;
     },
-    onWriter: (fn: () => void) => {
+    onWriter: (fn: () => void | Promise<void>) => {
       writer = fn;
+    },
+    delayErrorPublication: (fn: () => Promise<void>) => {
+      errorPublication = fn;
+    },
+    onCancellation: (fn: () => void) => {
+      onCancellation = fn;
+    },
+    emitLateReady: () =>
+      controller.enqueue(frame(1, encode({ protocolVersion: 99 }))),
+    emitMalformedFrame: () => {
+      const header = new Uint8Array(5);
+      header[0] = 2;
+      new DataView(header.buffer).setUint32(1, 1024 * 1024 + 65);
+      controller.enqueue(header);
     },
     finish,
     suppressInit: () => {

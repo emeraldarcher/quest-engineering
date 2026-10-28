@@ -445,6 +445,13 @@ async function openFake(
     restore: () => spawn.mockRestore(),
     kills: () => kills,
     writes: () => writes,
+    lateReady: () => controller.enqueue(frame(1, { protocolVersion: 99 })),
+    malformedFrame: () => {
+      const header = new Uint8Array(5);
+      header[0] = 2;
+      new DataView(header.buffer).setUint32(1, 1024 * 1024 + 65);
+      controller.enqueue(header);
+    },
     finish: () => {
       controller.enqueue(frame(4, ""));
       controller.enqueue(frame(5, ""));
@@ -505,6 +512,41 @@ for (const [name, ready, expected] of [
       f.restore();
     }
   });
+for (const failure of ["lateReady", "malformedFrame"] as const)
+  test(`observed ${failure} revokes live capability before async error publication`, async () => {
+    const f = await openFake({
+      protocolVersion: 2,
+      nonblockingDiagnosticWrite: true,
+    });
+    const published = deferred<void>(),
+      release = deferred<void>();
+    let running: Promise<void> | undefined;
+    try {
+      const transport = await f.opened;
+      running = transport.run(async (event) => {
+        if (event.kind === "transport_error") {
+          published.resolve();
+          await release.promise;
+        }
+      });
+      const historical = transport.negotiatedCapabilities();
+      expect(historical.nonblockingDiagnosticWrite).toBe("supported");
+      f[failure]();
+      await published.promise;
+      expect(
+        transport.negotiatedCapabilities().nonblockingDiagnosticWrite,
+      ).toBe("unavailable");
+      expect(transport.tryWriteDiagnostic(Uint8Array.of(1))).toBe(false);
+      expect(f.writes()).toBe(0);
+      expect(historical.nonblockingDiagnosticWrite).toBe("supported");
+    } finally {
+      release.resolve();
+      f.finish();
+      await running;
+      f.restore();
+    }
+  });
+
 for (const ready of ["eof", "malformed", "exit"] as const)
   test(`READY ${ready} cannot return a usable process or write a probe`, async () => {
     const f = await openFake(ready);

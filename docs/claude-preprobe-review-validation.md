@@ -178,3 +178,42 @@ Run. Isolated Product fixture Quests/Runs are not live operational entities.
 The six failed Runs and retained operational evidence were not accessed/modified.
 No push or merge occurred. This is a reviewable implementation result, not
 permission for operational use; a new adversarial review is still required.
+
+## Final adversarial review: synchronous error-revocation correction
+
+The final review found another concrete race in `30b748a4`: the relay could
+observe an unexpected control frame or frame-reader failure and then await
+asynchronous error publication while `negotiatedCapabilities()` still returned
+`supported`. With writer validation suspended and error publication held, both
+error paths permitted **one fake-transport probe write** on the old source. This
+was reproduced using the actual parser, transport, manager and adapter; no native
+process was launched. Historical frozen snapshots were not the cause: even a new
+live capability read was stale during this publication window.
+
+The narrow correction retires negotiation synchronously before either transport
+error-publication await. It changes no timeout, cancellation, wire, readiness,
+receipt or Product policy. Two transport tests hold error publication and require
+unavailable support/zero diagnostic writes; two combined Product/READY/manager/
+adapter tests hold both validation and publication and require zero probe bytes.
+The prior original candidate and review-fix commits are not amended.
+
+The safe allowlist and exclusions above remain unchanged. Additional read-only
+review experiments live under `/tmp/qe-preprobe-final-adversarial/`, outside the
+repository: `scanner-review.test.ts` covers 38 escaping/structure/boundary cases;
+`adapter-review.test.ts` runs nine new cases for individually revoked writer
+operands, delayed validation after teardown, and simultaneous Action-keyed
+receipts/swapped Attempt conflicts. Only their `^final-review` tests are selected;
+all copied baseline adapter tests are filtered out. They use the same no-native
+preload. The negative `transport-error-review.test.ts` and
+`before-fix-adapter.test.ts` reproductions are defect evidence, not clean PASS
+counts. The latter loads an immutable `30b748a4` transport source copy and confirms
+one prohibited fake probe in each of the two error-publication races.
+
+Post-correction validation: **560 Worker + 4 Product = 564 unique tests passed**;
+47 additional temporary review cases passed, for **611 unique clean tests**.
+Both five-test adversarial subsets and the four focused defect regressions are
+already included in those totals, not counted again. Full TypeScript, Biome,
+formatting/whitespace, authority/wire AST, unchanged relay/profile source, Python
+AST-only and pinned-artifact static checks passed again. The earlier accidental
+native-Claude history above remains explicit; this final review executes no
+native Claude/SDK/provider/model/login/inference or operational activity.

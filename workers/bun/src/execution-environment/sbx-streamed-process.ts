@@ -302,6 +302,9 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           await onEvent({ kind: "exit", exit: parseExit(frame.payload) });
           continue;
         }
+        // The live attachment is already unusable. Revoke before publishing
+        // through an async/backpressured observer, not only in finally.
+        this.negotiationRetired = true;
         await onEvent({
           kind: "transport_error",
           errorCode:
@@ -321,6 +324,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           errorCode: "streamed_process_stream_unavailable",
         });
     } catch {
+      this.negotiationRetired = true;
       if (!this.disconnected)
         await onEvent({
           kind: "transport_error",

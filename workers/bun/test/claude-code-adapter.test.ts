@@ -1285,6 +1285,83 @@ for (const race of [
     }
   });
 
+for (const failure of ["late_ready", "reader_failure"] as const)
+  productWireTest(
+    `raw READY writer fence: ${failure} cannot retain support while error publication awaits`,
+    async () => {
+      const f = await effortHarness(
+        { model: CLAUDE_CODE_MODEL, effort: "high" },
+        "high",
+        () => 1,
+        () => undefined,
+        productPreprobeAction("fresh"),
+      );
+      const relay = preprobeRelay(
+        f.lease,
+        '"protocolVersion":2,"nonblockingDiagnosticWrite":true',
+        initFrame,
+      );
+      let writerEntered!: () => void, releaseWriter!: () => void;
+      let errorEntered!: () => void, releaseError!: () => void;
+      const atWriter = new Promise<void>((resolve) => {
+        writerEntered = resolve;
+      });
+      const validation = new Promise<void>((resolve) => {
+        releaseWriter = resolve;
+      });
+      const atError = new Promise<void>((resolve) => {
+        errorEntered = resolve;
+      });
+      const publication = new Promise<void>((resolve) => {
+        releaseError = resolve;
+      });
+      relay.onWriter(() => {
+        writerEntered();
+        return validation;
+      });
+      relay.delayErrorPublication(async () => {
+        errorEntered();
+        await publication;
+      });
+      relay.onCancellation(releaseError);
+      const outcome = f.harness.start(f.dispatch, f.lineage).then(
+        () => null,
+        (error) => error,
+      );
+      try {
+        await atWriter;
+        const historical = relay.process()?.negotiatedCapabilities?.();
+        expect(historical?.nonblockingDiagnosticWrite).toBe("supported");
+        if (failure === "late_ready") relay.emitLateReady();
+        else relay.emitMalformedFrame();
+        await atError;
+        // The real manager has not received the error yet; the real transport
+        // must withdraw live support synchronously before this writer resumes.
+        releaseWriter();
+        expect(await outcome).toMatchObject({
+          code: "diagnostic_capability_unavailable",
+        });
+        expect(relay.counts.probes).toBe(0);
+        expect(relay.counts.bytes).toBe(0);
+        expect(relay.counts.diagnostics).toBe(0);
+        expect(relay.counts.queries).toBe(0);
+        expect(relay.counts.opens).toBe(1);
+        expect(relay.counts.cancels).toBe(1);
+        expect(historical?.nonblockingDiagnosticWrite).toBe("supported");
+        expect(
+          f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+        ).toBeNull();
+      } finally {
+        releaseWriter();
+        releaseError();
+        await outcome;
+        await relay.close();
+        f.registry.close();
+        f.store.close();
+      }
+    },
+  );
+
 productWireTest(
   "raw READY Product timeout: exact probe owns one synchronous diagnostic before cancellation",
   async () => {
