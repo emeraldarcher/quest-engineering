@@ -274,6 +274,8 @@ export class QuestEngineeringWorker {
                 this.sbxExecutionManager,
                 this.providerAccountEnvironments,
                 () => this.workspaceToolBroker,
+                undefined,
+                (actionId) => this.registry.get(actionId),
               );
             }
             const host = new HerdrTerminalBackend(

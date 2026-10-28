@@ -511,6 +511,13 @@ export class DispatchExecutor {
     if (monitor) monitor.cancelled = true;
     const newlyAcknowledged = current.serverAcknowledgedAt === null;
     this.registry.acknowledgeServerTerminal(actionId);
+    for (const harness of this.harnesses.list()) {
+      try {
+        harness.revokeDiagnosticCapabilities?.(actionId);
+      } catch {
+        // Diagnostic hooks cannot change the authoritative terminal ACK path.
+      }
+    }
 
     try {
       if (

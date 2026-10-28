@@ -35,6 +35,7 @@ const WRITE = 20;
 const CLOSE_STDIN = 21;
 const CANCEL = 22;
 const OBSERVE_IO = 23;
+const TRY_WRITE_DIAGNOSTIC = 24;
 const MAX_IO_SNAPSHOT_BYTES = 8_192;
 const MAX_RELAY_FRAME_BYTES = 1024 * 1024 + 64;
 
@@ -71,6 +72,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   private targetExited = false;
   private disconnected = false;
   private runStarted = false;
+  private diagnosticWriteAttempted = false;
   private ioWaiter: {
     id: string;
     resolve(value: StreamedProcessTransportIoSnapshot): void;
@@ -86,6 +88,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     private readonly processGeneration: string,
     private readonly expectedMarkerSha256: string,
     private readonly ioProtocolSupported: boolean,
+    private readonly diagnosticWriteSupported: boolean,
   ) {
     this.identity = identity;
     this.stderrReader = child.stderr.getReader();
@@ -206,6 +209,8 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         input.processGeneration,
         input.expectedMarkerSha256,
         ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION,
+        ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION &&
+          ready.nonblockingDiagnosticWrite === true,
       );
     } catch (error) {
       await frames.cancel().catch(() => undefined);
@@ -325,6 +330,34 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
 
   cancel(cancellationId: string): Promise<StreamedProcessTransportSideEffect> {
     return this.request(this.pendingCancellations, CANCEL, cancellationId);
+  }
+
+  tryWriteDiagnostic(data: Uint8Array): boolean {
+    if (this.diagnosticWriteAttempted) return false;
+    this.diagnosticWriteAttempted = true;
+    if (
+      !this.diagnosticWriteSupported ||
+      !this.identity.observedExecutableIdentity ||
+      !this.runStarted ||
+      this.disconnected ||
+      this.hostExited ||
+      this.targetExited ||
+      this.pendingWrites.size ||
+      this.pendingCancellations.size ||
+      data.byteLength === 0 ||
+      data.byteLength > 512
+    )
+      return false;
+    try {
+      // No ACK waiter/timer and no ordinary WRITE: the guest uses one atomic
+      // nonblocking pipe write, so it cannot wait ahead of physical CANCEL.
+      const frame = encodeFrame(TRY_WRITE_DIAGNOSTIC, data);
+      if (this.child.stdin.write(frame) !== frame.byteLength) return false;
+      void Promise.resolve(this.child.stdin.flush()).catch(() => undefined);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   observeIo(): Promise<StreamedProcessTransportIoSnapshot> {

@@ -71,6 +71,10 @@ import {
   waitForInit,
 } from "./protocol.ts";
 import {
+  type ProbeCancellationScope,
+  QueuedProbeCancellation,
+} from "./queued-probe-cancellation.ts";
+import {
   type ClaudeCodeSessionRecord,
   ClaudeCodeSessionStore,
 } from "./session-store.ts";
@@ -134,6 +138,7 @@ interface ActiveClaudeCodeExecution {
   continuationCount: number;
   fatal: Error | null;
   disconnected: boolean;
+  queuedProbeCancellation: QueuedProbeCancellation | null;
 }
 
 export class ClaudeCodeHarness implements AgentHarness {
@@ -151,6 +156,9 @@ export class ClaudeCodeHarness implements AgentHarness {
     private readonly accounts: ProviderAccountEnvironmentManager,
     private readonly brokerProvider: () => WorkspaceToolBroker,
     sessionStore?: ClaudeCodeSessionStore,
+    private readonly currentDispatch?: (
+      actionId: string,
+    ) => DispatchRecord | null,
   ) {
     this.sessions =
       sessionStore ?? new ClaudeCodeSessionStore(this.config.dataRoot);
@@ -201,6 +209,7 @@ export class ClaudeCodeHarness implements AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
+    this.active.get(lineage.lineageId)?.queuedProbeCancellation?.invalidate();
     return this.prepare(dispatch, lineage, true);
   }
 
@@ -313,6 +322,7 @@ export class ClaudeCodeHarness implements AgentHarness {
     lineage: HarnessLineage,
     dispatch?: DispatchRecord,
   ): Promise<HarnessRecoveredExecution> {
+    this.active.get(lineage.lineageId)?.queuedProbeCancellation?.invalidate();
     if (!dispatch)
       return {
         found: false,
@@ -349,6 +359,7 @@ export class ClaudeCodeHarness implements AgentHarness {
   async interrupt(lineage: HarnessLineage): Promise<void> {
     const active = this.active.get(lineage.lineageId);
     if (!active) return;
+    active.queuedProbeCancellation?.invalidate();
     active.disconnected = true;
     await Promise.allSettled([
       active.process.cancel(),
@@ -359,6 +370,12 @@ export class ClaudeCodeHarness implements AgentHarness {
     this.active.delete(lineage.lineageId);
   }
 
+  revokeDiagnosticCapabilities(actionId: string): void {
+    for (const active of this.active.values())
+      if (active.dispatch.action.action_id === actionId)
+        active.queuedProbeCancellation?.invalidate();
+  }
+
   async retire(lineage: HarnessLineage): Promise<void> {
     await this.close(lineage);
   }
@@ -366,6 +383,7 @@ export class ClaudeCodeHarness implements AgentHarness {
   async close(lineage: HarnessLineage): Promise<void> {
     const active = this.active.get(lineage.lineageId);
     if (active) {
+      active.queuedProbeCancellation?.invalidate();
       active.disconnected = true;
       await Promise.allSettled([
         active.process.cancel(),
@@ -416,6 +434,7 @@ export class ClaudeCodeHarness implements AgentHarness {
       active &&
       active.dispatch.action.action_id === dispatch.action.action_id
     ) {
+      active.queuedProbeCancellation?.invalidate();
       active.promptSubmitted = false;
       active.promptAccepted = false;
       active.session = this.sessions.transition(
@@ -434,6 +453,7 @@ export class ClaudeCodeHarness implements AgentHarness {
 
   disconnect(): void {
     for (const active of this.active.values()) {
+      active.queuedProbeCancellation?.invalidate();
       active.disconnected = true;
       this.markUncertain(active);
       void active.process.cancel();
@@ -478,6 +498,8 @@ export class ClaudeCodeHarness implements AgentHarness {
       // live authority instead of retaining the previous Action's revoked one.
       const account = await acquireAccountRuntime();
       const priorBroker = existing.broker;
+      existing.queuedProbeCancellation?.invalidate();
+      existing.queuedProbeCancellation = null;
       existing.account = account;
       existing.dispatch = dispatch;
       existing.runPrepared = runPrepared;
@@ -561,6 +583,7 @@ export class ClaudeCodeHarness implements AgentHarness {
           (error) => {
             const current = this.active.get(lineage.lineageId);
             if (!current) return;
+            current.queuedProbeCancellation?.invalidate();
             current.fatal = error;
             current.inspection = inspection(current, "unavailable", "unknown");
             void current.process.cancel();
@@ -627,13 +650,88 @@ export class ClaudeCodeHarness implements AgentHarness {
           continuationCount: 0,
           fatal: null,
           disconnected: false,
+          queuedProbeCancellation: null,
         };
         this.active.set(lineage.lineageId, active);
+        const scope: ProbeCancellationScope = {
+          runId: dispatch.action.run_id,
+          attemptId: dispatch.action.attempt_id,
+          actionId: dispatch.action.action_id,
+          lineageId: lineage.lineageId,
+          sessionId: nativeSessionId,
+          process,
+        };
+        try {
+          // Establish ownership once BEFORE the probe/budget. No store lookup
+          // is permitted in the later timeout dispatch or response path. ACKs
+          // after this synchronous check revoke via the executor's hook.
+          const canonical =
+            !continuation &&
+            !recovering &&
+            !dispatch.action.operational_recovery
+              ? this.currentDispatch?.(scope.actionId)
+              : null;
+          if (
+            !continuation &&
+            !recovering &&
+            !dispatch.action.operational_recovery &&
+            canonical &&
+            ["accepted", "running"].includes(canonical.state) &&
+            !canonical.serverAcknowledgedAt &&
+            !canonical.settledAt &&
+            !canonical.action.operational_recovery &&
+            canonical.action.action_id === scope.actionId &&
+            canonical.action.run_id === scope.runId &&
+            canonical.action.attempt_id === scope.attemptId &&
+            canonical.lineageId === scope.lineageId
+          ) {
+            active.queuedProbeCancellation = new QueuedProbeCancellation(
+              scope,
+              () => {
+                const current = active.dispatch;
+                if (
+                  !current ||
+                  current.action.operational_recovery ||
+                  current.serverAcknowledgedAt ||
+                  current.settledAt ||
+                  ["completed", "failed"].includes(current.state) ||
+                  current.lineageId !== scope.lineageId ||
+                  this.active.get(scope.lineageId) !== active ||
+                  active.dispatch !== dispatch ||
+                  active.lineageId !== scope.lineageId ||
+                  active.fatal !== null ||
+                  active.account !== account ||
+                  active.process !== process ||
+                  active.session.nativeSessionId !== nativeSessionId
+                )
+                  return null;
+                // Pure in-memory ownership fence: no SQLite/namespace wait
+                // may be introduced at the physical cancellation boundary.
+                return {
+                  ...scope,
+                  runId: current.action.run_id,
+                  attemptId: current.action.attempt_id,
+                  actionId: current.action.action_id,
+                };
+              },
+              (value) =>
+                diagnostics?.recordQueuedProbeCancellation(
+                  value,
+                  process.handle,
+                ),
+            );
+          }
+        } catch {
+          /* No capability is safer than uncertain identity; probe still proceeds. */
+        }
+        const queuedCancellation = active.queuedProbeCancellation ?? undefined;
+        let readinessTimedOut = false;
         observeClaudeProtocol(
           process,
           frames,
           diagnostics,
           () => active.disconnected,
+          queuedCancellation,
         );
         try {
           await sendMessage(
@@ -642,14 +740,18 @@ export class ClaudeCodeHarness implements AgentHarness {
             "Quest Engineering fixed zero-inference initialization probe.",
             false,
             diagnostics,
+            active.queuedProbeCancellation ?? undefined,
           );
           // Native settings proof shares the existing 30s post-probe budget;
           // it never extends the init timeout or introduces a second 30s wait.
           const deadline = Date.now() + 30_000;
+          active.queuedProbeCancellation?.arm(deadline);
           const init = await waitForInit(frames, 30_000, () => {
+            readinessTimedOut = true;
             diagnostics?.record("attestation_timeout_fired", process.handle);
             diagnostics?.captureIo("attestation_timeout_fired", process);
           });
+          active.queuedProbeCancellation?.invalidate();
           try {
             attestClaudeInit(init, {
               sessionId: nativeSessionId,
@@ -690,10 +792,15 @@ export class ClaudeCodeHarness implements AgentHarness {
         } catch (error) {
           active.disconnected = true;
           await Promise.allSettled([
-            cancelClaudePreparation(process, diagnostics),
+            cancelClaudePreparation(
+              process,
+              diagnostics,
+              readinessTimedOut ? (queuedCancellation ?? null) : undefined,
+            ),
             relay.stop(),
             admitted.client.close(),
           ]);
+          active.queuedProbeCancellation?.invalidate();
           this.active.delete(lineage.lineageId);
           this.markUncertain(active);
           throw claudeError(

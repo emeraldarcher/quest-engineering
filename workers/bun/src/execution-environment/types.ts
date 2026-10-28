@@ -250,6 +250,9 @@ export interface StreamedProcess {
   /** Resolves only after guest acknowledgement; uncertain writes are never replayed. */
   write(data: Uint8Array): Promise<StreamedProcessWriteReceipt>;
   closeStdin(): Promise<StreamedProcessWriteReceipt>;
+  /** Optional bounded, nonblocking submission on this current attachment only.
+   * True means submitted to transport, NOT target delivery/ACK. No retry/wait. */
+  tryWriteDiagnostic?(data: Uint8Array): boolean;
   /** Requests one physical termination action without signal escalation. */
   cancel(cancellationId?: string): Promise<StreamedProcessCancellationReceipt>;
   inspect(): Promise<StreamedProcessReconciliation>;

@@ -311,7 +311,11 @@ cancellation, queue removal, receipt by an internal control handler, or exact
 location of an unresolved await. Exit I/O remained unavailable:busy; do not
 invent terminal byte totals or a final pre-cancel census.
 
-## 7. Smallest proposed next diagnostic — design only
+## 7. Original smallest diagnostic proposal — source-investigation record
+
+This section records the original docs/tests-only proposal. Its subsequent
+Worker implementation is documented in [timeout queue diagnostics](claude-timeout-queue-diagnostic.md).
+That implementation does not establish the actual wait of any retained Run.
 
 There is no source-proven production correction. A full native phase snapshot
 would be more informative, but no reviewed existing local read-only control
@@ -363,8 +367,8 @@ Crucially, the current lifecycle recorder's private probe binding is
 binding as cancellation authority. Any future implementation needs a distinct
 operation-scoped owned-command capability held by the protocol/preparation
 owner, existing physical authority checks, and deterministic negative tests
-for stale/mismatched ownership. This design is not implemented here and
-provides no execution authorization.
+for stale/mismatched ownership. This design was not implemented in the original
+source-only commit and provides no execution authorization.
 
 ## 8. Deterministic validation and unchanged authority
 
@@ -384,11 +388,13 @@ logic or successful native readiness. Existing deterministic parser, census,
 privacy, init/effort and adapter tests remain the executable behavior checks.
 No source-only test can establish the failed process's actual stack/wait.
 
-Only this document and the new test are changed. Production adapter/protocol,
+In the original source-investigation commit, only this document and its new
+test changed. The subsequent diagnostic implementation is separately reviewable.
+The original investigation left production adapter/protocol,
 Mod/profile/settings/binary/SDK/image pins, auth/provenance, Worker protocol,
 ownership/relay versions, 30,000ms shared readiness budget, 3,000ms fail-open
 pre-probe capture, full init/model/high-effort proof, Product confirmation and
-inference gates remain unchanged. Historical evidence is not reclassified,
+inference gates unchanged. Historical evidence is not reclassified,
 repaired, zero-filled, migrated or cleaned up. No seventh Run is authorized.
 
 Related: [protocol investigation](claude-protocol-schema-investigation.md),

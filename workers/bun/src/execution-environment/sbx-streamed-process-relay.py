@@ -34,6 +34,7 @@ WRITE = 20
 CLOSE_STDIN = 21
 CANCEL = 22
 OBSERVE_IO = 23
+TRY_WRITE_DIAGNOSTIC = 24
 MAX_FRAME = 1024 * 1024 + 64
 
 output = sys.stdout.buffer
@@ -279,6 +280,36 @@ def relay_output(stream, frame_type, eof_type):
         terminate_target()
 
 
+def try_write_diagnostic(data):
+    # Optional v2 extension: never block the stdin/CANCEL loop. No ACK or retry.
+    fd = None
+    restore = False
+    try:
+        if (sys.platform != "linux" or not 0 < len(data) <= 512
+                or process.poll() is not None or process.stdin is None
+                or io_identity is None or io_pipe_identity is None):
+            return
+        fd = process.stdin.fileno()
+        pipe = os.fstat(fd)
+        if (not stat.S_ISFIFO(pipe.st_mode)
+                or (pipe.st_dev, pipe.st_ino) != io_pipe_identity
+                or len(data) > os.fpathconf(fd, "PC_PIPE_BUF")
+                or start_identity(process.pid) != io_identity["startIdentity"]
+                or executable_identity(process.pid) != io_identity["observedExecutableIdentity"]):
+            return
+        restore = os.get_blocking(fd)
+        os.set_blocking(fd, False)
+        os.write(fd, data)  # <= PIPE_BUF: atomic all-or-unavailable, no loop.
+    except Exception:
+        pass
+    finally:
+        if fd is not None and restore:
+            try:
+                os.set_blocking(fd, True)
+            except Exception:
+                pass
+
+
 def input_loop():
     global io_before_cancellation
     source = sys.stdin.buffer
@@ -352,6 +383,8 @@ def input_loop():
                     return
             elif frame_type == OBSERVE_IO:
                 request_io(payload)
+            elif frame_type == TRY_WRITE_DIAGNOSTIC:
+                try_write_diagnostic(payload)
             else:
                 terminate_target()
                 return
@@ -453,6 +486,7 @@ def main():
         READY,
         {
             "protocolVersion": RELAY_PROTOCOL_VERSION,
+            "nonblockingDiagnosticWrite": True,
             "observedExecutableIdentity": observed_executable_identity,
             "pid": str(process.pid),
             "startIdentity": started,

@@ -25,6 +25,7 @@ import {
   decodeClaudeOutputTag,
   isClaudeInit,
 } from "./claude-code/output-tags.ts";
+import type { QueuedProbeCancellationEvidence } from "./claude-code/queued-probe-cancellation.ts";
 
 export const LIFECYCLE_IO_CHECKPOINTS = [
   "before_probe_write",
@@ -123,6 +124,8 @@ export interface LifecycleEvidence {
           | "counter_regression";
       };
   outputCensus: ClaudeOutputCensusSnapshot & { frameValidated: boolean };
+  /** Prospective only; historical rows are returned unchanged, without defaults. */
+  queuedProbeCancellation?: QueuedProbeCancellationEvidence;
 }
 
 /** Worker-local, non-authoritative evidence. Never accepts native text/payloads. */
@@ -188,6 +191,8 @@ export class ManagedHarnessLifecycle {
   // Worker-owned, immutable, comparison-only; never included in snapshot/save.
   #probeCommandId: string | null = null;
   private censusSavePending = false;
+  private queuedProbeCancellation: QueuedProbeCancellationEvidence | null =
+    null;
   private readonly started = performance.now();
   private persistence: "available" | "unknown" = "unknown";
 
@@ -366,6 +371,39 @@ export class ManagedHarnessLifecycle {
       this.scheduleCensusSave();
     } catch {
       /* Never consume/drop a real protocol frame for diagnostics. */
+    }
+  }
+
+  recordQueuedProbeCancellation(
+    value: QueuedProbeCancellationEvidence,
+    source: StreamedProcessHandle,
+  ): void {
+    try {
+      if (
+        !this.matches(source) ||
+        !this.events.has("attestation_timeout_fired") ||
+        ![
+          "queued_cancel_request_sent",
+          "queued_cancel_request_unavailable",
+        ].includes(value.request) ||
+        ![
+          "cancelled_true",
+          "cancelled_false",
+          "response_unavailable",
+          "response_malformed",
+        ].includes(value.response)
+      )
+        return;
+      // Copy only closed scalars; no capability, operands or native response.
+      this.queuedProbeCancellation = {
+        request: value.request,
+        response: value.response,
+      };
+      // No new persistence task ahead of physical cancellation. Existing
+      // cancellation-request/ACK, exit and census checkpoints save this fixed
+      // in-memory projection; losing a checkpoint remains diagnostic loss.
+    } catch {
+      /* Unavailability cannot delay cancellation or grant readiness. */
     }
   }
 
@@ -561,6 +599,9 @@ export class ManagedHarnessLifecycle {
       events: structuredClone([...this.events.values()]),
       ioObservations: structuredClone([...this.io.values()]),
       probeIoDelta: this.probeIoDelta(),
+      ...(this.queuedProbeCancellation
+        ? { queuedProbeCancellation: { ...this.queuedProbeCancellation } }
+        : {}),
       outputCensus: {
         ...this.census.snapshot(
           this.events.has("stream_observation_registered"),
