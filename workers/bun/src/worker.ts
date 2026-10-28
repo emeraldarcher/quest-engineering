@@ -276,6 +276,16 @@ export class QuestEngineeringWorker {
                 () => this.workspaceToolBroker,
                 undefined,
                 (actionId) => this.registry.get(actionId),
+                () => {
+                  const connection = this.readyGeneration;
+                  const worker = this.channel.currentServerGeneration();
+                  return connection !== null &&
+                    worker !== null &&
+                    !this.stopping &&
+                    this.channel.isCurrentGeneration(connection)
+                    ? `${connection}:${worker}`
+                    : null;
+                },
               );
             }
             const host = new HerdrTerminalBackend(
@@ -457,6 +467,7 @@ export class QuestEngineeringWorker {
             "Worker connection was superseded by a newer generation; stopping this controller.",
           );
           this.stopping = true;
+          this.revokeDiagnosticCapabilities();
         },
       },
     );
@@ -1260,9 +1271,20 @@ export class QuestEngineeringWorker {
     if (this.readyGeneration === generation) this.readyGeneration = null;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = null;
+    this.revokeDiagnosticCapabilities();
     void this.trackProtocolOperation(
       this.workspaceToolBroker.retireAll("worker_generation_disconnected"),
     ).catch(() => undefined);
+  }
+
+  private revokeDiagnosticCapabilities(): void {
+    for (const harness of this.harnesses.list()) {
+      try {
+        harness.revokeDiagnosticCapabilities?.();
+      } catch {
+        /* Diagnostic revocation cannot replace the authoritative path. */
+      }
+    }
   }
 
   private async awaitClaimReadiness(generation: number): Promise<void> {

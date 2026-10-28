@@ -7,6 +7,7 @@ import type {
   StreamedProcessTransportIoSnapshot,
   StreamedProcessTransportSideEffect,
 } from "./streamed-process.ts";
+import { diagnosticWriteAccepted } from "./streamed-process.ts";
 import {
   ioUnavailable,
   STREAMED_PROCESS_IO_TIMEOUT_MS,
@@ -51,7 +52,7 @@ interface SideEffectWaiter {
 
 interface RelayChild {
   stdin: {
-    write(data: Uint8Array): number;
+    write(data: Uint8Array): number | Promise<number>;
     flush(): number | Promise<number>;
     end(): number | Promise<number>;
   };
@@ -352,9 +353,13 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
       // No ACK waiter/timer and no ordinary WRITE: the guest uses one atomic
       // nonblocking pipe write, so it cannot wait ahead of physical CANCEL.
       const frame = encodeFrame(TRY_WRITE_DIAGNOSTIC, data);
-      if (this.child.stdin.write(frame) !== frame.byteLength) return false;
+      // FileSink owns the whole ordered chunk, but may return an async or
+      // partial count under backpressure. Such outcomes remain unavailable;
+      // contain rejection and initiate flushing without awaiting either.
+      const written = this.child.stdin.write(frame);
+      if (typeof written !== "number") diagnosticWriteAccepted(written);
       void Promise.resolve(this.child.stdin.flush()).catch(() => undefined);
-      return true;
+      return written === frame.byteLength;
     } catch {
       return false;
     }
@@ -386,7 +391,9 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         }),
       );
       try {
-        this.child.stdin.write(encodeFrame(OBSERVE_IO, payload));
+        void Promise.resolve(
+          this.child.stdin.write(encodeFrame(OBSERVE_IO, payload)),
+        ).catch(() => this.resolveIo(ioUnavailable("observation_failed")));
         void Promise.resolve(this.child.stdin.flush()).catch(() =>
           this.resolveIo(ioUnavailable("observation_failed")),
         );
@@ -506,7 +513,9 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
       timer.unref();
       waiters.set(requestId, { resolve, timer });
       try {
-        this.child.stdin.write(frame);
+        void Promise.resolve(this.child.stdin.write(frame)).catch(() =>
+          this.resolveWaiter(waiters, requestId, "ambiguous"),
+        );
         void Promise.resolve(this.child.stdin.flush()).catch(() =>
           this.resolveWaiter(waiters, requestId, "ambiguous"),
         );

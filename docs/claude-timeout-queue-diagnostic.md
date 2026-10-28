@@ -43,8 +43,11 @@ The capability requires:
 - the same in-memory active preparation, Dispatch object, account and session;
   scope fields must still match, and no operational recovery or known terminal
   state/settlement/server ACK may be present;
-- explicit revocation from the canonical terminal-ACK path, before that path can
-  yield to another task, plus revocation on every rebind/recovery/teardown path;
+- the same current local connection and server Worker-registration generations,
+  captured before any preparation await and compared in memory before creation,
+  dispatch and response handling;
+- explicit revocation after canonical cancellation/failure/terminal ACK and before
+  the next await, plus revocation on every rebind/recovery/teardown path;
 - an acknowledged exact outbound probe write and the original deadline reached.
 
 Missing or contradictory identity is unavailable. Rebind, continuation/recovery,
@@ -57,7 +60,11 @@ any further await; Claude revokes only the matching Action's diagnostic authorit
 A one-time canonical dispatch lookup establishes eligibility before the probe;
 it rejects terminal/ACKed/recovered/mismatched operations, including ACKs that
 preceded capability creation. The same synchronous turn installs the capability,
-so a later ACK cannot miss it. Missing lookup support disables the diagnostic.
+so a later ACK cannot miss it. Canonical cancellation/failure also revokes before
+awaiting HumanAttention cleanup. Worker disconnect/supersession synchronously
+revokes every transient diagnostic capability without changing ordinary shutdown.
+Missing lookup or current-generation support disables the diagnostic. A new
+activation cannot lend its generation to an old in-flight preparation.
 There are no new ownership tombstones or unbounded revocation histories.
 The timeout callback does **not** query a database or revalidate credentials:
 those initial checks established the preparation and attachment, and this
@@ -138,7 +145,11 @@ queuedProbeCancellation.response:
 
 `queued_cancel_request_sent` means the current host transport accepted the
 best-effort submission, **not target delivery, a write ACK, or handler execution**.
-A full pipe, shutdown, identity loss or flush failure can lose it. Only a reliably
+A synchronous complete encoded-frame count is required; partial/pending host
+write outcomes stay unavailable. FileSink's existing ordered buffering owns the
+whole submitted chunk; there is no remainder replay. Async write/flush rejection
+is contained without awaiting it or logging raw errors. A full pipe, shutdown,
+identity loss or flush failure can lose it. Only a reliably
 correlated native response supports the corresponding handler-time conclusion.
 No response always remains unavailable, never false.
 
@@ -173,10 +184,21 @@ The optional `tryWriteDiagnostic` instead:
 
 This fd is the existing Popen pipe writer, not an arbitrary fd/PID reopen. Full,
 closed, unsupported or replaced targets lose only diagnostics. Relay CANCEL=22,
-its SIGTERM action, normal WRITE semantics and all normal receipt handling remain
-unchanged. Deploy Worker/relay source together; old live attachments are not
+its SIGTERM action, normal WRITE sequencing and ACK-only receipt authority remain
+unchanged. Shared ACK-request and I/O submissions contain async FileSink write
+rejection using their existing ambiguous/observation-failed error outcomes; they
+add no wait or retry and never infer ACK from a host write count.
+Deploy Worker/relay source together; old live attachments are not
 upgraded. Relay protocol remains v2; Worker protocol v19 and ownership v2 remain
 unchanged. This additive feature is not a new native Claude protocol.
+
+| Deployment combination | Behavior |
+|---|---|
+| New Worker / old relay | No advertised feature: unavailable; never sends opcode 24 or falls back. |
+| Old Worker / new relay | Extra READY field is ignored; ordinary operations remain unchanged. |
+| Surviving old-generation attachment | No capability transfer, serialization, upgrade or rebind. |
+| Preparation crossing activation | Captured generation is stale: unavailable, even if activation precedes capability creation. |
+| New Worker / new relay | Eligible exact current operation may attempt once at its existing timeout. |
 
 ## Persistence and validation
 

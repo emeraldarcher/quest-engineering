@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { inspect, isDeepStrictEqual } from "node:util";
+import { diagnosticWriteAccepted } from "../../execution-environment/streamed-process.ts";
 import type {
   StreamedProcess,
   StreamedProcessHandle,
@@ -107,7 +108,7 @@ export class QueuedProbeCancellation {
       this.#deadline = deadline;
   }
 
-  /** Synchronous single attempt; no timers, promises, ACK or response wait.
+  /** Synchronous single attempt; no timers, ACK or response wait.
    * The caller must still issue its existing physical cancel immediately. */
   atTimeout(process: StreamedProcess): void {
     if (this.#attempted) return;
@@ -134,7 +135,7 @@ export class QueuedProbeCancellation {
           },
         })}\n`,
       );
-      if (process.tryWriteDiagnostic?.(bytes) === true)
+      if (diagnosticWriteAccepted(process.tryWriteDiagnostic?.(bytes)))
         this.#evidence.request = "queued_cancel_request_sent";
       else this.invalidate();
     } catch {

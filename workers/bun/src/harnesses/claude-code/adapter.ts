@@ -159,6 +159,8 @@ export class ClaudeCodeHarness implements AgentHarness {
     private readonly currentDispatch?: (
       actionId: string,
     ) => DispatchRecord | null,
+    /** Private local-connection/server-registration epoch key; never evidence. */
+    private readonly currentDiagnosticGeneration?: () => string | null,
   ) {
     this.sessions =
       sessionStore ?? new ClaudeCodeSessionStore(this.config.dataRoot);
@@ -370,9 +372,12 @@ export class ClaudeCodeHarness implements AgentHarness {
     this.active.delete(lineage.lineageId);
   }
 
-  revokeDiagnosticCapabilities(actionId: string): void {
+  revokeDiagnosticCapabilities(actionId?: string): void {
     for (const active of this.active.values())
-      if (active.dispatch.action.action_id === actionId)
+      if (
+        actionId === undefined ||
+        active.dispatch.action.action_id === actionId
+      )
         active.queuedProbeCancellation?.invalidate();
   }
 
@@ -470,6 +475,17 @@ export class ClaudeCodeHarness implements AgentHarness {
     recovering = false,
   ): Promise<HarnessPreparedExecution> {
     assertExactConfiguration(dispatch);
+    // Capture before any preparation await: a later activation cannot lend its
+    // generation to an old in-flight preparation. Missing proof disables only
+    // the optional diagnostic, never ordinary readiness or cancellation.
+    let diagnosticGeneration: string | null = null;
+    try {
+      const generation = this.currentDiagnosticGeneration?.();
+      if (typeof generation === "string" && generation.length > 0)
+        diagnosticGeneration = generation;
+    } catch {
+      /* Fail open. */
+    }
     const runPrepared = await this.runManager.prepare(
       dispatch,
       lineage,
@@ -668,7 +684,9 @@ export class ClaudeCodeHarness implements AgentHarness {
           const canonical =
             !continuation &&
             !recovering &&
-            !dispatch.action.operational_recovery
+            !dispatch.action.operational_recovery &&
+            diagnosticGeneration !== null &&
+            this.currentDiagnosticGeneration?.() === diagnosticGeneration
               ? this.currentDispatch?.(scope.actionId)
               : null;
           if (
@@ -691,6 +709,8 @@ export class ClaudeCodeHarness implements AgentHarness {
                 const current = active.dispatch;
                 if (
                   !current ||
+                  this.currentDiagnosticGeneration?.() !==
+                    diagnosticGeneration ||
                   current.action.operational_recovery ||
                   current.serverAcknowledgedAt ||
                   current.settledAt ||

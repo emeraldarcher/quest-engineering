@@ -26,6 +26,17 @@ import type {
 } from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
 
+/** Strict synchronous acceptance only. Contain a broken/async optional adapter's
+ * rejection without awaiting it or granting submission authority. */
+export function diagnosticWriteAccepted(value: unknown): boolean {
+  if (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function")
+  )
+    void Promise.resolve(value).catch(() => undefined);
+  return value === true;
+}
+
 export const DEFAULT_STREAM_BUFFER_BYTES = 64 * 1024;
 export const MAX_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
 export const MAX_STREAMED_STDIN_WRITE_BYTES = 1024 * 1024;
@@ -264,8 +275,8 @@ export class StreamedProcessManager {
             return false;
           // No new lease/inventory, write-tail wait, ACK timer, or deferred write.
           // The operation owner must independently prove its current authority.
-          return (
-            state.transport.tryWriteDiagnostic?.(new Uint8Array(data)) === true
+          return diagnosticWriteAccepted(
+            state.transport.tryWriteDiagnostic?.(new Uint8Array(data)),
           );
         } catch {
           return false;

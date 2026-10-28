@@ -126,6 +126,19 @@ test("terminal ACK revocation is synchronous and revokes only diagnostic authori
   expect(text.indexOf("revokeDiagnosticCapabilities")).toBeLessThan(
     text.indexOf("await "),
   );
+  const cancellation = namedMethod(executor, "cancelOnce").getText(executor);
+  expect(cancellation.indexOf("assertCancellationIdentity")).toBeLessThan(
+    cancellation.indexOf("revokeDiagnosticCapabilities"),
+  );
+  expect(cancellation.indexOf("revokeDiagnosticCapabilities")).toBeLessThan(
+    cancellation.indexOf("await "),
+  );
+  expect(
+    cancellation.lastIndexOf("revokeDiagnosticCapabilities"),
+  ).toBeGreaterThan(cancellation.indexOf("this.registry.cancel("));
+  expect(cancellation.lastIndexOf("revokeDiagnosticCapabilities")).toBeLessThan(
+    cancellation.indexOf("await this.control"),
+  );
   const adapter = sourceFile("../src/harnesses/claude-code/adapter.ts");
   const revoke = namedMethod(adapter, "revokeDiagnosticCapabilities").getText(
     adapter,
@@ -210,6 +223,7 @@ function transportFixture(supported = true) {
   const running = transport.run(async () => undefined);
   return {
     transport,
+    child,
     written,
     feed,
     finish: async () => {
@@ -222,6 +236,75 @@ function transportFixture(supported = true) {
     },
   };
 }
+test("review: an async FileSink write rejection is unavailable and contained without blocking CANCEL", async () => {
+  const f = transportFixture();
+  let handlers = 0;
+  const rejected = Promise.reject(new Error("synthetic sink rejection"));
+  rejected.catch(() => undefined);
+  const then = rejected.then.bind(rejected);
+  // biome-ignore lint/suspicious/noThenProperty: instrument a real rejected Promise without producing an intentional unhandled rejection in the test runner.
+  rejected.then = ((...args: Parameters<typeof then>) => {
+    handlers++;
+    return then(...args);
+  }) as typeof rejected.then;
+  const original = f.child.stdin.write;
+  f.child.stdin.write = ((bytes: Uint8Array) => {
+    original(bytes);
+    return bytes[0] === 24 ? rejected : bytes.byteLength;
+  }) as never;
+  expect(f.transport.tryWriteDiagnostic(Uint8Array.of(1))).toBe(false);
+  const cancellation = f.transport.cancel(
+    "11111111-1111-4111-8111-111111111111",
+  );
+  expect(f.written.map((bytes) => bytes[0])).toEqual([24, 22]);
+  f.feed(9, new TextEncoder().encode("11111111-1111-4111-8111-111111111111"));
+  await cancellation;
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(handlers).toBeGreaterThan(0);
+  await f.finish();
+});
+
+for (const operation of ["cancel", "io"] as const)
+  test(`review: ${operation} FileSink rejection after a diagnostic stays contained with original authority`, async () => {
+    const f = transportFixture();
+    let handlers = 0;
+    const rejected = Promise.reject(new Error("synthetic sink rejection"));
+    rejected.catch(() => undefined);
+    const then = rejected.then.bind(rejected);
+    // biome-ignore lint/suspicious/noThenProperty: prove the production consumer handles its own rejected FileSink result.
+    rejected.then = ((...args: Parameters<typeof then>) => {
+      handlers++;
+      return then(...args);
+    }) as typeof rejected.then;
+    const original = f.child.stdin.write;
+    f.child.stdin.write = ((bytes: Uint8Array) => {
+      original(bytes);
+      return bytes[0] === (operation === "cancel" ? 22 : 23)
+        ? rejected
+        : bytes.byteLength;
+    }) as never;
+    expect(f.transport.tryWriteDiagnostic(Uint8Array.of(1))).toBe(true);
+    const result =
+      operation === "cancel"
+        ? f.transport.cancel("11111111-1111-4111-8111-111111111111")
+        : f.transport.observeIo();
+    try {
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(handlers).toBeGreaterThan(0);
+      expect(await result).toEqual(
+        operation === "cancel"
+          ? { certainty: "ambiguous" }
+          : { status: "unavailable", reason: "observation_failed" },
+      );
+    } finally {
+      f.feed(
+        9,
+        new TextEncoder().encode("11111111-1111-4111-8111-111111111111"),
+      );
+      await f.finish();
+    }
+  });
+
 test("relay diagnostic has no ACK waiter; physical CANCEL is submitted despite an unresolved flush", async () => {
   const f = transportFixture();
   expect(f.transport.tryWriteDiagnostic(Uint8Array.of(1))).toBe(true);
@@ -314,6 +397,134 @@ test("generic manager has no diagnostic write-tail/validation wait, and refuses 
   await process.disconnect();
   expect(process.tryWriteDiagnostic?.(Uint8Array.of(4))).toBe(false);
 });
+
+test("review: actual Worker disconnect/supersession bodies revoke before asynchronous retirement", () => {
+  const source = sourceFile("../src/worker.ts");
+  const body = (name: string) =>
+    (namedMethod(source, name) as ts.MethodDeclaration).body?.getText(source);
+  // Evaluate only the owned method bodies with fake fields, not Worker imports,
+  // its constructor, a broker/service, an SDK or any vendor code.
+  const revoke = new Function(
+    `return function() ${body("revokeDiagnosticCapabilities")}`,
+  )();
+  const disconnect = new Function(
+    `return function(generation) ${body("onDisconnected")}`,
+  )();
+  let retired = 0,
+    revoked = 0;
+  const owner = {
+    readyGeneration: 1 as number | null,
+    heartbeat: null,
+    stopping: false,
+    revokeDiagnosticCapabilities: revoke,
+    harnesses: {
+      list: () => [
+        {
+          revokeDiagnosticCapabilities: () => {
+            throw Error("synthetic");
+          },
+        },
+        {
+          revokeDiagnosticCapabilities: () => {
+            revoked++;
+          },
+        },
+      ],
+    },
+    workspaceToolBroker: {
+      retireAll: () => {
+        expect(revoked).toBe(1);
+        retired++;
+        return new Promise<void>(() => {});
+      },
+    },
+    trackProtocolOperation: (value: Promise<void>) => value,
+  };
+  disconnect.call(owner, 1);
+  expect(owner.readyGeneration).toBeNull();
+  expect(retired).toBe(1);
+  let superseded: ts.ArrowFunction | undefined;
+  let epochReader: ts.ArrowFunction | undefined;
+  function visit(n: ts.Node) {
+    if (
+      ts.isNewExpression(n) &&
+      n.expression.getText(source) === "ClaudeCodeHarness"
+    ) {
+      const reader = n.arguments?.[6];
+      if (reader && ts.isArrowFunction(reader)) epochReader = reader;
+    }
+    if (
+      ts.isPropertyAssignment(n) &&
+      n.name.getText(source) === "onSuperseded" &&
+      ts.isArrowFunction(n.initializer)
+    )
+      superseded = n.initializer;
+    ts.forEachChild(n, visit);
+  }
+  visit(source);
+  expect(epochReader).toBeDefined();
+  let server: number | null = 9;
+  const epochOwner = {
+    readyGeneration: 1,
+    stopping: false,
+    channel: {
+      isCurrentGeneration: () => true,
+      currentServerGeneration: () => server,
+    },
+  };
+  const epoch = new Function(`return (${epochReader?.getText(source)})()`);
+  expect(epoch.call(epochOwner)).toBe("1:9");
+  server = 10;
+  expect(epoch.call(epochOwner)).toBe("1:10");
+  epochOwner.readyGeneration = 2;
+  expect(epoch.call(epochOwner)).toBe("2:10");
+  server = null;
+  expect(epoch.call(epochOwner)).toBeNull();
+  server = 10;
+  epochOwner.stopping = true;
+  expect(epoch.call(epochOwner)).toBeNull();
+  expect(superseded).toBeDefined();
+  const run = new Function(
+    "console",
+    `return function() ${superseded?.body.getText(source)}`,
+  )({ warn: () => undefined });
+  run.call(owner);
+  expect(owner.stopping).toBe(true);
+  expect(revoked).toBe(2);
+});
+
+for (const result of [0, 2, "pending"] as const)
+  test(`review: buffered FileSink ${result} stays unavailable and preserves frame/CANCEL submission order`, async () => {
+    const f = transportFixture();
+    const original = f.child.stdin.write;
+    f.child.stdin.write = ((bytes: Uint8Array) => {
+      original(bytes);
+      return bytes[0] === 24
+        ? result === "pending"
+          ? new Promise<number>(() => {})
+          : result
+        : bytes.byteLength;
+    }) as never;
+    expect(f.transport.tryWriteDiagnostic(Uint8Array.of(1, 2, 3))).toBe(false);
+    expect(f.transport.tryWriteDiagnostic(Uint8Array.of(4))).toBe(false);
+    const cancellation = f.transport.cancel(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(f.written.map((bytes) => bytes[0])).toEqual([24, 22]);
+    // FileSink owns each entire ordered chunk even if reporting partial/pending
+    // completion. No diagnostic remainder/retry is sent as a separate frame.
+    const diagnosticFrame = f.written[0];
+    if (!diagnosticFrame) throw Error("Missing synthetic diagnostic frame.");
+    expect(
+      new DataView(
+        diagnosticFrame.buffer,
+        diagnosticFrame.byteOffset,
+      ).getUint32(1),
+    ).toBe(3);
+    f.feed(9, new TextEncoder().encode("11111111-1111-4111-8111-111111111111"));
+    await cancellation;
+    await f.finish();
+  });
 
 test("guest diagnostic function is nonblocking, bounded, atomic, and never sends an ACK ahead of CANCEL", async () => {
   const source = readFileSync(

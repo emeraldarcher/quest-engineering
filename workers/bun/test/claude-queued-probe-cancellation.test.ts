@@ -42,7 +42,10 @@ interface SyntheticReply extends Record<string, unknown> {
   };
 }
 const sessionId = "11111111-1111-4111-8111-111111111111";
-function fixture(publish: (v: unknown) => void = () => undefined) {
+function fixture(
+  publish: (v: unknown) => void = () => undefined,
+  identity: Partial<ProbeCancellationScope> = {},
+) {
   const requests: Record<string, unknown>[] = [],
     writes: Uint8Array[] = [],
     events: string[] = [];
@@ -100,6 +103,7 @@ function fixture(publish: (v: unknown) => void = () => undefined) {
     lineageId: "lineage",
     sessionId,
     process,
+    ...identity,
   };
   let current: ProbeCancellationScope | null = scope;
   const capability = new QueuedProbeCancellation(
@@ -126,7 +130,7 @@ function fixture(publish: (v: unknown) => void = () => undefined) {
     bind: async () => {
       await sendMessage(
         process,
-        sessionId,
+        scope.sessionId,
         "Quest Engineering fixed zero-inference initialization probe.",
         false,
         null,
@@ -148,6 +152,74 @@ function fixture(publish: (v: unknown) => void = () => undefined) {
     }),
   };
 }
+
+test("review: two concurrent Runs cannot cross-target probes or attribute each other's replies", async () => {
+  const a = fixture();
+  const b = fixture(() => undefined, {
+    runId: "run-b",
+    attemptId: "attempt-b",
+    actionId: "action-b",
+    lineageId: "lineage-b",
+    sessionId: "22222222-2222-4222-8222-222222222222",
+  });
+  await Promise.all([a.bind(), b.bind()]);
+  a.timeout();
+  b.timeout();
+  const probes = [a, b].map((f) =>
+    JSON.parse(new TextDecoder().decode(f.writes[0])),
+  );
+  expect(probes[0].uuid).not.toBe(probes[1].uuid);
+  expect(a.requests[0]?.request).toEqual({
+    subtype: "cancel_async_message",
+    message_uuid: probes[0].uuid,
+  });
+  expect(b.requests[0]?.request).toEqual({
+    subtype: "cancel_async_message",
+    message_uuid: probes[1].uuid,
+  });
+  expect(a.capability.observe(b.reply(false), a.process)).toBe(true);
+  expect(b.capability.observe(a.reply(true), b.process)).toBe(true);
+  expect(a.capability.snapshot().response).toBe("response_unavailable");
+  expect(b.capability.snapshot().response).toBe("response_unavailable");
+  expect(a.capability.observe(a.reply(true), b.process)).toBe(true);
+  expect(a.capability.snapshot().response).toBe("response_unavailable");
+  a.capability.observe(a.reply(true), a.process);
+  b.capability.observe(b.reply(false), b.process);
+  expect(a.capability.snapshot().response).toBe("cancelled_true");
+  expect(b.capability.snapshot().response).toBe("cancelled_false");
+  expect(a.requests).toHaveLength(1);
+  expect(b.requests).toHaveLength(1);
+});
+
+test("review: an invalid async diagnostic implementation cannot leak a rejection or postpone cancellation", async () => {
+  const f = fixture();
+  await f.bind();
+  let handlers = 0;
+  const rejected = Promise.reject(new Error("synthetic diagnostic failure"));
+  // Test-only safety handler prevents an intentional pre-fix unhandled rejection.
+  // Instrument the subsequent handlers installed by the production consumer.
+  rejected.catch(() => undefined);
+  const then = rejected.then.bind(rejected);
+  // biome-ignore lint/suspicious/noThenProperty: instrument a real rejected Promise to prove the consumer installs its own rejection handler.
+  rejected.then = ((...args: Parameters<typeof then>) => {
+    handlers++;
+    return then(...args);
+  }) as typeof rejected.then;
+  f.process.tryWriteDiagnostic = (() => rejected) as never;
+  f.setNow(30_000);
+  const cancellation = cancelClaudePreparation(f.process, null, f.capability);
+  expect(f.events).toEqual(["physical"]);
+  expect(f.capability.snapshot().request).toBe(
+    "queued_cancel_request_unavailable",
+  );
+  await ticks();
+  expect(handlers).toBeGreaterThan(0);
+  f.cancelled.resolve({
+    certainty: "acknowledged",
+    cancellationId: "synthetic",
+  });
+  await cancellation;
+});
 
 test("distinct outbound authority targets exactly the unchanged 301-byte probe once", async () => {
   const f = fixture();
