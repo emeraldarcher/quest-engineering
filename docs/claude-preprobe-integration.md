@@ -31,6 +31,15 @@ registration epochs, exact active process/preparation, Action/Attempt/Run/lineag
 account/session and canonical terminal/ACK state. Revocation clears the gate's
 private operands as well as the timeout capability. Support on A cannot qualify B.
 
+READY authority is derived from the exact raw frame. Duplicate top-level
+`protocolVersion`, `nonblockingDiagnosticWrite`, `pid`, `startIdentity`,
+`observedExecutable`, `observedExecutableIdentity`, or
+`environmentMarkerSha256` rejects the handshake even if values agree. Escaped
+spellings of the same key count as duplicates; nested names and key-like string
+values do not. The bounded READY-only scanner preserves duplicate information;
+ordinary strict JSON parsing still validates grammar. Rejection exposes only the
+existing fixed launcher failure, never payload text or a supported snapshot.
+
 Startup lacking/malformed READY still fails through existing bounded launcher
 handling: there is no new startup timer/poll, no returned usable process and no
 probe. A valid returned attachment without supported metadata fails the specific
@@ -101,6 +110,16 @@ without its current-epoch receipt also fails the pre-probe gate (replay is not a
 new acceptance). Existing legacy/recovery readiness may still proceed with
 supported transport, but the timeout diagnostic is ineligible.
 
+The review-fix Product wire tests additionally generate fresh, later-Attempt,
+human-fresh, retained recovery, prepared-adoption recovery and logical-continuation
+Actions with the actual Product scheduler and recovery producers in an isolated
+SQL sandbox. They pass persisted execution/metadata through WorkerProtocol JSON
+and the real Worker decoder. The fresh Claude representation is also used by
+the combined raw-READY → real transport → manager → adapter tests. Receipt tests
+execute only the production memory-only mint/consume AST bodies against the real
+registry's acceptance result; they never construct or activate a Worker.
+See [validation provenance and exclusions](claude-preprobe-review-validation.md).
+
 The structural sixth-Action regression fixture is synthetic initial/0/first/fresh
 metadata, not an imported historical database row. Its historical Run remains C /
 FAILED. A fresh Action with that shape is now eligible after all other fences.
@@ -135,6 +154,16 @@ physical probe bytes**. Intent is not delivery. The optional lifecycle field
 historical default filling or schema migration. It is not continuous liveness or
 Claude init evidence.
 
+After observer registration, a pre-probe gate failure synchronously retires the
+observer binding and frame queue before awaiting cleanup. It clears the private
+census comparison operand and prevents rebinding. Deferred pump/exit callbacks
+become inert even when backend cancellation rejects; an iterator may temporarily
+retain ordinary JS stream references until the transport settles. No secure
+memory erasure or guaranteed physical termination is claimed. Cleanup still
+attempts the original physical cancellation; rejected/unavailable cancellation
+is not an ACK or proof of target death. Exit racing teardown needs no terminal
+I/O totals.
+
 Gate failure sends no probe, never arms a probe-owned cancellation capability and
 never attempts opcode 24. The existing unconditional physical cancellation,
 relay/broker close and uncertain reservation handling still run once. The bounded
@@ -147,6 +176,23 @@ Product recovery metadata, a negotiation snapshot nor native output supplies its
 target. At timeout the original at-most-once, synchronous best-effort diagnostic
 still immediately precedes normal physical cancellation, with no response/ACK
 wait, new timer, persistence task, retry, grace or deadline extension.
+
+## Operational prerequisites and Run consumption
+
+**No probe does not mean no Run.** If a future live preparation discovers
+`diagnostic_capability_unavailable` after Product has already created its Run,
+that Run is still consumed/failed even though no zero-query probe was submitted.
+This gate does not preserve or refund an operational Run allowance.
+
+Merged code must first be activated through the supported Worker rejoin path.
+That rejoin may perform normal assigned-ProviderAccount reconciliation.
+Activation/rejoin and physical convergence remain separate operational
+prerequisites to any future seventh-Run sequence; neither is authorized or
+performed by this implementation or its deterministic validation.
+
+Only the exact target's **live READY frame** establishes capability. Merged
+source, relay version, expected configuration, or a historical supported snapshot
+is not proof. The six existing failed Runs/evidence are not modified.
 
 ## Corrected deployment matrix
 

@@ -193,6 +193,7 @@ export class ManagedHarnessLifecycle {
   private readonly census = new ClaudeOutputCensus();
   // Worker-owned, immutable, comparison-only; never included in snapshot/save.
   #probeCommandId: string | null = null;
+  #probeRetired = false;
   private censusSavePending = false;
   private queuedProbeCancellation: QueuedProbeCancellationEvidence | null =
     null;
@@ -342,6 +343,7 @@ export class ManagedHarnessLifecycle {
   ): void {
     try {
       if (
+        this.#probeRetired ||
         this.#probeCommandId !== null ||
         !this.matches(source) ||
         !this.events.has("stream_observation_registered") ||
@@ -356,6 +358,12 @@ export class ManagedHarnessLifecycle {
     } catch {
       /* Missing correlation remains unavailable, never authority. */
     }
+  }
+
+  /** End only this preparation's comparison binding; cannot be rebound. */
+  retireProbeCommand(): void {
+    this.#probeRetired = true;
+    this.#probeCommandId = null;
   }
 
   /** Closed metadata only is projected; native objects are transient at the parser boundary. */

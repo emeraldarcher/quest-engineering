@@ -184,7 +184,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           knownNotSubmitted ? "not_submitted" : "ambiguous",
         );
       }
-      const ready = parseObject(first.payload);
+      const ready = parseReady(first.payload);
       const backendProcessId = requiredText(ready.pid);
       const processStartIdentity = requiredText(ready.startIdentity);
       const observedExecutable = requiredText(ready.observedExecutable);
@@ -676,6 +676,46 @@ function encodeFrame(type: number, payload: Uint8Array): Uint8Array {
 
 function decodeId(payload: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(payload);
+}
+
+/** READY-only ambiguity check, on bounded raw frame bytes before semantic use.
+ * Strings are skipped as units (including escapes); only root member names
+ * count. JSON.parse below remains the strict grammar validator, not authority
+ * for duplicate resolution. No raw text escapes the launch error boundary. */
+function parseReady(payload: Uint8Array): Record<string, unknown> {
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(payload);
+  const critical = new Set([
+    "protocolVersion",
+    "nonblockingDiagnosticWrite",
+    "pid",
+    "startIdentity",
+    "observedExecutable",
+    "observedExecutableIdentity",
+    "environmentMarkerSha256",
+  ]);
+  const seen = new Set<string>();
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      const start = i++;
+      for (; i < text.length; i++) {
+        if (text[i] === "\\") i++;
+        else if (text[i] === '"') break;
+      }
+      let next = i + 1;
+      while (/[\t\n\r ]/.test(text[next] ?? "!")) next++;
+      if (depth === 1 && text[next] === ":") {
+        const key: string = JSON.parse(text.slice(start, i + 1));
+        if (critical.has(key)) {
+          if (seen.has(key)) throw new Error("SBX relay READY was ambiguous.");
+          seen.add(key);
+        }
+      }
+    } else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+  }
+  return parseObject(payload);
 }
 
 function parseObject(payload: Uint8Array): Record<string, unknown> {

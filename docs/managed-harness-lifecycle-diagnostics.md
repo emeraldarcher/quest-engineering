@@ -209,6 +209,13 @@ init or continuous liveness. Failed gates submit no physical probe bytes and
 use normal cancellation. Logical write intent can precede a late writer-entry
 gate failure; intent is not delivery. Existing checkpoints save this scalar;
 there is no new persistence task, DDL, migration or historical default filling.
+Late pre-probe failure retires the observer/frame queue and clears the private
+comparison binding before cleanup awaits; a failed backend cancellation is not
+reported as proof of termination. A Run already created by Product is still
+consumed/failed despite zero probe bytes. Supported Worker rejoin and account
+convergence are separate operational prerequisites, not granted by these tests.
+See the [review validation boundary](claude-preprobe-review-validation.md) for the
+prior accidental native test execution and this task's explicit exclusions.
 
 ## Provider-free validation
 

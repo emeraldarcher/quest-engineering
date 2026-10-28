@@ -34,7 +34,13 @@ closes PR #59's missing live feature gate and fresh-initial metadata exclusion.
 The exact current attachment must expose actual negotiated relay-v2
 `nonblockingDiagnosticWrite:true` **before observer/probe submission**. Unsupported
 or unavailable blocks the probe with `diagnostic_capability_unavailable` and normal
-physical cancellation; no fallback. The guard is rechecked after the existing
+physical cancellation; no fallback. Duplicate critical top-level READY fields
+reject the handshake before support can be derived, including equal duplicates.
+No probe does not mean no Run: a future gate failure after Run creation still
+consumes/fails that Run. Supported Worker rejoin (which may reconcile assigned
+ProviderAccounts) and physical convergence remain separately authorized
+operational prerequisites; source/version/configuration alone is not live READY.
+The guard is rechecked after the existing
 baseline await and at physical write entry after lease validation. A supported
 snapshot is not Claude readiness, inference authority, or a liveness lease.
 

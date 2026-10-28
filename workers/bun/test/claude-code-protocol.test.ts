@@ -123,6 +123,50 @@ for (const dropDiagnostics of [false, true]) {
   });
 }
 
+test("retired observer discards queued frames and ignores late output/exit without crossing preparation", async () => {
+  const fixture = processFixture();
+  const db = new Database(":memory:");
+  const diagnostics = new ManagedHarnessLifecycleStore(db).begin({
+    harnessKind: "claude_code",
+    harnessProtocol: "qe_claude_account_cell_v1",
+    reservedNativeSessionId: protocolSession,
+    environment: protocolEnvironment,
+  });
+  diagnostics?.bindProcess(fixture.process.handle);
+  const frames = new AsyncFrameQueue();
+  const stop = observeClaudeProtocol(
+    fixture.process,
+    frames,
+    diagnostics,
+    () => false,
+  );
+  frames.push({
+    type: "system",
+    subtype: "init",
+    session_id: "queued-private-frame",
+  });
+  stop();
+  stop(); // idempotent, and cannot reattach
+  expect(frames.closed).toBe(true);
+  await expect(frames.next(null)).rejects.toThrow("retired");
+  const before = diagnostics?.snapshot().outputCensus;
+  fixture.output(
+    new TextEncoder().encode(`${JSON.stringify(protocolInit())}\n`),
+  );
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(diagnostics?.snapshot().outputCensus).toEqual(before);
+  expect(diagnostics?.snapshot().observations.protocol_frame_observed).toBe(
+    "not_observed",
+  );
+  expect(fixture.writes).toHaveLength(0);
+  await fixture.process.cancel();
+  await fixture.process.exit;
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  await expect(frames.next(null)).rejects.toThrow("retired");
+  expect(diagnostics?.snapshot().outputCensus).toEqual(before);
+  db.close();
+});
+
 test("dropped/unproven Mod breadcrumbs leave timeout native interval unknown", async () => {
   const fixture = processFixture();
   const db = new Database(":memory:");

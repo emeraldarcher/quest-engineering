@@ -824,6 +824,7 @@ export class ClaudeCodeHarness implements AgentHarness {
         );
         active.probeGate = gate;
         let queuedCancellation: QueuedProbeCancellation | undefined;
+        let stopObservation: (() => void) | undefined;
         let readinessTimedOut = false;
         try {
           // Live exact-attachment proof before observation or any probe bytes.
@@ -863,7 +864,7 @@ export class ClaudeCodeHarness implements AgentHarness {
             );
           }
           queuedCancellation = active.queuedProbeCancellation ?? undefined;
-          observeClaudeProtocol(
+          stopObservation = observeClaudeProtocol(
             process,
             frames,
             diagnostics,
@@ -943,6 +944,10 @@ export class ClaudeCodeHarness implements AgentHarness {
             );
           active.disconnected = true;
           gate.invalidate();
+          // Revoke observation synchronously on a pre-probe gate failure, even
+          // if backend cancellation later rejects or never reports target exit.
+          if (error instanceof ClaudeDiagnosticCapabilityUnavailable)
+            stopObservation?.();
           await Promise.allSettled([
             cancelClaudePreparation(
               process,

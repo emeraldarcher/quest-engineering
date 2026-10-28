@@ -3592,6 +3592,189 @@ defmodule QuestEngineering.Server.LaunchSchedulingTest do
     assert recovered_binding.setup_id == setup.id
   end
 
+  # Export only synthetic SQL-sandbox data; never deliver to a Worker. The
+  # dedicated validation command runs only this tag with background services off.
+  @tag :preprobe_product_wire
+  test "preprobe Product wire: ordinary Claude fresh, retry, and human recovery", context do
+    fixture =
+      product_fixture(
+        first_harness: "claude_code",
+        first_model: %ModelRef{provider: "anthropic", model: "claude-opus-4-6"},
+        first_reasoning: "high",
+        tools: ["workspace.filesystem", "workspace.search", "terminal.shell"]
+      )
+
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+    worker =
+      register_worker("preprobe-product-claude", context.workspace_root,
+        adapter: "claude_code",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        features: ["workspace_tool_broker_v1"]
+      )
+
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+    export_preprobe_wire!("fresh", first)
+
+    assert {:ok, %{"result" => "automatic_retry_scheduled"}} =
+             fail_operational(worker, first, "auto_retryable")
+
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+    export_preprobe_wire!("retry", second)
+    assert {:ok, _} = fail_operational(worker, second, "operator_recovery_required")
+
+    assert {:ok, _} =
+             OperationalRecovery.authorize_fresh(
+               launched.run_id,
+               second.execution.identity.occurrence_id,
+               Ecto.UUID.generate()
+             )
+
+    assert {:ok, third} = SchedulingStore.schedule_next(launched.run_id)
+    export_preprobe_wire!("human_fresh", third)
+  end
+
+  for {name, harness, native} <- [
+        {"retained", "fake", "fixture-native-session"},
+        {"prepared_adoption", "antigravity", nil}
+      ] do
+    @tag :preprobe_product_wire
+    test "preprobe Product wire: #{name}", context do
+      name = unquote(name)
+      harness = unquote(harness)
+      native = unquote(native)
+      fixture = product_fixture(first_harness: harness)
+      assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+
+      worker =
+        register_worker("preprobe-product-" <> name, context.workspace_root, adapter: harness)
+
+      assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+
+      failure =
+        if name == "prepared_adoption",
+          do: %{
+            "code" => "execution_control_readiness_failed",
+            "classification" => "operator_recovery_required",
+            "message" => "Synthetic pre-prompt control failure."
+          },
+          else: %{"classification" => "operator_recovery_required", "reason" => "synthetic"}
+
+      assert {:ok, _} =
+               WorkerMessageHandler.handle(worker.id, worker.connection_generation, %{
+                 type: :step_failed,
+                 action_id: first.action_id,
+                 occurrence_id: first.execution.identity.occurrence_id,
+                 attempt_id: first.execution.identity.attempt_id,
+                 failure: failure
+               })
+
+      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      lineage = Ecto.UUID.generate()
+
+      assert {:ok, _} =
+               ExecutionSessionStore.record(worker.id, worker.connection_generation, %{
+                 session_id: lineage,
+                 action_id: first.action_id,
+                 run_id: launched.run_id,
+                 occurrence_id: first.execution.identity.occurrence_id,
+                 attempt_id: first.execution.identity.attempt_id,
+                 member_key: first.execution.performer.member_key,
+                 harness_kind: harness,
+                 harness_display_name: "Synthetic",
+                 state: :retained,
+                 capabilities: %{"can_attach_terminal" => true},
+                 terminal: %{"supports_takeover" => true},
+                 native_session_id: native,
+                 attention: nil,
+                 turn: %{"phase" => "preparing"},
+                 started_at: now,
+                 last_activity_at: now
+               })
+
+      if name == "prepared_adoption" do
+        assert {:ok, _} =
+                 OperationalRecovery.request_pre_prompt_process(
+                   launched.run_id,
+                   first.execution.identity.occurrence_id,
+                   first.execution.identity.attempt_id,
+                   Ecto.UUID.generate()
+                 )
+      else
+        assert {:ok, _} =
+                 OperationalRecovery.authorize(%{
+                   request_id: Ecto.UUID.generate(),
+                   run_id: launched.run_id,
+                   occurrence_id: first.execution.identity.occurrence_id,
+                   attempt_id: first.execution.identity.attempt_id,
+                   action_id: first.action_id,
+                   member_key: first.execution.performer.member_key,
+                   worker_id: worker.id,
+                   session_id: lineage,
+                   lineage_id: lineage,
+                   native_session_id: native
+                 })
+      end
+
+      assert {:ok, recovered} = SchedulingStore.schedule_next(launched.run_id)
+      export_preprobe_wire!(name, recovered)
+    end
+  end
+
+  @tag :preprobe_product_wire
+  test "preprobe Product wire: logical continuation", context do
+    fixture =
+      product_fixture(
+        one_member?: true,
+        tactic:
+          sequence([
+            step("build",
+              name: "Build",
+              performer: class("builder"),
+              context: fresh(),
+              instruction: "Build."
+            ),
+            step("follow",
+              name: "Follow",
+              performer: same_as("build"),
+              context: continue_from("build"),
+              instruction: "Follow."
+            )
+          ])
+      )
+
+    assert {:ok, launched} = LaunchQuest.launch(fixture.quest.id)
+    worker = register_worker("preprobe-product-continuation", context.workspace_root)
+    assert {:ok, first} = SchedulingStore.schedule_next(launched.run_id)
+    complete(worker, first)
+    assert {:ok, second} = SchedulingStore.schedule_next(launched.run_id)
+    export_preprobe_wire!("continuation", second)
+  end
+
+  defp export_preprobe_wire!(name, dispatch) do
+    # Redelivery uses the persisted execution codec and the same metadata producer.
+    assert {:ok, fetched} = SchedulingStore.fetch_execution(dispatch.action_id)
+    assert fetched.execution == dispatch.execution
+    assert fetched.operational_recovery == dispatch.operational_recovery
+
+    wire =
+      WorkerProtocol.execute_action(
+        dispatch.worker_id,
+        fetched.execution,
+        fetched.operational_recovery,
+        fetched.harness_setup
+      )
+
+    # Normal Product-only runs still exercise scheduling/serialization without
+    # requiring a cross-language export directory. The review runner sets it
+    # explicitly and Worker tests require all six generated files.
+    if directory = System.get_env("QE_PREPROBE_WIRE_DIR") do
+      File.mkdir_p!(directory)
+      File.write!(Path.join(directory, name <> ".json"), Jason.encode!(wire))
+    end
+  end
+
   defp product_fixture(options \\ []) do
     builder =
       create_class("builder", "Build from the immutable snapshot.")

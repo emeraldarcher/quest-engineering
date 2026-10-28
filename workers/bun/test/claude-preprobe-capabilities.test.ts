@@ -7,10 +7,7 @@ import {
   StreamedProcessManager,
   type StreamedProcessTransport,
 } from "../src/execution-environment/streamed-process.ts";
-import type {
-  EnvironmentRef,
-  StreamedProcess,
-} from "../src/execution-environment/types.ts";
+import type { EnvironmentRef } from "../src/execution-environment/types.ts";
 import {
   ClaudePreProbeGate,
   isFreshInitialProbeExecution,
