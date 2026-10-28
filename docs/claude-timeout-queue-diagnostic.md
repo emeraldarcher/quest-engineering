@@ -27,6 +27,17 @@ race. A reply before cancellation ACK, no reply, and a partial frame at shutdown
 are all legitimate outcomes. Terminal stdout totals and terminal lifecycle events
 are not required; their absence is not cancellation failure.
 
+## Mandatory pre-probe transport gate
+
+The subsequent [pre-probe integration correction](claude-preprobe-integration.md)
+closes PR #59's missing live feature gate and fresh-initial metadata exclusion.
+The exact current attachment must expose actual negotiated relay-v2
+`nonblockingDiagnosticWrite:true` **before observer/probe submission**. Unsupported
+or unavailable blocks the probe with `diagnostic_capability_unavailable` and normal
+physical cancellation; no fallback. The guard is rechecked after the existing
+baseline await and at physical write entry after lease validation. A supported
+snapshot is not Claude readiness, inference authority, or a liveness lease.
+
 ## Distinct operation-owned capability
 
 `QueuedProbeCancellation` is independent of `ManagedHarnessLifecycle`'s private,
@@ -41,13 +52,14 @@ The capability requires:
 - the Worker-reserved session and the same `StreamedProcess` object;
 - an immutable captured handle, checked against the current full handle;
 - the same in-memory active preparation, Dispatch object, account and session;
-  scope fields must still match, and no operational recovery or known terminal
-  state/settlement/server ACK may be present;
+  scope fields must still match, and the exact fresh-initial eligibility predicate
+  must hold, with no known terminal state/settlement/server ACK;
 - the same current local connection and server Worker-registration generations,
   captured before any preparation await and compared in memory before creation,
   dispatch and response handling;
 - explicit revocation after canonical cancellation/failure/terminal ACK and before
   the next await, plus revocation on every rebind/recovery/teardown path;
+- actual live attachment support proven by the mandatory pre-probe gate;
 - an acknowledged exact outbound probe write and the original deadline reached.
 
 Missing or contradictory identity is unavailable. Rebind, continuation/recovery,
@@ -60,10 +72,19 @@ any further await; Claude revokes only the matching Action's diagnostic authorit
 A one-time canonical dispatch lookup establishes eligibility before the probe;
 it rejects terminal/ACKed/recovered/mismatched operations, including ACKs that
 preceded capability creation. The same synchronous turn installs the capability,
-so a later ACK cannot miss it. Canonical cancellation/failure also revokes before
+so a later ACK cannot miss it. Product's ordinary initial Actions carry
+`operational_recovery`; its presence alone is not recovery. Eligibility requires
+initial/fresh epoch 0, first Attempt, null source/retained/request references,
+valid allowance, fresh QE context and no prior session/continuity. A bounded
+one-use current-Worker new-acceptance receipt excludes restart/replay/backend
+re-entry; metadata never grants cancellation authority.
+Canonical cancellation/failure also revokes before
 awaiting HumanAttention cleanup. Worker disconnect/supersession synchronously
 revokes every transient diagnostic capability without changing ordinary shutdown.
-Missing lookup or current-generation support disables the diagnostic. A new
+Missing lookup or current-generation support blocks the probe. Missing fresh
+eligibility leaves timeout authority unavailable, without manufacturing initial
+semantics for legacy or recovery execution. Missing the current receipt for an
+otherwise initial-first-fresh execution blocks its probe too. A new
 activation cannot lend its generation to an old in-flight preparation.
 There are no new ownership tombstones or unbounded revocation histories.
 The timeout callback does **not** query a database or revalidate credentials:
@@ -194,15 +215,16 @@ unchanged. This additive feature is not a new native Claude protocol.
 
 | Deployment combination | Behavior |
 |---|---|
-| New Worker / old relay | No advertised feature: unavailable; never sends opcode 24 or falls back. |
+| New Worker / old relay | Actual READY lacks required feature: **pre-probe block**, zero probe writes; no opcode 24/fallback. |
 | Old Worker / new relay | Extra READY field is ignored; ordinary operations remain unchanged. |
 | Surviving old-generation attachment | No capability transfer, serialization, upgrade or rebind. |
-| Preparation crossing activation | Captured generation is stale: unavailable, even if activation precedes capability creation. |
-| New Worker / new relay | Eligible exact current operation may attempt once at its existing timeout. |
+| Preparation crossing activation | Captured generation is stale: fail closed before probe; after probe, timeout authority is unavailable. |
+| New Worker / new relay | Live feature + exact current operation permit probe; fresh-initial eligibility separately permits one timeout attempt. |
 
 ## Persistence and validation
 
-Only the optional closed object is added to the existing Worker-local lifecycle
+Only optional closed objects/scalars (`queuedProbeCancellation` and the last
+pre-probe `probeDiagnosticCapability` check) enter existing Worker-local lifecycle
 JSON. There is no DDL, Product field, migration, historical default filling or
 reclassification. Old rows return unchanged. Missing evidence is unavailable,
 not a measured false/zero.

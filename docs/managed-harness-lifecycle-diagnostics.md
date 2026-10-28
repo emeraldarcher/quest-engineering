@@ -199,6 +199,17 @@ termination remain unchanged. Reply/termination races and partial/missing frames
 are valid. No terminal totals are required. Historical rows get no new defaults.
 The recorder's comparison-only binding is never cancellation authority.
 
+## Mandatory pre-probe capability check
+
+The [integration correction](claude-preprobe-integration.md) requires actual
+live attachment support before Claude's zero-query probe. Optional prospective
+`probeDiagnosticCapability` is the last closed gate result: `supported`,
+`unsupported`, or `unavailable`. It is transport/ownership evidence, not native
+init or continuous liveness. Failed gates submit no physical probe bytes and
+use normal cancellation. Logical write intent can precede a late writer-entry
+gate failure; intent is not delivery. Existing checkpoints save this scalar;
+there is no new persistence task, DDL, migration or historical default filling.
+
 ## Provider-free validation
 
 - Lifecycle tests cover every progress stage, first-observation bounds, exact

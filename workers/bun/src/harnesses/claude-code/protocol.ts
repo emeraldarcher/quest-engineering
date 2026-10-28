@@ -200,6 +200,7 @@ export async function sendMessage(
   shouldQuery: boolean,
   diagnostics: ManagedHarnessLifecycle | null = null,
   queuedCancellation?: QueuedProbeCancellation,
+  beforeProbe?: () => void,
 ): Promise<void> {
   if (!shouldQuery && diagnostics) {
     try {
@@ -208,6 +209,7 @@ export async function sendMessage(
       /* Unavailable baseline is not a prerequisite for probe submission. */
     }
   }
+  if (!shouldQuery) beforeProbe?.();
   const message = {
     type: "user",
     message: { role: "user", content },
@@ -230,7 +232,10 @@ export async function sendMessage(
     diagnostics?.record("probe_write_requested", process.handle);
   }
   const bytes = new TextEncoder().encode(`${JSON.stringify(message)}\n`);
-  const receipt = await process.write(bytes);
+  const receipt = await process.write(
+    bytes,
+    shouldQuery ? undefined : beforeProbe,
+  );
   if (
     !shouldQuery &&
     receipt.certainty === "acknowledged" &&

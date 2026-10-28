@@ -14,7 +14,11 @@ import {
   STREAMED_PROCESS_IO_UNAVAILABLE,
   safeIoSample,
 } from "./streamed-process-io.ts";
-import type { StreamedProcessCommand, StreamedProcessExit } from "./types.ts";
+import type {
+  StreamedProcessCommand,
+  StreamedProcessExit,
+  StreamedProcessNegotiatedCapabilities,
+} from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
 
 const READY = 1;
@@ -74,6 +78,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   private disconnected = false;
   private runStarted = false;
   private diagnosticWriteAttempted = false;
+  private negotiationRetired = false;
   private ioWaiter: {
     id: string;
     resolve(value: StreamedProcessTransportIoSnapshot): void;
@@ -90,6 +95,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     private readonly expectedMarkerSha256: string,
     private readonly ioProtocolSupported: boolean,
     private readonly diagnosticWriteSupported: boolean,
+    private readonly diagnosticNegotiationAvailable = true,
   ) {
     this.identity = identity;
     this.stderrReader = child.stderr.getReader();
@@ -212,6 +218,11 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION,
         ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION &&
           ready.nonblockingDiagnosticWrite === true,
+        (ready.nonblockingDiagnosticWrite === undefined ||
+          typeof ready.nonblockingDiagnosticWrite === "boolean") &&
+          (ready.protocolVersion === undefined ||
+            (Number.isSafeInteger(ready.protocolVersion) &&
+              (ready.protocolVersion as number) > 0)),
       );
     } catch (error) {
       await frames.cancel().catch(() => undefined);
@@ -238,7 +249,10 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     try {
       while (!this.disconnected) {
         const frame = await this.frames.next();
-        if (!frame) break;
+        if (!frame) {
+          this.negotiationRetired = true;
+          break;
+        }
         if (frame.type === STDOUT || frame.type === STDERR) {
           await onEvent({
             kind: "data",
@@ -313,6 +327,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           errorCode: "streamed_process_stream_unavailable",
         });
     } finally {
+      this.negotiationRetired = true;
       this.resolveAllPending("ambiguous");
       await this.stderrDrain.catch(() => undefined);
     }
@@ -326,11 +341,31 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   }
 
   closeStdin(writeId: string): Promise<StreamedProcessTransportSideEffect> {
+    this.negotiationRetired = true;
     return this.request(this.pendingWrites, CLOSE_STDIN, writeId);
   }
 
   cancel(cancellationId: string): Promise<StreamedProcessTransportSideEffect> {
+    this.negotiationRetired = true;
     return this.request(this.pendingCancellations, CANCEL, cancellationId);
+  }
+
+  negotiatedCapabilities(): Readonly<StreamedProcessNegotiatedCapabilities> {
+    const unavailable =
+      !this.diagnosticNegotiationAvailable ||
+      !this.runStarted ||
+      this.negotiationRetired ||
+      this.disconnected ||
+      this.hostExited ||
+      this.targetExited ||
+      !this.identity.observedExecutableIdentity;
+    return Object.freeze({
+      nonblockingDiagnosticWrite: unavailable
+        ? "unavailable"
+        : this.diagnosticWriteSupported
+          ? "supported"
+          : "unsupported",
+    });
   }
 
   tryWriteDiagnostic(data: Uint8Array): boolean {
@@ -338,6 +373,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     this.diagnosticWriteAttempted = true;
     if (
       !this.diagnosticWriteSupported ||
+      this.negotiationRetired ||
       !this.identity.observedExecutableIdentity ||
       !this.runStarted ||
       this.disconnected ||

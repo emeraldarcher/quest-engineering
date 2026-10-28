@@ -62,6 +62,11 @@ import {
   isClaudeResultSuccess,
 } from "./output-tags.ts";
 import {
+  ClaudeDiagnosticCapabilityUnavailable,
+  ClaudePreProbeGate,
+  isFreshInitialProbeExecution,
+} from "./preprobe-diagnostics.ts";
+import {
   AsyncFrameQueue,
   ClaudeProtocolTimeout,
   cancelClaudePreparation,
@@ -139,6 +144,7 @@ interface ActiveClaudeCodeExecution {
   fatal: Error | null;
   disconnected: boolean;
   queuedProbeCancellation: QueuedProbeCancellation | null;
+  probeGate: ClaudePreProbeGate | null;
 }
 
 export class ClaudeCodeHarness implements AgentHarness {
@@ -148,6 +154,11 @@ export class ClaudeCodeHarness implements AgentHarness {
   readonly capabilities = CAPABILITIES;
   readonly humanAttentionWaitRecoverability = "wait_not_recoverable" as const;
   private readonly active = new Map<string, ActiveClaudeCodeExecution>();
+  /** Revocable pending-invocation receipts, including the pre-spawn-await gap. */
+  private readonly diagnosticPreparations = new Map<
+    string,
+    { lineageId: string }
+  >();
   private readonly sessions: ClaudeCodeSessionStore;
 
   constructor(
@@ -161,6 +172,10 @@ export class ClaudeCodeHarness implements AgentHarness {
     ) => DispatchRecord | null,
     /** Private local-connection/server-registration epoch key; never evidence. */
     private readonly currentDiagnosticGeneration?: () => string | null,
+    /** Consumes only a newly accepted Action's receipt in this Worker epoch. */
+    private readonly claimFreshDiagnosticAction?: (
+      actionId: string,
+    ) => string | null,
   ) {
     this.sessions =
       sessionStore ?? new ClaudeCodeSessionStore(this.config.dataRoot);
@@ -211,7 +226,8 @@ export class ClaudeCodeHarness implements AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<HarnessPreparedExecution> {
-    this.active.get(lineage.lineageId)?.queuedProbeCancellation?.invalidate();
+    const active = this.active.get(lineage.lineageId);
+    if (active) revokeProbeDiagnostics(active);
     return this.prepare(dispatch, lineage, true);
   }
 
@@ -324,7 +340,9 @@ export class ClaudeCodeHarness implements AgentHarness {
     lineage: HarnessLineage,
     dispatch?: DispatchRecord,
   ): Promise<HarnessRecoveredExecution> {
-    this.active.get(lineage.lineageId)?.queuedProbeCancellation?.invalidate();
+    this.revokePendingPreparations(lineage.lineageId);
+    const previous = this.active.get(lineage.lineageId);
+    if (previous) revokeProbeDiagnostics(previous);
     if (!dispatch)
       return {
         found: false,
@@ -359,9 +377,10 @@ export class ClaudeCodeHarness implements AgentHarness {
   }
 
   async interrupt(lineage: HarnessLineage): Promise<void> {
+    this.revokePendingPreparations(lineage.lineageId);
     const active = this.active.get(lineage.lineageId);
     if (!active) return;
-    active.queuedProbeCancellation?.invalidate();
+    revokeProbeDiagnostics(active);
     active.disconnected = true;
     await Promise.allSettled([
       active.process.cancel(),
@@ -373,12 +392,21 @@ export class ClaudeCodeHarness implements AgentHarness {
   }
 
   revokeDiagnosticCapabilities(actionId?: string): void {
+    if (actionId === undefined) this.diagnosticPreparations.clear();
+    else this.diagnosticPreparations.delete(actionId);
+    if (actionId !== undefined) {
+      try {
+        this.claimFreshDiagnosticAction?.(actionId);
+      } catch {
+        /* Still revoke live capabilities. */
+      }
+    }
     for (const active of this.active.values())
       if (
         actionId === undefined ||
         active.dispatch.action.action_id === actionId
       )
-        active.queuedProbeCancellation?.invalidate();
+        revokeProbeDiagnostics(active);
   }
 
   async retire(lineage: HarnessLineage): Promise<void> {
@@ -386,9 +414,10 @@ export class ClaudeCodeHarness implements AgentHarness {
   }
 
   async close(lineage: HarnessLineage): Promise<void> {
+    this.revokePendingPreparations(lineage.lineageId);
     const active = this.active.get(lineage.lineageId);
     if (active) {
-      active.queuedProbeCancellation?.invalidate();
+      revokeProbeDiagnostics(active);
       active.disconnected = true;
       await Promise.allSettled([
         active.process.cancel(),
@@ -434,12 +463,13 @@ export class ClaudeCodeHarness implements AgentHarness {
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
   ): Promise<void> {
+    this.diagnosticPreparations.delete(dispatch.action.action_id);
     const active = this.active.get(lineage.lineageId);
     if (
       active &&
       active.dispatch.action.action_id === dispatch.action.action_id
     ) {
-      active.queuedProbeCancellation?.invalidate();
+      revokeProbeDiagnostics(active);
       active.promptSubmitted = false;
       active.promptAccepted = false;
       active.session = this.sessions.transition(
@@ -457,8 +487,9 @@ export class ClaudeCodeHarness implements AgentHarness {
   }
 
   disconnect(): void {
+    this.diagnosticPreparations.clear();
     for (const active of this.active.values()) {
-      active.queuedProbeCancellation?.invalidate();
+      revokeProbeDiagnostics(active);
       active.disconnected = true;
       this.markUncertain(active);
       void active.process.cancel();
@@ -468,6 +499,12 @@ export class ClaudeCodeHarness implements AgentHarness {
     this.active.clear();
   }
 
+  private revokePendingPreparations(lineageId: string): void {
+    for (const [actionId, preparation] of this.diagnosticPreparations)
+      if (preparation.lineageId === lineageId)
+        this.diagnosticPreparations.delete(actionId);
+  }
+
   private async prepare(
     dispatch: DispatchRecord,
     lineage: HarnessLineage,
@@ -475,17 +512,55 @@ export class ClaudeCodeHarness implements AgentHarness {
     recovering = false,
   ): Promise<HarnessPreparedExecution> {
     assertExactConfiguration(dispatch);
-    // Capture before any preparation await: a later activation cannot lend its
-    // generation to an old in-flight preparation. Missing proof disables only
-    // the optional diagnostic, never ordinary readiness or cancellation.
+    // Capture before any preparation await. Missing/replaced epoch proof now
+    // fails the mandatory pre-probe gate; it never changes physical cancellation.
     let diagnosticGeneration: string | null = null;
     try {
       const generation = this.currentDiagnosticGeneration?.();
       if (typeof generation === "string" && generation.length > 0)
         diagnosticGeneration = generation;
     } catch {
-      /* Fail open. */
+      /* Unavailable; the mandatory pre-probe gate fails closed. */
     }
+    let freshAcceptance = false;
+    try {
+      freshAcceptance =
+        diagnosticGeneration !== null &&
+        this.claimFreshDiagnosticAction?.(dispatch.action.action_id) ===
+          diagnosticGeneration;
+    } catch {
+      /* No fresh receipt, no diagnostic command authority. */
+    }
+    this.revokePendingPreparations(lineage.lineageId);
+    const preparation = { lineageId: lineage.lineageId };
+    const actionId = dispatch.action.action_id;
+    if (this.diagnosticPreparations.size < 4096)
+      this.diagnosticPreparations.set(actionId, preparation);
+    try {
+      return await this.prepareCurrent(
+        dispatch,
+        lineage,
+        continuation,
+        recovering,
+        diagnosticGeneration,
+        freshAcceptance,
+        () => this.diagnosticPreparations.get(actionId) === preparation,
+      );
+    } finally {
+      if (this.diagnosticPreparations.get(actionId) === preparation)
+        this.diagnosticPreparations.delete(actionId);
+    }
+  }
+
+  private async prepareCurrent(
+    dispatch: DispatchRecord,
+    lineage: HarnessLineage,
+    continuation: boolean,
+    recovering: boolean,
+    diagnosticGeneration: string | null,
+    freshAcceptance: boolean,
+    preparationCurrent: () => boolean,
+  ): Promise<HarnessPreparedExecution> {
     const runPrepared = await this.runManager.prepare(
       dispatch,
       lineage,
@@ -514,7 +589,7 @@ export class ClaudeCodeHarness implements AgentHarness {
       // live authority instead of retaining the previous Action's revoked one.
       const account = await acquireAccountRuntime();
       const priorBroker = existing.broker;
-      existing.queuedProbeCancellation?.invalidate();
+      revokeProbeDiagnostics(existing);
       existing.queuedProbeCancellation = null;
       existing.account = account;
       existing.dispatch = dispatch;
@@ -599,7 +674,7 @@ export class ClaudeCodeHarness implements AgentHarness {
           (error) => {
             const current = this.active.get(lineage.lineageId);
             if (!current) return;
-            current.queuedProbeCancellation?.invalidate();
+            revokeProbeDiagnostics(current);
             current.fatal = error;
             current.inspection = inspection(current, "unavailable", "unknown");
             void current.process.cancel();
@@ -667,6 +742,7 @@ export class ClaudeCodeHarness implements AgentHarness {
           fatal: null,
           disconnected: false,
           queuedProbeCancellation: null,
+          probeGate: null,
         };
         this.active.set(lineage.lineageId, active);
         const scope: ProbeCancellationScope = {
@@ -677,63 +753,108 @@ export class ClaudeCodeHarness implements AgentHarness {
           sessionId: nativeSessionId,
           process,
         };
+        let canonical: DispatchRecord | null = null;
         try {
-          // Establish ownership once BEFORE the probe/budget. No store lookup
-          // is permitted in the later timeout dispatch or response path. ACKs
-          // after this synchronous check revoke via the executor's hook.
-          const canonical =
-            !continuation &&
-            !recovering &&
-            !dispatch.action.operational_recovery &&
-            diagnosticGeneration !== null &&
-            this.currentDiagnosticGeneration?.() === diagnosticGeneration
-              ? this.currentDispatch?.(scope.actionId)
-              : null;
-          if (
-            !continuation &&
-            !recovering &&
-            !dispatch.action.operational_recovery &&
-            canonical &&
-            ["accepted", "running"].includes(canonical.state) &&
+          canonical = this.currentDispatch?.(scope.actionId) ?? null;
+        } catch {
+          /* gate unavailable */
+        }
+        const canonicalMatches = Boolean(
+          canonical &&
+            (["accepted", "running"].includes(canonical.state) ||
+              (recovering && canonical.state === "uncertain")) &&
             !canonical.serverAcknowledgedAt &&
             !canonical.settledAt &&
-            !canonical.action.operational_recovery &&
+            canonical.lineageId === scope.lineageId &&
             canonical.action.action_id === scope.actionId &&
             canonical.action.run_id === scope.runId &&
-            canonical.action.attempt_id === scope.attemptId &&
-            canonical.lineageId === scope.lineageId
+            canonical.action.attempt_id === scope.attemptId,
+        );
+        const continuity = {
+          freshAcceptance,
+          continuation,
+          recovering,
+          priorSession: Boolean(
+            durable ||
+              lineage.nativeSession ||
+              lineage.executionHandle ||
+              lineage.transportBinding,
+          ),
+        };
+        const operationCurrent = () => {
+          const current = active.dispatch;
+          return Boolean(
+            canonicalMatches &&
+              preparationCurrent() &&
+              diagnosticGeneration !== null &&
+              this.currentDiagnosticGeneration?.() === diagnosticGeneration &&
+              current &&
+              !current.serverAcknowledgedAt &&
+              !current.settledAt &&
+              !["completed", "failed"].includes(current.state) &&
+              current.lineageId === scope.lineageId &&
+              current.action.action_id === scope.actionId &&
+              current.action.run_id === scope.runId &&
+              current.action.attempt_id === scope.attemptId &&
+              this.active.get(scope.lineageId) === active &&
+              active.dispatch === dispatch &&
+              active.lineageId === scope.lineageId &&
+              active.fatal === null &&
+              active.account === account &&
+              active.process === process &&
+              active.session.nativeSessionId === nativeSessionId,
+          );
+        };
+        const requiresFreshReceipt = isFreshInitialProbeExecution(
+          dispatch.action,
+          { ...continuity, freshAcceptance: true },
+        );
+        const gate = new ClaudePreProbeGate(
+          process,
+          () =>
+            operationCurrent() &&
+            (!requiresFreshReceipt || freshAcceptance) &&
+            !active.disconnected &&
+            !frames.closed,
+          (status) =>
+            diagnostics?.recordProbeDiagnosticCapability(
+              status,
+              process.handle,
+            ),
+        );
+        active.probeGate = gate;
+        let queuedCancellation: QueuedProbeCancellation | undefined;
+        let readinessTimedOut = false;
+        try {
+          // Live exact-attachment proof before observation or any probe bytes.
+          gate.check();
+          if (
+            canonical &&
+            isFreshInitialProbeExecution(dispatch.action, continuity) &&
+            isFreshInitialProbeExecution(canonical.action, continuity) &&
+            !dispatch.promptIntentAt &&
+            !dispatch.promptAcceptedAt &&
+            !dispatch.nativeActivityAt &&
+            !dispatch.promptAuthorizedAt &&
+            !canonical.promptIntentAt &&
+            !canonical.promptAcceptedAt &&
+            !canonical.nativeActivityAt &&
+            !canonical.promptAuthorizedAt
           ) {
             active.queuedProbeCancellation = new QueuedProbeCancellation(
               scope,
-              () => {
-                const current = active.dispatch;
-                if (
-                  !current ||
-                  this.currentDiagnosticGeneration?.() !==
-                    diagnosticGeneration ||
-                  current.action.operational_recovery ||
-                  current.serverAcknowledgedAt ||
-                  current.settledAt ||
-                  ["completed", "failed"].includes(current.state) ||
-                  current.lineageId !== scope.lineageId ||
-                  this.active.get(scope.lineageId) !== active ||
-                  active.dispatch !== dispatch ||
-                  active.lineageId !== scope.lineageId ||
-                  active.fatal !== null ||
-                  active.account !== account ||
-                  active.process !== process ||
-                  active.session.nativeSessionId !== nativeSessionId
-                )
-                  return null;
-                // Pure in-memory ownership fence: no SQLite/namespace wait
-                // may be introduced at the physical cancellation boundary.
-                return {
-                  ...scope,
-                  runId: current.action.run_id,
-                  attemptId: current.action.attempt_id,
-                  actionId: current.action.action_id,
-                };
-              },
+              () =>
+                operationCurrent() &&
+                isFreshInitialProbeExecution(
+                  active.dispatch.action,
+                  continuity,
+                ) &&
+                !active.dispatch.promptIntentAt &&
+                !active.dispatch.promptAcceptedAt &&
+                !active.dispatch.nativeActivityAt &&
+                !active.dispatch.promptAuthorizedAt
+                  ? scope
+                  : null,
               (value) =>
                 diagnostics?.recordQueuedProbeCancellation(
                   value,
@@ -741,19 +862,14 @@ export class ClaudeCodeHarness implements AgentHarness {
                 ),
             );
           }
-        } catch {
-          /* No capability is safer than uncertain identity; probe still proceeds. */
-        }
-        const queuedCancellation = active.queuedProbeCancellation ?? undefined;
-        let readinessTimedOut = false;
-        observeClaudeProtocol(
-          process,
-          frames,
-          diagnostics,
-          () => active.disconnected,
-          queuedCancellation,
-        );
-        try {
+          queuedCancellation = active.queuedProbeCancellation ?? undefined;
+          observeClaudeProtocol(
+            process,
+            frames,
+            diagnostics,
+            () => active.disconnected,
+            queuedCancellation,
+          );
           await sendMessage(
             process,
             nativeSessionId,
@@ -761,7 +877,9 @@ export class ClaudeCodeHarness implements AgentHarness {
             false,
             diagnostics,
             active.queuedProbeCancellation ?? undefined,
+            () => gate.check(),
           );
+          gate.invalidate();
           // Native settings proof shares the existing 30s post-probe budget;
           // it never extends the init timeout or introduces a second 30s wait.
           const deadline = Date.now() + 30_000;
@@ -773,6 +891,10 @@ export class ClaudeCodeHarness implements AgentHarness {
           });
           active.queuedProbeCancellation?.invalidate();
           try {
+            if (!operationCurrent() || active.disconnected)
+              throw new Error(
+                "Claude preparation ownership is no longer current.",
+              );
             attestClaudeInit(init, {
               sessionId: nativeSessionId,
               cwd: account.cwd,
@@ -789,6 +911,10 @@ export class ClaudeCodeHarness implements AgentHarness {
               },
               deadline,
             );
+            if (!operationCurrent() || active.disconnected)
+              throw new Error(
+                "Claude preparation ownership is no longer current.",
+              );
             account.assertCurrent();
           } catch (error) {
             diagnostics?.record("protocol_frame_rejected", process.handle);
@@ -810,7 +936,13 @@ export class ClaudeCodeHarness implements AgentHarness {
           active.inspection = inspection(active, "starting", "idle");
           return prepared(lineage, active);
         } catch (error) {
+          if (error instanceof ClaudeDiagnosticCapabilityUnavailable)
+            diagnostics?.recordProbeDiagnosticCapability(
+              error.negotiation,
+              process.handle,
+            );
           active.disconnected = true;
+          gate.invalidate();
           await Promise.allSettled([
             cancelClaudePreparation(
               process,
@@ -823,6 +955,8 @@ export class ClaudeCodeHarness implements AgentHarness {
           active.queuedProbeCancellation?.invalidate();
           this.active.delete(lineage.lineageId);
           this.markUncertain(active);
+          if (error instanceof ClaudeDiagnosticCapabilityUnavailable)
+            throw error;
           throw claudeError(
             "environment_attestation_failed",
             error instanceof ClaudeProtocolTimeout
@@ -1287,6 +1421,11 @@ async function waitForResult(dispatch: DispatchRecord): Promise<void> {
     await Bun.sleep(25);
   }
   throw new Error("Structured completion export did not settle.");
+}
+
+function revokeProbeDiagnostics(active: ActiveClaudeCodeExecution): void {
+  active.probeGate?.invalidate();
+  active.queuedProbeCancellation?.invalidate();
 }
 
 function claudeError(

@@ -148,6 +148,8 @@ export class QuestEngineeringWorker {
   private cleanupScanActive = false;
   private readonly cleanupCoordinator: RunCleanupCoordinator;
   private readyGeneration: number | null = null;
+  /** Bounded one-use new-acceptance receipts; never restored or transferred. */
+  private readonly freshDiagnosticActions = new Map<string, string>();
   private registration: {
     generation: number;
     operation: Promise<void>;
@@ -285,6 +287,12 @@ export class QuestEngineeringWorker {
                     this.channel.isCurrentGeneration(connection)
                     ? `${connection}:${worker}`
                     : null;
+                },
+                (actionId) => {
+                  const epoch =
+                    this.freshDiagnosticActions.get(actionId) ?? null;
+                  this.freshDiagnosticActions.delete(actionId);
+                  return epoch;
                 },
               );
             }
@@ -1066,6 +1074,20 @@ export class QuestEngineeringWorker {
         });
         return;
       }
+      if (
+        acceptance.created &&
+        action.execution.configuration.harness_kind === "claude_code" &&
+        this.freshDiagnosticActions.size < 4096 &&
+        this.readyGeneration === generation &&
+        this.channel.isCurrentGeneration(generation)
+      ) {
+        const worker = this.channel.currentServerGeneration();
+        if (worker !== null)
+          this.freshDiagnosticActions.set(
+            action.action_id,
+            `${generation}:${worker}`,
+          );
+      }
       try {
         await this.sendAcceptedOrState(acceptance.dispatch);
       } finally {
@@ -1278,6 +1300,7 @@ export class QuestEngineeringWorker {
   }
 
   private revokeDiagnosticCapabilities(): void {
+    this.freshDiagnosticActions.clear();
     for (const harness of this.harnesses.list()) {
       try {
         harness.revokeDiagnosticCapabilities?.();

@@ -20,6 +20,7 @@ import type {
   StreamedProcessExit,
   StreamedProcessHandle,
   StreamedProcessInfrastructureEvent,
+  StreamedProcessNegotiatedCapabilities,
   StreamedProcessOptions,
   StreamedProcessReconciliation,
   StreamedProcessStreamEvent,
@@ -93,6 +94,7 @@ export interface StreamedProcessTransport {
   closeStdin(writeId: string): Promise<StreamedProcessTransportSideEffect>;
   /** Optional nonblocking, bounded, current-channel-only submission. */
   tryWriteDiagnostic?(data: Uint8Array): boolean;
+  negotiatedCapabilities?(): Readonly<StreamedProcessNegotiatedCapabilities>;
   cancel(cancellationId: string): Promise<StreamedProcessTransportSideEffect>;
   disconnect(): Promise<void>;
 }
@@ -256,8 +258,46 @@ export class StreamedProcessManager {
       stdout: state.stdout,
       stderr: state.stderr,
       exit: exit.promise,
-      write: (data) => this.write(state, data, false),
+      write: (data, beforeWrite) => this.write(state, data, false, beforeWrite),
       closeStdin: () => this.write(state, new Uint8Array(), true),
+      negotiatedCapabilities: () => {
+        let status: StreamedProcessNegotiatedCapabilities["nonblockingDiagnosticWrite"] =
+          "unavailable";
+        try {
+          assertSameHandle(state.handle, publicHandle, "write_streamed");
+          const identity = state.transport.identity;
+          if (
+            this.processes.get(handle.processGeneration) === state &&
+            !state.terminal &&
+            !state.disconnected &&
+            !state.writeClosed &&
+            !state.cancelPromise &&
+            identity.backendProcessId === state.handle.backendProcessId &&
+            identity.processStartIdentity ===
+              state.handle.processStartIdentity &&
+            identity.observedExecutable === state.handle.observedExecutable &&
+            identity.observedExecutableIdentity ===
+              state.handle.observedExecutableIdentity
+          ) {
+            const value = state.transport.negotiatedCapabilities?.();
+            const field =
+              value &&
+              Object.getOwnPropertyDescriptor(
+                value,
+                "nonblockingDiagnosticWrite",
+              );
+            if (
+              field &&
+              "value" in field &&
+              ["supported", "unsupported", "unavailable"].includes(field.value)
+            )
+              status = field.value;
+          }
+        } catch {
+          /* No identity/capability failure is converted to unsupported. */
+        }
+        return Object.freeze({ nonblockingDiagnosticWrite: status });
+      },
       tryWriteDiagnostic: (data) => {
         try {
           assertSameHandle(state.handle, publicHandle, "write_streamed");
@@ -512,6 +552,7 @@ export class StreamedProcessManager {
     state: ManagedProcessState,
     data: Uint8Array,
     close: boolean,
+    beforeWrite?: () => void,
   ): Promise<{
     certainty: "acknowledged";
     writeId: string;
@@ -554,6 +595,9 @@ export class StreamedProcessManager {
         operationId: writeId,
         byteLength,
       });
+      // Synchronous caller precondition after the existing async validation.
+      // A rejection here precedes all physical bytes and is never ambiguous.
+      beforeWrite?.();
       let result: StreamedProcessTransportSideEffect;
       try {
         result = close

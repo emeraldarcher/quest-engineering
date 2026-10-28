@@ -13,6 +13,7 @@ import type {
   StreamedProcess,
   StreamedProcessExit,
   StreamedProcessHandle,
+  StreamedProcessNegotiatedCapabilities,
 } from "../execution-environment/types.ts";
 
 import {
@@ -126,6 +127,8 @@ export interface LifecycleEvidence {
   outputCensus: ClaudeOutputCensusSnapshot & { frameValidated: boolean };
   /** Prospective only; historical rows are returned unchanged, without defaults. */
   queuedProbeCancellation?: QueuedProbeCancellationEvidence;
+  /** Last exact pre-probe gate check; transport support only, never Claude init. */
+  probeDiagnosticCapability?: StreamedProcessNegotiatedCapabilities["nonblockingDiagnosticWrite"];
 }
 
 /** Worker-local, non-authoritative evidence. Never accepts native text/payloads. */
@@ -193,6 +196,9 @@ export class ManagedHarnessLifecycle {
   private censusSavePending = false;
   private queuedProbeCancellation: QueuedProbeCancellationEvidence | null =
     null;
+  private probeDiagnosticCapability:
+    | StreamedProcessNegotiatedCapabilities["nonblockingDiagnosticWrite"]
+    | null = null;
   private readonly started = performance.now();
   private persistence: "available" | "unknown" = "unknown";
 
@@ -371,6 +377,25 @@ export class ManagedHarnessLifecycle {
       this.scheduleCensusSave();
     } catch {
       /* Never consume/drop a real protocol frame for diagnostics. */
+    }
+  }
+
+  recordProbeDiagnosticCapability(
+    status: StreamedProcessNegotiatedCapabilities["nonblockingDiagnosticWrite"],
+    source: StreamedProcessHandle,
+  ): void {
+    try {
+      if (
+        !this.matches(source) ||
+        !["supported", "unsupported", "unavailable"].includes(status) ||
+        this.events.has("probe_write_acknowledged")
+      )
+        return;
+      this.probeDiagnosticCapability = status;
+      // Existing observer/write/cancellation checkpoints persist this closed
+      // projection. No extra persistence task or round-trip precedes cancellation.
+    } catch {
+      /* Diagnostic projection cannot establish capability or readiness. */
     }
   }
 
@@ -599,6 +624,9 @@ export class ManagedHarnessLifecycle {
       events: structuredClone([...this.events.values()]),
       ioObservations: structuredClone([...this.io.values()]),
       probeIoDelta: this.probeIoDelta(),
+      ...(this.probeDiagnosticCapability
+        ? { probeDiagnosticCapability: this.probeDiagnosticCapability }
+        : {}),
       ...(this.queuedProbeCancellation
         ? { queuedProbeCancellation: { ...this.queuedProbeCancellation } }
         : {}),

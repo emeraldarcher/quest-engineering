@@ -239,6 +239,16 @@ export interface StreamedProcessReconciliation {
   streamRecovery: "current_worker_only" | "not_recoverable";
 }
 
+/** Closed snapshot of live READY negotiation, never readiness/inference proof.
+ * supported requires compatible relay-v2 READY and literal feature=true.
+ * Snapshots confer no authority: re-read on the exact attachment before use. */
+export interface StreamedProcessNegotiatedCapabilities {
+  readonly nonblockingDiagnosticWrite:
+    | "supported"
+    | "unsupported"
+    | "unavailable";
+}
+
 export interface StreamedProcess {
   readonly handle: StreamedProcessHandle;
   /** Ordered bytes plus explicit EOF/error for the target's stdout. */
@@ -247,12 +257,19 @@ export interface StreamedProcess {
   readonly stderr: AsyncIterable<StreamedProcessStreamEvent>;
   /** Terminal process evidence, distinct from either stream's EOF. */
   readonly exit: Promise<StreamedProcessExit>;
-  /** Resolves only after guest acknowledgement; uncertain writes are never replayed. */
-  write(data: Uint8Array): Promise<StreamedProcessWriteReceipt>;
+  /** Resolves only after guest acknowledgement; uncertain writes are never replayed.
+   * beforeWrite is a synchronous precondition immediately before physical bytes,
+   * after any async validation. A thrown precondition is never ambiguous. */
+  write(
+    data: Uint8Array,
+    beforeWrite?: () => void,
+  ): Promise<StreamedProcessWriteReceipt>;
   closeStdin(): Promise<StreamedProcessWriteReceipt>;
   /** Optional bounded, nonblocking submission on this current attachment only.
    * True means submitted to transport, NOT target delivery/ACK. No retry/wait. */
   tryWriteDiagnostic?(data: Uint8Array): boolean;
+  /** Synchronous read-only live-attachment metadata; absent means unavailable. */
+  negotiatedCapabilities?(): Readonly<StreamedProcessNegotiatedCapabilities>;
   /** Requests one physical termination action without signal escalation. */
   cancel(cancellationId?: string): Promise<StreamedProcessCancellationReceipt>;
   inspect(): Promise<StreamedProcessReconciliation>;
