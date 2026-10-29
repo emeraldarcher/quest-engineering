@@ -14,7 +14,11 @@ import {
   STREAMED_PROCESS_IO_UNAVAILABLE,
   safeIoSample,
 } from "./streamed-process-io.ts";
-import type { StreamedProcessCommand, StreamedProcessExit } from "./types.ts";
+import type {
+  StreamedProcessCommand,
+  StreamedProcessExit,
+  StreamedProcessNegotiatedCapabilities,
+} from "./types.ts";
 import { EnvironmentBackendError } from "./types.ts";
 
 const READY = 1;
@@ -74,6 +78,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   private disconnected = false;
   private runStarted = false;
   private diagnosticWriteAttempted = false;
+  private negotiationRetired = false;
   private ioWaiter: {
     id: string;
     resolve(value: StreamedProcessTransportIoSnapshot): void;
@@ -90,6 +95,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     private readonly expectedMarkerSha256: string,
     private readonly ioProtocolSupported: boolean,
     private readonly diagnosticWriteSupported: boolean,
+    private readonly diagnosticNegotiationAvailable = true,
   ) {
     this.identity = identity;
     this.stderrReader = child.stderr.getReader();
@@ -178,7 +184,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           knownNotSubmitted ? "not_submitted" : "ambiguous",
         );
       }
-      const ready = parseObject(first.payload);
+      const ready = parseReady(first.payload);
       const backendProcessId = requiredText(ready.pid);
       const processStartIdentity = requiredText(ready.startIdentity);
       const observedExecutable = requiredText(ready.observedExecutable);
@@ -212,6 +218,11 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
         ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION,
         ready.protocolVersion === SBX_STREAMED_PROCESS_RELAY_PROTOCOL_VERSION &&
           ready.nonblockingDiagnosticWrite === true,
+        (ready.nonblockingDiagnosticWrite === undefined ||
+          typeof ready.nonblockingDiagnosticWrite === "boolean") &&
+          (ready.protocolVersion === undefined ||
+            (Number.isSafeInteger(ready.protocolVersion) &&
+              (ready.protocolVersion as number) > 0)),
       );
     } catch (error) {
       await frames.cancel().catch(() => undefined);
@@ -238,7 +249,10 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     try {
       while (!this.disconnected) {
         const frame = await this.frames.next();
-        if (!frame) break;
+        if (!frame) {
+          this.negotiationRetired = true;
+          break;
+        }
         if (frame.type === STDOUT || frame.type === STDERR) {
           await onEvent({
             kind: "data",
@@ -288,6 +302,9 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           await onEvent({ kind: "exit", exit: parseExit(frame.payload) });
           continue;
         }
+        // The live attachment is already unusable. Revoke before publishing
+        // through an async/backpressured observer, not only in finally.
+        this.negotiationRetired = true;
         await onEvent({
           kind: "transport_error",
           errorCode:
@@ -307,12 +324,14 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
           errorCode: "streamed_process_stream_unavailable",
         });
     } catch {
+      this.negotiationRetired = true;
       if (!this.disconnected)
         await onEvent({
           kind: "transport_error",
           errorCode: "streamed_process_stream_unavailable",
         });
     } finally {
+      this.negotiationRetired = true;
       this.resolveAllPending("ambiguous");
       await this.stderrDrain.catch(() => undefined);
     }
@@ -326,11 +345,31 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
   }
 
   closeStdin(writeId: string): Promise<StreamedProcessTransportSideEffect> {
+    this.negotiationRetired = true;
     return this.request(this.pendingWrites, CLOSE_STDIN, writeId);
   }
 
   cancel(cancellationId: string): Promise<StreamedProcessTransportSideEffect> {
+    this.negotiationRetired = true;
     return this.request(this.pendingCancellations, CANCEL, cancellationId);
+  }
+
+  negotiatedCapabilities(): Readonly<StreamedProcessNegotiatedCapabilities> {
+    const unavailable =
+      !this.diagnosticNegotiationAvailable ||
+      !this.runStarted ||
+      this.negotiationRetired ||
+      this.disconnected ||
+      this.hostExited ||
+      this.targetExited ||
+      !this.identity.observedExecutableIdentity;
+    return Object.freeze({
+      nonblockingDiagnosticWrite: unavailable
+        ? "unavailable"
+        : this.diagnosticWriteSupported
+          ? "supported"
+          : "unsupported",
+    });
   }
 
   tryWriteDiagnostic(data: Uint8Array): boolean {
@@ -338,6 +377,7 @@ export class SbxStreamedProcessTransport implements StreamedProcessTransport {
     this.diagnosticWriteAttempted = true;
     if (
       !this.diagnosticWriteSupported ||
+      this.negotiationRetired ||
       !this.identity.observedExecutableIdentity ||
       !this.runStarted ||
       this.disconnected ||
@@ -640,6 +680,46 @@ function encodeFrame(type: number, payload: Uint8Array): Uint8Array {
 
 function decodeId(payload: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(payload);
+}
+
+/** READY-only ambiguity check, on bounded raw frame bytes before semantic use.
+ * Strings are skipped as units (including escapes); only root member names
+ * count. JSON.parse below remains the strict grammar validator, not authority
+ * for duplicate resolution. No raw text escapes the launch error boundary. */
+function parseReady(payload: Uint8Array): Record<string, unknown> {
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(payload);
+  const critical = new Set([
+    "protocolVersion",
+    "nonblockingDiagnosticWrite",
+    "pid",
+    "startIdentity",
+    "observedExecutable",
+    "observedExecutableIdentity",
+    "environmentMarkerSha256",
+  ]);
+  const seen = new Set<string>();
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      const start = i++;
+      for (; i < text.length; i++) {
+        if (text[i] === "\\") i++;
+        else if (text[i] === '"') break;
+      }
+      let next = i + 1;
+      while (/[\t\n\r ]/.test(text[next] ?? "!")) next++;
+      if (depth === 1 && text[next] === ":") {
+        const key: string = JSON.parse(text.slice(start, i + 1));
+        if (critical.has(key)) {
+          if (seen.has(key)) throw new Error("SBX relay READY was ambiguous.");
+          seen.add(key);
+        }
+      }
+    } else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+  }
+  return parseObject(payload);
 }
 
 function parseObject(payload: Uint8Array): Record<string, unknown> {

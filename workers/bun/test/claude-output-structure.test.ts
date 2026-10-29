@@ -647,6 +647,16 @@ test("probe binding requires exact observed attachment/session, is immutable, an
   expect(
     diag.snapshot().outputCensus.commandLifecycle.probeCorrelation,
   ).toEqual({ match: 1, mismatch: 0, missing_or_invalid: 0, unavailable: 0 });
+  diag.retireProbeCommand();
+  diag.bindProbeCommand(foreign, reserved, h); // retired binding cannot be reused
+  for (const command_uuid of [owned, foreign])
+    diag.observeClaudeOutput(
+      { kind: "json", value: { type: "command_lifecycle", command_uuid } },
+      h,
+    );
+  expect(
+    diag.snapshot().outputCensus.commandLifecycle.probeCorrelation,
+  ).toEqual({ match: 1, mismatch: 0, missing_or_invalid: 0, unavailable: 2 });
   const late = new ManagedHarnessLifecycle(context);
   late.bindProcess(h);
   late.record("stream_observation_registered", h);

@@ -52,6 +52,12 @@ export class AsyncFrameQueue {
     }
   }
 
+  /** Preparation teardown discards buffered native frames; never reusable. */
+  retire(): void {
+    this.values.length = 0;
+    this.fail(new Error("Claude protocol observation was retired."));
+  }
+
   next(timeoutMs: number | null): Promise<Record<string, unknown>> {
     const value = this.values.shift();
     if (value) return Promise.resolve(value);
@@ -79,26 +85,49 @@ export function observeClaudeProtocol(
   diagnostics: ManagedHarnessLifecycle | null,
   disconnected: () => boolean,
   queuedCancellation?: QueuedProbeCancellation,
-): void {
+): () => void {
+  let binding: {
+    process: StreamedProcess;
+    frames: AsyncFrameQueue;
+    diagnostics: ManagedHarnessLifecycle | null;
+    disconnected: () => boolean;
+    queuedCancellation: QueuedProbeCancellation | undefined;
+  } | null = { process, frames, diagnostics, disconnected, queuedCancellation };
   void pump(
     process.stdout,
     frames,
-    (frame) => diagnostics?.observeInit(frame, process.handle),
-    (unit) => diagnostics?.observeClaudeOutput(unit, process.handle),
-    (frame) => queuedCancellation?.observe(frame, process) ?? false,
+    (frame) => {
+      const b = binding;
+      b?.diagnostics?.observeInit(frame, b.process.handle);
+    },
+    (unit) => {
+      const b = binding;
+      b?.diagnostics?.observeClaudeOutput(unit, b.process.handle);
+    },
+    (frame) => {
+      const b = binding;
+      return b?.queuedCancellation?.observe(frame, b.process) ?? false;
+    },
+    () => binding !== null,
   )
     .catch(() => {
-      diagnostics?.record("protocol_observation_failed", process.handle);
+      const b = binding;
+      if (!b) return;
+      b.diagnostics?.record("protocol_observation_failed", b.process.handle);
       // JSON/UTF-8 parser exceptions can contain native input excerpts.
-      frames.fail(new Error("Claude Code stdout protocol observation failed."));
+      b.frames.fail(
+        new Error("Claude Code stdout protocol observation failed."),
+      );
     })
-    .finally(() => queuedCancellation?.invalidate());
+    .finally(() => binding?.queuedCancellation?.invalidate());
   void process.exit.then((exit) => {
-    queuedCancellation?.invalidate();
-    diagnostics?.record("process_exit_observed", process.handle, { exit });
-    diagnostics?.captureIo("process_exit_observed", process);
-    if (!disconnected() && !frames.closed)
-      frames.fail(
+    const b = binding;
+    if (!b) return;
+    b.queuedCancellation?.invalidate();
+    b.diagnostics?.record("process_exit_observed", b.process.handle, { exit });
+    b.diagnostics?.captureIo("process_exit_observed", b.process);
+    if (!b.disconnected() && !b.frames.closed)
+      b.frames.fail(
         new Error(
           exit.kind === "observation_unavailable"
             ? "Claude Code process observation became unavailable before protocol settlement."
@@ -107,6 +136,13 @@ export function observeClaudeProtocol(
       );
   });
   diagnostics?.record("stream_observation_registered", process.handle);
+  return () => {
+    const b = binding;
+    binding = null;
+    b?.queuedCancellation?.invalidate();
+    b?.diagnostics?.retireProbeCommand();
+    b?.frames.retire();
+  };
 }
 
 export async function pump(
@@ -115,6 +151,7 @@ export async function pump(
   onFrame: (frame: Record<string, unknown>) => void = () => undefined,
   onUnit: (unit: ClaudeOutputUnit) => void = () => undefined,
   consumeDiagnostic: (frame: Record<string, unknown>) => boolean = () => false,
+  observing: () => boolean = () => true,
 ): Promise<void> {
   const observe = (unit: ClaudeOutputUnit) => {
     try {
@@ -126,6 +163,9 @@ export async function pump(
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffered = "";
   for await (const event of stream) {
+    // Keep draining the owned iterator without parsing/observing. Returning
+    // early could disconnect transport ahead of the owner's physical cancel.
+    if (!observing()) continue;
     if (event.kind === "transport_error")
       throw new Error("Claude Code stdout transport failed.");
     if (event.kind !== "data") continue;
@@ -174,7 +214,7 @@ export async function pump(
       } catch {
         /* Observer failure cannot reject a real protocol frame. */
       }
-      frames.push(object);
+      if (observing()) frames.push(object);
     }
   }
   try {
@@ -200,6 +240,7 @@ export async function sendMessage(
   shouldQuery: boolean,
   diagnostics: ManagedHarnessLifecycle | null = null,
   queuedCancellation?: QueuedProbeCancellation,
+  beforeProbe?: () => void,
 ): Promise<void> {
   if (!shouldQuery && diagnostics) {
     try {
@@ -208,6 +249,7 @@ export async function sendMessage(
       /* Unavailable baseline is not a prerequisite for probe submission. */
     }
   }
+  if (!shouldQuery) beforeProbe?.();
   const message = {
     type: "user",
     message: { role: "user", content },
@@ -230,7 +272,10 @@ export async function sendMessage(
     diagnostics?.record("probe_write_requested", process.handle);
   }
   const bytes = new TextEncoder().encode(`${JSON.stringify(message)}\n`);
-  const receipt = await process.write(bytes);
+  const receipt = await process.write(
+    bytes,
+    shouldQuery ? undefined : beforeProbe,
+  );
   if (
     !shouldQuery &&
     receipt.certainty === "acknowledged" &&

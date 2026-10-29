@@ -99,12 +99,20 @@ test("capability imports/call paths cannot invoke readiness, inference or async 
 });
 test("canonical ownership lookup is before probe; timeout ownership closure is memory-only", () => {
   const source = sourceFile("../src/harnesses/claude-code/adapter.ts");
-  const text = namedMethod(source, "prepare").getText(source);
+  const entry = namedMethod(source, "prepare").getText(source);
+  expect(entry.indexOf("this.currentDiagnosticGeneration?.")).toBeLessThan(
+    entry.indexOf("await this.prepareCurrent("),
+  );
+  expect(entry.indexOf("this.diagnosticPreparations.set(")).toBeLessThan(
+    entry.indexOf("await this.prepareCurrent("),
+  );
+  expect(entry).toContain("finally");
+  const text = namedMethod(source, "prepareCurrent").getText(source);
   expect(text.indexOf("this.currentDispatch?.")).toBeLessThan(
     text.indexOf("await sendMessage("),
   );
   const from = text.indexOf("const current = active.dispatch");
-  const to = text.indexOf("return {", from);
+  const to = text.indexOf("};", from);
   const guard = text.slice(from, to);
   expect(from).toBeGreaterThan(0);
   for (const forbidden of [
@@ -143,7 +151,12 @@ test("terminal ACK revocation is synchronous and revokes only diagnostic authori
   const revoke = namedMethod(adapter, "revokeDiagnosticCapabilities").getText(
     adapter,
   );
-  expect(revoke).toContain("queuedProbeCancellation?.invalidate()");
+  expect(revoke).toContain("revokeProbeDiagnostics(active)");
+  const retire = namedMethod(adapter, "revokeProbeDiagnostics").getText(
+    adapter,
+  );
+  expect(retire).toContain("probeGate?.invalidate()");
+  expect(retire).toContain("queuedProbeCancellation?.invalidate()");
   for (const forbidden of [
     "await",
     ".sessions",
@@ -416,6 +429,7 @@ test("review: actual Worker disconnect/supersession bodies revoke before asynchr
     readyGeneration: 1 as number | null,
     heartbeat: null,
     stopping: false,
+    freshDiagnosticActions: new Map([["synthetic", "1:9"]]),
     revokeDiagnosticCapabilities: revoke,
     harnesses: {
       list: () => [
@@ -442,6 +456,7 @@ test("review: actual Worker disconnect/supersession bodies revoke before asynchr
   };
   disconnect.call(owner, 1);
   expect(owner.readyGeneration).toBeNull();
+  expect(owner.freshDiagnosticActions.size).toBe(0);
   expect(retired).toBe(1);
   let superseded: ts.ArrowFunction | undefined;
   let epochReader: ts.ArrowFunction | undefined;

@@ -30,7 +30,17 @@ import {
   ClaudeProtocolTimeout,
 } from "../src/harnesses/claude-code/protocol.ts";
 import { ClaudeCodeSessionStore } from "../src/harnesses/claude-code/session-store.ts";
+import type { ExecuteAction } from "../src/protocol/types.ts";
 import type { WorkspaceToolBroker } from "../src/workspace-tool-broker.ts";
+import {
+  preprobeRelay,
+  rawReadyCases,
+  readyIdentity,
+} from "./support/preprobe-relay.ts";
+import {
+  productAcceptanceReceipt,
+  productPreprobeAction,
+} from "./support/product-preprobe-wire.ts";
 import { action } from "./support.ts";
 
 const roots: string[] = [];
@@ -117,6 +127,9 @@ test("ClaudeCodeHarness prepares credential generation 2 in the retained generat
         boundClientForAction: () => ({ binding, client, accountAuthority }),
       }) as unknown as WorkspaceToolBroker,
     sessionStore,
+    (actionId) => registry.get(actionId),
+    () => "1:1",
+    () => "1:1",
   );
 
   const prepared = await harness.start(accepted, lineage);
@@ -560,9 +573,10 @@ test("terminal ACK before capability creation cannot resurrect diagnostic author
   };
   try {
     await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
-      code: "environment_attestation_failed",
+      code: "diagnostic_capability_unavailable",
     });
     expect(diagnosticWrites).toBe(0);
+    expect(f.process.probeWrites).toBe(0);
     expect(f.ownershipReads()).toBe(1);
   } finally {
     clock.mockRestore();
@@ -612,7 +626,12 @@ for (const handoff of [
     try {
       await expect(
         f.harness.start(f.dispatch, f.lineage),
-      ).rejects.toMatchObject({ code: "environment_attestation_failed" });
+      ).rejects.toMatchObject({
+        code:
+          handoff === "before_creation"
+            ? "diagnostic_capability_unavailable"
+            : "environment_attestation_failed",
+      });
       expect(writes).toBe(0);
       expect(f.process.queryWrites).toBe(0);
     } finally {
@@ -710,20 +729,927 @@ test("review: canonical cancellation revokes before a pending HumanAttention cle
   }
 });
 
+for (const loss of [
+  "canonical_action",
+  "all",
+  "disconnect",
+  "interrupt",
+  "close",
+] as const)
+  test(`preprobe: ${loss} revocation while spawn awaits prevents resurrection before durable cancellation`, async () => {
+    const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+    const spawn = f.lease.spawnStreamed;
+    f.lease.spawnStreamed = async (...args) => {
+      const process = await spawn(...args);
+      if (loss === "canonical_action")
+        f.harness.revokeDiagnosticCapabilities(f.dispatch.action.action_id);
+      else if (loss === "all") f.harness.revokeDiagnosticCapabilities();
+      else if (loss === "disconnect") f.harness.disconnect();
+      else if (loss === "interrupt") await f.harness.interrupt(f.lineage);
+      else await f.harness.close(f.lineage);
+      return process;
+    };
+    try {
+      await expect(
+        f.harness.start(f.dispatch, f.lineage),
+      ).rejects.toMatchObject({ code: "diagnostic_capability_unavailable" });
+      expect(f.process.probeWrites).toBe(0);
+      expect(f.process.cancelCalls).toBe(1);
+      expect(f.process.queryWrites).toBe(0);
+      expect(f.registry.get(f.dispatch.action.action_id).state).toBe(
+        "accepted",
+      );
+    } finally {
+      f.harness.disconnect();
+      f.registry.close();
+      f.store.close();
+    }
+  });
+
+test("preprobe: another Action's revocation cannot remove this pending preparation", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  const spawn = f.lease.spawnStreamed;
+  f.lease.spawnStreamed = async (...args) => {
+    const process = await spawn(...args);
+    f.harness.revokeDiagnosticCapabilities("other-action");
+    return process;
+  };
+  try {
+    await f.harness.start(f.dispatch, f.lineage);
+    expect(f.process.probeWrites).toBe(1);
+    expect(f.process.queryWrites).toBe(0);
+  } finally {
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+test("preprobe: supported live metadata permits one unchanged Product-initial probe, not inference", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  const writes: Uint8Array[] = [];
+  const write = f.process.write.bind(f.process);
+  f.process.write = async (bytes, guard) => {
+    writes.push(bytes);
+    return write(bytes, guard);
+  };
+  try {
+    const prepared = await f.harness.start(f.dispatch, f.lineage);
+    await f.harness.ready(f.dispatch, prepared);
+    expect(f.process.probeWrites).toBe(1);
+    expect(writes[0]?.byteLength).toBe(301);
+    expect(f.nativeSpawns()).toBe(1);
+    const evidence = await preprobeEvidence(f.storeRoot);
+    expect(evidence.probeDiagnosticCapability).toBe("supported");
+    expect(evidence.outputCensus.frameValidated).toBe(true);
+    expect(
+      f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+    ).toBeNull();
+    expect(f.process.queryWrites).toBe(0);
+  } finally {
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+for (const feature of [
+  "unsupported",
+  "unavailable",
+  "missing",
+  "malformed",
+  "throws",
+] as const)
+  test(`preprobe: ${feature} live negotiation blocks before observer/probe and cancels once`, async () => {
+    const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+    let diagnosticWrites = 0;
+    f.process.tryWriteDiagnostic = () => {
+      diagnosticWrites++;
+      return true;
+    };
+    if (feature === "missing") delete f.process.negotiatedCapabilities;
+    else
+      f.process.negotiatedCapabilities = (() => {
+        if (feature === "throws") throw Error("synthetic-private-error");
+        return {
+          nonblockingDiagnosticWrite:
+            feature === "malformed" ? "truthy" : feature,
+        };
+      }) as never;
+    try {
+      await expect(
+        f.harness.start(f.dispatch, f.lineage),
+      ).rejects.toMatchObject({
+        code: "diagnostic_capability_unavailable",
+        phase: "prepare",
+        classification: "terminal_not_recoverable",
+        sideEffectCertainty: "not_submitted",
+      });
+      expect(f.process.probeWrites).toBe(0);
+      expect(diagnosticWrites).toBe(0);
+      expect(f.process.cancelCalls).toBe(1);
+      expect(f.nativeSpawns()).toBe(1);
+      const evidence = await preprobeEvidence(f.storeRoot);
+      expect(evidence.probeDiagnosticCapability).toBe(
+        feature === "unsupported" ? "unsupported" : "unavailable",
+      );
+      expect(evidence.observations.stream_observation_registered).toBe(
+        "not_observed",
+      );
+      expect(evidence.observations.probe_write_requested).toBe("not_observed");
+      expect(evidence.outputCensus.frameValidated).toBe(false);
+      expect(evidence.queuedProbeCancellation).toBeUndefined();
+      expect(
+        f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+      ).toBeNull();
+      expect(f.process.queryWrites).toBe(0);
+    } finally {
+      await f.harness.close(f.lineage);
+      f.registry.close();
+      f.store.close();
+    }
+  });
+for (const replacement of [
+  "feature",
+  "handle",
+  "attachment",
+  "connection_epoch",
+  "registration_epoch",
+  "terminal_ack",
+] as const)
+  test(`preprobe: ${replacement} replacement during pre-probe baseline cannot reuse earlier support`, async () => {
+    let generation = 1;
+    const f = await effortHarness(
+      { model: CLAUDE_CODE_MODEL, effort: "high" },
+      "high",
+      () => generation,
+    );
+    const executor = new DispatchExecutor(
+      f.registry,
+      f.harness,
+      async () => false,
+    );
+    f.process.observeIo = async () => {
+      if (replacement === "feature")
+        f.process.negotiatedCapabilities = () => ({
+          nonblockingDiagnosticWrite: "unsupported",
+        });
+      if (replacement === "handle")
+        f.process.handle.processGeneration = "replacement";
+      if (replacement === "attachment") {
+        const active = (
+          f.harness as unknown as {
+            active: Map<string, { process: StreamedProcess }>;
+          }
+        ).active.get(f.lineage.lineageId);
+        if (active)
+          active.process = {
+            ...f.process,
+            negotiatedCapabilities: () => ({
+              nonblockingDiagnosticWrite: "unavailable",
+            }),
+          };
+      }
+      if (
+        replacement === "connection_epoch" ||
+        replacement === "registration_epoch"
+      )
+        generation = 2;
+      if (replacement === "terminal_ack") {
+        f.registry.fail(f.dispatch.action.action_id, { code: "fixture" });
+        void executor.acknowledgeTerminal(f.dispatch.action.action_id);
+      }
+      return { status: "unavailable", reason: "unsupported" };
+    };
+    try {
+      await expect(
+        f.harness.start(f.dispatch, f.lineage),
+      ).rejects.toMatchObject({ code: "diagnostic_capability_unavailable" });
+      expect(f.process.probeWrites).toBe(0);
+      expect(f.process.queryWrites).toBe(0);
+      expect(f.process.cancelCalls).toBe(1);
+      const evidence = await preprobeEvidence(f.storeRoot);
+      expect(evidence.outputCensus.frameValidated).toBe(false);
+    } finally {
+      await f.harness.close(f.lineage);
+      f.registry.close();
+      f.store.close();
+    }
+  });
+for (const shape of [
+  "human_fresh",
+  "retry",
+  "missing_metadata",
+  "replayed_acceptance",
+] as const)
+  test(`preprobe: ${shape} with supported relay cannot own timeout cancellation`, async () => {
+    const f = await effortHarness(
+      { model: CLAUDE_CODE_MODEL, effort: "high" },
+      "high",
+      () => 1,
+      (candidate) => {
+        if (shape === "missing_metadata") delete candidate.operational_recovery;
+        else if (candidate.operational_recovery) {
+          if (shape === "retry")
+            candidate.operational_recovery.attempt_in_epoch = 2;
+          if (shape.startsWith("human"))
+            Object.assign(candidate.operational_recovery, {
+              authorization_kind: "human",
+              epoch_number: 1,
+              source_attempt_id: "synthetic-previous",
+              request_id: "synthetic-request",
+              continuation_mode: "fresh",
+              retained_lineage_id: null,
+            });
+        }
+      },
+    );
+    if (shape === "replayed_acceptance") f.setFreshAcceptance(false);
+    f.process.probeFrames = () => [];
+    let now = 0,
+      diagnosticWrites = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+      async () => {
+        now = 30_000;
+        throw new ClaudeProtocolTimeout();
+      },
+    );
+    f.process.tryWriteDiagnostic = () => {
+      diagnosticWrites++;
+      return true;
+    };
+    try {
+      await expect(
+        f.harness.start(f.dispatch, f.lineage),
+      ).rejects.toMatchObject({
+        code:
+          shape === "replayed_acceptance"
+            ? "diagnostic_capability_unavailable"
+            : "environment_attestation_failed",
+      });
+      expect(f.process.probeWrites).toBe(
+        shape === "replayed_acceptance" ? 0 : 1,
+      );
+      expect(diagnosticWrites).toBe(0);
+      expect(f.process.queryWrites).toBe(0);
+      expect(
+        (await preprobeEvidence(f.storeRoot)).queuedProbeCancellation,
+      ).toEqual(
+        shape === "replayed_acceptance"
+          ? undefined
+          : {
+              request: "queued_cancel_request_unavailable",
+              response: "response_unavailable",
+            },
+      );
+    } finally {
+      clock.mockRestore();
+      next.mockRestore();
+      await f.harness.close(f.lineage);
+      f.registry.close();
+      f.store.close();
+    }
+  });
+test("preprobe: generation loss after probe ACK before timeout invalidates the fresh-initial capability", async () => {
+  let generation = 1;
+  const f = await effortHarness(
+    { model: CLAUDE_CODE_MODEL, effort: "high" },
+    "high",
+    () => generation,
+  );
+  f.process.probeFrames = () => [];
+  let now = 0,
+    diagnostics = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+    async () => {
+      generation = 2;
+      now = 30_000;
+      throw new ClaudeProtocolTimeout();
+    },
+  );
+  f.process.tryWriteDiagnostic = () => {
+    diagnostics++;
+    return true;
+  };
+  try {
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
+      code: "environment_attestation_failed",
+    });
+    expect(f.process.probeWrites).toBe(1);
+    expect(diagnostics).toBe(0);
+    expect(f.process.cancelCalls).toBe(1);
+  } finally {
+    clock.mockRestore();
+    next.mockRestore();
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+test("preprobe: two preparations cannot borrow negotiated support from each other", async () => {
+  const a = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" }),
+    b = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  b.process.negotiatedCapabilities = () => ({
+    nonblockingDiagnosticWrite: "unavailable",
+  });
+  try {
+    const results = await Promise.allSettled([
+      a.harness.start(a.dispatch, a.lineage),
+      b.harness.start(b.dispatch, b.lineage),
+    ]);
+    expect(results[0]?.status).toBe("fulfilled");
+    expect(results[1]?.status).toBe("rejected");
+    expect(a.process.probeWrites).toBe(1);
+    expect(b.process.probeWrites).toBe(0);
+  } finally {
+    for (const f of [a, b]) {
+      await f.harness.close(f.lineage);
+      f.registry.close();
+      f.store.close();
+    }
+  }
+});
+test("preprobe: actual restored-session recovery uses its own READY but never creates fresh diagnostic authority", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  await f.harness.start(f.dispatch, f.lineage);
+  f.harness.disconnect();
+  const b = syntheticInitProcess(accountEnvironment());
+  b.probeFrames = () => [];
+  f.lease.spawnStreamed = async () => b;
+  let now = 0,
+    diagnosticWrites = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+    async () => {
+      now = 30_000;
+      throw new ClaudeProtocolTimeout();
+    },
+  );
+  b.tryWriteDiagnostic = () => {
+    diagnosticWrites++;
+    return true;
+  };
+  try {
+    expect((await f.harness.recover(f.lineage, f.dispatch)).found).toBe(false);
+    expect(b.probeWrites).toBe(1);
+    expect(diagnosticWrites).toBe(0);
+    expect(b.cancelCalls).toBe(1);
+    expect(b.queryWrites).toBe(0);
+    expect(
+      (await preprobeEvidence(f.storeRoot)).queuedProbeCancellation,
+    ).toEqual({
+      request: "queued_cancel_request_unavailable",
+      response: "response_unavailable",
+    });
+  } finally {
+    clock.mockRestore();
+    next.mockRestore();
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+// Cross-language fixture generation is explicit; ordinary Worker-only runs do
+// not pretend a manually reconstructed Product fixture is equivalent coverage.
+const productWireTest = test.skipIf(!process.env.QE_PREPROBE_WIRE_DIR);
+
+// Combined integration: no fake negotiatedCapabilities at the adapter boundary.
+// Raw READY -> real SBX transport -> real manager -> full harness preparation.
+for (const [name, fields, expected] of rawReadyCases)
+  productWireTest(`raw READY integration: ${name}`, async () => {
+    const f = await effortHarness(
+      { model: CLAUDE_CODE_MODEL, effort: "high" },
+      "high",
+      () => 1,
+      () => undefined,
+      productPreprobeAction("fresh"),
+    );
+    const relay = preprobeRelay(f.lease, fields, initFrame);
+    try {
+      const preparation = f.harness.start(f.dispatch, f.lineage);
+      if (expected === "supported") {
+        await preparation;
+        expect(relay.counts.probes).toBe(1);
+        expect(relay.counts.bytes).toBe(301);
+        expect(
+          (await preprobeEvidence(f.storeRoot)).observations
+            .stream_observation_registered,
+        ).toBe("observed");
+      } else {
+        await expect(preparation).rejects.toMatchObject({
+          code:
+            expected === "rejected"
+              ? "streamed_process_spawn_failed"
+              : "diagnostic_capability_unavailable",
+        });
+        expect(relay.counts.probes).toBe(0);
+        expect(relay.counts.bytes).toBe(0);
+        expect(relay.counts.cancels).toBe(expected === "rejected" ? 0 : 1);
+        expect(relay.counts.kills).toBe(expected === "rejected" ? 1 : 0);
+        const evidence = await preprobeEvidence(f.storeRoot);
+        expect(evidence.observations.stream_observation_registered).toBe(
+          "not_observed",
+        );
+        expect(evidence.observations.probe_write_requested).toBe(
+          "not_observed",
+        );
+        expect(evidence.outputCensus.frameValidated).toBe(false);
+        expect(evidence.probeDiagnosticCapability).toBe(
+          expected === "rejected" ? undefined : expected,
+        );
+      }
+      expect(relay.counts.opens).toBe(1);
+      expect(relay.counts.diagnostics).toBe(0);
+      expect(relay.counts.queries).toBe(0);
+      expect(
+        f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+      ).toBeNull();
+    } finally {
+      await f.harness.close(f.lineage);
+      await relay.close();
+      f.registry.close();
+      f.store.close();
+    }
+  });
+
+for (const race of [
+  "baseline_epoch",
+  "baseline_attachment",
+  "baseline_exit",
+  "writer_epoch",
+  "writer_marker",
+  "spawn_marker",
+] as const)
+  productWireTest(`raw READY integration revocation: ${race}`, async () => {
+    let epoch = 1;
+    const f = await effortHarness(
+      { model: CLAUDE_CODE_MODEL, effort: "high" },
+      "high",
+      () => epoch,
+      () => undefined,
+      productPreprobeAction("fresh"),
+    );
+    const relay = preprobeRelay(
+      f.lease,
+      '"protocolVersion":2,"nonblockingDiagnosticWrite":true',
+      initFrame,
+    );
+    let retainedFrames: AsyncFrameQueue | undefined;
+    const fail = AsyncFrameQueue.prototype.fail;
+    const next = spyOn(AsyncFrameQueue.prototype, "fail").mockImplementation(
+      function (this: AsyncFrameQueue, error: Error) {
+        retainedFrames = this;
+        fail.call(this, error);
+      },
+    );
+    // No native output should be available before a probe. Exit races are
+    // delivered by the real manager, not by a replacement capability method.
+    if (race.startsWith("baseline"))
+      relay.onBaseline(() => {
+        if (race === "baseline_epoch") epoch++;
+        else if (race === "baseline_exit") relay.finish();
+        else {
+          const active = (
+            f.harness as unknown as {
+              active: Map<string, { process: StreamedProcess }>;
+            }
+          ).active.get(f.lineage.lineageId);
+          const p = relay.process();
+          if (active && p)
+            active.process = {
+              ...p,
+              handle: { ...p.handle, processGeneration: "replacement-B" },
+            };
+        }
+      });
+    if (race.startsWith("writer"))
+      relay.onWriter(() => {
+        if (race === "writer_epoch") epoch++;
+        else
+          f.harness.revokeDiagnosticCapabilities(f.dispatch.action.action_id);
+      });
+    if (race === "spawn_marker") {
+      const spawn = f.lease.spawnStreamed;
+      f.lease.spawnStreamed = async (...args) => {
+        const p = await spawn(...args);
+        f.harness.revokeDiagnosticCapabilities(f.dispatch.action.action_id);
+        return p;
+      };
+    }
+    try {
+      await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toThrow();
+      expect(relay.counts.opens).toBe(1);
+      expect(relay.counts.probes).toBe(0);
+      expect(relay.counts.bytes).toBe(0);
+      expect(relay.counts.diagnostics).toBe(0);
+      expect(relay.counts.queries).toBe(0);
+      // An already observed exit can make cancel validation reject before opcode
+      // submission. It is not evidence that a cancellation was physically sent.
+      expect(relay.counts.cancels).toBe(race === "baseline_exit" ? 0 : 1);
+      await relay.process()?.exit;
+      const evidence = await preprobeEvidence(f.storeRoot);
+      expect(evidence.observations.cancellation_requested).toBe("observed");
+      expect(evidence.outputCensus.frameValidated).toBe(false);
+      expect(evidence.observations.stream_observation_registered).toBe(
+        race === "spawn_marker" ? "not_observed" : "observed",
+      );
+      expect(
+        (
+          f.harness as unknown as {
+            active: Map<string, unknown>;
+            diagnosticPreparations: Map<string, unknown>;
+          }
+        ).active.size,
+      ).toBe(0);
+      expect(
+        (
+          f.harness as unknown as {
+            diagnosticPreparations: Map<string, unknown>;
+          }
+        ).diagnosticPreparations.size,
+      ).toBe(0);
+      expect(
+        f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+      ).toBeNull();
+      // Observer queues and census are per-preparation, not reusable handles.
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      if (race === "spawn_marker") expect(retainedFrames).toBeUndefined();
+      else expect(retainedFrames?.closed).toBe(true);
+    } finally {
+      next.mockRestore();
+      await relay.close();
+      f.registry.close();
+      f.store.close();
+    }
+  });
+
+for (const failure of ["late_ready", "reader_failure"] as const)
+  productWireTest(
+    `raw READY writer fence: ${failure} cannot retain support while error publication awaits`,
+    async () => {
+      const f = await effortHarness(
+        { model: CLAUDE_CODE_MODEL, effort: "high" },
+        "high",
+        () => 1,
+        () => undefined,
+        productPreprobeAction("fresh"),
+      );
+      const relay = preprobeRelay(
+        f.lease,
+        '"protocolVersion":2,"nonblockingDiagnosticWrite":true',
+        initFrame,
+      );
+      let writerEntered!: () => void, releaseWriter!: () => void;
+      let errorEntered!: () => void, releaseError!: () => void;
+      const atWriter = new Promise<void>((resolve) => {
+        writerEntered = resolve;
+      });
+      const validation = new Promise<void>((resolve) => {
+        releaseWriter = resolve;
+      });
+      const atError = new Promise<void>((resolve) => {
+        errorEntered = resolve;
+      });
+      const publication = new Promise<void>((resolve) => {
+        releaseError = resolve;
+      });
+      relay.onWriter(() => {
+        writerEntered();
+        return validation;
+      });
+      relay.delayErrorPublication(async () => {
+        errorEntered();
+        await publication;
+      });
+      relay.onCancellation(releaseError);
+      const outcome = f.harness.start(f.dispatch, f.lineage).then(
+        () => null,
+        (error) => error,
+      );
+      try {
+        await atWriter;
+        const historical = relay.process()?.negotiatedCapabilities?.();
+        expect(historical?.nonblockingDiagnosticWrite).toBe("supported");
+        if (failure === "late_ready") relay.emitLateReady();
+        else relay.emitMalformedFrame();
+        await atError;
+        // The real manager has not received the error yet; the real transport
+        // must withdraw live support synchronously before this writer resumes.
+        releaseWriter();
+        expect(await outcome).toMatchObject({
+          code: "diagnostic_capability_unavailable",
+        });
+        expect(relay.counts.probes).toBe(0);
+        expect(relay.counts.bytes).toBe(0);
+        expect(relay.counts.diagnostics).toBe(0);
+        expect(relay.counts.queries).toBe(0);
+        expect(relay.counts.opens).toBe(1);
+        expect(relay.counts.cancels).toBe(1);
+        expect(historical?.nonblockingDiagnosticWrite).toBe("supported");
+        expect(
+          f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+        ).toBeNull();
+      } finally {
+        releaseWriter();
+        releaseError();
+        await outcome;
+        await relay.close();
+        f.registry.close();
+        f.store.close();
+      }
+    },
+  );
+
+productWireTest(
+  "raw READY Product timeout: exact probe owns one synchronous diagnostic before cancellation",
+  async () => {
+    const f = await effortHarness(
+      { model: CLAUDE_CODE_MODEL, effort: "high" },
+      "high",
+      () => 1,
+      () => undefined,
+      productPreprobeAction("fresh"),
+    );
+    const relay = preprobeRelay(
+      f.lease,
+      '"protocolVersion":2,"nonblockingDiagnosticWrite":true',
+      initFrame,
+    );
+    relay.suppressInit();
+    let now = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const next = spyOn(AsyncFrameQueue.prototype, "next").mockImplementation(
+      async () => {
+        now = 30_000;
+        throw new ClaudeProtocolTimeout();
+      },
+    );
+    try {
+      await expect(
+        f.harness.start(f.dispatch, f.lineage),
+      ).rejects.toMatchObject({
+        code: "environment_attestation_failed",
+      });
+      expect(relay.counts.probes).toBe(1);
+      expect(relay.counts.bytes).toBe(301);
+      expect(relay.counts.diagnostics).toBe(1);
+      expect(relay.counts.diagnosticMatchesProbe).toBe(true);
+      expect(relay.counts.cancellationOrder).toEqual([24, 22]);
+      expect(relay.counts.opens).toBe(1);
+      expect(relay.counts.queries).toBe(0);
+      expect(
+        f.registry.get(f.dispatch.action.action_id).promptAuthorizedAt,
+      ).toBeNull();
+    } finally {
+      next.mockRestore();
+      clock.mockRestore();
+      await relay.close();
+      f.registry.close();
+      f.store.close();
+    }
+  },
+);
+
+test("review-fix adversarial: preparation failure clears marker and cannot remint a consumed receipt", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  const manager = (
+    f.harness as unknown as { runManager: { prepare: () => Promise<unknown> } }
+  ).runManager;
+  const prepare = manager.prepare;
+  manager.prepare = async () => {
+    throw new Error("synthetic preparation failure");
+  };
+  try {
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toThrow(
+      "synthetic preparation failure",
+    );
+    expect(
+      (f.harness as unknown as { diagnosticPreparations: Map<string, unknown> })
+        .diagnosticPreparations.size,
+    ).toBe(0);
+    manager.prepare = prepare;
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
+      code: "diagnostic_capability_unavailable",
+    });
+    expect(f.process.probeWrites).toBe(0);
+    expect(f.process.cancelCalls).toBe(1);
+  } finally {
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+test("review-fix adversarial: retained writer callback is unusable after marker revocation and cleanup", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  let retained: (() => void) | undefined;
+  const write = f.process.write;
+  f.process.write = async (bytes, guard) => {
+    retained = guard;
+    f.harness.revokeDiagnosticCapabilities(f.dispatch.action.action_id);
+    return write(bytes, guard);
+  };
+  try {
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
+      code: "diagnostic_capability_unavailable",
+    });
+    expect(retained).toBeDefined();
+    expect(() => retained?.()).toThrow();
+    expect(f.process.probeWrites).toBe(0);
+    expect(f.process.cancelCalls).toBe(1);
+    // The stale callback cannot authorize another invocation either. Its durable
+    // failed reservation also blocks a fresh spawn before the gate is reached.
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toThrow(
+      "Fresh Claude execution cannot reuse any prior native session record.",
+    );
+    expect(() => retained?.()).toThrow();
+  } finally {
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+test("review-fix adversarial: rejected backend cancellation leaves observer inert, not falsely terminated", async () => {
+  let epoch = 1;
+  const f = await effortHarness(
+    { model: CLAUDE_CODE_MODEL, effort: "high" },
+    "high",
+    () => epoch,
+  );
+  const relay = preprobeRelay(
+    f.lease,
+    '"protocolVersion":2,"nonblockingDiagnosticWrite":true',
+    initFrame,
+  );
+  let frames: AsyncFrameQueue | undefined;
+  relay.rejectCancellation();
+  relay.onBaseline(() => {
+    frames = (
+      f.harness as unknown as {
+        active: Map<string, { frames: AsyncFrameQueue }>;
+      }
+    ).active.get(f.lineage.lineageId)?.frames;
+    epoch++;
+  });
+  try {
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
+      code: "diagnostic_capability_unavailable",
+    });
+    expect(frames?.closed).toBe(true);
+    expect(relay.counts.cancels).toBe(1);
+    expect(relay.counts.kills).toBe(0); // no terminal proof at failed cancellation
+    expect(relay.counts.probes).toBe(0);
+    expect(relay.counts.diagnostics).toBe(0);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    const before = await preprobeEvidence(f.storeRoot);
+    expect(before.observations.cancellation_acknowledged).toBe("not_observed");
+    relay.emitOutput(initFrame("late-unowned-session"));
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    const after = await preprobeEvidence(f.storeRoot);
+    expect(after.outputCensus).toEqual(before.outputCensus);
+    expect(after.observations.protocol_frame_observed).toBe("not_observed");
+    await expect(frames?.next(null)).rejects.toThrow();
+  } finally {
+    await relay.close();
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+test("review-fix adversarial: real supported attachment A cannot authorize real unavailable attachment B", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  const leaseB = { ...f.lease };
+  const b = preprobeRelay(
+    leaseB,
+    '"protocolVersion":2,"nonblockingDiagnosticWrite":true',
+    initFrame,
+    readyIdentity.replace(',"observedExecutableIdentity":"1:2"', ""),
+  );
+  const processB = await leaseB.spawnStreamed({
+    executable: "/opt/qe/claude/claude",
+    args: [],
+    cwd: leaseB.paths.state,
+    environment: {},
+  });
+  expect(processB.negotiatedCapabilities?.().nonblockingDiagnosticWrite).toBe(
+    "unavailable",
+  );
+  const a = preprobeRelay(
+    f.lease,
+    '"protocolVersion":2,"nonblockingDiagnosticWrite":true',
+    initFrame,
+  );
+  let historical: unknown;
+  a.onBaseline(() => {
+    historical = a.process()?.negotiatedCapabilities?.();
+    const active = (
+      f.harness as unknown as {
+        active: Map<string, { process: StreamedProcess }>;
+      }
+    ).active.get(f.lineage.lineageId);
+    if (active) active.process = processB;
+  });
+  try {
+    await expect(f.harness.start(f.dispatch, f.lineage)).rejects.toMatchObject({
+      code: "diagnostic_capability_unavailable",
+    });
+    expect(historical).toEqual({ nonblockingDiagnosticWrite: "supported" });
+    expect(a.counts.probes + b.counts.probes).toBe(0);
+    expect(a.counts.diagnostics + b.counts.diagnostics).toBe(0);
+    expect(a.counts.cancels).toBe(1);
+  } finally {
+    await a.close();
+    await b.close();
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+test("review-fix adversarial: terminal revocation before process creation fences a suspended Promise continuation", async () => {
+  const f = await effortHarness({ model: CLAUDE_CODE_MODEL, effort: "high" });
+  let release!: () => void;
+  let entered!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const manager = (
+    f.harness as unknown as { runManager: { prepare: () => Promise<unknown> } }
+  ).runManager;
+  const prepare = manager.prepare;
+  manager.prepare = async () => {
+    entered();
+    await pending;
+    return prepare();
+  };
+  const outcome = f.harness
+    .start(f.dispatch, f.lineage)
+    .catch((error) => error);
+  try {
+    await ready;
+    f.harness.revokeDiagnosticCapabilities(f.dispatch.action.action_id);
+    expect(
+      (f.harness as unknown as { diagnosticPreparations: Map<string, unknown> })
+        .diagnosticPreparations.size,
+    ).toBe(0);
+    release();
+    expect(await outcome).toMatchObject({
+      code: "diagnostic_capability_unavailable",
+    });
+    expect(f.process.probeWrites).toBe(0);
+    expect(f.process.cancelCalls).toBe(1);
+  } finally {
+    release();
+    await outcome;
+    await f.harness.close(f.lineage);
+    f.registry.close();
+    f.store.close();
+  }
+});
+
+async function preprobeEvidence(root: string) {
+  const db = new (await import("bun:sqlite")).Database(
+    join(root, "claude-code-sessions-v1.sqlite"),
+    { readonly: true },
+  );
+  try {
+    const row = db
+      .query(
+        "SELECT evidence_json FROM managed_harness_lifecycle ORDER BY rowid DESC LIMIT 1",
+      )
+      .get() as { evidence_json: string };
+    return JSON.parse(row.evidence_json);
+  } finally {
+    db.close();
+  }
+}
+
 async function effortHarness(
   applied: Record<string, unknown>,
   reasoning: string | null = "high",
   diagnosticGeneration: () => number | null = () => 1,
+  configureAction: (candidate: ExecuteAction) => void = () => undefined,
+  productAction?: ExecuteAction,
 ) {
   const root = await testRoot();
-  const candidate = claudeAction();
+  const candidate = productAction ?? claudeAction();
   candidate.execution.configuration.reasoning = reasoning;
+  configureAction(candidate);
   const registry = new DispatchRegistry(
     join(root, "dispatches.sqlite"),
     root,
     "claude_code",
   );
-  const dispatch = registry.accept(candidate).dispatch;
+  const acceptance = registry.accept(candidate);
+  const dispatch = acceptance.dispatch;
+  const productReceipt = productAction
+    ? productAcceptanceReceipt(candidate, acceptance.created, true, 1)
+    : null;
   registry.occupy(dispatch.lineageId as string, dispatch.action.action_id);
   const lineage = registry.getLineage(dispatch.lineageId as string);
   const environment = accountEnvironment();
@@ -735,7 +1661,17 @@ async function effortHarness(
     spawns++;
     return process;
   };
-  const binding = brokerBinding(dispatch.action.action_id, environment);
+  const binding = {
+    ...brokerBinding(dispatch.action.action_id, environment),
+    runId: candidate.run_id,
+    occurrenceId: candidate.occurrence_id,
+    attemptId: candidate.attempt_id,
+    workspaceId: candidate.execution.logical_workspace.workspace_id,
+    worktreeId: candidate.execution.execution_workspace.worktree_id,
+    workspaceBindingId:
+      candidate.execution.execution_workspace.workspace_binding_id,
+    workspaceAccess: candidate.execution.execution_workspace.access,
+  };
   const store = new ClaudeCodeSessionStore(root);
   const accountAuthority = {
     providerAccountId: binding.providerAccountId,
@@ -743,7 +1679,9 @@ async function effortHarness(
     ref: environment,
     assertCurrent: () => undefined,
   };
-  let ownershipReads = 0;
+  let ownershipReads = 0,
+    freshClaimed = false,
+    allowFresh = true;
   const harness = new ClaudeCodeHarness(
     { workerId: "worker-test", dataRoot: root } as WorkerConfig,
     { prepare: async () => ({ materializedArtifacts: {} }) } as never,
@@ -757,6 +1695,7 @@ async function effortHarness(
       }),
       withSerializedAccount: async (_id: string, run: () => Promise<unknown>) =>
         run(),
+      retireClaudeAccountProcesses: async () => undefined,
     } as never,
     () =>
       ({
@@ -778,6 +1717,13 @@ async function effortHarness(
       const generation = diagnosticGeneration();
       return generation === null ? null : `1:${generation}`;
     },
+    () => {
+      if (freshClaimed || !allowFresh) return null;
+      freshClaimed = true;
+      if (productReceipt) return productReceipt.claim();
+      const generation = diagnosticGeneration();
+      return generation === null ? null : `1:${generation}`;
+    },
   );
   return {
     harness,
@@ -788,6 +1734,9 @@ async function effortHarness(
     store,
     nativeSpawns: () => spawns,
     ownershipReads: () => ownershipReads,
+    setFreshAcceptance: (value: boolean) => {
+      allowFresh = value;
+    },
     lease,
     storeRoot: root,
   };
@@ -796,6 +1745,16 @@ async function effortHarness(
 function claudeAction() {
   const base = action();
   return action({
+    operational_recovery: {
+      authorization_kind: "initial",
+      continuation_mode: "fresh",
+      epoch_number: 0,
+      attempt_in_epoch: 1,
+      attempt_allowance: 1,
+      retained_lineage_id: null,
+      source_attempt_id: null,
+      request_id: null,
+    },
     execution: {
       ...base.execution,
       configuration: {
@@ -937,6 +1896,8 @@ function brokerBinding(actionId: string, environment: EnvironmentRef) {
 interface SyntheticInitProcess extends StreamedProcess {
   onWrite: (frame: Record<string, unknown>) => void;
   queryWrites: number;
+  probeWrites: number;
+  cancelCalls: number;
   appliedSettings: Record<string, unknown>;
   probeFrames: ((sessionId: string) => Record<string, unknown>[]) | null;
   endProbeOutput: boolean;
@@ -978,6 +1939,12 @@ function syntheticInitProcess(
     exit,
     onWrite: () => undefined,
     queryWrites: 0,
+    probeWrites: 0,
+    cancelCalls: 0,
+    negotiatedCapabilities: () =>
+      Object.freeze({
+        nonblockingDiagnosticWrite: cancelled ? "unavailable" : "supported",
+      }),
     appliedSettings: { model: CLAUDE_CODE_MODEL, effort: CLAUDE_CODE_EFFORT },
     probeFrames: null,
     endProbeOutput: false,
@@ -985,7 +1952,8 @@ function syntheticInitProcess(
       stdoutController.enqueue(
         new TextEncoder().encode(`${JSON.stringify(frame)}\n`),
       ),
-    write: async (data) => {
+    write: async (data, beforeWrite) => {
+      beforeWrite?.();
       const frame = JSON.parse(new TextDecoder().decode(data)) as Record<
         string,
         unknown
@@ -1007,6 +1975,7 @@ function syntheticInitProcess(
         );
       } else if (frame.shouldQuery !== false) process.queryWrites += 1;
       else {
+        process.probeWrites++;
         const sessionId = frame.session_id as string;
         for (const output of process.probeFrames?.(sessionId) ?? [
           initFrame(sessionId),
@@ -1031,6 +2000,7 @@ function syntheticInitProcess(
       byteLength: 0,
     }),
     cancel: async () => {
+      process.cancelCalls++;
       if (!cancelled) {
         cancelled = true;
         if (!stdoutClosed) {
